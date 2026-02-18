@@ -1,0 +1,564 @@
+#include "crosspad/pad/PadManager.hpp"
+#include <cstdio>
+
+namespace crosspad {
+
+void PadManager::init(PadLedController& ledController, PadAnimator& animator,
+                       IMidiOutput& midiOutput, IEventBus& eventBus,
+                       CrosspadSettings* settings, CrosspadStatus* status) {
+    ledController_ = &ledController;
+    animator_ = &animator;
+    midiOutput_ = &midiOutput;
+    eventBus_ = &eventBus;
+    settings_ = settings;
+    status_ = status;
+}
+
+void PadManager::begin() {
+    // Initialize the LED controller (subscribes EventBus, initial LED update)
+    if (ledController_) {
+        ledController_->begin();
+    }
+
+    // Set initial pad notes (offset from status->keyOffset, default C2=36)
+    uint8_t offset = status_ ? status_->keyOffset : 36;
+    for (int i = 0; i < 16; i++) {
+        padNotes_[i] = i + offset;
+    }
+}
+
+void PadManager::update() {
+    // Tick PadAnimator first; when active it sets isAnimating on PadLedController
+    if (animator_) {
+        animator_->update();
+    }
+
+    if (ledController_) {
+        ledController_->update();
+    }
+}
+
+// ── Physical pad interaction ────────────────────────────────────────────
+
+void PadManager::handlePadPress(uint8_t padIdx, uint8_t velocity) {
+    if (padIdx >= 16) return;
+
+    // Get active pad logic handler (thread-safe read)
+    std::shared_ptr<IPadLogicHandler> handler;
+    {
+        std::lock_guard<std::mutex> lock(logicMutex_);
+        handler = activePadLogic_;
+    }
+
+    // Update internal state (thread-safe write)
+    {
+        std::lock_guard<std::mutex> lock(stateMutex_);
+        padStates_[padIdx] = true;
+        padVelocity_[padIdx] = velocity;
+    }
+
+    // Check if there's an active pad logic handler
+    if (handler) {
+        handler->onPadPress(*this, padIdx, velocity);
+        return;
+    }
+
+    // Default behavior
+    if (ledController_) {
+        ledController_->notifyNoteOn(padIdx, velocity);
+    }
+
+    // Send MIDI message if needed
+    if (settings_ && settings_->keypad.enableKeypad && !settings_->keypad.sendCC) {
+        uint8_t note = getMidiNoteForPad(padIdx);
+        uint8_t channel = getPadChannel(padIdx);
+        if (midiOutput_) {
+            midiOutput_->sendNoteOn(note, channel);
+        }
+    }
+
+    // Always send through EventBus
+    if (eventBus_) {
+        uint8_t note = getMidiNoteForPad(padIdx);
+        uint8_t channel = getPadChannel(padIdx);
+        eventBus_->postNoteOn(channel, note, velocity, EventSource::PadManager);
+        eventBus_->postPadPressed(padIdx, true, velocity, EventSource::PadManager);
+    }
+}
+
+void PadManager::handlePadRelease(uint8_t padIdx) {
+    if (padIdx >= 16) return;
+
+    std::shared_ptr<IPadLogicHandler> handler;
+    {
+        std::lock_guard<std::mutex> lock(logicMutex_);
+        handler = activePadLogic_;
+    }
+
+    {
+        std::lock_guard<std::mutex> lock(stateMutex_);
+        padStates_[padIdx] = false;
+    }
+
+    if (handler) {
+        handler->onPadRelease(*this, padIdx);
+        return;
+    }
+
+    if (ledController_) {
+        ledController_->notifyNoteOff(padIdx);
+    }
+
+    if (settings_ && settings_->keypad.enableKeypad && !settings_->keypad.sendCC) {
+        uint8_t note = getMidiNoteForPad(padIdx);
+        uint8_t channel = getPadChannel(padIdx);
+        if (midiOutput_) {
+            midiOutput_->sendNoteOff(note, channel);
+        }
+
+        if (!settings_->keypad.noteOffOnRelease) return;
+    }
+
+    if (eventBus_) {
+        uint8_t note = getMidiNoteForPad(padIdx);
+        uint8_t channel = getPadChannel(padIdx);
+        eventBus_->postNoteOff(channel, note, 0, EventSource::PadManager);
+        eventBus_->postPadReleased(padIdx, EventSource::PadManager);
+    }
+}
+
+void PadManager::handlePadPressure(uint8_t padIdx, uint8_t pressure) {
+    if (padIdx >= 16) return;
+
+    std::shared_ptr<IPadLogicHandler> handler;
+    {
+        std::lock_guard<std::mutex> lock(logicMutex_);
+        handler = activePadLogic_;
+    }
+
+    {
+        std::lock_guard<std::mutex> lock(stateMutex_);
+        padPressure_[padIdx] = pressure;
+    }
+
+    if (handler) {
+        handler->onPadPressure(*this, padIdx, pressure);
+        return;
+    }
+
+    if (ledController_) {
+        ledController_->handleAftertouch(0, getMidiNoteForPad(padIdx), pressure);
+    }
+}
+
+// ── MIDI event handling ─────────────────────────────────────────────────
+
+void PadManager::handleMidiNoteOn(uint8_t channel, uint8_t note, uint8_t velocity) {
+    uint8_t padIdx = getPadForMidiNote(note);
+    if (padIdx < 16) {
+        {
+            std::lock_guard<std::mutex> lock(stateMutex_);
+            padStates_[padIdx] = true;
+            padVelocity_[padIdx] = velocity;
+        }
+        if (ledController_) {
+            ledController_->handleNoteOn(channel, note, velocity);
+        }
+    }
+}
+
+void PadManager::handleMidiNoteOff(uint8_t channel, uint8_t note) {
+    uint8_t padIdx = getPadForMidiNote(note);
+    if (padIdx < 16) {
+        {
+            std::lock_guard<std::mutex> lock(stateMutex_);
+            padStates_[padIdx] = false;
+        }
+        if (ledController_) {
+            ledController_->handleNoteOff(channel, note);
+        }
+    }
+}
+
+void PadManager::handleMidiAftertouch(uint8_t channel, uint8_t note, uint8_t pressure) {
+    uint8_t padIdx = getPadForMidiNote(note);
+    if (padIdx < 16) {
+        {
+            std::lock_guard<std::mutex> lock(stateMutex_);
+            padPressure_[padIdx] = pressure;
+        }
+        if (ledController_) {
+            ledController_->handleAftertouch(channel, note, pressure);
+        }
+    }
+}
+
+// ── Sample playback ─────────────────────────────────────────────────────
+
+void PadManager::handleSamplePlay(uint8_t padIdx, bool isPlaying, uint8_t wavIdx) {
+    if (padIdx >= 16) return;
+    {
+        std::lock_guard<std::mutex> lock(stateMutex_);
+        padPlayStates_[padIdx] = isPlaying;
+    }
+    if (ledController_) {
+        ledController_->notifyNotePlay(padIdx, isPlaying);
+    }
+}
+
+void PadManager::togglePadPlay(uint8_t padIdx) {
+    if (padIdx >= 16) return;
+
+    bool currentlyPlaying;
+    {
+        std::lock_guard<std::mutex> lock(stateMutex_);
+        currentlyPlaying = padPlayStates_[padIdx];
+    }
+
+    if (currentlyPlaying) {
+        uint8_t note = getMidiNoteForPad(padIdx);
+        uint8_t channel = getPadChannel(padIdx);
+        if (eventBus_) {
+            eventBus_->postNoteOff(channel, note, 0, EventSource::PadManager);
+        }
+        std::lock_guard<std::mutex> lock(stateMutex_);
+        padPlayStates_[padIdx] = false;
+    } else {
+        uint8_t note = getMidiNoteForPad(padIdx);
+        uint8_t channel = getPadChannel(padIdx);
+        if (eventBus_) {
+            eventBus_->postNoteOn(channel, note, 127, EventSource::PadManager);
+        }
+        std::lock_guard<std::mutex> lock(stateMutex_);
+        padPlayStates_[padIdx] = true;
+    }
+}
+
+// ── Pad state queries ───────────────────────────────────────────────────
+
+bool PadManager::isPadPressed(uint8_t padIdx) {
+    if (padIdx >= 16) return false;
+    std::lock_guard<std::mutex> lock(stateMutex_);
+    return padStates_[padIdx];
+}
+
+bool PadManager::isPadPlaying(uint8_t padIdx) {
+    if (padIdx >= 16) return false;
+    std::lock_guard<std::mutex> lock(stateMutex_);
+    return padPlayStates_[padIdx];
+}
+
+// ── Color forwarding to PadLedController ────────────────────────────────
+
+void PadManager::setPadColor(uint8_t padIdx, RgbColor color) {
+    if (ledController_) ledController_->setPadColor(padIdx, color);
+}
+void PadManager::setPadColor(uint8_t padIdx, uint8_t r, uint8_t g, uint8_t b) {
+    if (ledController_) ledController_->setPadColor(padIdx, r, g, b);
+}
+void PadManager::setDefaultColor(RgbColor color) {
+    if (ledController_) ledController_->setDefaultColor(color);
+}
+void PadManager::setDefaultColor(uint8_t r, uint8_t g, uint8_t b) {
+    if (ledController_) ledController_->setDefaultColor(RgbColor(r, g, b));
+}
+void PadManager::setPressedColor(RgbColor color) {
+    if (ledController_) ledController_->setPressedColor(color);
+}
+void PadManager::setPressedColor(uint8_t r, uint8_t g, uint8_t b) {
+    if (ledController_) ledController_->setPressedColor(RgbColor(r, g, b));
+}
+void PadManager::setPlayingColor(RgbColor color) {
+    if (ledController_) ledController_->setPlayingColor(color);
+}
+void PadManager::setPlayingColor(uint8_t r, uint8_t g, uint8_t b) {
+    if (ledController_) ledController_->setPlayingColor(RgbColor(r, g, b));
+}
+RgbColor PadManager::getPadColor(uint8_t padIdx) {
+    return ledController_ ? ledController_->getPadColor(padIdx) : RgbColor(0, 0, 0);
+}
+RgbColor PadManager::getPressedColor(uint8_t padIdx) {
+    return ledController_ ? ledController_->getPressedColor(padIdx) : RgbColor(0, 0, 0);
+}
+RgbColor PadManager::getPlayingColor(uint8_t padIdx) {
+    return ledController_ ? ledController_->getPlayingColor(padIdx) : RgbColor(0, 0, 0);
+}
+
+// ── Brightness ──────────────────────────────────────────────────────────
+
+void PadManager::setBrightness(uint8_t brightness) {
+    if (ledController_) ledController_->setBrightness(brightness);
+}
+uint8_t PadManager::getBrightness() {
+    return ledController_ ? ledController_->getBrightness() : 255;
+}
+
+// ── Feedback mode ───────────────────────────────────────────────────────
+
+void PadManager::setFeedbackMode(KeypadFeedbackMode mode) {
+    if (ledController_) ledController_->setFeedbackMode(mode);
+}
+KeypadFeedbackMode PadManager::getFeedbackMode() {
+    return ledController_ ? ledController_->getFeedbackMode() : KeypadFeedbackMode::STANDARD;
+}
+
+// ── Animation forwarding ────────────────────────────────────────────────
+
+bool PadManager::playAnimation(KeypadAnimationMode mode, KeypadAnimationParams params) {
+    return ledController_ ? ledController_->playAnimation(mode, params) : false;
+}
+bool PadManager::playPadAnimation(uint8_t padIdx, KeypadAnimationParams params) {
+    return ledController_ ? ledController_->playPadAnimation(padIdx, params) : false;
+}
+void PadManager::stopAnimation() {
+    if (ledController_) ledController_->stopAnimation();
+}
+bool PadManager::isAnimationActive() {
+    return ledController_ ? ledController_->isAnimationActive() : false;
+}
+
+void PadManager::setCustomColorCallback(KeypadCustomColorCallback callback) {
+    if (ledController_) ledController_->setCustomColorCallback(callback);
+}
+
+// ── Pad configuration ───────────────────────────────────────────────────
+
+void PadManager::loadPadConfig(Pad* padArray, uint8_t count) {
+    pads_ = padArray;
+    padCount_ = count;
+
+    for (int i = 0; i < count && i < 16; i++) {
+        Pad& pad = pads_[i];
+
+        uint8_t r = (pad.color >> 16) & 0xFF;
+        uint8_t g = (pad.color >> 8) & 0xFF;
+        uint8_t b = pad.color & 0xFF;
+        RgbColor padColor(r, g, b);
+
+        uint8_t pressedR = (pad.color_pressed >> 16) & 0xFF;
+        uint8_t pressedG = (pad.color_pressed >> 8) & 0xFF;
+        uint8_t pressedB = pad.color_pressed & 0xFF;
+        RgbColor pressedColor(pressedR, pressedG, pressedB);
+
+        if (ledController_) {
+            ledController_->setPadColor(pad.number, padColor);
+            ledController_->setPadPressedColor(pad.number, pressedColor);
+        }
+
+        padNotes_[pad.number] = pad.note;
+    }
+}
+
+void PadManager::setPadNote(uint8_t padIdx, uint8_t note) {
+    if (padIdx < 16) {
+        padNotes_[padIdx] = note;
+        if (pads_ && padIdx < padCount_) {
+            pads_[padIdx].note = note;
+        }
+    }
+}
+
+uint8_t PadManager::getPadNote(uint8_t padIdx) {
+    if (padIdx < 16) {
+        if (pads_ && padIdx < padCount_) {
+            return pads_[padIdx].note;
+        }
+        return padNotes_[padIdx];
+    }
+    return 0;
+}
+
+void PadManager::setChordNote(uint8_t padIdx, uint8_t chordIdx, int8_t note) {
+    if (padIdx < 16 && chordIdx < 8) {
+        padChordNotes_[padIdx][chordIdx] = note;
+    }
+}
+
+int8_t PadManager::getChordNote(uint8_t padIdx, uint8_t chordIdx) {
+    if (padIdx < 16 && chordIdx < 8) {
+        return padChordNotes_[padIdx][chordIdx];
+    }
+    return -1;
+}
+
+void PadManager::setPadChannel(uint8_t padIdx, uint8_t channel) {
+    if (padIdx < 16) {
+        padChannels_[padIdx] = channel;
+    }
+}
+
+uint8_t PadManager::getPadChannel(uint8_t padIdx) {
+    return (padIdx < 16) ? padChannels_[padIdx] : 0;
+}
+
+// ── Note mapping ────────────────────────────────────────────────────────
+
+uint8_t PadManager::getMidiNoteForPad(uint8_t padIdx) {
+    if (padIdx >= 16) return 0;
+    if (pads_ && padIdx < padCount_) {
+        return pads_[padIdx].note;
+    }
+    return padNotes_[padIdx];
+}
+
+uint8_t PadManager::getPadForMidiNote(uint8_t note) {
+    if (pads_) {
+        for (int i = 0; i < padCount_ && i < 16; i++) {
+            if (pads_[i].note == note) {
+                return pads_[i].number;
+            }
+        }
+    }
+    for (int i = 0; i < 16; i++) {
+        if (padNotes_[i] == note) {
+            return i;
+        }
+    }
+    return 255;
+}
+
+int PadManager::getPadIndex(uint8_t midiNote) {
+    return getPadForMidiNote(midiNote);
+}
+
+void PadManager::updateLEDState(uint8_t padIdx) {
+    if (padIdx >= 16 || !ledController_) return;
+
+    bool pressed, playing;
+    uint8_t velocity;
+    {
+        std::lock_guard<std::mutex> lock(stateMutex_);
+        pressed = padStates_[padIdx];
+        playing = padPlayStates_[padIdx];
+        velocity = padVelocity_[padIdx];
+    }
+
+    if (pressed) {
+        ledController_->notifyNoteOn(padIdx, velocity);
+    } else if (playing) {
+        ledController_->notifyNotePlay(padIdx, true);
+    } else {
+        ledController_->notifyNoteOff(padIdx);
+    }
+}
+
+// ── Notification methods ────────────────────────────────────────────────
+
+void PadManager::notifyNoteOn(uint8_t padIdx, uint8_t velocity, bool fromSampler) {
+    if (padIdx >= 16) return;
+    {
+        std::lock_guard<std::mutex> lock(stateMutex_);
+        padStates_[padIdx] = true;
+        padVelocity_[padIdx] = velocity;
+    }
+    if (ledController_) {
+        ledController_->notifyNoteOn(padIdx, velocity);
+    }
+}
+
+void PadManager::notifyNoteOff(uint8_t padIdx, bool fromSampler) {
+    if (padIdx >= 16) return;
+    {
+        std::lock_guard<std::mutex> lock(stateMutex_);
+        padStates_[padIdx] = false;
+    }
+    if (ledController_) {
+        ledController_->notifyNoteOff(padIdx);
+    }
+}
+
+void PadManager::notifySamplePlay(uint8_t padIdx, bool isPlaying) {
+    if (padIdx >= 16) return;
+    {
+        std::lock_guard<std::mutex> lock(stateMutex_);
+        padPlayStates_[padIdx] = isPlaying;
+    }
+    if (ledController_) {
+        ledController_->notifyNotePlay(padIdx, isPlaying);
+    }
+}
+
+// ── Pad Logic Application Management ────────────────────────────────────
+
+void PadManager::registerPadLogic(const std::string& appName, std::shared_ptr<IPadLogicHandler> handler) {
+    if (!handler) {
+        printf("PadManager: Cannot register null handler for app '%s'\n", appName.c_str());
+        return;
+    }
+    std::lock_guard<std::mutex> lock(logicMutex_);
+    padLogicHandlers_[appName] = handler;
+    printf("PadManager: Registered pad logic for app '%s'\n", appName.c_str());
+}
+
+void PadManager::setActivePadLogic(const std::string& appName) {
+    std::lock_guard<std::mutex> lock(logicMutex_);
+
+    if (activePadLogic_ && !activePadLogicName_.empty()) {
+        printf("PadManager: Deactivating pad logic '%s'\n", activePadLogicName_.c_str());
+        auto oldLogic = activePadLogic_;
+        activePadLogic_ = nullptr;
+        activePadLogicName_ = "";
+
+        // Unlock before calling user code to avoid deadlock
+        logicMutex_.unlock();
+        oldLogic->onDeactivate(*this);
+        logicMutex_.lock();
+    } else {
+        activePadLogic_ = nullptr;
+        activePadLogicName_ = "";
+    }
+
+    if (appName.empty()) {
+        printf("PadManager: No app specified, using default pad logic\n");
+        return;
+    }
+
+    auto it = padLogicHandlers_.find(appName);
+    if (it != padLogicHandlers_.end()) {
+        activePadLogic_ = it->second;
+        activePadLogicName_ = appName;
+        printf("PadManager: Activating pad logic '%s'\n", appName.c_str());
+
+        auto newLogic = activePadLogic_;
+        logicMutex_.unlock();
+        newLogic->onActivate(*this);
+        logicMutex_.lock();
+    } else {
+        printf("PadManager: App '%s' not found, using default pad logic\n", appName.c_str());
+    }
+}
+
+std::string PadManager::getActivePadLogic() const {
+    std::lock_guard<std::mutex> lock(logicMutex_);
+    return activePadLogicName_;
+}
+
+void PadManager::unregisterPadLogic(const std::string& appName) {
+    std::lock_guard<std::mutex> lock(logicMutex_);
+
+    if (activePadLogicName_ == appName && activePadLogic_) {
+        auto oldLogic = activePadLogic_;
+        activePadLogic_ = nullptr;
+        activePadLogicName_ = "";
+
+        logicMutex_.unlock();
+        oldLogic->onDeactivate(*this);
+        logicMutex_.lock();
+    }
+
+    auto it = padLogicHandlers_.find(appName);
+    if (it != padLogicHandlers_.end()) {
+        padLogicHandlers_.erase(it);
+        printf("PadManager: Unregistered pad logic for app '%s'\n", appName.c_str());
+    }
+}
+
+std::vector<std::string> PadManager::getRegisteredPadLogics() const {
+    std::vector<std::string> apps;
+    for (const auto& pair : padLogicHandlers_) {
+        apps.push_back(pair.first);
+    }
+    return apps;
+}
+
+} // namespace crosspad

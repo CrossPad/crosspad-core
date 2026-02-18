@@ -1,11 +1,10 @@
 #pragma once
 #include <cstdint>
 
-// PadManager lives outside crosspad-core (platform-specific),
-// forward-declared here so IPadLogicHandler can reference it.
-class PadManager;
-
 namespace crosspad {
+
+// Forward declaration — PadManager is now in crosspad-core
+class PadManager;
 
 /**
  * @brief Interface for application-specific pad logic handlers

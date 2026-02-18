@@ -15,4 +15,5 @@ idf_component_register(
         "${CMAKE_CURRENT_SOURCE_DIR}/include"
     REQUIRES
         bblanchon__ArduinoJson
+        freertos
 )

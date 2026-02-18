@@ -5,12 +5,18 @@ static const char* TAG = "EspLedStrip";
 
 namespace crosspad {
 
-EspLedStrip::EspLedStrip(const Config& config) : config_(config) {}
+EspLedStrip::EspLedStrip(const Config& config) : config_(config) {
+    mutex_ = xSemaphoreCreateMutex();
+}
 
 EspLedStrip::~EspLedStrip() {
     if (strip_) {
         led_strip_del(strip_);
         strip_ = nullptr;
+    }
+    if (mutex_) {
+        vSemaphoreDelete(mutex_);
+        mutex_ = nullptr;
     }
 }
 
@@ -20,6 +26,7 @@ void EspLedStrip::begin() {
     led_strip_config_t strip_config = {};
     strip_config.strip_gpio_num = config_.gpioPin;
     strip_config.max_leds = config_.ledCount;
+    strip_config.led_pixel_format = LED_PIXEL_FORMAT_GRB;
     strip_config.led_model = LED_MODEL_WS2812;
     strip_config.flags.invert_out = false;
 
@@ -37,12 +44,22 @@ void EspLedStrip::begin() {
 
     led_strip_clear(strip_);
     initialized_ = true;
-    ESP_LOGI(TAG, "LED strip initialized: %d LEDs on GPIO %d", config_.ledCount, config_.gpioPin);
+    ESP_LOGI(TAG, "LED strip initialized: %d LEDs on GPIO %d (remap: %s)",
+             config_.ledCount, config_.gpioPin,
+             config_.padToLedMap ? "yes" : "no");
 }
 
 void EspLedStrip::setPixel(uint16_t idx, RgbColor color) {
-    if (!strip_ || idx >= config_.ledCount) return;
-    led_strip_set_pixel(strip_, idx, color.R, color.G, color.B);
+    if (!strip_) return;
+
+    // Apply pad→LED remap if configured
+    uint16_t physIdx = idx;
+    if (config_.padToLedMap && idx < config_.padCount) {
+        physIdx = config_.padToLedMap[idx];
+    }
+
+    if (physIdx >= config_.ledCount) return;
+    led_strip_set_pixel(strip_, physIdx, color.R, color.G, color.B);
 }
 
 void EspLedStrip::refresh() {
@@ -52,6 +69,18 @@ void EspLedStrip::refresh() {
 
 uint16_t EspLedStrip::getPixelCount() const {
     return config_.ledCount;
+}
+
+void EspLedStrip::lock() {
+    if (mutex_) {
+        xSemaphoreTake(mutex_, portMAX_DELAY);
+    }
+}
+
+void EspLedStrip::unlock() {
+    if (mutex_) {
+        xSemaphoreGive(mutex_);
+    }
 }
 
 } // namespace crosspad

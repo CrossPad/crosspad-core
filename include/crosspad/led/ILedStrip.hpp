@@ -27,6 +27,11 @@ public:
 
     /// Number of LEDs on the strip
     virtual uint16_t getPixelCount() const = 0;
+
+    /// Thread-safety: lock before multi-step LED operations.
+    /// Default no-ops for single-threaded platforms.
+    virtual void lock() {}
+    virtual void unlock() {}
 };
 
 } // namespace crosspad

@@ -6,6 +6,24 @@ namespace crosspad {
 
 class STMRoutingSettings {
 public:
+    // ── Byte 1 bit positions (7 bools, bits 0-6) ──
+    static constexpr uint8_t BIT_MIDI2MIDI_THRU  = 0x01;
+    static constexpr uint8_t BIT_MIDI2USB        = 0x02;
+    static constexpr uint8_t BIT_MIDI2ESP        = 0x04;
+    static constexpr uint8_t BIT_USB2MIDI        = 0x08;
+    static constexpr uint8_t BIT_USB2USB_THRU    = 0x10;
+    static constexpr uint8_t BIT_USB2ESP         = 0x20;
+    static constexpr uint8_t BIT_ESP2MIDI        = 0x40;
+
+    // ── Byte 2 bit positions (7 bools, bits 0-6) ──
+    static constexpr uint8_t BIT_ESP2USB         = 0x01;
+    static constexpr uint8_t BIT_ESP2ESP_THRU    = 0x02;
+    static constexpr uint8_t BIT_ENABLED         = 0x04;
+    static constexpr uint8_t BIT_BUTTONS_AS_MIDI = 0x08;
+    static constexpr uint8_t BIT_BUTTONS2MIDI    = 0x10;
+    static constexpr uint8_t BIT_BUTTONS2USB     = 0x20;
+    static constexpr uint8_t BIT_BUTTONS2ESP     = 0x40;
+
     bool Midi2MidiThru;
     bool Midi2USB;
     bool Midi2ESP;
@@ -36,6 +54,32 @@ public:
         Buttons2Midi = false;
         Buttons2USB = false;
         Buttons2ESP = true;
+    }
+
+    /** Pack first 7 routing bools into a single byte for SysEx transmission. */
+    uint8_t packByte1() const {
+        uint8_t b = 0;
+        if (Midi2MidiThru)  b |= BIT_MIDI2MIDI_THRU;
+        if (Midi2USB)       b |= BIT_MIDI2USB;
+        if (Midi2ESP)       b |= BIT_MIDI2ESP;
+        if (USB2Midi)       b |= BIT_USB2MIDI;
+        if (USB2USBThru)    b |= BIT_USB2USB_THRU;
+        if (USB2ESP)        b |= BIT_USB2ESP;
+        if (ESP2Midi)       b |= BIT_ESP2MIDI;
+        return b;
+    }
+
+    /** Pack remaining 7 routing bools into a single byte for SysEx transmission. */
+    uint8_t packByte2() const {
+        uint8_t b = 0;
+        if (ESP2USB)              b |= BIT_ESP2USB;
+        if (ESP2ESPThru)          b |= BIT_ESP2ESP_THRU;
+        if (RoutingMatrixEnabled) b |= BIT_ENABLED;
+        if (ConfigButtonsAsMidi)  b |= BIT_BUTTONS_AS_MIDI;
+        if (Buttons2Midi)         b |= BIT_BUTTONS2MIDI;
+        if (Buttons2USB)          b |= BIT_BUTTONS2USB;
+        if (Buttons2ESP)          b |= BIT_BUTTONS2ESP;
+        return b;
     }
 
     void toJson(JsonObject& json) const {

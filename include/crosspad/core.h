@@ -22,6 +22,13 @@
 #include "crosspad/settings/CrosspadSettings.hpp"
 #include "crosspad/settings/IKeyValueStore.hpp"
 
+// Protocol
+#include "crosspad/protocol/SysExProtocol.h"
+#include "crosspad/protocol/IStm32Transport.hpp"
+#include "crosspad/protocol/SysExFramer.hpp"
+#include "crosspad/protocol/Stm32CommandSender.hpp"
+#include "crosspad/protocol/Stm32MessageHandler.hpp"
+
 // Status
 #include "crosspad/status/CrosspadStatus.hpp"
 
@@ -38,3 +45,15 @@
 #include "crosspad/led/LedTypes.hpp"
 #include "crosspad/led/ILedStrip.hpp"
 #include "crosspad/led/HtmlColor.hpp"
+
+// Platform interfaces
+#include "crosspad/platform/IClock.hpp"
+#include "crosspad/midi/IMidiOutput.hpp"
+
+// Pad management (portable)
+#include "crosspad/pad/PadAnimator.hpp"
+#include "crosspad/pad/PadLedController.hpp"
+#include "crosspad/pad/PadManager.hpp"
+
+// STM32 manager (portable)
+#include "crosspad/stm32/Stm32Manager.hpp"
