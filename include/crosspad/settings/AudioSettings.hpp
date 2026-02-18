@@ -168,8 +168,12 @@ public:
 
     // --- Main fields ---
     bool mute;
+    bool speakersEnabled;
     uint8_t inVolume;
     uint8_t outVolume;
+    // Per-codec per-output volumes: [codec][out] where codec in {0,1}, out in {0=OUT1,1=OUT2}
+    uint8_t outVolumeCodec[2][2];
+    uint8_t inVolumeCodec[2][2];
     Delay delay;
     Reverb reverb;
     Distortion distortion;
@@ -181,7 +185,13 @@ public:
     Eq eq[EQ_MAX_COUNT];
     Controller controler[LFO_MAX_COUNT];
 
-    AudioSettings() : mute(false), inVolume(50), outVolume(50) {}
+    AudioSettings() : mute(false), speakersEnabled(true), inVolume(50), outVolume(50),
+                      outVolumeCodec{}, inVolumeCodec{} {
+        outVolumeCodec[0][0] = 64;  // Codec 0, OUT1 (Speakers)
+        outVolumeCodec[0][1] = 50;  // Codec 0, OUT2 (Line Out 1/2)
+        outVolumeCodec[1][0] = 64;  // Codec 1, OUT1 (Speakers)
+        outVolumeCodec[1][1] = 50;  // Codec 1, OUT2 (Line Out 3/4)
+    }
 
     void toJson(JsonObject& json) const {
         json["mute"] = mute;
