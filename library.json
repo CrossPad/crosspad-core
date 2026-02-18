@@ -1,0 +1,13 @@
+{
+    "name": "crosspad-core",
+    "version": "0.1.0",
+    "description": "CrossPad portable core library — app registry, event bus interface, pad manager, settings model",
+    "keywords": ["crosspad", "midi", "sampler", "embedded"],
+    "frameworks": ["arduino", "espidf"],
+    "platforms": ["espressif32", "native"],
+    "build": {
+        "srcDir": "src",
+        "includeDir": "include",
+        "flags": ["-std=c++17"]
+    }
+}

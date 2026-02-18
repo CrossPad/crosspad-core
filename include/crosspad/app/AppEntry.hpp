@@ -1,0 +1,59 @@
+#pragma once
+
+/**
+ * @file AppEntry.hpp
+ * @brief Portable application entry descriptor
+ *
+ * Pure data struct describing an application's metadata and function pointers.
+ * No platform dependencies — only uses forward declarations for LVGL and App types.
+ */
+
+#include <cstdint>
+
+#ifdef USE_LVGL
+// Forward declaration to avoid full LVGL header dependency.
+// Consumers that create/use these function pointers include lvgl.h themselves.
+struct _lv_obj_t;
+typedef struct _lv_obj_t lv_obj_t;
+#endif
+
+// Forward declaration — App class is defined by the platform (LVGL or Simple GUI variant)
+class App;
+
+namespace crosspad {
+
+/**
+ * @brief Describes a registered application's metadata and callbacks
+ *
+ * Used by AppRegistry to store application information at compile time.
+ * Function pointers are set by the REGISTER_APP macro or manually at runtime.
+ */
+struct AppEntry {
+    const char* name;
+    const char* icon;
+
+#ifdef USE_LVGL
+    /// LVGL UI factory — creates the app's widget tree
+    lv_obj_t* (*createLVGL)(lv_obj_t* parent, App* a) = nullptr;
+
+    /// LVGL UI teardown — destroys the app's widget tree
+    void (*destroyLVGL)(lv_obj_t* app) = nullptr;
+#endif
+
+    /// Application logic callback (called on start or per-update)
+    void (*appLogic)(App* self) = nullptr;
+
+    /// Simple GUI initialization (non-LVGL path)
+    void (*initSimpleGUI)() = nullptr;
+
+    /// GUI refresh callback (for apps that need forced redraw)
+    void (*refreshGUI)() = nullptr;
+
+    /// Application cleanup callback
+    void (*cleanup)() = nullptr;
+
+    /// Priority for auto-selection (higher = more preferred, 0 = normal)
+    int priority = 0;
+};
+
+} // namespace crosspad

@@ -1,0 +1,232 @@
+#pragma once
+#include <cstdint>
+#include <ArduinoJson.h>
+
+namespace crosspad {
+
+class AudioSettings {
+public:
+    struct Delay {
+        bool bypass;
+        uint8_t length;
+        uint8_t feedback;
+        uint8_t dry;
+        uint8_t wet;
+        uint8_t inVolume;
+        uint8_t outVolume;
+
+        Delay() : bypass(true), length(50), feedback(50), dry(50), wet(50), inVolume(50), outVolume(50) {}
+
+        void toJson(JsonObject& json) const {
+            json["bypass"] = bypass; json["length"] = length; json["feedback"] = feedback;
+            json["dry"] = dry; json["wet"] = wet; json["inVolume"] = inVolume; json["outVolume"] = outVolume;
+        }
+        void fromJson(const JsonObject& json) {
+            bypass = json["bypass"]; length = json["length"]; feedback = json["feedback"];
+            dry = json["dry"]; wet = json["wet"]; inVolume = json["inVolume"]; outVolume = json["outVolume"];
+        }
+    };
+
+    struct Reverb {
+        bool bypass;
+        uint8_t roomSize;
+        uint8_t damping;
+        uint8_t dry;
+        uint8_t wet;
+        uint8_t inVolume;
+        uint8_t outVolume;
+
+        Reverb() : bypass(true), roomSize(50), damping(50), dry(50), wet(50), inVolume(50), outVolume(50) {}
+
+        void toJson(JsonObject& json) const {
+            json["bypass"] = bypass; json["roomSize"] = roomSize; json["damping"] = damping;
+            json["dry"] = dry; json["wet"] = wet; json["inVolume"] = inVolume; json["outVolume"] = outVolume;
+        }
+        void fromJson(const JsonObject& json) {
+            bypass = json["bypass"]; roomSize = json["roomSize"]; damping = json["damping"];
+            dry = json["dry"]; wet = json["wet"]; inVolume = json["inVolume"]; outVolume = json["outVolume"];
+        }
+    };
+
+    struct Distortion {
+        bool bypass;
+        uint8_t gain;
+        uint8_t tone;
+        uint8_t level;
+        uint8_t inVolume;
+        uint8_t outVolume;
+
+        Distortion() : bypass(true), gain(50), tone(50), level(50), inVolume(50), outVolume(50) {}
+
+        void toJson(JsonObject& json) const {
+            json["bypass"] = bypass; json["gain"] = gain; json["tone"] = tone;
+            json["level"] = level; json["inVolume"] = inVolume; json["outVolume"] = outVolume;
+        }
+        void fromJson(const JsonObject& json) {
+            bypass = json["bypass"]; gain = json["gain"]; tone = json["tone"];
+            level = json["level"]; inVolume = json["inVolume"]; outVolume = json["outVolume"];
+        }
+    };
+
+    struct Chorus {
+        bool bypass;
+        uint8_t rate;
+        uint8_t depth;
+        uint8_t feedback;
+        uint8_t dry;
+        uint8_t wet;
+        uint8_t inVolume;
+        uint8_t outVolume;
+
+        Chorus() : bypass(true), rate(50), depth(50), feedback(50), dry(50), wet(50), inVolume(50), outVolume(50) {}
+
+        void toJson(JsonObject& json) const {
+            json["bypass"] = bypass; json["rate"] = rate; json["depth"] = depth; json["feedback"] = feedback;
+            json["dry"] = dry; json["wet"] = wet; json["inVolume"] = inVolume; json["outVolume"] = outVolume;
+        }
+        void fromJson(const JsonObject& json) {
+            bypass = json["bypass"]; rate = json["rate"]; depth = json["depth"]; feedback = json["feedback"];
+            dry = json["dry"]; wet = json["wet"]; inVolume = json["inVolume"]; outVolume = json["outVolume"];
+        }
+    };
+
+    struct Flanger {
+        bool bypass;
+        uint8_t rate;
+        uint8_t depth;
+        uint8_t feedback;
+        uint8_t dry;
+        uint8_t wet;
+        uint8_t inVolume;
+        uint8_t outVolume;
+
+        Flanger() : bypass(true), rate(50), depth(50), feedback(50), dry(50), wet(50), inVolume(50), outVolume(50) {}
+
+        void toJson(JsonObject& json) const {
+            json["bypass"] = bypass; json["rate"] = rate; json["depth"] = depth; json["feedback"] = feedback;
+            json["dry"] = dry; json["wet"] = wet; json["inVolume"] = inVolume; json["outVolume"] = outVolume;
+        }
+        void fromJson(const JsonObject& json) {
+            bypass = json["bypass"]; rate = json["rate"]; depth = json["depth"]; feedback = json["feedback"];
+            dry = json["dry"]; wet = json["wet"]; inVolume = json["inVolume"]; outVolume = json["outVolume"];
+        }
+    };
+
+    struct Controller {
+        bool bypass;
+        uint8_t rate;
+        uint8_t depth;
+        uint8_t feedback;
+        uint8_t output;
+
+        Controller() : bypass(true), rate(50), depth(50), feedback(50), output(50) {}
+
+        void toJson(JsonObject& json) const {
+            json["bypass"] = bypass; json["rate"] = rate; json["depth"] = depth;
+            json["feedback"] = feedback; json["output"] = output;
+        }
+        void fromJson(const JsonObject& json) {
+            bypass = json["bypass"]; rate = json["rate"]; depth = json["depth"];
+            feedback = json["feedback"]; output = json["output"];
+        }
+    };
+
+    struct Eq {
+        bool bypass;
+        uint8_t low, lowQ;
+        uint8_t midLow, midLowQ;
+        uint8_t mid, midQ;
+        uint8_t midHigh, midHighQ;
+        uint8_t high, highQ;
+        uint8_t inVolume;
+        uint8_t outVolume;
+
+        Eq() : bypass(true),
+               low(50), lowQ(50), midLow(50), midLowQ(50),
+               mid(50), midQ(50), midHigh(50), midHighQ(50),
+               high(50), highQ(50), inVolume(50), outVolume(50) {}
+
+        void toJson(JsonObject& json) const {
+            json["bypass"] = bypass;
+            json["low"] = low; json["lowQ"] = lowQ;
+            json["midLow"] = midLow; json["midLowQ"] = midLowQ;
+            json["mid"] = mid; json["midQ"] = midQ;
+            json["midHigh"] = midHigh; json["midHighQ"] = midHighQ;
+            json["high"] = high; json["highQ"] = highQ;
+            json["inVolume"] = inVolume; json["outVolume"] = outVolume;
+        }
+        void fromJson(const JsonObject& json) {
+            bypass = json["bypass"];
+            low = json["low"]; lowQ = json["lowQ"];
+            midLow = json["midLow"]; midLowQ = json["midLowQ"];
+            mid = json["mid"]; midQ = json["midQ"];
+            midHigh = json["midHigh"]; midHighQ = json["midHighQ"];
+            high = json["high"]; highQ = json["highQ"];
+            inVolume = json["inVolume"]; outVolume = json["outVolume"];
+        }
+    };
+
+    // --- Main fields ---
+    bool mute;
+    uint8_t inVolume;
+    uint8_t outVolume;
+    Delay delay;
+    Reverb reverb;
+    Distortion distortion;
+    Chorus chorus;
+    Flanger flanger;
+
+    static constexpr int EQ_MAX_COUNT = 4;
+    static constexpr int LFO_MAX_COUNT = 4;
+    Eq eq[EQ_MAX_COUNT];
+    Controller controler[LFO_MAX_COUNT];
+
+    AudioSettings() : mute(false), inVolume(50), outVolume(50) {}
+
+    void toJson(JsonObject& json) const {
+        json["mute"] = mute;
+        json["inVolume"] = inVolume;
+        json["outVolume"] = outVolume;
+        JsonObject delayJson = json.createNestedObject("delay");
+        delay.toJson(delayJson);
+        JsonObject reverbJson = json.createNestedObject("reverb");
+        reverb.toJson(reverbJson);
+        JsonObject distortionJson = json.createNestedObject("distortion");
+        distortion.toJson(distortionJson);
+        JsonObject chorusJson = json.createNestedObject("chorus");
+        chorus.toJson(chorusJson);
+        JsonObject flangerJson = json.createNestedObject("flanger");
+        flanger.toJson(flangerJson);
+        JsonArray eqArray = json.createNestedArray("eq");
+        for (int i = 0; i < EQ_MAX_COUNT; i++) {
+            JsonObject eqJson = eqArray.createNestedObject();
+            eq[i].toJson(eqJson);
+        }
+        JsonArray controllerArray = json.createNestedArray("controller");
+        for (int i = 0; i < LFO_MAX_COUNT; i++) {
+            JsonObject controllerJson = controllerArray.createNestedObject();
+            controler[i].toJson(controllerJson);
+        }
+    }
+
+    void fromJson(const JsonObject& json) {
+        mute = json["mute"];
+        inVolume = json["inVolume"];
+        outVolume = json["outVolume"];
+        delay.fromJson(json["delay"]);
+        reverb.fromJson(json["reverb"]);
+        distortion.fromJson(json["distortion"]);
+        chorus.fromJson(json["chorus"]);
+        flanger.fromJson(json["flanger"]);
+        JsonArray eqArray = json["eq"];
+        for (int i = 0; i < EQ_MAX_COUNT; i++) {
+            eq[i].fromJson(eqArray[i]);
+        }
+        JsonArray controllerArray = json["controller"];
+        for (int i = 0; i < LFO_MAX_COUNT; i++) {
+            controler[i].fromJson(controllerArray[i]);
+        }
+    }
+};
+
+} // namespace crosspad
