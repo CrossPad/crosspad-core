@@ -2,9 +2,10 @@
 
 /**
  * @file CrosspadSettings.hpp
- * @brief Portable settings container — pure data model, no I/O
+ * @brief Portable settings container with IKeyValueStore-based persistence
  *
- * Persistence is handled by platform-specific IKeyValueStore implementations
+ * Field-to-key mapping is defined here so it's consistent across all platforms.
+ * Platform-specific IKeyValueStore implementations provide the actual storage
  * (NVS on ESP-IDF, SPIFFS on Arduino, filesystem on Linux).
  */
 
@@ -14,6 +15,7 @@
 #include "crosspad/settings/WirelessSettings.hpp"
 #include "crosspad/settings/AudioSettings.hpp"
 #include "crosspad/settings/VibrationSettings.hpp"
+#include "crosspad/settings/IKeyValueStore.hpp"
 
 namespace crosspad {
 
@@ -27,6 +29,12 @@ public:
         }
         return instance;
     }
+
+    /// Load all settings from a key-value store
+    void loadFrom(IKeyValueStore& store);
+
+    /// Save all settings to a key-value store
+    void saveTo(IKeyValueStore& store);
 
     KeypadSettings keypad;
     STMRoutingSettings stmRouting;
