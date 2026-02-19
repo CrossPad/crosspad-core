@@ -13,8 +13,11 @@
 #ifdef USE_LVGL
 // Forward declaration to avoid full LVGL header dependency.
 // Consumers that create/use these function pointers include lvgl.h themselves.
+// Guard: skip if lvgl.h was already included (it defines LV_VERSION_CHECK).
+#ifndef LV_VERSION_CHECK
 struct _lv_obj_t;
 typedef struct _lv_obj_t lv_obj_t;
+#endif
 #endif
 
 // Forward declaration — App class is defined by the platform (LVGL or Simple GUI variant)

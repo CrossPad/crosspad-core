@@ -8,7 +8,7 @@ namespace crosspad {
  *
  * Platform implementations:
  *   - ESP-IDF: NvsKeyValueStore (wraps NVS)
- *   - Arduino: SpiffsKeyValueStore (wraps SPIFFS JSON files)
+ *   - Arduino: PreferencesKeyValueStore (wraps NVS via Preferences.h)
  *   - Linux: FileKeyValueStore (wraps filesystem)
  */
 class IKeyValueStore {
