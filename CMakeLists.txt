@@ -16,4 +16,5 @@ idf_component_register(
     REQUIRES
         bblanchon__ArduinoJson
         freertos
+        esp_event
 )

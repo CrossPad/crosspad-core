@@ -13,11 +13,16 @@ class SampleSlot {
 public:
     uint8_t slot = 0;
     std::string sample = "";
+    uint32_t start = 0;
+    uint32_t end = 0;
 
     SampleSlot(uint8_t s, std::string f) : slot(s), sample(f) {}
     SampleSlot(uint8_t s) : slot(s) { sample = std::to_string(s) + ".wav"; }
 
-    bool isEmpty() { return (slot == 0) || !sample.ends_with(".wav"); }
+    bool isEmpty() {
+        if (slot == 0) return true;
+        return sample.size() < 4 || sample.compare(sample.size() - 4, 4, ".wav") != 0;
+    }
 };
 
 class Pad {
@@ -31,7 +36,9 @@ public:
     int volume = 100;
     int pan = 0;
     bool dirty = false;
+    bool dirtyModified = false;
     uint8_t note = 0;
+    uint8_t playbackMode = 0; // 0=one shot, 1=hold (stop on release), 2=loop (toggle)
 
     std::vector<SampleSlot> samples;
     uint8_t sampleCount = 0;
@@ -85,6 +92,35 @@ public:
     }
 
     uint8_t GetSampleCount() { return sampleCount; }
+
+    void CopyFrom(const Pad& source) {
+        uint8_t savedNumber = number;
+        uint8_t savedNote = note;
+
+        color = source.color;
+        color_pressed = source.color_pressed;
+        choke_group = source.choke_group;
+        cycle = source.cycle;
+        pitch = source.pitch;
+        volume = source.volume;
+        pan = source.pan;
+        playbackMode = source.playbackMode;
+
+        samples.clear();
+        sampleCount = 0;
+        for (uint8_t i = 0; i < source.sampleCount && i < KIT_LOADER_MAX_SAMPLES_PER_PAD; i++) {
+            SampleSlot slot(i + 1, source.samples[i].sample);
+            slot.start = source.samples[i].start;
+            slot.end = source.samples[i].end;
+            samples.push_back(slot);
+            sampleCount++;
+        }
+
+        number = savedNumber;
+        note = savedNote;
+        dirty = true;
+        dirtyModified = true;
+    }
 };
 
 } // namespace crosspad

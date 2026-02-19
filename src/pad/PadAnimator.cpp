@@ -39,7 +39,7 @@ void PadAnimator::startProgress(RgbColor color) {
 
     // Render initial state (all black)
     strip_->lock();
-    for (int i = 0; i < PAD_COUNT; i++) {
+    for (int i = 0; i < kPadCount; i++) {
         setPixel(i, RgbColor(0, 0, 0));
     }
     refresh();
@@ -94,7 +94,7 @@ void PadAnimator::setAnimationStateCallback(AnimationStateCallback cb) {
 }
 
 void PadAnimator::setPixel(uint8_t padIdx, RgbColor color) {
-    if (padIdx >= PAD_COUNT || !strip_) return;
+    if (padIdx >= kPadCount || !strip_) return;
     strip_->setPixel(padIdx, color);
 }
 
@@ -125,11 +125,11 @@ void PadAnimator::notifyAnimState(bool active) {
 // ── Progress bar rendering ──────────────────────────────────────────────
 
 void PadAnimator::renderProgress() {
-    float filledCount = currentProgress_ * PAD_COUNT;
+    float filledCount = currentProgress_ * kPadCount;
     int fullPads = (int)filledCount;
     float fractional = filledCount - fullPads;
 
-    for (int i = 0; i < PAD_COUNT; i++) {
+    for (int i = 0; i < kPadCount; i++) {
         if (i < fullPads) {
             setPixel(i, animColor_);
         } else if (i == fullPads) {
@@ -149,7 +149,7 @@ void PadAnimator::renderSuccess() {
     float t = (float)elapsed / ((float)duration_ * 1000.0f); // duration is ms, timer is us
 
     if (t >= 1.0f) {
-        for (int i = 0; i < PAD_COUNT; i++) {
+        for (int i = 0; i < kPadCount; i++) {
             setPixel(i, RgbColor(0, 0, 0));
         }
         refresh();
@@ -162,7 +162,7 @@ void PadAnimator::renderSuccess() {
     uint8_t bri = (uint8_t)(brightness * 255.0f);
     RgbColor green(0, bri, 0);
 
-    for (int i = 0; i < PAD_COUNT; i++) {
+    for (int i = 0; i < kPadCount; i++) {
         setPixel(i, green);
     }
     refresh();
@@ -179,7 +179,7 @@ void PadAnimator::renderError() {
     int phase = (int)((elapsedMs % 400) < 200 ? 0 : 1); // 0=on, 1=off
 
     if (cycle >= 3) {
-        for (int i = 0; i < PAD_COUNT; i++) {
+        for (int i = 0; i < kPadCount; i++) {
             setPixel(i, RgbColor(0, 0, 0));
         }
         refresh();
@@ -188,7 +188,7 @@ void PadAnimator::renderError() {
     }
 
     RgbColor color = (phase == 0) ? RgbColor(255, 0, 0) : RgbColor(0, 0, 0);
-    for (int i = 0; i < PAD_COUNT; i++) {
+    for (int i = 0; i < kPadCount; i++) {
         setPixel(i, color);
     }
     refresh();
@@ -197,7 +197,7 @@ void PadAnimator::renderError() {
 // ── Boot animation (rainbow wipe + breathe) ────────────────────────────
 
 static RgbColor rainbowColor(int padIdx) {
-    float hue = (float)padIdx / PadAnimator::PAD_COUNT * 360.0f;
+    float hue = (float)padIdx / PadAnimator::kPadCount * 360.0f;
     HslColor hsl(hue, 1.0f, 0.5f);
     return RgbColor(hsl);
 }
@@ -207,7 +207,7 @@ void PadAnimator::renderBoot() {
     int64_t elapsedMs = elapsedUs / 1000;
 
     if (elapsedMs >= (int64_t)duration_) {
-        for (int i = 0; i < PAD_COUNT; i++) {
+        for (int i = 0; i < kPadCount; i++) {
             setPixel(i, RgbColor(0, 0, 0));
         }
         refresh();
@@ -221,9 +221,9 @@ void PadAnimator::renderBoot() {
 
     if (elapsedMs < wipeEnd) {
         float wipeFraction = (float)elapsedMs / (float)wipeEnd;
-        float wipePad = wipeFraction * PAD_COUNT;
+        float wipePad = wipeFraction * kPadCount;
 
-        for (int i = 0; i < PAD_COUNT; i++) {
+        for (int i = 0; i < kPadCount; i++) {
             if ((float)i <= wipePad) {
                 float fadeFactor = 1.0f;
                 if ((float)i > wipePad - 1.0f && (float)i <= wipePad) {
@@ -245,7 +245,7 @@ void PadAnimator::renderBoot() {
 
         uint8_t bri = (uint8_t)((1.0f - t) * 255.0f);
 
-        for (int i = 0; i < PAD_COUNT; i++) {
+        for (int i = 0; i < kPadCount; i++) {
             RgbColor c = rainbowColor(i);
             setPixel(i, c.Dim(bri));
         }

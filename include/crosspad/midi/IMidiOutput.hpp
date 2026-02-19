@@ -6,10 +6,8 @@ namespace crosspad {
 /**
  * @brief Abstract MIDI output interface
  *
- * Platform implementations:
- *   - ESP-IDF: wraps DigitalPadSendNoteOn/Off (TinyUSB + BLE MIDI)
- *   - Arduino: wraps MIDI library
- *   - Linux: wraps ALSA/JACK MIDI
+ * Platform implementations inject callbacks via EspMidiOutput::setCallbacks()
+ * or provide a concrete subclass (ArduinoMidiOutput, etc.).
  */
 class IMidiOutput {
 public:

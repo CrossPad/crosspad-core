@@ -41,6 +41,7 @@ public:
     ESPRoutingSettings esp32Routing;
     WirelessSettings wireless;
     AudioSettings audio[CROSSPAD_MAX_PADS];
+    AudioSettings previewAudio;
     AudioSettings masterFX;
     VibrationSettings vibration;
     uint8_t LCDbrightness;
@@ -64,6 +65,7 @@ private:
         AudioEngineEnabled = true;
         Kit = 0;
         masterFX = AudioSettings();
+        previewAudio = AudioSettings();
         for (int i = 0; i < CROSSPAD_MAX_PADS; i++) {
             audio[i] = AudioSettings();
         }

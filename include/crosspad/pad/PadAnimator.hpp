@@ -15,7 +15,7 @@ namespace crosspad {
  */
 class PadAnimator {
 public:
-    static constexpr uint8_t PAD_COUNT = 16;
+    static constexpr uint8_t kPadCount = 16;
 
     PadAnimator() = default;
 
