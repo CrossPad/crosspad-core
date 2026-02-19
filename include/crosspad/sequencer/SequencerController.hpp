@@ -1,0 +1,223 @@
+#pragma once
+#include <crosspad/sequencer/SequencerTypes.hpp>
+#include <crosspad/sequencer/ISequencerEngine.hpp>
+
+namespace crosspad {
+
+/**
+ * @brief Cross-platform sequencer state manager and controller.
+ *
+ * Owns all sequencer business logic: mode/state transitions, BPM clamping,
+ * solo-mode toggling, sequence navigation.  Delegates actual MIDI
+ * sequencing + click to ISequencerEngine (platform-supplied).
+ */
+class SequencerController {
+public:
+    using Limits = SequencerLimits;
+
+    // Backward-compatible nested aliases used by GUI code
+    using quantization_e = Quantization;
+    static constexpr Quantization q_1_4      = Quantization::Quarter;
+    static constexpr Quantization q_1_8      = Quantization::Eighth;
+    static constexpr Quantization q_1_16     = Quantization::Sixteenth;
+    static constexpr Quantization q_1_32     = Quantization::ThirtySecond;
+    static constexpr Quantization q_INFINITE = Quantization::Off;
+
+    void init(ISequencerEngine& engine) {
+        engine_ = &engine;
+        engine_->setLength(seqLength_);
+        engine_->setClickAudible(clickActive_);
+        engine_->setClickBpm(bpm_);
+        engine_->setQuantization(quantization_);
+        engine_->setLoop(loopActive_);
+        engine_->setPreLen(4);
+        engine_->selectSeqRecord(recSequence_);
+        setSoloMode(soloMode_);
+        for (uint8_t i = 0; i <= Limits::MAX_SEQ_INDEX; i++) {
+            engine_->selectDirect(i, seqPlyState[i]);
+        }
+        engine_->resetClick();
+        enabled_ = true;
+    }
+
+    // ---------- getters ----------
+
+    SequencerMode  getMode()        const { return mode_; }
+    SequencerState getState()       const { return state_; }
+    SequencerMode  getNextMode()    const { return nextMode_; }
+    SequencerState getNextState()   const { return nextState_; }
+    uint8_t        getBar()         const { return bar_; }
+    uint8_t        getSeqLength()   const { return seqLength_; }
+    bool           getClickActive() const { return clickActive_; }
+    uint8_t        getLoopLength()  const { return loopLength_; }
+    uint8_t        getPlaybackSequence() const { return plySequence_; }
+    uint8_t        getRecordSequence()   const { return recSequence_; }
+    float          getBpm()         const { return bpm_; }
+    Quantization   getQuantization() const { return quantization_; }
+    bool           getSoloMode()    const { return soloMode_; }
+    bool           isEnabled()      const { return enabled_; }
+    bool           isLoopActive()   const { return loopActive_; }
+
+    bool isRecording() const {
+        return (mode_ == SequencerMode::Record || mode_ == SequencerMode::Overdub)
+            && state_ == SequencerState::Running;
+    }
+
+    bool getSeqPlyState(uint8_t idx) const {
+        if (idx > Limits::MAX_SEQ_INDEX) return false;
+        return seqPlyState[idx];
+    }
+
+    // ---------- setters (state from callbacks) ----------
+
+    void setMode(SequencerMode m) { mode_ = m; }
+
+    void setState(SequencerState s) {
+        state_ = s;
+        if (s == SequencerState::Idle) {
+            mode_      = SequencerMode::None;
+            nextMode_  = SequencerMode::None;
+            nextState_ = SequencerState::Idle;
+        }
+    }
+
+    void setNextState(SequencerState s) { nextState_ = s; }
+    void setNextMode(SequencerMode m)   { nextMode_ = m; }
+    void setBar(uint8_t b)              { bar_ = b; }
+
+    void setNoteCount(uint8_t count)    { noteCount_ = count; }
+
+    // ---------- setters (user actions → engine) ----------
+
+    void setLoopActive(bool v) {
+        loopActive_ = v;
+        if (engine_) engine_->setLoop(v);
+    }
+
+    void setSeqLength(uint8_t len) {
+        if (len > Limits::MAX_SEQ_LENGTH) len = Limits::MAX_SEQ_LENGTH;
+        seqLength_ = len;
+        if (engine_) engine_->setLength(len);
+    }
+
+    void setClickActive(bool v) {
+        clickActive_ = v;
+        if (engine_) engine_->setClickAudible(v);
+    }
+
+    void setBpm(float v) {
+        if (v < Limits::MIN_BPM) v = Limits::MIN_BPM;
+        if (v > Limits::MAX_BPM) v = Limits::MAX_BPM;
+        bpm_ = v;
+        if (engine_) engine_->setClickBpm(v);
+    }
+
+    void setQuantization(Quantization q) {
+        quantization_ = q;
+        if (engine_) engine_->setQuantization(q);
+    }
+
+    void setSoloMode(bool v) {
+        soloMode_ = v;
+        for (uint8_t i = 0; i <= Limits::MAX_SEQ_INDEX; i++) {
+            seqPlyState[i] = v ? (i == recSequence_) : true;
+            if (engine_) engine_->selectDirect(i, seqPlyState[i]);
+        }
+    }
+
+    void setSequence(uint8_t seq) {
+        if (seq > Limits::MAX_SEQ_INDEX) seq = Limits::MAX_SEQ_INDEX;
+        plySequence_ = seq;
+        if (engine_) engine_->select(seq);
+    }
+
+    void setSequenceRecord(uint8_t seq) {
+        if (seq > Limits::MAX_SEQ_INDEX) seq = Limits::MAX_SEQ_INDEX;
+        recSequence_ = seq;
+        if (engine_) engine_->selectSeqRecord(seq);
+    }
+
+    void setSequenceEnabled(uint8_t seq, bool enabled) {
+        if (seq > Limits::MAX_SEQ_INDEX) return;
+        seqPlyState[seq] = enabled;
+        if (engine_) engine_->selectDirect(seq, enabled);
+    }
+
+    // ---------- navigation ----------
+
+    void useNextSequence() {
+        recSequence_++;
+        if (recSequence_ > Limits::MAX_SEQ_INDEX) recSequence_ = 0;
+        if (engine_) engine_->selectSeqRecord(recSequence_);
+        if (soloMode_) applySoloMute();
+    }
+
+    void usePrevSequence() {
+        if (recSequence_ == 0)
+            recSequence_ = Limits::MAX_SEQ_INDEX;
+        else
+            recSequence_--;
+        if (engine_) engine_->selectSeqRecord(recSequence_);
+        if (soloMode_) applySoloMute();
+    }
+
+    // ---------- transport ----------
+
+    void playback() { if (engine_) engine_->playback(); }
+    void record()   { if (engine_) { engine_->record(); setClickActive(true); } }
+    void overdub()  { if (engine_) engine_->overdub(); }
+
+    void reset() {
+        if (engine_) {
+            engine_->resetClick();
+            engine_->reset();
+        }
+        setClickActive(false);
+    }
+
+    void stop() {
+        if (engine_) engine_->stop();
+        setClickActive(false);
+    }
+
+    void eraseSeq(int8_t idx = -1) {
+        if (!engine_) return;
+        if (idx < 0 || idx > Limits::MAX_SEQ_INDEX) {
+            engine_->clearAll(0, 127);
+            setClickActive(false);
+        } else {
+            engine_->clearSeq(idx, 127);
+        }
+    }
+
+    // Public state array (backward compat with GUI code that accesses directly)
+    bool seqPlyState[Limits::MAX_SEQ_INDEX + 1] = {true};
+
+private:
+    void applySoloMute() {
+        for (uint8_t i = 0; i <= Limits::MAX_SEQ_INDEX; i++) {
+            seqPlyState[i] = (i == recSequence_);
+            if (engine_) engine_->selectDirect(i, seqPlyState[i]);
+        }
+    }
+
+    ISequencerEngine* engine_ = nullptr;
+    bool              enabled_ = false;
+    SequencerMode     mode_      = SequencerMode::None;
+    SequencerState    state_     = SequencerState::Idle;
+    SequencerMode     nextMode_  = SequencerMode::None;
+    SequencerState    nextState_ = SequencerState::Idle;
+    uint8_t           bar_        = 0;
+    uint8_t           seqLength_  = 4;
+    bool              clickActive_ = true;
+    bool              loopActive_  = true;
+    uint8_t           loopLength_  = 0;
+    float             bpm_         = 120.0f;
+    uint8_t           plySequence_ = 0;
+    uint8_t           recSequence_ = 0;
+    Quantization      quantization_ = Limits::DEFAULT_QUANTIZATION;
+    uint8_t           noteCount_   = 0;
+    bool              soloMode_    = true;
+};
+
+} // namespace crosspad

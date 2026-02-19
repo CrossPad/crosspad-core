@@ -38,10 +38,26 @@ void PadManager::update() {
     }
 }
 
+// ── Input suppression ─────────────────────────────────────────────────
+
+void PadManager::allNotesOff() {
+    for (uint8_t i = 0; i < 16; i++) {
+        bool wasPressed;
+        {
+            std::lock_guard<std::mutex> lock(stateMutex_);
+            wasPressed = padStates_[i];
+        }
+        if (wasPressed) {
+            handlePadRelease(i);
+        }
+    }
+}
+
 // ── Physical pad interaction ────────────────────────────────────────────
 
 void PadManager::handlePadPress(uint8_t padIdx, uint8_t velocity) {
     if (padIdx >= 16) return;
+    if (inputSuppressed_) return;
 
     // Get active pad logic handler (thread-safe read)
     std::shared_ptr<IPadLogicHandler> handler;

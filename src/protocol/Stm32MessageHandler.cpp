@@ -63,7 +63,6 @@ void Stm32MessageHandler::handleMessage(const uint8_t* data, unsigned size) {
 }
 
 void Stm32MessageHandler::parseDigitalButtons(const uint8_t* data, unsigned size) {
-    if (forceButtonOff > 0) return;
     if (!padManager_) return;
 
     // Button index decode table: 3 bytes × 7 bits each → up to 21 button indices

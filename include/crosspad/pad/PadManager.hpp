@@ -37,6 +37,11 @@ public:
     void begin();
     void update();
 
+    // Input suppression (replaces global forceButtonOff)
+    void setInputSuppressed(bool suppressed) { inputSuppressed_ = suppressed; }
+    bool isInputSuppressed() const { return inputSuppressed_; }
+    void allNotesOff();
+
     // Physical pad interaction
     void handlePadPress(uint8_t padIdx, uint8_t velocity = 127);
     void handlePadRelease(uint8_t padIdx);
@@ -146,6 +151,9 @@ private:
 
     // RGB Callback Manager
     RGBCallbackManager rgbCallbackManager_;
+
+    // Input suppression flag
+    bool inputSuppressed_ = false;
 
     // Thread safety
     mutable std::mutex stateMutex_;

@@ -62,9 +62,6 @@ public:
     bool powerBtnPressed = false;
     bool keyPresses[16] = {};
 
-    /// When > 0, digital button presses are ignored
-    int forceButtonOff = 0;
-
 private:
     PadManager* padManager_ = nullptr;
     CrosspadStatus* status_ = nullptr;

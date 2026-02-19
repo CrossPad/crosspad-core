@@ -13,6 +13,11 @@ void PadLedController::init(ILedStrip& ledStrip, IEventBus& eventBus,
 }
 
 void PadLedController::begin() {
+    // Initialize the LED strip hardware (creates mutex, starts RMT peripheral)
+    if (ledStrip_) {
+        ledStrip_->begin();
+    }
+
     // Subscribe to EventBus for sampler feedback
     if (eventBus_) {
         samplePlaybackSub_ = eventBus_->subscribe(EventType::SamplePlayback,
