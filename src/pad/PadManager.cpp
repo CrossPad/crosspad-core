@@ -393,6 +393,16 @@ uint8_t PadManager::getPadChannel(uint8_t padIdx) {
 
 // ── Note mapping ────────────────────────────────────────────────────────
 
+void PadManager::applyDefaultOffsetToPadNotes() {
+    uint8_t offset = status_ ? status_->keyOffset : 36;
+    for (int i = 0; i < 16; i++) {
+        padNotes_[i] = i + offset;
+        if (pads_ && i < padCount_) {
+            pads_[i].note = i + offset;
+        }
+    }
+}
+
 uint8_t PadManager::getMidiNoteForPad(uint8_t padIdx) {
     if (padIdx >= 16) return 0;
     if (pads_ && padIdx < padCount_) {

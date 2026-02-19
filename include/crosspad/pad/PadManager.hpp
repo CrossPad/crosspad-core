@@ -100,6 +100,7 @@ public:
     uint8_t getPadChannel(uint8_t padIdx);
 
     // Note mapping
+    void applyDefaultOffsetToPadNotes();
     uint8_t getMidiNoteForPad(uint8_t padIdx);
     uint8_t getPadForMidiNote(uint8_t note);
 
