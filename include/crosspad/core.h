@@ -17,6 +17,7 @@
 #include "crosspad/app/AppEntry.hpp"
 #include "crosspad/app/AppRegistry.hpp"
 #include "crosspad/app/AppRegistrar.hpp"
+#include "crosspad/app/AppPointers.hpp"
 
 // Settings system
 #include "crosspad/settings/CrosspadSettings.hpp"
@@ -49,6 +50,7 @@
 // Platform interfaces
 #include "crosspad/platform/IClock.hpp"
 #include "crosspad/midi/IMidiOutput.hpp"
+#include "crosspad/midi/MidiInputHandler.hpp"
 
 // Pad management (portable)
 #include "crosspad/pad/PadAnimator.hpp"
