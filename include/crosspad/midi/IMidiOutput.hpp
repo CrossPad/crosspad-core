@@ -41,6 +41,9 @@ public:
     virtual void sendProgramChange(uint8_t program, uint8_t channel) {
         (void)program; (void)channel;
     }
+    virtual void sendPitchBend(int16_t value, uint8_t channel) {
+        (void)value; (void)channel;
+    }
 };
 
 /// Platform-injected singleton (same pattern as getEventBus())
