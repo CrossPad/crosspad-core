@@ -9,7 +9,7 @@ namespace crosspad {
  * @brief Byte-level transport interface to/from STM32 co-processor
  *
  * Platform provides the implementation (UART, SPI, BLE, etc.).
- * Used by SysExFramer (RX side) and Stm32CommandSender (TX side).
+ * Used by Stm32CommandSender (TX side).
  */
 class IStm32Transport {
 public:

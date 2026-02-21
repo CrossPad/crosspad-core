@@ -24,6 +24,10 @@ public:
     /// @param stm32Dfu true = STM32 goes to DFU, false = ESP goes to DFU
     using DfuRequestCallback = std::function<void(bool stm32Dfu)>;
 
+    /// Callback for platform-specific USB mode switch
+    /// @param mode USB mode byte from STM32 (0x01=DEFAULT CDC+MIDI, 0x02=AUDIO MIDI+UAC2)
+    using UsbModeCallback = std::function<void(uint8_t mode)>;
+
     Stm32MessageHandler() = default;
 
     /**
@@ -37,6 +41,11 @@ public:
      * @brief Set callback for DFU mode requests (platform-specific)
      */
     void setDfuRequestCallback(DfuRequestCallback cb) { dfuCb_ = std::move(cb); }
+
+    /**
+     * @brief Set callback for USB mode switch requests (platform-specific)
+     */
+    void setUsbModeCallback(UsbModeCallback cb) { usbModeCb_ = std::move(cb); }
 
     /**
      * @brief Handle a raw SysEx message from STM32
@@ -54,18 +63,21 @@ public:
 
     // ── Input state (read by LVGL encoder/keypad drivers) ──
 
-    int8_t encoderTop = 0;
-    int8_t encoderTopPrev = 0;
-    int8_t encoderLeft = 0;
-    int8_t encoderLeftPrev = 0;
-    bool encoderPressed = false;
-    bool powerBtnPressed = false;
-    bool keyPresses[16] = {};
+    struct Stm32InputState {
+        int8_t encoderTop = 0;
+        int8_t encoderLeft = 0;
+        bool encoderPressed = false;
+        bool powerBtnPressed = false;
+    };
+
+    Stm32InputState input;
 
 private:
     PadManager* padManager_ = nullptr;
     CrosspadStatus* status_ = nullptr;
     DfuRequestCallback dfuCb_;
+    UsbModeCallback usbModeCb_;
+    bool keyPresses_[16] = {};
 };
 
 } // namespace crosspad

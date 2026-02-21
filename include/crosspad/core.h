@@ -26,7 +26,6 @@
 // Protocol
 #include "crosspad/protocol/SysExProtocol.h"
 #include "crosspad/protocol/IStm32Transport.hpp"
-#include "crosspad/protocol/SysExFramer.hpp"
 #include "crosspad/protocol/Stm32CommandSender.hpp"
 #include "crosspad/protocol/Stm32MessageHandler.hpp"
 

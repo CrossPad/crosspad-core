@@ -3,3 +3,5 @@ build/
 .vscode/
 *.o
 *.d
+docs/generated/
+docs/doxygen/

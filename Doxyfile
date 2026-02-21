@@ -1,0 +1,33 @@
+# Doxyfile for crosspad-core
+
+PROJECT_NAME           = "crosspad-core"
+PROJECT_BRIEF          = "Portable C++ core library for CrossPad"
+OUTPUT_DIRECTORY       = docs/doxygen
+
+# Input
+INPUT                  = include/ src/
+RECURSIVE              = YES
+FILE_PATTERNS          = *.h *.hpp *.c *.cpp
+EXCLUDE_PATTERNS       = */build/* */managed_components/* */.pio/*
+
+# Parsing
+JAVADOC_AUTOBRIEF      = YES
+BUILTIN_STL_SUPPORT    = YES
+PREDEFINED             = ESP_PLATFORM
+
+# Extraction
+EXTRACT_ALL            = YES
+EXTRACT_STATIC         = YES
+SORT_MEMBERS_CTORS_1ST = YES
+
+# HTML output
+GENERATE_HTML          = YES
+GENERATE_LATEX         = NO
+HTML_COLORSTYLE        = DARK
+GENERATE_TREEVIEW      = YES
+FULL_SIDEBAR           = YES
+SEARCHENGINE           = YES
+SOURCE_BROWSER         = YES
+
+# Diagrams
+HAVE_DOT               = NO

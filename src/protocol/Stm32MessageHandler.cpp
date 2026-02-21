@@ -20,8 +20,8 @@ void Stm32MessageHandler::handleMessage(const uint8_t* data, unsigned size) {
         break;
 
     case CROSSPAD_CMD_ENCODER_COUNTER:
-        encoderTop = (data[3] & 0x3F) / 2; // max 60 on lptimer
-        encoderPressed = (data[3] >> 6);    // press state at 2nd MSB
+        input.encoderTop = (data[3] & 0x3F) / 2; // max 60 on lptimer
+        input.encoderPressed = (data[3] >> 6);    // press state at 2nd MSB
         break;
 
     case CROSSPAD_CMD_BUTTONS_DIGITAL:
@@ -45,6 +45,12 @@ void Stm32MessageHandler::handleMessage(const uint8_t* data, unsigned size) {
         break;
 
     case CROSSPAD_CMD_KEEP_ALIVE:
+        break;
+
+    case CROSSPAD_CMD_USB_MODE:
+        if (usbModeCb_ && size >= 4) {
+            usbModeCb_(data[3]);
+        }
         break;
 
     case CROSSPAD_CMD_DFU_REQUEST:
@@ -74,25 +80,25 @@ void Stm32MessageHandler::parseDigitalButtons(const uint8_t* data, unsigned size
     };
 
     bool oldPresses[16];
-    memcpy(oldPresses, keyPresses, sizeof(oldPresses));
+    memcpy(oldPresses, keyPresses_, sizeof(oldPresses));
 
     for (int i = 0; i < 3; i++) {
         uint8_t x = data[i + 3];
         for (int j = 1; j < 8; j++) {
             int num = buttonsidx[i][j];
             if (num <= 16) {
-                keyPresses[num - 1] = !(x >> (7 - j) & 1);
+                keyPresses_[num - 1] = !(x >> (7 - j) & 1);
             }
         }
         if (i == 2) {
-            powerBtnPressed = x & 1;
+            input.powerBtnPressed = x & 1;
         }
     }
 
     // Detect state changes and forward to PadManager
     for (int i = 0; i < 16; i++) {
-        if (keyPresses[i] != oldPresses[i]) {
-            if (keyPresses[i]) {
+        if (keyPresses_[i] != oldPresses[i]) {
+            if (keyPresses_[i]) {
                 padManager_->handlePadPress(i, 127);
             } else {
                 padManager_->handlePadRelease(i);
