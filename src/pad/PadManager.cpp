@@ -178,7 +178,7 @@ void PadManager::handleMidiNoteOn(uint8_t channel, uint8_t note, uint8_t velocit
             padVelocity_[padIdx] = velocity;
         }
         if (ledController_) {
-            ledController_->handleNoteOn(channel, note, velocity);
+            ledController_->notifyNoteOn(padIdx, velocity);
         }
     }
 }
@@ -191,7 +191,7 @@ void PadManager::handleMidiNoteOff(uint8_t channel, uint8_t note) {
             padStates_[padIdx] = false;
         }
         if (ledController_) {
-            ledController_->handleNoteOff(channel, note);
+            ledController_->notifyNoteOff(padIdx);
         }
     }
 }
