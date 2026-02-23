@@ -58,15 +58,38 @@ public:
     }
 
     /**
-     * Linear battery percentage: 3300 mV → 0%, 4200 mV → 100%.
+     * Battery percentage using piecewise-linear approximation of a typical
+     * single-cell Li-Ion/LiPo discharge curve (no-load / light-load).
      * Returns -1 if voltage is below 3200 mV (no battery / dead).
+     *
+     * Curve points (mV → %):
+     *   3300→0, 3500→5, 3600→10, 3670→20, 3710→30, 3750→40,
+     *   3790→50, 3830→60, 3870→70, 3950→80, 4050→90, 4200→100
      */
     static int8_t calculateBatteryPct(uint16_t vbat_mv) {
         if (vbat_mv < 3200) return -1;
-        int pct = static_cast<int>(vbat_mv - 3300) * 100 / (4200 - 3300);
-        if (pct < 0) pct = 0;
-        if (pct > 100) pct = 100;
-        return static_cast<int8_t>(pct);
+
+        struct Point { uint16_t mv; uint8_t pct; };
+        static constexpr Point curve[] = {
+            {3300,   0}, {3500,   5}, {3600,  10}, {3670,  20},
+            {3710,  30}, {3750,  40}, {3790,  50}, {3830,  60},
+            {3870,  70}, {3950,  80}, {4050,  90}, {4200, 100},
+        };
+        static constexpr size_t N = sizeof(curve) / sizeof(curve[0]);
+
+        if (vbat_mv <= curve[0].mv) return 0;
+        if (vbat_mv >= curve[N - 1].mv) return 100;
+
+        for (size_t i = 1; i < N; ++i) {
+            if (vbat_mv <= curve[i].mv) {
+                int dv = curve[i].mv - curve[i - 1].mv;
+                int dp = curve[i].pct - curve[i - 1].pct;
+                int pct = curve[i - 1].pct +
+                          (vbat_mv - curve[i - 1].mv) * dp / dv;
+                return static_cast<int8_t>(pct);
+            }
+        }
+        return 100;
     }
 };
 
