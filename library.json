@@ -23,7 +23,13 @@
             "+<stm32/Stm32Manager.cpp>",
             "+<music/MusicTheory.cpp>",
             "+<midi/MidiInputHandler.cpp>",
-            "+<platform/CrosspadPlatformInit.cpp>"
+            "+<platform/CrosspadPlatformInit.cpp>",
+            "+<platform/PlatformCapabilities.cpp>",
+            "+<app/AppManagerBase.cpp>",
+            "+<event/FreeRtosEventBus.cpp>",
+            "+<event/SyncEventBus.cpp>",
+            "+<settings/ISettingsUI.cpp>",
+            "+<drivers/Drv2605Driver.cpp>"
         ]
     }
 }
