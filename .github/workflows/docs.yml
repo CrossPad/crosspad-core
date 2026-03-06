@@ -1,4 +1,4 @@
-name: Deploy API Docs
+name: Build API Docs
 
 on:
   push:
@@ -12,19 +12,10 @@ on:
 
 permissions:
   contents: read
-  pages: write
-  id-token: write
-
-concurrency:
-  group: pages
-  cancel-in-progress: true
 
 jobs:
   docs:
     runs-on: ubuntu-latest
-    environment:
-      name: github-pages
-      url: ${{ steps.deployment.outputs.page_url }}
     steps:
       - uses: actions/checkout@v4
 
@@ -34,11 +25,8 @@ jobs:
       - name: Generate docs
         run: doxygen
 
-      - name: Upload artifact
-        uses: actions/upload-pages-artifact@v4
+      - name: Upload docs artifact
+        uses: actions/upload-artifact@v4
         with:
+          name: api-docs
           path: docs/doxygen/html
-
-      - name: Deploy to GitHub Pages
-        id: deployment
-        uses: actions/deploy-pages@v4
