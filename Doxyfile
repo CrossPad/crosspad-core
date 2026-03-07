@@ -29,5 +29,13 @@ FULL_SIDEBAR           = YES
 SEARCHENGINE           = YES
 SOURCE_BROWSER         = YES
 
-# Diagrams
-HAVE_DOT               = NO
+# Diagrams (requires graphviz)
+HAVE_DOT               = YES
+DOT_IMAGE_FORMAT       = svg
+INTERACTIVE_SVG        = YES
+CALL_GRAPH             = YES
+CALLER_GRAPH           = YES
+CLASS_GRAPH            = YES
+COLLABORATION_GRAPH    = YES
+INCLUDE_GRAPH          = YES
+INCLUDED_BY_GRAPH      = YES
