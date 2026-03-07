@@ -2,12 +2,7 @@ name: Build API Docs
 
 on:
   push:
-    branches: [main]
-    paths:
-      - 'include/**'
-      - 'src/**'
-      - 'Doxyfile'
-      - '.github/workflows/docs.yml'
+  pull_request:
   workflow_dispatch:
 
 permissions:
