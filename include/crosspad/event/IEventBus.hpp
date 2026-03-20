@@ -91,4 +91,7 @@ public:
     virtual bool sendNoteOff(uint8_t channel, uint8_t note, EventSource source = EventSource::System) = 0;
 };
 
+/// Platform-injected singleton (implemented by PlatformServices)
+IEventBus& getEventBus();
+
 } // namespace crosspad
