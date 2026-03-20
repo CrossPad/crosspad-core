@@ -1,5 +1,6 @@
 #include "crosspad/platform/CrosspadPlatformInit.hpp"
 #include "crosspad/platform/PlatformServices.hpp"
+#include "crosspad/platform/PlatformCapabilities.hpp"
 
 #include "crosspad/event/IEventBus.hpp"
 #include "crosspad/platform/IClock.hpp"
@@ -74,6 +75,13 @@ bool crosspad_platform_init(const CrosspadPlatformConfig& config) {
 
 void crosspad_platform_set_midi(IMidiOutput& midi) {
     getPlatformServices().setMidiOutput(&midi);
+}
+
+void crosspad_platform_reset() {
+    s_initialized = false;
+    auto& svc = getPlatformServices();
+    svc = PlatformServices{};
+    setPlatformCapabilities(Capability::None);
 }
 
 } // namespace crosspad

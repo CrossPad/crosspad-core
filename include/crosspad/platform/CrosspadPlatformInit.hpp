@@ -64,4 +64,11 @@ bool crosspad_platform_init(const CrosspadPlatformConfig& config);
  */
 void crosspad_platform_set_midi(IMidiOutput& midi);
 
+/**
+ * @brief Reset platform init state so crosspad_platform_init() can be called again.
+ *
+ * Intended for test teardown — clears PlatformServices and the init guard.
+ */
+void crosspad_platform_reset();
+
 } // namespace crosspad
