@@ -5,7 +5,8 @@ namespace crosspad {
 void CrosspadSettings::loadFrom(IKeyValueStore& store) {
     // Display
     LCDbrightness     = store.readU8("cfg_display", "brightness", 100);
-    LCDAutoBrightness = store.readBool("cfg_display", "auto_bright", true);
+    themeColorIndex   = store.readU8("cfg_display", "theme_clr", 0);
+    perfStatsFlags    = store.readU8("cfg_display", "perf_stats", 0);
 
     // Audio (master)
     AudioEngineEnabled       = store.readBool("cfg_audio", "engine_en", true);
@@ -83,7 +84,8 @@ void CrosspadSettings::loadFrom(IKeyValueStore& store) {
 void CrosspadSettings::saveTo(IKeyValueStore& store) {
     // Display
     store.saveU8("cfg_display", "brightness", LCDbrightness);
-    store.saveBool("cfg_display", "auto_bright", LCDAutoBrightness);
+    store.saveU8("cfg_display", "theme_clr", themeColorIndex);
+    store.saveU8("cfg_display", "perf_stats", perfStatsFlags);
 
     // Audio (master)
     store.saveBool("cfg_audio", "engine_en", AudioEngineEnabled);

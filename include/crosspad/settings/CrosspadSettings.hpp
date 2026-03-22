@@ -45,7 +45,8 @@ public:
     AudioSettings masterFX;
     VibrationSettings vibration;
     uint8_t LCDbrightness;
-    bool LCDAutoBrightness;
+    uint8_t themeColorIndex;
+    uint8_t perfStatsFlags;   // bitfield: bit0=FPS, bit1=CPU, bit2=MEM
     uint8_t RGBbrightness;
     bool AudioEngineEnabled;
     uint8_t Kit;
@@ -60,7 +61,8 @@ private:
         wireless = WirelessSettings();
         vibration = VibrationSettings();
         LCDbrightness = 100;
-        LCDAutoBrightness = true;
+        themeColorIndex = 0;
+        perfStatsFlags = 0;
         RGBbrightness = 100;
         AudioEngineEnabled = true;
         Kit = 0;

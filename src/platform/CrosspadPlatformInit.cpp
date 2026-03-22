@@ -1,4 +1,6 @@
 #include "crosspad/platform/CrosspadPlatformInit.hpp"
+#include "crosspad/platform/PlatformServices.hpp"
+#include "crosspad/platform/PlatformCapabilities.hpp"
 
 #include "crosspad/event/IEventBus.hpp"
 #include "crosspad/platform/IClock.hpp"
@@ -13,14 +15,7 @@
 
 namespace crosspad {
 
-// Cached references for crosspad_platform_set_midi()
-static PadManager*       s_padManager       = nullptr;
-static PadLedController* s_padLedController = nullptr;
-static PadAnimator*      s_padAnimator      = nullptr;
-static IEventBus*        s_eventBus         = nullptr;
-static CrosspadSettings* s_settings         = nullptr;
-static CrosspadStatus*   s_status           = nullptr;
-static bool              s_initialized      = false;
+static bool s_initialized = false;
 
 bool crosspad_platform_init(const CrosspadPlatformConfig& config) {
     if (s_initialized) return true;
@@ -60,25 +55,33 @@ bool crosspad_platform_init(const CrosspadPlatformConfig& config) {
     config.padManager->begin();
     config.padLedController->begin();
 
-    // Cache for crosspad_platform_set_midi()
-    s_padManager       = config.padManager;
-    s_padLedController = config.padLedController;
-    s_padAnimator      = config.padAnimator;
-    s_eventBus         = config.eventBus;
-    s_settings         = settings;
-    s_status           = status;
-    s_initialized      = true;
+    // 7. Populate PlatformServices registry
+    auto& svc = getPlatformServices();
+    svc.eventBus        = config.eventBus;
+    svc.clock           = config.clock;
+    svc.ledStrip        = config.ledStrip;
+    svc.midiOutput      = config.midiOutput;
+    svc.padManager      = config.padManager;
+    svc.padLedController = config.padLedController;
+    svc.padAnimator     = config.padAnimator;
+    svc.kvStore         = config.kvStore;
+    svc.settings        = settings;
+    svc.status          = status;
+
+    s_initialized = true;
 
     return true;
 }
 
 void crosspad_platform_set_midi(IMidiOutput& midi) {
-    if (!s_padManager || !s_padLedController || !s_padAnimator || !s_eventBus || !s_settings) {
-        return;
-    }
-    s_padManager->init(*s_padLedController, *s_padAnimator, midi,
-                       *s_eventBus, s_settings, s_status);
-    s_padManager->begin();
+    getPlatformServices().setMidiOutput(&midi);
+}
+
+void crosspad_platform_reset() {
+    s_initialized = false;
+    auto& svc = getPlatformServices();
+    svc = PlatformServices{};
+    setPlatformCapabilities(Capability::None);
 }
 
 } // namespace crosspad

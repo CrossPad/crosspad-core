@@ -63,7 +63,7 @@ public:
         const size_t first = (pos + count <= capacity_) ? count : (capacity_ - pos);
         std::memcpy(data, buffer_.data() + pos, first * sizeof(T));
         if (first < count) {
-            std::memcpy(data, buffer_.data() + first, (count - first) * sizeof(T));
+            std::memcpy(data + first, buffer_.data(), (count - first) * sizeof(T));
         }
 
         tail_.store(t + count, std::memory_order_release);

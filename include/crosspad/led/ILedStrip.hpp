@@ -34,4 +34,7 @@ public:
     virtual void unlock() {}
 };
 
+/// Platform-injected singleton (implemented by PlatformServices)
+ILedStrip& getLedStrip();
+
 } // namespace crosspad

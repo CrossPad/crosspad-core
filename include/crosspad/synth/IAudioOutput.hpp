@@ -20,4 +20,7 @@ public:
     virtual uint32_t getBufferSize() const = 0;
 };
 
+/// Platform-injected singleton (implemented by PlatformServices)
+IAudioOutput& getAudioOutput();
+
 } // namespace crosspad
