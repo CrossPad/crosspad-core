@@ -30,6 +30,7 @@ class ISynthEngine;
 class IKeyValueStore;
 class IVibration;
 class IImu;
+class IHttpClient;
 class ISettingsUI;
 class PadManager;
 class PadLedController;
@@ -65,6 +66,7 @@ struct PlatformServices {
     ISynthEngine*     synthEngine     = nullptr;
     IVibration*       vibration       = nullptr;  // defaults to NullVibration
     IImu*             imu             = nullptr;  // defaults to NullImu
+    IHttpClient*      httpClient      = nullptr;  // defaults to NullHttpClient
     ISettingsUI*      settingsUI      = nullptr;
 
     // ── Typed setters — auto-update PlatformCapabilities ────────────────
@@ -87,6 +89,9 @@ struct PlatformServices {
 
     /// Set IMU driver + toggle Capability::Imu.
     void setImu(IImu* imu);
+
+    /// Set HTTP client + toggle Capability::Http.
+    void setHttpClient(IHttpClient* http);
 };
 
 /// Access the singleton PlatformServices registry.
