@@ -7,6 +7,7 @@
 #include "crosspad/synth/NullAudioOutput.hpp"
 #include "crosspad/platform/NullVibration.hpp"
 #include "crosspad/platform/NullImu.hpp"
+#include "crosspad/net/NullHttpClient.hpp"
 
 // Interface headers for getter return types
 #include "crosspad/event/IEventBus.hpp"
@@ -19,6 +20,7 @@
 #include "crosspad/settings/IKeyValueStore.hpp"
 #include "crosspad/platform/IVibration.hpp"
 #include "crosspad/platform/IImu.hpp"
+#include "crosspad/net/IHttpClient.hpp"
 #include "crosspad/pad/PadManager.hpp"
 #include "crosspad/pad/PadLedController.hpp"
 #include "crosspad/pad/PadAnimator.hpp"
@@ -31,6 +33,7 @@ static NullMidiOutput   s_nullMidi;
 static NullAudioOutput  s_nullAudio;
 static NullVibration    s_nullVibration;
 static NullImu          s_nullImu;
+static NullHttpClient   s_nullHttp;
 
 // ── Singleton registry ──────────────────────────────────────────────────
 
@@ -41,6 +44,7 @@ static PlatformServices& initServices() {
     svc.audioOutput = &s_nullAudio;
     svc.vibration = &s_nullVibration;
     svc.imu = &s_nullImu;
+    svc.httpClient = &s_nullHttp;
     return svc;
 }
 
@@ -119,6 +123,16 @@ void PlatformServices::setImu(IImu* newImu) {
     }
 }
 
+void PlatformServices::setHttpClient(IHttpClient* http) {
+    httpClient = http ? http : &s_nullHttp;
+
+    if (http) {
+        addPlatformCapability(Capability::Http);
+    } else {
+        removePlatformCapability(Capability::Http);
+    }
+}
+
 // ── Singleton getter functions ──────────────────────────────────────────
 // Defined once here — platforms no longer need to implement these.
 
@@ -160,6 +174,10 @@ IVibration& getVibration() {
 
 IImu& getImu() {
     return *s_services.imu;
+}
+
+IHttpClient& getHttpClient() {
+    return *s_services.httpClient;
 }
 
 } // namespace crosspad
