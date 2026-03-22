@@ -37,6 +37,7 @@ enum class Capability : uint32_t {
     Imu         = 1 << 13,  ///< IMU/accelerometer available
     Stm32       = 1 << 14,  ///< STM32 co-processor available
     Sequencer   = 1 << 15,  ///< Sequencer engine available
+    Http        = 1 << 16,  ///< HTTP client available
 };
 
 // Bitwise operators
