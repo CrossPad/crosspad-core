@@ -1,0 +1,56 @@
+name: Notify Downstream Repos
+
+on:
+  push:
+    tags: ['v*']
+  pull_request:
+    types: [closed]
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  dispatch:
+    # Only run for tags, merged PRs (not closed-without-merge), or manual dispatch
+    if: >
+      github.event_name == 'push' ||
+      github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'pull_request' && github.event.pull_request.merged == true)
+    runs-on: ubuntu-latest
+
+    strategy:
+      fail-fast: false
+      matrix:
+        downstream:
+          - repo: CrossPad/crosspad-pc
+          - repo: CrossPad/ESP32-S3
+          - repo: matixan/2playerCrosspad
+
+    steps:
+      - name: Determine ref label
+        id: label
+        run: |
+          REF="${{ github.ref }}"
+          SHA="${{ github.sha }}"
+          SHORT_SHA="${SHA:0:7}"
+          if [[ "$REF" == refs/tags/v* ]]; then
+            TAG="${REF#refs/tags/}"
+            echo "short_sha=$TAG" >> $GITHUB_OUTPUT
+          else
+            echo "short_sha=$SHORT_SHA" >> $GITHUB_OUTPUT
+          fi
+          echo "sha=$SHA" >> $GITHUB_OUTPUT
+          echo "ref=$REF" >> $GITHUB_OUTPUT
+
+      - name: Dispatch to ${{ matrix.downstream.repo }}
+        uses: peter-evans/repository-dispatch@v3
+        with:
+          token: ${{ secrets.DOWNSTREAM_PAT }}
+          repository: ${{ matrix.downstream.repo }}
+          event-type: submodule-update
+          client-payload: >
+            {
+              "lib": "crosspad-core",
+              "sha": "${{ steps.label.outputs.sha }}",
+              "short_sha": "${{ steps.label.outputs.short_sha }}",
+              "ref": "${{ steps.label.outputs.ref }}"
+            }
