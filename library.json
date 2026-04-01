@@ -25,6 +25,8 @@
             "+<midi/MidiInputHandler.cpp>",
             "+<platform/CrosspadPlatformInit.cpp>",
             "+<platform/PlatformCapabilities.cpp>",
+            "+<platform/PlatformServices.cpp>",
+            "+<kit/KitJsonParser.cpp>",
             "+<app/AppManagerBase.cpp>",
             "+<event/FreeRtosEventBus.cpp>",
             "+<event/SyncEventBus.cpp>",

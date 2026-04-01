@@ -180,4 +180,12 @@ IHttpClient& getHttpClient() {
     return *s_services.httpClient;
 }
 
+IKitManager* getKitManager() {
+    return s_services.kitManager;
+}
+
+IKitLoader* getKitLoader() {
+    return s_services.kitLoader;
+}
+
 } // namespace crosspad
