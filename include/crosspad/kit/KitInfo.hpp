@@ -31,6 +31,12 @@ struct KitInfo {
     KitInfo() = default;
     explicit KitInfo(const std::string& kitPath) : path(kitPath) {}
 
+    void createDefaultSamples() {
+        for (uint8_t n = 0; n < KIT_PADS; n++) {
+            pads[n].AddDefaultSample();
+        }
+    }
+
     std::string getDetails() const {
         return name + " by " + author + ", " + description + ", " + version
              + ", " + created_at + ", " + std::to_string(total_samples)
