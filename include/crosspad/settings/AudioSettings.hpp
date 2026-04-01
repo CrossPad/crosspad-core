@@ -197,24 +197,24 @@ public:
         json["mute"] = mute;
         json["inVolume"] = inVolume;
         json["outVolume"] = outVolume;
-        JsonObject delayJson = json.createNestedObject("delay");
+        JsonObject delayJson = json["delay"].to<JsonObject>();
         delay.toJson(delayJson);
-        JsonObject reverbJson = json.createNestedObject("reverb");
+        JsonObject reverbJson = json["reverb"].to<JsonObject>();
         reverb.toJson(reverbJson);
-        JsonObject distortionJson = json.createNestedObject("distortion");
+        JsonObject distortionJson = json["distortion"].to<JsonObject>();
         distortion.toJson(distortionJson);
-        JsonObject chorusJson = json.createNestedObject("chorus");
+        JsonObject chorusJson = json["chorus"].to<JsonObject>();
         chorus.toJson(chorusJson);
-        JsonObject flangerJson = json.createNestedObject("flanger");
+        JsonObject flangerJson = json["flanger"].to<JsonObject>();
         flanger.toJson(flangerJson);
-        JsonArray eqArray = json.createNestedArray("eq");
+        JsonArray eqArray = json["eq"].to<JsonArray>();
         for (int i = 0; i < EQ_MAX_COUNT; i++) {
-            JsonObject eqJson = eqArray.createNestedObject();
+            JsonObject eqJson = eqArray.add<JsonObject>();
             eq[i].toJson(eqJson);
         }
-        JsonArray controllerArray = json.createNestedArray("controller");
+        JsonArray controllerArray = json["controller"].to<JsonArray>();
         for (int i = 0; i < LFO_MAX_COUNT; i++) {
-            JsonObject controllerJson = controllerArray.createNestedObject();
+            JsonObject controllerJson = controllerArray.add<JsonObject>();
             controler[i].toJson(controllerJson);
         }
     }
