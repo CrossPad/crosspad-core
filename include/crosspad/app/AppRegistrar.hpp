@@ -40,11 +40,12 @@ public:
 // ============================================================================
 
 /**
- * @brief Full registration macro — creates a named registration function
+ * @brief Full registration macro — static constructor pattern
  *
- * Creates `void _register_<appName>_app()` which the platform calls at init.
- * ESP-IDF uses generate_registry.cmake to auto-discover these and generate
- * AppRegistry_InitAll() that calls them all.
+ * Creates a static AppRegistrar whose constructor registers the app
+ * at program startup. Works on all platforms when combined with
+ * --whole-archive linker flag for library archives (see appLibrary
+ * flag in library.json and force_link_app_libs.py).
  *
  * Parameters:
  *   appName      — Identifier (used as stringified name and variable suffix)
@@ -59,20 +60,14 @@ public:
  */
 #ifdef USE_LVGL
 #define REGISTER_APP(appName, logicFunc, iconPath, createLVGL, destroyLVGL, initSimple, refreshFunc, cleanupFunc, priority) \
-    void _register_##appName##_app() { \
-        static const crosspad::AppEntry entry = { \
-            #appName, iconPath, createLVGL, destroyLVGL, logicFunc, initSimple, refreshFunc, cleanupFunc, priority \
-        }; \
-        crosspad::AppRegistry::getInstance().registerApp(entry); \
-    }
+    static crosspad::AppRegistrar reg##appName(crosspad::AppEntry{ \
+        #appName, iconPath, createLVGL, destroyLVGL, logicFunc, initSimple, refreshFunc, cleanupFunc, priority \
+    });
 #else
 #define REGISTER_APP(appName, logicFunc, iconPath, createLVGL, destroyLVGL, initSimple, refreshFunc, cleanupFunc, priority) \
-    void _register_##appName##_app() { \
-        static const crosspad::AppEntry entry = { \
-            #appName, "", logicFunc, initSimple, refreshFunc, cleanupFunc, priority \
-        }; \
-        crosspad::AppRegistry::getInstance().registerApp(entry); \
-    }
+    static crosspad::AppRegistrar reg##appName(crosspad::AppEntry{ \
+        #appName, "", logicFunc, initSimple, refreshFunc, cleanupFunc, priority \
+    });
 #endif
 
 // --- Convenience macros ---

@@ -27,6 +27,7 @@
             "+<platform/PlatformCapabilities.cpp>",
             "+<platform/PlatformServices.cpp>",
             "+<kit/KitJsonParser.cpp>",
+            "+<kit/PortableKitLoader.cpp>",
             "+<app/AppManagerBase.cpp>",
             "+<event/FreeRtosEventBus.cpp>",
             "+<event/SyncEventBus.cpp>",
