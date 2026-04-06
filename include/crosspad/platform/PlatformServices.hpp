@@ -39,6 +39,8 @@ class PadLedController;
 class PadAnimator;
 class CrosspadSettings;
 class CrosspadStatus;
+class SequencerController;
+class ISequencerEngine;
 
 /**
  * @brief Central registry of all platform service pointers.
@@ -72,6 +74,8 @@ struct PlatformServices {
     ISettingsUI*      settingsUI      = nullptr;
     IKitManager*      kitManager      = nullptr;
     IKitLoader*       kitLoader       = nullptr;
+    SequencerController* sequencer   = nullptr;
+    ISequencerEngine* sequencerEngine = nullptr;
 
     // ── Typed setters — auto-update PlatformCapabilities ────────────────
 
