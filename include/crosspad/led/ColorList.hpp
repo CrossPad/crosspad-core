@@ -40,7 +40,7 @@ class ColorList
     // @return `const char *` list of colors
     const char * Get() {return colorList + 9;}
     const char * GetPressed() {return colorList;}
-    uint GetCount() {return sizeof(colorListValues) / sizeof(colorListValues[0]);}
+    unsigned int GetCount() {return sizeof(colorListValues) / sizeof(colorListValues[0]);}
 
     // get the color by index
     // @param `int` index - index of the color

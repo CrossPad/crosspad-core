@@ -58,6 +58,10 @@ public:
  *   cleanupFunc  — Cleanup function, or nullptr
  *   priority     — int, higher = more preferred for auto-selection
  */
+#ifndef REGISTER_APP
+#ifdef CROSSPAD_REGISTER_APP_NAMED_FUNCTIONS
+// Named-function pattern: creates _register_<appName>_app() callable by platform init.
+// Required on ESP-IDF where static constructors are unreliable.
 #ifdef USE_LVGL
 #define REGISTER_APP(appName, logicFunc, iconPath, createLVGL, destroyLVGL, initSimple, refreshFunc, cleanupFunc, priority) \
     static crosspad::AppRegistrar reg##appName(crosspad::AppEntry{ \
@@ -69,6 +73,27 @@ public:
         #appName, "", logicFunc, initSimple, refreshFunc, cleanupFunc, priority \
     });
 #endif
+#else
+// Static constructor pattern: works on platforms with reliable static init (Arduino, Linux).
+#ifdef USE_LVGL
+#define REGISTER_APP(appName, logicFunc, iconPath, createLVGL, destroyLVGL, initSimple, refreshFunc, cleanupFunc, priority) \
+    void _register_##appName##_app() { \
+        static const crosspad::AppEntry entry = { \
+            #appName, iconPath, createLVGL, destroyLVGL, logicFunc, initSimple, refreshFunc, cleanupFunc, priority \
+        }; \
+        crosspad::AppRegistry::getInstance().registerApp(entry); \
+    }
+#else
+#define REGISTER_APP(appName, logicFunc, iconPath, createLVGL, destroyLVGL, initSimple, refreshFunc, cleanupFunc, priority) \
+    void _register_##appName##_app() { \
+        static const crosspad::AppEntry entry = { \
+            #appName, "", logicFunc, initSimple, refreshFunc, cleanupFunc, priority \
+        }; \
+        crosspad::AppRegistry::getInstance().registerApp(entry); \
+    }
+#endif
+#endif // CROSSPAD_REGISTER_APP_NAMED_FUNCTIONS
+#endif // REGISTER_APP
 
 // --- Convenience macros ---
 
