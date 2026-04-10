@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 #include <crosspad/kit/PortableKitLoader.hpp>
 #include <crosspad/kit/KitPathUtils.hpp>
-#include <crosspad/kit/KitJsonParser.hpp>
+#include "KitJsonParser.hpp"
 
 #include <ArduinoJson.h>
 
@@ -36,7 +36,7 @@ static bool mkdirRecursive(const std::string& path) {
     return mkdir(path.c_str(), 0755) == 0 || isDir(path);
 }
 
-// ── IKitLoader ──────────────────────────────────────────────────────────────
+// ── IKitManager (persistence) ───────────────────────────────────────────────
 
 std::string PortableKitLoader::toFsPath(const std::string& logicalPath) const {
     if (rootPrefix_.empty()) return logicalPath;
@@ -113,11 +113,11 @@ bool PortableKitLoader::isLoading() const {
     return false;
 }
 
-// ── Non-virtual helpers ─────────────────────────────────────────────────────
-
 void PortableKitLoader::setCurrentKitId(int id) {
     currentKitId_ = id;
 }
+
+// ── Non-virtual helpers ─────────────────────────────────────────────────────
 
 int PortableKitLoader::findKitIdByPath(const std::string& path) const {
     for (int i = 0; i < static_cast<int>(kits_.size()); i++) {
@@ -136,11 +136,6 @@ std::vector<KitInfo>& PortableKitLoader::kits() {
 
 const std::vector<KitInfo>& PortableKitLoader::kits() const {
     return kits_;
-}
-
-std::string PortableKitLoader::resolveRelativePath(const std::string& kitPath,
-                                                    const std::string& sampleFile) {
-    return resolveKitSamplePath(kitPath, sampleFile);
 }
 
 // ── Free function (KitPathUtils) ────────────────────────────────────────────

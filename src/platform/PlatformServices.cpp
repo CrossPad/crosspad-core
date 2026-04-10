@@ -197,10 +197,6 @@ IKitManager* getKitManager() {
     return s_services.kitManager;
 }
 
-IKitLoader* getKitLoader() {
-    return s_services.kitLoader;
-}
-
 IBleMidi& getBleMidi() {
     return *s_services.bleMidi;
 }

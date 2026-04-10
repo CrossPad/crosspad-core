@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: MIT
 #pragma once
 
-#include <crosspad/kit/IKitLoader.hpp>
 #include <crosspad/kit/IKitManager.hpp>
 #include <string>
 #include <vector>
@@ -15,35 +14,29 @@ namespace crosspad {
 /// rootPrefix is a VFS mount-point prefix (e.g. "/sdcard" on ESP32, "" on PC).
 /// It is added to paths for actual file I/O but NOT stored in KitInfo::path,
 /// so kit paths remain portable across platforms.
-class PortableKitLoader : public IKitLoader, public IKitManager {
+class PortableKitLoader : public IKitManager {
 public:
     explicit PortableKitLoader(const std::string& rootPrefix = "")
         : rootPrefix_(rootPrefix) {}
 
-    // ── IKitLoader ──────────────────────────────────────────────────────────
-    std::vector<KitInfo> listKits(const std::string& rootDir) override;
-    KitLoadResult loadKit(KitInfo& kit) override;
-    bool saveKit(const KitInfo& kit) override;
-
-    // ── IKitManager ─────────────────────────────────────────────────────────
+    // ── IKitManager (runtime state) ─────────────────────────────────────────
     int      getKitCount() const override;
     KitInfo* getKit(int id) override;
     KitInfo* getCurrentKit() override;
     int      getCurrentKitId() const override;
+    void     setCurrentKitId(int id) override;
     bool     isLoading() const override;
 
+    // ── IKitManager (persistence) ───────────────────────────────────────────
+    std::vector<KitInfo> listKits(const std::string& rootDir) override;
+    KitLoadResult loadKit(KitInfo& kit) override;
+    bool saveKit(const KitInfo& kit) override;
+
     // ── Non-virtual helpers ─────────────────────────────────────────────────
-    void setCurrentKitId(int id);
     int  findKitIdByPath(const std::string& path) const;
     bool isKitKnown(const std::string& path) const;
     std::vector<KitInfo>& kits();
     const std::vector<KitInfo>& kits() const;
-
-    /// Resolve a sample path relative to a kit.json location.
-    /// If sampleFile starts with '/', returns it as-is.
-    /// Otherwise prepends the kit's directory.
-    static std::string resolveRelativePath(const std::string& kitPath,
-                                           const std::string& sampleFile);
 
     /// Set or change the root prefix (e.g. "/sdcard").
     void setRootPrefix(const std::string& prefix) { rootPrefix_ = prefix; }

@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-#include <crosspad/kit/KitJsonParser.hpp>
+#include "KitJsonParser.hpp"
 
 namespace crosspad {
 

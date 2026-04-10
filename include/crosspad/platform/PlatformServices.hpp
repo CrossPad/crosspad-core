@@ -33,7 +33,6 @@ class IImu;
 class IHttpClient;
 class ISettingsUI;
 class IKitManager;
-class IKitLoader;
 class IBleMidi;
 class PadManager;
 class PadLedController;
@@ -74,7 +73,6 @@ struct PlatformServices {
     IHttpClient*      httpClient      = nullptr;  // defaults to NullHttpClient
     ISettingsUI*      settingsUI      = nullptr;
     IKitManager*      kitManager      = nullptr;
-    IKitLoader*       kitLoader       = nullptr;
     SequencerController* sequencer   = nullptr;
     ISequencerEngine* sequencerEngine = nullptr;
     IBleMidi*         bleMidi         = nullptr;  // defaults to NullBleMidi
@@ -113,8 +111,5 @@ PlatformServices& getPlatformServices();
 
 /// Get the kit manager (may be nullptr if no kit system is available).
 IKitManager* getKitManager();
-
-/// Get the kit loader (may be nullptr if no kit system is available).
-IKitLoader* getKitLoader();
 
 } // namespace crosspad
