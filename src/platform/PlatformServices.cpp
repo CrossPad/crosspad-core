@@ -8,6 +8,7 @@
 #include "crosspad/platform/NullVibration.hpp"
 #include "crosspad/platform/NullImu.hpp"
 #include "crosspad/net/NullHttpClient.hpp"
+#include "crosspad/midi/NullBleMidi.hpp"
 
 // Interface headers for getter return types
 #include "crosspad/event/IEventBus.hpp"
@@ -34,6 +35,7 @@ static NullAudioOutput  s_nullAudio;
 static NullVibration    s_nullVibration;
 static NullImu          s_nullImu;
 static NullHttpClient   s_nullHttp;
+static NullBleMidi      s_nullBle;
 
 // ── Singleton registry ──────────────────────────────────────────────────
 
@@ -45,6 +47,7 @@ static PlatformServices& initServices() {
     svc.vibration = &s_nullVibration;
     svc.imu = &s_nullImu;
     svc.httpClient = &s_nullHttp;
+    svc.bleMidi = &s_nullBle;
     return svc;
 }
 
@@ -133,6 +136,16 @@ void PlatformServices::setHttpClient(IHttpClient* http) {
     }
 }
 
+void PlatformServices::setBleMidi(IBleMidi* ble) {
+    bleMidi = ble ? ble : &s_nullBle;
+
+    if (ble) {
+        addPlatformCapability(Capability::Bluetooth);
+    } else {
+        removePlatformCapability(Capability::Bluetooth);
+    }
+}
+
 // ── Singleton getter functions ──────────────────────────────────────────
 // Defined once here — platforms no longer need to implement these.
 
@@ -186,6 +199,10 @@ IKitManager* getKitManager() {
 
 IKitLoader* getKitLoader() {
     return s_services.kitLoader;
+}
+
+IBleMidi& getBleMidi() {
+    return *s_services.bleMidi;
 }
 
 } // namespace crosspad

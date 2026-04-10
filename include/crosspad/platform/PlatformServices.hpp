@@ -34,6 +34,7 @@ class IHttpClient;
 class ISettingsUI;
 class IKitManager;
 class IKitLoader;
+class IBleMidi;
 class PadManager;
 class PadLedController;
 class PadAnimator;
@@ -76,6 +77,7 @@ struct PlatformServices {
     IKitLoader*       kitLoader       = nullptr;
     SequencerController* sequencer   = nullptr;
     ISequencerEngine* sequencerEngine = nullptr;
+    IBleMidi*         bleMidi         = nullptr;  // defaults to NullBleMidi
 
     // ── Typed setters — auto-update PlatformCapabilities ────────────────
 
@@ -100,6 +102,10 @@ struct PlatformServices {
 
     /// Set HTTP client + toggle Capability::Http.
     void setHttpClient(IHttpClient* http);
+
+    /// Set BLE MIDI interface + toggle Capability::Bluetooth.
+    /// Also wires into MidiInputHandler::setBleOutput().
+    void setBleMidi(IBleMidi* ble);
 };
 
 /// Access the singleton PlatformServices registry.

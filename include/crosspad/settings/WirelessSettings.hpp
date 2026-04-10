@@ -13,6 +13,8 @@ public:
     bool enableUDP;
     bool enableTCP;
     bool enableWebServer;
+    uint8_t bleMidiMode = 0;       ///< 0=Host (Central), 1=Server (Peripheral)
+    int8_t  bleMidiNoteOffset = 0; ///< Semitone offset for BLE MIDI input
 
     WirelessSettings() {
         enableWiFi = false;
@@ -32,6 +34,8 @@ public:
         json["enableUDP"] = enableUDP;
         json["enableTCP"] = enableTCP;
         json["enableWebServer"] = enableWebServer;
+        json["bleMidiMode"] = bleMidiMode;
+        json["bleMidiNoteOffset"] = bleMidiNoteOffset;
     }
 
     void fromJson(const JsonObject& json) {
@@ -42,6 +46,10 @@ public:
         enableUDP = json["enableUDP"];
         enableTCP = json["enableTCP"];
         enableWebServer = json["enableWebServer"];
+        if (json.containsKey("bleMidiMode"))
+            bleMidiMode = json["bleMidiMode"].as<uint8_t>();
+        if (json.containsKey("bleMidiNoteOffset"))
+            bleMidiNoteOffset = json["bleMidiNoteOffset"].as<int8_t>();
     }
 };
 
