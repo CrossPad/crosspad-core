@@ -25,6 +25,7 @@
 #define CROSSPAD_CMD_DFU_REQUEST        0x19
 #define CROSSPAD_CMD_KEEP_ALIVE         0x1A
 #define CROSSPAD_CMD_USB_MODE           0x1B
+#define CROSSPAD_CMD_VERSION_REPLY      0x1C  /* STM->ESP: [pcb_rev, api_ver] */
 
 #define CROSSPAD_CMD_ADC_VALUES         0x20
 #define CROSSPAD_CMD_ADC_BUTTONS        0x21

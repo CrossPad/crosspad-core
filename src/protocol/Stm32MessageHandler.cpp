@@ -20,11 +20,13 @@ void Stm32MessageHandler::handleMessage(const uint8_t* data, unsigned size) {
         break;
 
     case CROSSPAD_CMD_ENCODER_COUNTER:
+        if (size < 5) break;
         input.encoderTop = (data[3] & 0x3F) / 2; // max 60 on lptimer
         input.encoderPressed = (data[3] >> 6);    // press state at 2nd MSB
         break;
 
     case CROSSPAD_CMD_BUTTONS_DIGITAL:
+        if (size < 7) break;
         parseDigitalButtons(data, size);
         break;
 
@@ -33,6 +35,7 @@ void Stm32MessageHandler::handleMessage(const uint8_t* data, unsigned size) {
         break;
 
     case CROSSPAD_CMD_STATUS_REGISTER:
+        if (size < 6) break;
         status_->stm32.SetStm32Status(data[3], data[4]);
         break;
 
@@ -40,6 +43,7 @@ void Stm32MessageHandler::handleMessage(const uint8_t* data, unsigned size) {
         break;
 
     case CROSSPAD_CMD_VOLTAGES_MV:
+        if (size < 10) break;
         status_->stm32.unpackVoltages(&data[3]);
         status_->batteryPct = Stm32Status::calculateBatteryPct(status_->stm32.VBAT);
         break;
@@ -48,15 +52,24 @@ void Stm32MessageHandler::handleMessage(const uint8_t* data, unsigned size) {
         break;
 
     case CROSSPAD_CMD_USB_MODE:
-        if (usbModeCb_ && size >= 4) {
+        if (usbModeCb_ && size >= 5) {
             usbModeCb_(data[3]);
         }
         break;
 
+    case CROSSPAD_CMD_VERSION_REPLY:
+        // [pcb_rev, api_ver] — currently informational, no consumer
+        if (size < 6) break;
+        break;
+
     case CROSSPAD_CMD_DFU_REQUEST:
+        if (size < 5) break;
+        // Unified semantics in both directions:
+        //   data[3] == 1 -> STM32 is going to / requested to enter DFU
+        //   data[3] == 0 -> ESP is going to / requested to enter DFU
         status_->stm32.isDfuMode = (data[3] == 1);
         if (dfuCb_) {
-            dfuCb_(data[3] == 1); // true = STM32 DFU, false = ESP DFU
+            dfuCb_(data[3] == 1);
         }
         break;
 
