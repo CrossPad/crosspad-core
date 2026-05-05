@@ -14,6 +14,7 @@
 #include "crosspad/settings/ESPRoutingSettings.hpp"
 #include "crosspad/settings/WirelessSettings.hpp"
 #include "crosspad/settings/AudioSettings.hpp"
+#include "crosspad/settings/AudioEngineSettings.hpp"
 #include "crosspad/settings/VibrationSettings.hpp"
 #include "crosspad/settings/IKeyValueStore.hpp"
 
@@ -43,6 +44,7 @@ public:
     AudioSettings audio[CROSSPAD_MAX_PADS];
     AudioSettings previewAudio;
     AudioSettings masterFX;
+    AudioEngineSettings audioEngine;
     VibrationSettings vibration;
     uint8_t LCDbrightness;
     uint8_t themeColorIndex;

@@ -63,6 +63,14 @@ public:
 
     // Level metering
     virtual void getLevel(int16_t& left, int16_t& right) = 0;
+
+    // ── Float pipeline integration (preferred) ────────────────────
+    // Render polyphonic synth output into an interleaved stereo float buffer
+    // [-1.0, 1.0]. Default impl is a silence stub so older synth ports compile;
+    // platform synth wrappers should override.
+    virtual void process(float* stereoOut, uint32_t frames) {
+        for (uint32_t i = 0; i < frames * 2; ++i) stereoOut[i] = 0.0f;
+    }
 };
 
 } // namespace crosspad

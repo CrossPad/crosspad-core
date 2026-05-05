@@ -43,8 +43,22 @@ public:
         if (rawR > peakR_) peakR_ = rawR;
     }
 
+    /** Float overload. Feeds normalized peaks [0.0, 1.0]; rescales to int16 internally. */
+    void updateFloat(float rawL, float rawR) {
+        if (rawL < 0) rawL = -rawL;
+        if (rawR < 0) rawR = -rawR;
+        if (rawL > 1.0f) rawL = 1.0f;
+        if (rawR > 1.0f) rawR = 1.0f;
+        update(static_cast<int16_t>(rawL * 32767.0f),
+               static_cast<int16_t>(rawR * 32767.0f));
+    }
+
     int16_t left()  const { return peakL_; }
     int16_t right() const { return peakR_; }
+
+    /** Float accessors, normalized [0.0, 1.0]. */
+    float leftFloat()  const { return peakL_ / 32767.0f; }
+    float rightFloat() const { return peakR_ / 32767.0f; }
 
     void reset() { peakL_ = 0; peakR_ = 0; }
 

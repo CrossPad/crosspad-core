@@ -26,6 +26,7 @@ class ILedStrip;
 class IMidiOutput;
 class IAudioOutput;
 class IAudioInput;
+class IAudioModule;
 class ISynthEngine;
 class IKeyValueStore;
 class IVibration;
@@ -65,8 +66,9 @@ struct PlatformServices {
     CrosspadStatus*   status          = nullptr;
 
     // ── Optional services (default to null stubs) ───────────────────────
-    IAudioOutput*     audioOutput     = nullptr;  // defaults to NullAudioOutput
+    IAudioOutput*     audioOutput     = nullptr;  // defaults to NullAudioOutput (low-level PCM)
     IAudioInput*      audioInput      = nullptr;
+    IAudioModule*     audioModule     = nullptr;  // defaults to NullAudioModule (pipeline)
     ISynthEngine*     synthEngine     = nullptr;
     IVibration*       vibration       = nullptr;  // defaults to NullVibration
     IImu*             imu             = nullptr;  // defaults to NullImu
@@ -88,6 +90,10 @@ struct PlatformServices {
 
     /// Set audio input + toggle Capability::AudioIn.
     void setAudioInput(IAudioInput* input);
+
+    /// Set audio module (DSP pipeline) + toggle Capability::AudioOut.
+    /// This is the canonical audio API; setAudioOutput is low-level PCM only.
+    void setAudioModule(IAudioModule* module);
 
     /// Set synth engine + toggle Capability::Synth.
     void setSynthEngine(ISynthEngine* synth);

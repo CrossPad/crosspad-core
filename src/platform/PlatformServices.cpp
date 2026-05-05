@@ -18,6 +18,8 @@
 #include "crosspad/synth/IAudioOutput.hpp"
 #include "crosspad/synth/IAudioInput.hpp"
 #include "crosspad/synth/ISynthEngine.hpp"
+#include "crosspad/audio/IAudioModule.hpp"
+#include "crosspad/audio/NullAudioModule.hpp"
 #include "crosspad/settings/IKeyValueStore.hpp"
 #include "crosspad/platform/IVibration.hpp"
 #include "crosspad/platform/IImu.hpp"
@@ -32,6 +34,7 @@ namespace crosspad {
 
 static NullMidiOutput   s_nullMidi;
 static NullAudioOutput  s_nullAudio;
+static NullAudioModule  s_nullAudioModule;
 static NullVibration    s_nullVibration;
 static NullImu          s_nullImu;
 static NullHttpClient   s_nullHttp;
@@ -44,6 +47,7 @@ static PlatformServices& initServices() {
     // Non-null defaults for optional services
     svc.midiOutput = &s_nullMidi;
     svc.audioOutput = &s_nullAudio;
+    svc.audioModule = &s_nullAudioModule;
     svc.vibration = &s_nullVibration;
     svc.imu = &s_nullImu;
     svc.httpClient = &s_nullHttp;
@@ -93,6 +97,16 @@ void PlatformServices::setAudioInput(IAudioInput* input) {
         addPlatformCapability(Capability::AudioIn);
     } else {
         removePlatformCapability(Capability::AudioIn);
+    }
+}
+
+void PlatformServices::setAudioModule(IAudioModule* module) {
+    audioModule = module ? module : &s_nullAudioModule;
+
+    if (module) {
+        addPlatformCapability(Capability::AudioOut);
+    } else {
+        removePlatformCapability(Capability::AudioOut);
     }
 }
 
@@ -167,6 +181,10 @@ IMidiOutput& getMidiOutput() {
 
 IAudioOutput& getAudioOutput() {
     return *s_services.audioOutput;
+}
+
+IAudioModule& getAudioModule() {
+    return *s_services.audioModule;
 }
 
 PadManager& getPadManager() {

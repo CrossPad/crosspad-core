@@ -10,6 +10,16 @@ void CrosspadSettings::loadFrom(IKeyValueStore& store) {
 
     // Audio (master)
     AudioEngineEnabled       = store.readBool("cfg_audio", "engine_en", true);
+    {
+        uint32_t sr = store.readU8("cfg_audio_eng", "sr_idx", 1); // 0=44100, 1=48000, 2=96000
+        if (sr < AudioEngineSettings::kSampleRatesCount) {
+            audioEngine.sampleRate = AudioEngineSettings::kSampleRates[sr];
+        }
+        uint32_t fcIdx = store.readU8("cfg_audio_eng", "fc_idx", 2); // 0=32 ... 5=512, default 64
+        if (fcIdx < AudioEngineSettings::kFrameCountsCount) {
+            audioEngine.frameCount = AudioEngineSettings::kFrameCounts[fcIdx];
+        }
+    }
     masterFX.mute            = store.readBool("cfg_audio", "mute", false);
     masterFX.inVolume        = store.readU8("cfg_audio", "in_vol", 50);
     masterFX.outVolume       = store.readU8("cfg_audio", "out_vol", 50);
@@ -89,6 +99,18 @@ void CrosspadSettings::saveTo(IKeyValueStore& store) {
 
     // Audio (master)
     store.saveBool("cfg_audio", "engine_en", AudioEngineEnabled);
+    {
+        uint8_t srIdx = 1;
+        for (uint8_t i = 0; i < AudioEngineSettings::kSampleRatesCount; ++i) {
+            if (AudioEngineSettings::kSampleRates[i] == audioEngine.sampleRate) { srIdx = i; break; }
+        }
+        store.saveU8("cfg_audio_eng", "sr_idx", srIdx);
+        uint8_t fcIdx = 2;
+        for (uint8_t i = 0; i < AudioEngineSettings::kFrameCountsCount; ++i) {
+            if (AudioEngineSettings::kFrameCounts[i] == audioEngine.frameCount) { fcIdx = i; break; }
+        }
+        store.saveU8("cfg_audio_eng", "fc_idx", fcIdx);
+    }
     store.saveBool("cfg_audio", "mute", masterFX.mute);
     store.saveU8("cfg_audio", "in_vol", masterFX.inVolume);
     store.saveU8("cfg_audio", "out_vol", masterFX.outVolume);

@@ -3,129 +3,112 @@
 
 /**
  * @file IAudioModule.hpp
- * @brief Cross-platform audio processing pipeline interface.
+ * @brief Cross-platform audio processing pipeline.
  *
- * Models Marcel's audio_module pattern (P4): setup → process loop.
- * Each platform implements the hardware-specific parts (I2S, RtAudio, etc.)
- * while sharing the DSP pipeline structure.
+ * Internal pipeline format is float32 in [-1.0, 1.0]. Streams declare which
+ * formats they natively support (Float32 / Int32 / Int16) — the module picks
+ * the highest-quality match and converts only at the I/O boundary.
  *
- * Typical usage:
- * @code
- *   // Platform creates and configures the module
- *   auto& mod = getAudioModule();
- *   mod.setup(config);
+ * Sample rate is configured at setup() time from CrosspadSettings.audioEngine
+ * and is not hot-swappable; restart required to change. Nodes that depend on
+ * SR rebuild their state in onSampleRateChange().
  *
- *   // Platform runs the process loop (FreeRTOS task, std::thread, etc.)
- *   while (running) {
- *       mod.process();   // pull inputs → DSP → push outputs
- *   }
- * @endcode
- *
- * Threading: The platform owns the audio thread. IAudioModule::process()
- * is called from that thread at the rate determined by the hardware/driver.
+ * Pipeline cycle (one process() call):
+ *   1. pull inputs into float bus buffer (if any)
+ *   2. for each generator node: node.mix(bus, frames)
+ *   3. for each effect node:    node.process(bus, bus, frames)
+ *   4. push bus to each output stream (with format conversion if needed)
  */
+
+#include "crosspad/audio/AudioFormat.hpp"
 
 #include <cstdint>
 #include <cstddef>
 
 namespace crosspad {
 
+class IAudioNode;
+
 // ── Audio configuration ──────────────────────────────────────────────────
 
 struct AudioModuleConfig {
-    uint32_t sampleRate   = 48000;   ///< Sample rate in Hz
-    uint32_t frameCount   = 48;      ///< Frames per process() call
-    uint8_t  channelCount = 2;       ///< Channels per stream (typically 2 = stereo)
-    uint8_t  streamCount  = 2;       ///< Number of independent output streams
+    uint32_t sampleRate   = 48000;
+    uint32_t frameCount   = 64;
+    uint8_t  channelCount = 2;
+    uint8_t  streamCount  = 2;
 };
 
 // ── Audio stream interface ───────────────────────────────────────────────
 
 /**
- * @brief A single audio output stream (e.g. one I2S interface or one RtAudio device).
+ * @brief A single audio I/O endpoint (one I2S interface, one RtAudio device).
  *
- * Platform implementations push interleaved samples to the hardware.
- * The IAudioModule calls pushSamples() once per process() cycle per stream.
+ * Streams declare format support via supportedFormats() bitmask; the module
+ * picks the highest-quality match (Float32 > Int32 > Int16). Push/pull take
+ * a runtime AudioFormat tag so the same call signature works for any format.
  */
 class IAudioStream {
 public:
     virtual ~IAudioStream() = default;
 
-    /// Push interleaved samples to this stream's output device.
-    /// @param samples  Interleaved int32_t samples [frame][channel]
-    /// @param frames   Number of frames to push
-    /// @return frames actually written (may be less if non-blocking)
-    virtual uint32_t pushSamples(const int32_t* samples, uint32_t frames) = 0;
+    /// Bitmask of supported AudioFormat values. Must include at least one.
+    virtual uint32_t supportedFormats() const = 0;
 
-    /// Pull interleaved samples from this stream's input device (optional).
-    /// @param samples  Buffer to fill with interleaved int32_t samples
-    /// @param frames   Number of frames to read
-    /// @return frames actually read
-    virtual uint32_t pullSamples(int32_t* samples, uint32_t frames) { (void)samples; (void)frames; return 0; }
+    /// Push interleaved samples in the given format. Returns frames written.
+    virtual uint32_t pushSamples(const void* samples, AudioFormat fmt, uint32_t frames) = 0;
 
-    /// Set output volume (0-100). Implementation-dependent (codec register, software gain, etc.)
+    /// Pull interleaved samples in the given format. Returns frames read.
+    virtual uint32_t pullSamples(void* samples, AudioFormat fmt, uint32_t frames) {
+        (void)samples; (void)fmt; (void)frames; return 0;
+    }
+
     virtual void setVolume(int volume) { (void)volume; }
-
-    /// Get output volume (0-100).
     virtual int getVolume() const { return 100; }
 
-    /// Is this stream open and functional?
     virtual bool isOpen() const = 0;
+    virtual uint32_t getSampleRate() const = 0;
 };
 
 // ── Audio module interface ───────────────────────────────────────────────
 
-/**
- * @brief Cross-platform audio processing pipeline.
- *
- * The module owns the DSP pipeline and delegates I/O to IAudioStream instances.
- * Platforms implement this to provide their specific DSP (synth, sampler, effects)
- * and wire up the streams (I2S, RtAudio, etc.).
- *
- * Process cycle (mirrors Marcel's audio_module.cpp):
- *   1. pullInputs()    — read from input streams into DSP buffers
- *   2. generate()      — run DSP (synthesis, sample playback, effects)
- *   3. control()       — runtime control logic (volume ramps, mute after timeout)
- *   4. pushOutputs()   — interleave DSP buffers and write to output streams
- */
 class IAudioModule {
 public:
     virtual ~IAudioModule() = default;
 
-    /// One-time setup. Returns false on failure.
     virtual bool setup(const AudioModuleConfig& config) = 0;
-
-    /// Single DSP cycle: pull → generate → control → push.
-    /// Called from the audio thread in a tight loop.
-    virtual void process() = 0;
-
-    /// Tear down and release resources.
     virtual void teardown() {}
 
-    // ── Configuration queries ────────────────────────────────────
+    /// One DSP cycle: pull inputs → mix generators → process effects → push outputs.
+    /// Called from the audio thread (FreeRTOS task on embedded, std::thread on PC).
+    virtual void process() = 0;
 
     virtual const AudioModuleConfig& getConfig() const = 0;
 
-    // ── Stream management ────────────────────────────────────────
+    // ── Node chain ───────────────────────────────────────────────
 
-    /// Get an output stream by index (0..streamCount-1).
+    /// Append a node to the chain. Node ownership stays with caller.
+    virtual void addNode(IAudioNode* node) = 0;
+    virtual void removeNode(IAudioNode* node) = 0;
+    virtual size_t nodeCount() const = 0;
+    virtual IAudioNode* getNode(size_t index) const = 0;
+
+    // ── Streams ──────────────────────────────────────────────────
+
     virtual IAudioStream* getOutputStream(uint8_t index) = 0;
+    virtual IAudioStream* getInputStream(uint8_t /*index*/) { return nullptr; }
 
-    /// Get an input stream by index (optional, may return nullptr).
-    virtual IAudioStream* getInputStream(uint8_t index) { (void)index; return nullptr; }
+    // ── Level metering (float [0.0, 1.0]) ────────────────────────
 
-    // ── Level metering ───────────────────────────────────────────
-
-    /// Get peak output level for a stream (0..streamCount-1).
-    /// Values are abs(sample) peaks since last call, suitable for VU meters.
-    virtual void getOutputLevel(uint8_t stream, int16_t& left, int16_t& right) const {
-        (void)stream; left = 0; right = 0;
+    virtual void getOutputLevel(uint8_t /*stream*/, float& left, float& right) const {
+        left = 0.0f; right = 0.0f;
     }
 
-    /// Get peak input level for a stream.
-    virtual void getInputLevel(uint8_t stream, int16_t& left, int16_t& right) const {
-        (void)stream; left = 0; right = 0;
+    virtual void getInputLevel(uint8_t /*stream*/, float& left, float& right) const {
+        left = 0.0f; right = 0.0f;
     }
 };
+
+/// Platform-injected singleton (implemented by PlatformServices)
+IAudioModule& getAudioModule();
 
 } // namespace crosspad
