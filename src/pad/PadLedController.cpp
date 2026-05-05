@@ -356,7 +356,7 @@ RgbColor PadLedController::calculatePadColor(uint8_t padIdx) {
 }
 
 void PadLedController::applyBrightness(RgbColor& color) {
-    uint8_t settingsBri = settings_ ? (uint8_t)(settings_->RGBbrightness * 255) : 255;
+    uint8_t settingsBri = settings_ ? settings_->RGBbrightness : 255;
     uint8_t effectiveBrightness = std::min(brightness_, settingsBri);
     color = color.Dim(effectiveBrightness);
 }
