@@ -32,6 +32,7 @@ constexpr float kFloatScaleToInt16   = 32767.0f;
 constexpr float kFloatScaleToInt32   = 2147483647.0f;
 
 inline float clampFloat(float v) {
+    if (v != v)    return  0.0f;   // NaN → silent sample
     if (v >  1.0f) return  1.0f;
     if (v < -1.0f) return -1.0f;
     return v;
