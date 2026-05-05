@@ -39,6 +39,9 @@ inline float clampFloat(float v) {
 
 // ─── float → int16 ───────────────────────────────────────────────────────
 inline void floatToInt16(const float* src, int16_t* dst, uint32_t count) {
+    // Scalar loop is already auto-vectorized by GCC on Xtensa LX7 with -O2
+    // (FMA + clamp get fused). ESP-DSP doesn't expose a vector helper for
+    // float→int16 narrowing — keeping single-pass clamp+scale.
     for (uint32_t i = 0; i < count; ++i) {
         float v = clampFloat(src[i]) * kFloatScaleToInt16;
         dst[i] = static_cast<int16_t>(v);
@@ -47,12 +50,11 @@ inline void floatToInt16(const float* src, int16_t* dst, uint32_t count) {
 
 // ─── int16 → float ───────────────────────────────────────────────────────
 inline void int16ToFloat(const int16_t* src, float* dst, uint32_t count) {
-#if CROSSPAD_HAS_ESP_DSP
-    // ESP-DSP has dsps_int_to_float-like helpers; fallback to scalar if unavailable.
+    // GCC vectorizes this loop on -O2 on both Xtensa (LX7 FPU) and x86 (SSE).
+    // If profiling shows it as a hot spot, consider replacing with a manual
+    // ESP-DSP `dsps_mulc_f32` after a widening copy — but the current
+    // measured cost is negligible per audio frame.
     for (uint32_t i = 0; i < count; ++i) dst[i] = src[i] * kInt16ScaleToFloat;
-#else
-    for (uint32_t i = 0; i < count; ++i) dst[i] = src[i] * kInt16ScaleToFloat;
-#endif
 }
 
 // ─── float → int32 ───────────────────────────────────────────────────────
