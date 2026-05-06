@@ -67,11 +67,14 @@ public:
         // 4. peak metering on bus
         updateLevels(bus_.data(), frames);
 
-        // 5. push to all output streams
+        // 5. push to all output streams. Conversion to non-float formats is
+        // done at most once per cycle, then shared by every stream that wants it.
+        bool int16Ready = false;
+        bool int32Ready = false;
         for (uint8_t s = 0; s < config_.streamCount; ++s) {
             IAudioStream* stream = getOutputStream(s);
             if (!stream || !stream->isOpen()) continue;
-            pushBusToStream(stream, frames);
+            pushBusToStream(stream, frames, samples, int16Ready, int32Ready);
         }
     }
 
@@ -112,26 +115,33 @@ protected:
     std::atomic<float> peakR_{0.0f};
 
 private:
-    void pushBusToStream(IAudioStream* stream, uint32_t frames) {
-        const uint32_t samples = frames * config_.channelCount;
+    void pushBusToStream(IAudioStream* stream, uint32_t frames, uint32_t samples,
+                         bool& int16Ready, bool& int32Ready) {
         const AudioFormat fmt = audioFormatPreferred(stream->supportedFormats());
-
         switch (fmt) {
             case AudioFormat::Float32:
                 stream->pushSamples(bus_.data(), AudioFormat::Float32, frames);
                 break;
             case AudioFormat::Int32:
-                floatToInt32(bus_.data(), scratchInt32_.data(), samples);
+                if (!int32Ready) {
+                    floatToInt32(bus_.data(), scratchInt32_.data(), samples);
+                    int32Ready = true;
+                }
                 stream->pushSamples(scratchInt32_.data(), AudioFormat::Int32, frames);
                 break;
             case AudioFormat::Int16:
-                floatToInt16(bus_.data(), scratchInt16_.data(), samples);
+                if (!int16Ready) {
+                    floatToInt16(bus_.data(), scratchInt16_.data(), samples);
+                    int16Ready = true;
+                }
                 stream->pushSamples(scratchInt16_.data(), AudioFormat::Int16, frames);
                 break;
         }
     }
 
     void updateLevels(const float* buf, uint32_t frames) {
+        // Stereo-only: AudioModuleConfig.channelCount must be 2 for now. If a
+        // future config breaks that, generalize this to per-channel atomics.
         constexpr float kDecay = 0.93f;
         float pL = peakL_.load(std::memory_order_relaxed) * kDecay;
         float pR = peakR_.load(std::memory_order_relaxed) * kDecay;
