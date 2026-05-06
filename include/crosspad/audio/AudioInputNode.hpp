@@ -43,15 +43,16 @@ public:
     const char* name() const override { return name_; }
     bool isGenerator() const override { return true; }
 
-    void onSampleRateChange(uint32_t /*newSr*/) override {
-        // Input device owns its own SR; the engine reads what's available.
+    void onPrepare(uint32_t maxFrames, uint32_t /*sampleRate*/) override {
+        // Input device owns its own SR; pre-size the int16 scratch so mix()
+        // never allocates on the audio thread.
+        rawBuf_.assign(static_cast<size_t>(maxFrames) * 2, 0);
     }
 
     void mix(float* out, uint32_t frames) override {
         IAudioInput* in = getter_ ? getter_(getterIndex_) : input_;
         if (!in) return;
         const uint32_t stereo = frames * 2;
-        if (rawBuf_.size() < stereo) rawBuf_.resize(stereo);
 
         uint32_t got = in->read(rawBuf_.data(), frames);
         if (got == 0) return;

@@ -60,6 +60,7 @@ TEST_CASE("SynthEngineNode: identifies as generator", "[audio][node][synth]") {
 
 TEST_CASE("SynthEngineNode: null engine is no-op", "[audio][node][synth]") {
     SynthEngineNode node;
+    node.onPrepare(64, 48000);
     std::vector<float> bus(128, 0.7f);    // pre-populated
     node.mix(bus.data(), 64);             // 64 frames * 2 ch
     for (float v : bus) REQUIRE(v == 0.7f);  // unchanged
@@ -68,6 +69,7 @@ TEST_CASE("SynthEngineNode: null engine is no-op", "[audio][node][synth]") {
 TEST_CASE("SynthEngineNode: mix is additive", "[audio][node][synth]") {
     ConstSynth synth(0.5f);
     SynthEngineNode node(&synth);
+    node.onPrepare(64, 48000);
 
     std::vector<float> bus(128, 0.0f);
 
@@ -94,6 +96,7 @@ TEST_CASE("SynthEngineNode: mix is additive", "[audio][node][synth]") {
 TEST_CASE("SynthEngineNode: setEngine swaps backend", "[audio][node][synth]") {
     ConstSynth a(0.1f), b(0.4f);
     SynthEngineNode node(&a);
+    node.onPrepare(64, 48000);
     REQUIRE(node.getEngine() == &a);
 
     std::vector<float> bus(128, 0.0f);
@@ -108,16 +111,19 @@ TEST_CASE("SynthEngineNode: setEngine swaps backend", "[audio][node][synth]") {
     for (float v : bus) REQUIRE(v == 0.4f);
 }
 
-TEST_CASE("SynthEngineNode: scratch buffer grows on demand", "[audio][node][synth]") {
+TEST_CASE("SynthEngineNode: onPrepare sizes scratch for max frames", "[audio][node][synth]") {
     ConstSynth synth(0.5f);
     SynthEngineNode node(&synth);
 
-    // First call with small frame count, then larger — should not crash or truncate
+    // Prepare for the largest expected buffer up front; subsequent mix() calls
+    // at any frame count <= maxFrames must not allocate.
+    node.onPrepare(1024, 48000);
+
     std::vector<float> small(64, 0.0f);    // 32 frames
     node.mix(small.data(), 32);
     for (float v : small) REQUIRE(v == 0.5f);
 
-    std::vector<float> large(2048, 0.0f);  // 1024 frames — larger than first call
+    std::vector<float> large(2048, 0.0f);  // 1024 frames
     node.mix(large.data(), 1024);
     for (float v : large) REQUIRE(v == 0.5f);
 }

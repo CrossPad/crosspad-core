@@ -37,7 +37,7 @@ public:
         bus_.assign(samples, 0.0f);
         scratchInt16_.assign(samples, 0);
         scratchInt32_.assign(samples, 0);
-        for (auto* n : nodes_) if (n) n->onSampleRateChange(config.sampleRate);
+        for (auto* n : nodes_) if (n) n->onPrepare(config.frameCount, config.sampleRate);
         return true;
     }
 
@@ -83,7 +83,7 @@ public:
     void addNode(IAudioNode* node) override {
         if (!node) return;
         nodes_.push_back(node);
-        if (config_.sampleRate > 0) node->onSampleRateChange(config_.sampleRate);
+        if (config_.sampleRate > 0) node->onPrepare(config_.frameCount, config_.sampleRate);
     }
 
     void removeNode(IAudioNode* node) override {

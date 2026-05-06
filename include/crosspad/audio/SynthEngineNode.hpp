@@ -29,15 +29,15 @@ public:
     const char* name() const override { return "SynthEngine"; }
     bool isGenerator() const override { return true; }
 
-    void onSampleRateChange(uint32_t /*newSr*/) override {
-        // No SR-dependent state; scratch sizes itself on first mix().
+    void onPrepare(uint32_t maxFrames, uint32_t /*sampleRate*/) override {
+        scratch_.assign(static_cast<size_t>(maxFrames) * 2, 0.0f);
     }
 
     void mix(float* out, uint32_t frames) override {
         if (!engine_) return;
         const uint32_t samples = frames * 2;
         // ISynthEngine::process is a write (=) contract; scratch overwritten fully.
-        if (scratch_.size() < samples) scratch_.resize(samples);
+        // Buffer pre-sized in onPrepare(); never grow on the audio thread.
         engine_->process(scratch_.data(), frames);
         for (uint32_t i = 0; i < samples; ++i) out[i] += scratch_[i];
     }

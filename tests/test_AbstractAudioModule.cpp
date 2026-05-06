@@ -233,6 +233,38 @@ TEST_CASE("AbstractAudioModule: onSampleRateChange propagates", "[audio][module]
     }
 }
 
+TEST_CASE("AbstractAudioModule: onPrepare propagates frameCount", "[audio][module]") {
+    // Node that captures both maxFrames and sampleRate from onPrepare().
+    class PrepareCapture : public IAudioNode {
+    public:
+        const char* name() const override { return "PrepareCapture"; }
+        bool isGenerator() const override { return true; }
+        void onPrepare(uint32_t maxFrames, uint32_t sr) override {
+            lastFrames = maxFrames;
+            lastSr     = sr;
+            ++calls;
+        }
+        uint32_t lastFrames = 0;
+        uint32_t lastSr     = 0;
+        int      calls      = 0;
+    };
+
+    TestAudioModule m;
+    PrepareCapture p;
+    AudioModuleConfig cfg; cfg.sampleRate = 96000; cfg.frameCount = 32;
+    REQUIRE(m.setup(cfg));
+    m.addNode(&p);
+    REQUIRE(p.lastFrames == 32);
+    REQUIRE(p.lastSr     == 96000);
+    REQUIRE(p.calls      == 1);
+
+    // Re-setup with a new frame count must re-fire onPrepare on the node.
+    cfg.frameCount = 128;
+    REQUIRE(m.setup(cfg));
+    REQUIRE(p.lastFrames == 128);
+    REQUIRE(p.calls      == 2);
+}
+
 TEST_CASE("AbstractAudioModule: peak metering tracks bus", "[audio][module]") {
     TestAudioModule m;
     CapturingInt16Stream s;
