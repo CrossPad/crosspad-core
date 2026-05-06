@@ -22,6 +22,7 @@
 #include "crosspad/audio/IAudioNode.hpp"
 #include "crosspad/audio/AudioFormatConvert.hpp"
 
+#include <atomic>
 #include <vector>
 #include <algorithm>
 #include <cstring>
@@ -93,8 +94,8 @@ public:
     }
 
     void getOutputLevel(uint8_t /*stream*/, float& left, float& right) const override {
-        left  = peakL_;
-        right = peakR_;
+        left  = peakL_.load(std::memory_order_relaxed);
+        right = peakR_.load(std::memory_order_relaxed);
     }
 
 protected:
@@ -104,8 +105,11 @@ protected:
     std::vector<int16_t> scratchInt16_;
     std::vector<int32_t> scratchInt32_;
 
-    float peakL_ = 0.0f;
-    float peakR_ = 0.0f;
+    // Peak meters cross the audio-thread/UI-thread boundary; atomic relaxed
+    // is enough because each value is independently consistent and we don't
+    // need ordering between L and R.
+    std::atomic<float> peakL_{0.0f};
+    std::atomic<float> peakR_{0.0f};
 
 private:
     void pushBusToStream(IAudioStream* stream, uint32_t frames) {
@@ -129,16 +133,18 @@ private:
 
     void updateLevels(const float* buf, uint32_t frames) {
         constexpr float kDecay = 0.93f;
-        peakL_ *= kDecay;
-        peakR_ *= kDecay;
+        float pL = peakL_.load(std::memory_order_relaxed) * kDecay;
+        float pR = peakR_.load(std::memory_order_relaxed) * kDecay;
         for (uint32_t i = 0; i < frames; ++i) {
             float l = buf[i * 2 + 0];
             float r = buf[i * 2 + 1];
             if (l < 0) l = -l;
             if (r < 0) r = -r;
-            if (l > peakL_) peakL_ = l;
-            if (r > peakR_) peakR_ = r;
+            if (l > pL) pL = l;
+            if (r > pR) pR = r;
         }
+        peakL_.store(pL, std::memory_order_relaxed);
+        peakR_.store(pR, std::memory_order_relaxed);
     }
 };
 

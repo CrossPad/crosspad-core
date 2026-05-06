@@ -54,10 +54,18 @@ public:
     /// Bitmask of supported AudioFormat values. Must include at least one.
     virtual uint32_t supportedFormats() const = 0;
 
-    /// Push interleaved samples in the given format. Returns frames written.
+    /// Push interleaved samples in the given format.
+    /// @param samples  Buffer holding `frames * channelCount` values of the
+    ///                 element size implied by `fmt` (e.g. for stereo Int16,
+    ///                 `frames * 2 * sizeof(int16_t)` bytes).
+    /// @param fmt      Element format of `samples`.
+    /// @param frames   Number of multi-channel frames (one frame = one
+    ///                 sample per channel; "stereo frames" for 2-ch streams).
+    /// @return         Frames actually accepted; may be < frames on backpressure.
     virtual uint32_t pushSamples(const void* samples, AudioFormat fmt, uint32_t frames) = 0;
 
-    /// Pull interleaved samples in the given format. Returns frames read.
+    /// Pull interleaved samples in the given format. See pushSamples for
+    /// `frames` semantics. Returns frames actually delivered.
     virtual uint32_t pullSamples(void* samples, AudioFormat fmt, uint32_t frames) {
         (void)samples; (void)fmt; (void)frames; return 0;
     }
