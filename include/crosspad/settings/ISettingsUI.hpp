@@ -24,6 +24,10 @@ public:
 
     /// Get platform-specific info string (e.g., profile dir path). nullptr = hide row.
     virtual const char* getPlatformInfo() { return nullptr; }
+
+    /// Request STM32 co-processor to enter DFU mode. Default no-op for platforms
+    /// without an STM32 (PC sim). Implementers send the DFU sysex command.
+    virtual void enterStm32Dfu() {}
 };
 
 /// Set the active settings UI callback (called by platform before opening Settings)
