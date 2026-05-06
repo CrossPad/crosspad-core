@@ -1,0 +1,49 @@
+name: Audio Tests (Tier 1)
+
+on:
+  push:
+    branches: [main, feat/audio-tests-tier1]
+    paths:
+      - 'include/crosspad/audio/**'
+      - 'include/crosspad/synth/**'
+      - 'include/crosspad/settings/AudioEngineSettings.hpp'
+      - 'tests/**'
+      - '.github/workflows/audio-tests.yml'
+  pull_request:
+    branches: [main]
+    paths:
+      - 'include/crosspad/audio/**'
+      - 'include/crosspad/synth/**'
+      - 'include/crosspad/settings/AudioEngineSettings.hpp'
+      - 'tests/**'
+      - '.github/workflows/audio-tests.yml'
+  workflow_dispatch:
+
+jobs:
+  tier1-unit:
+    name: Tier 1 portable unit tests
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install build deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake ninja-build g++
+
+      - name: Configure tests/
+        working-directory: tests
+        run: cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Debug
+
+      - name: Build
+        working-directory: tests
+        run: cmake --build build
+
+      - name: Run all tests (compact)
+        working-directory: tests
+        run: ./build/crosspad_core_tests --reporter compact
+
+      - name: Audio-only filter (verbose, fails fast)
+        working-directory: tests
+        run: ./build/crosspad_core_tests "[audio]" --reporter console
