@@ -28,6 +28,14 @@ void CrosspadSettings::loadFrom(IKeyValueStore& store) {
     masterFX.distortion.bypass = store.readBool("cfg_audio", "dist_byp", true);
     masterFX.chorus.bypass   = store.readBool("cfg_audio", "chorus_byp", true);
     masterFX.flanger.bypass  = store.readBool("cfg_audio", "flangr_byp", true);
+    masterFX.outVolumeCodec[0][0] = store.readU8("cfg_audio", "ovc00", masterFX.outVolumeCodec[0][0]);
+    masterFX.outVolumeCodec[0][1] = store.readU8("cfg_audio", "ovc01", masterFX.outVolumeCodec[0][1]);
+    masterFX.outVolumeCodec[1][0] = store.readU8("cfg_audio", "ovc10", masterFX.outVolumeCodec[1][0]);
+    masterFX.outVolumeCodec[1][1] = store.readU8("cfg_audio", "ovc11", masterFX.outVolumeCodec[1][1]);
+    masterFX.inVolumeCodec[0][0]  = store.readU8("cfg_audio", "ivc00", masterFX.inVolumeCodec[0][0]);
+    masterFX.inVolumeCodec[0][1]  = store.readU8("cfg_audio", "ivc01", masterFX.inVolumeCodec[0][1]);
+    masterFX.inVolumeCodec[1][0]  = store.readU8("cfg_audio", "ivc10", masterFX.inVolumeCodec[1][0]);
+    masterFX.inVolumeCodec[1][1]  = store.readU8("cfg_audio", "ivc11", masterFX.inVolumeCodec[1][1]);
 
     // RGB
     RGBbrightness = store.readU8("cfg_rgb", "brightness", 100);
@@ -119,6 +127,14 @@ void CrosspadSettings::saveTo(IKeyValueStore& store) {
     store.saveBool("cfg_audio", "dist_byp", masterFX.distortion.bypass);
     store.saveBool("cfg_audio", "chorus_byp", masterFX.chorus.bypass);
     store.saveBool("cfg_audio", "flangr_byp", masterFX.flanger.bypass);
+    store.saveU8("cfg_audio", "ovc00", masterFX.outVolumeCodec[0][0]);
+    store.saveU8("cfg_audio", "ovc01", masterFX.outVolumeCodec[0][1]);
+    store.saveU8("cfg_audio", "ovc10", masterFX.outVolumeCodec[1][0]);
+    store.saveU8("cfg_audio", "ovc11", masterFX.outVolumeCodec[1][1]);
+    store.saveU8("cfg_audio", "ivc00", masterFX.inVolumeCodec[0][0]);
+    store.saveU8("cfg_audio", "ivc01", masterFX.inVolumeCodec[0][1]);
+    store.saveU8("cfg_audio", "ivc10", masterFX.inVolumeCodec[1][0]);
+    store.saveU8("cfg_audio", "ivc11", masterFX.inVolumeCodec[1][1]);
 
     // RGB
     store.saveU8("cfg_rgb", "brightness", RGBbrightness);
