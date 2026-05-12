@@ -21,8 +21,12 @@ void Stm32MessageHandler::handleMessage(const uint8_t* data, unsigned size) {
 
     case CROSSPAD_CMD_ENCODER_COUNTER:
         if (size < 5) break;
-        input.encoderTop = (data[3] & 0x3F) / 2; // max 60 on lptimer
-        input.encoderPressed = (data[3] >> 6);    // press state at 2nd MSB
+        // STM r20 packs raw LPTIM1 CNT mod 64 directly (bit6 = button,
+        // bits 5..0 = counter). LPTIM samples 4 transitions per detent so
+        // CNT steps ~4 per click — keep the byte as-is so LVGL receives a
+        // diff per detent rather than per transition.
+        input.encoderTop = (data[3] & 0x3F);
+        input.encoderPressed = (data[3] >> 6) & 0x01;
         break;
 
     case CROSSPAD_CMD_BUTTONS_DIGITAL:
