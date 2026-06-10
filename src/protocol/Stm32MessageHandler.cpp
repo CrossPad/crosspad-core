@@ -21,8 +21,30 @@ void Stm32MessageHandler::handleMessage(const uint8_t* data, unsigned size) {
 
     case CROSSPAD_CMD_ENCODER_COUNTER:
         if (size < 5) break;
-        input.encoderTop = (data[3] & 0x3F) / 2; // max 60 on lptimer
-        input.encoderPressed = (data[3] >> 6);    // press state at 2nd MSB
+        // Frame length selects the STM firmware generation:
+        //   6 bytes (… detent|btn, phase, END) → new STM: detent index 0..15
+        //     (one step per mech detent) plus a sub-detent phase byte.
+        //   5 bytes (… cnt|btn, END)           → legacy STM: raw LPTIM CNT 0..63;
+        //     derive the centered detent index + phase on the host so the rest
+        //     of the code is firmware-agnostic. Assumes the legacy encoder also
+        //     rests at CNT ≡ 1 (mod 4).
+        if (size >= 6) {
+            input.encoderTop   = (data[3] & 0x0F);
+            input.encoderPhase = data[4];
+        } else {
+            uint8_t cnt  = data[3] & 0x3F;
+            uint8_t mod4 = cnt & 0x03;
+            uint8_t a, b;
+            switch (mod4) {                 // Gray map, rest (mod4==1) = (A,B)=(1,1)
+                case 1:  a = 1; b = 1; break;
+                case 2:  a = 0; b = 1; break;
+                case 3:  a = 0; b = 0; break;
+                default: a = 1; b = 0; break;
+            }
+            input.encoderTop   = ((cnt + 1) >> 2) & 0x0F;
+            input.encoderPhase = mod4 | (a << 2) | (b << 3) | (mod4 == 1 ? 0x10 : 0);
+        }
+        input.encoderPressed = (data[3] >> 6) & 0x01;
         break;
 
     case CROSSPAD_CMD_BUTTONS_DIGITAL:
