@@ -48,14 +48,15 @@ extern "C" {
 #define REG_IDENT_LEN               0x09
 
 /* Inputs (RO snapshot). */
-#define REG_IN_ENCODER              (REG_INPUTS_BASE  + 0x00)  /* low 7 bits = counter, bit7 = enc_btn */
+#define REG_IN_ENCODER              (REG_INPUTS_BASE  + 0x00)  /* low 4 bits = detent index 0..15, bit7 = enc_btn */
 #define REG_IN_PADS_HI              (REG_INPUTS_BASE  + 0x01)  /* bits 8..15 of 16-pad bitmap */
 #define REG_IN_PADS_LO              (REG_INPUTS_BASE  + 0x02)  /* bits 0..7  of 16-pad bitmap */
 #define REG_IN_PAD_SUM_BASE         (REG_INPUTS_BASE  + 0x03)  /* +0..+15 — per-pad pressure 0..127 */
 #define REG_IN_PAD_DIFF_BASE        (REG_INPUTS_BASE  + 0x13)  /* +0..+15 — per-pad pan int8_t */
 #define REG_IN_JACK_DET             (REG_INPUTS_BASE  + 0x23)
 #define REG_IN_COL_PRES_BASE        (REG_INPUTS_BASE  + 0x24)  /* +0..+7 — debug column-min */
-#define REG_INPUTS_LEN              0x2C
+#define REG_IN_ENC_PHASE            (REG_INPUTS_BASE  + 0x2E)  /* sub-detent: [1:0]=CNT mod4, [2]=A, [3]=B, [4]=settled gate */
+#define REG_INPUTS_LEN              0x2F
 
 /* Power (RO snapshot). */
 #define REG_PWR_VBAT_HI             (REG_POWER_BASE   + 0x00)

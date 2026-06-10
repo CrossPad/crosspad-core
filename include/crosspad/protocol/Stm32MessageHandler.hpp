@@ -64,8 +64,9 @@ public:
     // ── Input state (read by LVGL encoder/keypad drivers) ──
 
     struct Stm32InputState {
-        int8_t encoderTop = 0;
-        int8_t encoderLeft = 0;
+        int8_t  encoderTop = 0;     // centered detent index 0..15 (one step per mech detent)
+        uint8_t encoderPhase = 0;   // sub-detent: [1:0]=CNT mod4, [2]=A, [3]=B, [4]=settled gate
+        int8_t  encoderLeft = 0;
         bool encoderPressed = false;
         bool powerBtnPressed = false;
     };
