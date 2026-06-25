@@ -35,6 +35,13 @@ public:
     // Boot animation
     void playBootAnim(uint32_t durationMs = 600);
 
+    // Charge-while-off gauge. Persistent (runs until stop()): a battery gauge
+    // fills the 4x4 pads bottom-up, color red->green by SoC, a soft concentric
+    // glow drifts over the lit pads, and the single frontier pad breathes to 0.
+    // At soc == 1.0 (full) there is no frontier — all 16 pads green + drift.
+    void startCharging(float soc = 0.0f);
+    void setChargePercent(float soc);   // 0.0 - 1.0, live updates while charging
+
     // Control
     void stop();
 
@@ -47,7 +54,7 @@ public:
     void setAnimationStateCallback(AnimationStateCallback cb);
 
 private:
-    enum class AnimType { NONE, PROGRESS, SUCCESS, ERROR, BOOT };
+    enum class AnimType { NONE, PROGRESS, SUCCESS, ERROR, BOOT, CHARGING };
 
     AnimType type_ = AnimType::NONE;
     ILedStrip* strip_ = nullptr;
@@ -56,6 +63,7 @@ private:
     int64_t startTime_ = 0;
     uint32_t duration_ = 0;
     float currentProgress_ = 0.0f;
+    float chargeSoc_ = 0.0f;          // 0..1 battery state-of-charge for CHARGING
     RgbColor animColor_;
     CompletionCallback completionCb_ = nullptr;
     AnimationStateCallback animStateCb_ = nullptr;
@@ -69,6 +77,7 @@ private:
     void renderSuccess();
     void renderError();
     void renderBoot();
+    void renderCharging();
 };
 
 /// Platform-injected singleton accessor

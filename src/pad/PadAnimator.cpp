@@ -19,6 +19,7 @@ void PadAnimator::update() {
         case AnimType::SUCCESS:  renderSuccess();  break;
         case AnimType::ERROR:    renderError();    break;
         case AnimType::BOOT:     renderBoot();     break;
+        case AnimType::CHARGING: renderCharging(); break;
         default: break;
     }
     bool justFinished = !active_; // finish() may have been called during render
@@ -75,6 +76,18 @@ void PadAnimator::playBootAnim(uint32_t durationMs) {
     startTime_ = clock_->getTimeUs();
     active_ = true;
     notifyAnimState(true);
+}
+
+void PadAnimator::startCharging(float soc) {
+    chargeSoc_ = (soc < 0.0f) ? 0.0f : (soc > 1.0f ? 1.0f : soc);
+    type_ = AnimType::CHARGING;
+    startTime_ = clock_->getTimeUs();
+    active_ = true;
+    notifyAnimState(true);
+}
+
+void PadAnimator::setChargePercent(float soc) {
+    chargeSoc_ = (soc < 0.0f) ? 0.0f : (soc > 1.0f ? 1.0f : soc);
 }
 
 void PadAnimator::stop() {
@@ -249,6 +262,64 @@ void PadAnimator::renderBoot() {
             RgbColor c = rainbowColor(i);
             setPixel(i, c.Dim(bri));
         }
+    }
+    refresh();
+}
+
+// ── Charge-while-off gauge ──────────────────────────────────────────────
+//
+// Battery gauge on the 4x4 grid. Pad index 0 = bottom-left, 15 = top-right
+// (visualRow = i/4, 0 = bottom). Lit set = pads 0..N-1 with N = round(soc*16),
+// so the fill rises row by row, left→right, from the bottom.
+//
+//   • color: red (empty) → green (full), one uniform hue per frame = f(SoC).
+//   • body (lit, non-frontier): a soft concentric glow blob drifts over the
+//     grid on two incommensurate sines and lifts local brightness ~±12%.
+//   • frontier (the single highest lit pad, only when N < 16): breathes fully
+//     to 0 on top of the body color.
+//   • full (soc == 1.0 → N == 16): all green + drift, no frontier breathing.
+//
+// Persistent: never calls finish(); runs until stop().
+void PadAnimator::renderCharging() {
+    const float soc = chargeSoc_;
+    int litCount = (int)(soc * (float)kPadCount + 0.5f);
+    if (litCount < 0) litCount = 0;
+    if (litCount > kPadCount) litCount = kPadCount;
+
+    const RgbColor base = RgbColor::LinearBlend(RgbColor(255, 0, 0),
+                                                RgbColor(0, 255, 0), soc);
+
+    const float t = (float)(clock_->getTimeUs() - startTime_) / 1000000.0f;
+
+    // Drifting concentric glow centre, in grid coords (col 0..3, visualRow 0..3).
+    const float bx = 1.5f + 1.5f * sinf(t * 0.37f);
+    const float by = 1.5f + 1.5f * sinf(t * 0.29f + 1.3f);
+
+    // Frontier breathing 0→1 (deep), ~2.6 s period.
+    const float breath = 0.5f * (1.0f - cosf(t * (6.2831853f / 2.6f)));
+
+    const int frontier = (litCount < kPadCount) ? (litCount - 1) : -1;
+
+    for (int i = 0; i < kPadCount; i++) {
+        if (i >= litCount) {
+            setPixel(i, RgbColor(0, 0, 0));
+            continue;
+        }
+        if (i == frontier) {
+            setPixel(i, base.Dim((uint8_t)(breath * 255.0f)));
+            continue;
+        }
+        // Body pad: baseline 0.90, +0.12 near the drifting blob (→ 0.90..1.02).
+        const float col = (float)(i % 4);
+        const float vrow = (float)(i / 4);
+        const float dx = col - bx;
+        const float dy = vrow - by;
+        const float dist = sqrtf(dx * dx + dy * dy);
+        float fall = 1.0f - dist / 2.2f;
+        if (fall < 0.0f) fall = 0.0f;
+        float factor = 0.90f + 0.12f * fall;
+        if (factor > 1.0f) factor = 1.0f;
+        setPixel(i, base.Dim((uint8_t)(factor * 255.0f)));
     }
     refresh();
 }
