@@ -21,8 +21,12 @@ extern "C" {
 /* 7-bit slave address. */
 #define STM32_I2C_ADDR_7B           0x42
 
-/* Wire protocol version (REG_IDENT_PROTO_HI/LO). */
-#define STM32_PROTO_VERSION         0x0001
+/* Wire protocol version (REG_IDENT_PROTO_HI/LO).
+ * NOTE: this copy is a thin/older mirror — it tracks the macro names used by
+ * crosspad-core command builders and omits registers added in v0x0002-v0x0004
+ * that are only consumed by platform-idf / ESP app code. Bumped to 0x0005 to
+ * match the STM firmware; full parity lives in stm32_hal/include/stm32_reg_map.h. */
+#define STM32_PROTO_VERSION         0x0005
 
 /* Block bases. */
 #define REG_IDENTITY_BASE           0x0000
@@ -33,6 +37,7 @@ extern "C" {
 #define REG_LED_BASE                0x0500
 #define REG_MIDI_PIPE_BASE          0x0600
 #define REG_MAPPING_BASE            0x0700
+#define REG_PAD_CFG_BASE            0x0800
 #define REG_DEBUG_BASE              0x1000
 
 /* Identity (RO). */
@@ -87,6 +92,17 @@ extern "C" {
 #define REG_CTL_USB_GATE_E          (REG_CONTROL_BASE + 0x09)
 #define REG_CTL_EN_3V3_HOLD         (REG_CONTROL_BASE + 0x0A)
 
+/* Analog pads — velocity curve defaults + continuous-stream config (RW).
+ * Added in proto 0x0005. */
+#define REG_CTL_VEL_CURVE_DEF       (REG_CONTROL_BASE + 0x3E)  /* global default curve */
+#define REG_CTL_VEL_FLOOR_DEF       (REG_CONTROL_BASE + 0x3F)  /* global default floor 0..127 */
+#define REG_CTL_CC_PRESS_BASE       (REG_CONTROL_BASE + 0x40)  /* pressure→CC base (CC = base+pad) */
+#define REG_CTL_PAN_CC_EN           (REG_CONTROL_BASE + 0x41)  /* 0/1 enable pan→CC streaming */
+#define REG_CTL_CC_PAN_BASE         (REG_CONTROL_BASE + 0x42)  /* pan→CC base (CC = base+pad) */
+#define REG_CTL_ANALOG_MIN_MS       (REG_CONTROL_BASE + 0x43)  /* continuous-stream rate cap ms (~16=60Hz) */
+#define REG_CTL_ANALOG_DELTA        (REG_CONTROL_BASE + 0x44)  /* min pressure/pan change to send */
+#define REG_CTL_CC_CONFLICT         (REG_CONTROL_BASE + 0x45)  /* RO bitmask (Task 4) */
+
 /* Command (WO trigger — write 1 to fire). */
 #define REG_CMD_DFU                 (REG_COMMAND_BASE + 0x00)
 #define REG_CMD_POWEROFF            (REG_COMMAND_BASE + 0x01)
@@ -104,6 +120,23 @@ extern "C" {
 /* Pad mapping (RW). 16 pads × 5 bytes (mux_a, mux_b, ch_a, ch_b, swap). */
 #define REG_MAPPING_STRIDE          5U
 #define REG_MAPPING_LEN             (16U * REG_MAPPING_STRIDE)
+
+/* Per-pad config (RW). 16 pads × 6 bytes per stride. HI stages sensitivity,
+ * LO commits. Single-byte fields commit on write. Added proto 0x0004; stride
+ * 4→6 in proto 0x0005 (vel_curve, vel_floor). */
+#define REG_PAD_CFG_STRIDE          6U
+#define REG_PAD_CFG_LEN             (16U * REG_PAD_CFG_STRIDE)
+#define REG_PAD_CFG_FIELD_SENS_HI   0
+#define REG_PAD_CFG_FIELD_SENS_LO   1
+#define REG_PAD_CFG_FIELD_LR_RATIO  2
+#define REG_PAD_CFG_FIELD_ANALOG    3
+#define REG_PAD_CFG_FIELD_VEL_CURVE 4   /* enum vel_curve, 0xFF = inherit global */
+#define REG_PAD_CFG_FIELD_VEL_FLOOR 5   /* 0..127, 0xFF = inherit global */
+/* vel_curve enum values (REG_PAD_CFG_FIELD_VEL_CURVE / REG_CTL_VEL_CURVE_DEF). */
+#define VEL_LINEAR                  0
+#define VEL_EXP_SOFT                1
+#define VEL_EXP_HARD                2
+#define VEL_CFG_INHERIT             0xFFU  /* per-pad: inherit global default */
 
 /* Identity magic literals — for handshake validation. */
 #define STM32_IDENT_MAGIC_C         0x43
