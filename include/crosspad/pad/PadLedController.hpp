@@ -34,6 +34,7 @@ public:
     // Direct pad state control
     void notifyNoteOn(uint8_t padIdx, uint8_t velocity);
     void notifyNoteOff(uint8_t padIdx, uint8_t velocity = 0);
+    void notifyAftertouch(uint8_t padIdx, uint8_t pressure);
     void notifyNotePlay(uint8_t padIdx, bool isPlaying);
 
     // Color management
@@ -97,7 +98,7 @@ private:
     // Global state
     uint8_t brightness_ = 255;
     KeypadAnimationMode currentAnimMode_ = KeypadAnimationMode::NONE;
-    KeypadFeedbackMode currentFeedbackMode_ = KeypadFeedbackMode::STANDARD;
+    KeypadFeedbackMode currentFeedbackMode_ = KeypadFeedbackMode::AFTERTOUCH;
     bool isAnimating_ = false;
     KeypadAnimationParams currentAnimParams_;
 

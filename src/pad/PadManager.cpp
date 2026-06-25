@@ -167,6 +167,31 @@ void PadManager::handlePadPressure(uint8_t padIdx, uint8_t pressure) {
     }
 }
 
+void PadManager::notifyPadPressure(uint8_t padIdx, uint8_t pressure) {
+    if (padIdx >= 16) return;
+
+    std::shared_ptr<IPadLogicHandler> handler;
+    {
+        std::lock_guard<std::mutex> lock(logicMutex_);
+        handler = activePadLogic_;
+    }
+    {
+        std::lock_guard<std::mutex> lock(stateMutex_);
+        padPressure_[padIdx] = pressure;
+    }
+
+    // App pad logic still sees pressure (e.g. sampler choke/effects)...
+    if (handler) {
+        handler->onPadPressure(*this, padIdx, pressure);
+    }
+    // ...but the LED brightness is ALWAYS driven here by padIdx, so live
+    // pressure reaches the RGB regardless of which app is active (mirrors how
+    // handlePadPress drives notifyNoteOn unconditionally).
+    if (ledController_) {
+        ledController_->notifyAftertouch(padIdx, pressure);
+    }
+}
+
 // ── MIDI event handling ─────────────────────────────────────────────────
 
 void PadManager::handleMidiNoteOn(uint8_t channel, uint8_t note, uint8_t velocity) {

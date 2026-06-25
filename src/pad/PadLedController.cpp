@@ -119,6 +119,23 @@ void PadLedController::notifyNoteOff(uint8_t padIdx, uint8_t velocity) {
     updateSingleLED(padIdx);
 }
 
+void PadLedController::notifyAftertouch(uint8_t padIdx, uint8_t pressure) {
+    if (padIdx >= 16) return;
+
+    padStates_[padIdx].pressure = pressure;
+
+    if (aftertouchCallback_) {
+        aftertouchCallback_(padIdx, pressure);
+    }
+
+    // Repaint only when live pressure actually drives the visual (AFTERTOUCH
+    // mode, pad held). updateSingleLED keeps it cheap at the ~60 Hz STM rate.
+    if (currentFeedbackMode_ == KeypadFeedbackMode::AFTERTOUCH &&
+        padStates_[padIdx].isPressed) {
+        updateSingleLED(padIdx);
+    }
+}
+
 void PadLedController::notifyNotePlay(uint8_t padIdx, bool isPlaying) {
     if (padIdx >= 16) return;
 
@@ -330,9 +347,11 @@ RgbColor PadLedController::calculatePadColor(uint8_t padIdx) {
         return color;
     }
 
-    // Aftertouch feedback
+    // Aftertouch feedback — modulate brightness by live pressure. Use the pad's
+    // app-assigned color (sampler sets it via setPadColor → defaultColor) so the
+    // gradient keeps the pad's identity; fall back to pressedColor otherwise.
     if (currentFeedbackMode_ == KeypadFeedbackMode::AFTERTOUCH && state.isPressed) {
-        RgbColor color = state.pressedColor;
+        RgbColor color = state.hasCustomColor ? state.defaultColor : state.pressedColor;
         uint8_t pressureBrightness = mapRange(state.pressure, 0, 127, 10, 255);
         color = color.Dim(pressureBrightness);
         applyBrightness(color);

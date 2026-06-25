@@ -46,6 +46,11 @@ public:
     void handlePadPress(uint8_t padIdx, uint8_t velocity = 127);
     void handlePadRelease(uint8_t padIdx);
     void handlePadPressure(uint8_t padIdx, uint8_t pressure);
+    // Like handlePadPressure but always drives the LED brightness by padIdx,
+    // bypassing the note↔pad lookups (getPadForMidiNote can return 255 under
+    // sampler kit configs; PadLedController.midiNote is unpopulated). Used by
+    // the STM32 MIDI aftertouch route to make live pressure reach the RGB.
+    void notifyPadPressure(uint8_t padIdx, uint8_t pressure);
 
     // Notification methods for updating LEDs directly
     void notifyNoteOn(uint8_t padIdx, uint8_t velocity, bool fromSampler = false);
