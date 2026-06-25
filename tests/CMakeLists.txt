@@ -60,6 +60,9 @@ set(CORE_SOURCES
 
     # MIDI routing
     ${CORE_DIR}/src/midi/MidiInputHandler.cpp
+
+    # STM32 config sync
+    ${CORE_DIR}/src/stm32/Stm32ConfigSync.cpp
 )
 
 # ── Test sources ──
