@@ -1,4 +1,5 @@
 #include "crosspad/stm32/Stm32Manager.hpp"
+#include "crosspad/stm32/Stm32ConfigSync.hpp"
 #include <cstdio>
 
 namespace crosspad {
@@ -14,7 +15,13 @@ void Stm32Manager::init(Stm32CommandSender& cmdSender,
 void Stm32Manager::start() {
     if (running_) return;
 
-    // Send initial routing from settings and keepalive
+    // Push the full ESP-authoritative config, then routing + keepalive.
+    if (configSync_ && settings_) {
+        uint8_t bc = 0;
+        if (configSync_->pushAll(settings_->stm)) {
+            if (configSync_->readBootCount(bc)) lastBootCount_ = bc;
+        }
+    }
     if (cmdSender_ && settings_) {
         cmdSender_->sendRoutingMatrix(settings_->stmRouting);
         cmdSender_->sendKeepAlive();
@@ -99,6 +106,14 @@ void Stm32Manager::maintenanceLoop() {
                 cmdSender_->sendRoutingMatrix(settings_->stmRouting);
             }
             lastRouting = now;
+        }
+
+        // Detect STM reset (boot count changed) -> re-push full config.
+        if (configSync_ && settings_ && (now - lastRouting == 0)) {
+            uint8_t bc = 0;
+            if (configSync_->readBootCount(bc) && stm32ShouldResync(lastBootCount_, bc)) {
+                if (configSync_->pushAll(settings_->stm)) lastBootCount_ = bc;
+            }
         }
 
         vTaskDelay(pdMS_TO_TICKS(100));

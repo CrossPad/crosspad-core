@@ -7,6 +7,7 @@
 #include "crosspad/protocol/Stm32CommandSender.hpp"
 #include "crosspad/settings/CrosspadSettings.hpp"
 #include "crosspad/status/CrosspadStatus.hpp"
+#include "crosspad/stm32/Stm32ConfigSync.hpp"
 
 namespace crosspad {
 
@@ -63,6 +64,7 @@ public:
 
     void setResetCallback(ResetCallback cb) { resetCb_ = std::move(cb); }
     void setDfuButtonCheckCallback(DfuButtonCheckCallback cb) { dfuButtonCb_ = std::move(cb); }
+    void setConfigSync(Stm32ConfigSync* sync) { configSync_ = sync; }
 
 private:
     static void taskEntry(void* param);
@@ -79,6 +81,9 @@ private:
 
     ResetCallback resetCb_;
     DfuButtonCheckCallback dfuButtonCb_;
+
+    Stm32ConfigSync* configSync_ = nullptr;
+    int lastBootCount_ = -1;   // <0 = never synced
 };
 
 } // namespace crosspad
