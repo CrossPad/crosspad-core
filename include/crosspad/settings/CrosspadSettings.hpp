@@ -16,6 +16,7 @@
 #include "crosspad/settings/AudioSettings.hpp"
 #include "crosspad/settings/AudioEngineSettings.hpp"
 #include "crosspad/settings/VibrationSettings.hpp"
+#include "crosspad/settings/Stm32Settings.hpp"
 #include "crosspad/settings/IKeyValueStore.hpp"
 
 namespace crosspad {
@@ -46,6 +47,7 @@ public:
     AudioSettings masterFX;
     AudioEngineSettings audioEngine;
     VibrationSettings vibration;
+    Stm32Settings stm;
     uint8_t LCDbrightness;
     uint8_t themeColorIndex;
     uint8_t perfStatsFlags;   // bitfield: bit0=FPS, bit1=CPU, bit2=MEM

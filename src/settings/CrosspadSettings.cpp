@@ -98,6 +98,9 @@ void CrosspadSettings::loadFrom(IKeyValueStore& store) {
 
     // Kit
     Kit = store.readU8("cfg_system", "kit", 0);
+
+    // STM running config
+    stm.load(store);
 }
 
 void CrosspadSettings::saveTo(IKeyValueStore& store) {
@@ -198,6 +201,9 @@ void CrosspadSettings::saveTo(IKeyValueStore& store) {
 
     // Kit
     store.saveU8("cfg_system", "kit", Kit);
+
+    // STM running config
+    stm.save(store);
 }
 
 } // namespace crosspad
