@@ -130,12 +130,15 @@ void Stm32MessageHandler::parseDigitalButtons(const uint8_t* data, unsigned size
         }
     }
 
-    // Detect state changes and forward to PadManager
+    // Detect state changes and forward to PadManager.
+    // Press: do not call handlePadPress(i, 127) — that would clobber the real
+    // velocity already written by the MIDI note-on pipe (handleSampleNoteOn →
+    // handleMidiNoteOn).  The CMD_BUTTONS_DIGITAL path carries no velocity byte;
+    // the MIDI pipe owns velocity.  Release: handlePadRelease cleans up LED +
+    // EventBus and sends NoteOff via keypad settings routing.
     for (int i = 0; i < 16; i++) {
         if (keyPresses_[i] != oldPresses[i]) {
-            if (keyPresses_[i]) {
-                padManager_->handlePadPress(i, 127);
-            } else {
+            if (!keyPresses_[i]) {
                 padManager_->handlePadRelease(i);
             }
         }

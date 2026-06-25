@@ -46,6 +46,8 @@ void MidiInputHandler::handleAftertouch(uint8_t channel, uint8_t note, uint8_t p
 // ── Audio-routed MIDI input (STM32 UART / USB MIDI in) ──────────────────
 
 void MidiInputHandler::handleSampleNoteOn(uint8_t channel, uint8_t note, uint8_t velocity) {
+    // Feed real velocity into pad LED animation (via MIDI pipe from STM32)
+    padManager_->handleMidiNoteOn(channel, note, velocity);
     eventBus_->postNoteOn(channel, note, velocity, EventSource::MidiInput);
     padManager_->handleSamplePlay(note, true);
 
@@ -54,6 +56,10 @@ void MidiInputHandler::handleSampleNoteOn(uint8_t channel, uint8_t note, uint8_t
 }
 
 void MidiInputHandler::handleSampleNoteOff(uint8_t channel, uint8_t note, uint8_t velocity) {
+    // Symmetric with handleSampleNoteOn: clear the pad press LED/state set on
+    // the MIDI path so it does not stay "pressed" if no CMD_BUTTONS_DIGITAL
+    // release follows (e.g. BLE-only input).
+    padManager_->handleMidiNoteOff(channel, note);
     eventBus_->postNoteOff(channel, note, velocity, EventSource::MidiInput);
     padManager_->handleSamplePlay(note, false);
 
@@ -67,6 +73,9 @@ void MidiInputHandler::handleSampleControlChange(uint8_t channel, uint8_t contro
 }
 
 void MidiInputHandler::handleSampleAftertouch(uint8_t channel, uint8_t note, uint8_t pressure) {
+    // Dispatch poly-aftertouch from STM32 MIDI pipe into pad pressure animation
+    padManager_->handleMidiAftertouch(channel, note, pressure);
+
     if (settings_ && settings_->esp32Routing.Midi2BLE && bleOutput_)
         bleOutput_->sendAftertouch(note, pressure, channel);
 }
