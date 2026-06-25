@@ -20,6 +20,7 @@
 #include "crosspad/led/ILedStrip.hpp"
 #include "crosspad/platform/IClock.hpp"
 #include "crosspad/status/CrosspadStatus.hpp"
+#include "crosspad/stm32/IStm32RegisterBus.hpp"
 
 #include <chrono>
 #include <map>
@@ -128,6 +129,37 @@ private:
         return std::string(ns) + "/" + key;
     }
     std::map<std::string, int32_t> store_;
+};
+
+// ── Mock STM32 register bus (records writes, serves canned reads) ──
+
+class MockStm32Bus : public crosspad::IStm32RegisterBus {
+public:
+    struct Write { uint16_t reg; std::vector<uint8_t> data; };
+    std::vector<Write> writes;
+    std::map<uint16_t, uint8_t> readValues;  // reg -> byte
+    bool failWrites = false;
+
+    bool writeReg(uint16_t reg, const uint8_t* data, size_t len) override {
+        if (failWrites) return false;
+        writes.push_back({reg, std::vector<uint8_t>(data, data + len)});
+        return true;
+    }
+    bool readReg(uint16_t reg, uint8_t* dst, size_t len) override {
+        for (size_t i = 0; i < len; ++i) {
+            auto it = readValues.find((uint16_t)(reg + i));
+            dst[i] = (it != readValues.end()) ? it->second : 0;
+        }
+        return true;
+    }
+
+    // Helper: find the single-byte value written to reg (last wins), or -1.
+    int lastByteAt(uint16_t reg) const {
+        int v = -1;
+        for (const auto& w : writes)
+            if (w.reg == reg && w.data.size() >= 1) v = w.data[0];
+        return v;
+    }
 };
 
 // ── Full platform fixture (uses SyncEventBus, no FreeRTOS) ──
