@@ -24,8 +24,9 @@ bool Stm32ConfigSync::pushAll(const Stm32Settings& s) {
     w8(REG_CTL_MIDI_CHAN, s.midiChannel);
     w8(REG_CTL_NOTE_OFFSET, (uint8_t)s.noteOffset);
     w8(REG_CTL_KEYPAD_DIS, s.keypadEnabled ? 0 : 1);
-    w8(REG_CTL_USB_GATE_S, s.usbGateStart);
-    w8(REG_CTL_USB_GATE_E, s.usbGateEnd);
+    // USB_GATE (REG_CTL_USB_GATE_S/E) intentionally omitted — charger source
+    // supervisor is STM-owned; ESP writing these registers forces CHG_SRC_MANUAL
+    // and disables STM charger arbitration.
     w8(REG_CTL_EN_3V3_HOLD, s.en3v3Hold);
     w8(REG_CTL_WAKE_BRIGHT, s.wakeBrightness);
     w8(REG_CTL_USB_SUSP_S, s.usbSuspendS);

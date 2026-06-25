@@ -109,6 +109,7 @@ void Stm32Manager::maintenanceLoop() {
         }
 
         // Detect STM reset (boot count changed) -> re-push full config.
+        // now - lastRouting == 0 only on the tick the routing block above just set lastRouting = now -> polls boot count on the 3s routing cadence.
         if (configSync_ && settings_ && (now - lastRouting == 0)) {
             uint8_t bc = 0;
             if (configSync_->readBootCount(bc) && stm32ShouldResync(lastBootCount_, bc)) {

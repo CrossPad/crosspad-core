@@ -17,8 +17,8 @@ struct Stm32Settings {
     uint8_t midiChannel   = 0;     // 0..15
     int8_t  noteOffset    = 0;     // signed semitone offset
     bool    keypadEnabled = true;  // -> REG_CTL_KEYPAD_DIS = !keypadEnabled
-    uint8_t usbGateStart  = 1;
-    uint8_t usbGateEnd    = 1;
+    // usbGateStart / usbGateEnd removed — USB_GATE is STM charger-supervisor
+    // territory; ESP pushing these forces CHG_SRC_MANUAL and breaks STM arbitration.
     uint8_t en3v3Hold     = 1;
 
     // timeouts
@@ -66,8 +66,6 @@ struct Stm32Settings {
         midiChannel   = s.readU8("cfg_stm", "midi_chan", midiChannel);
         noteOffset    = (int8_t)s.readI32("cfg_stm", "note_off", noteOffset);
         keypadEnabled = s.readBool("cfg_stm", "keypad_en", keypadEnabled);
-        usbGateStart  = s.readU8("cfg_stm", "usb_gate_s", usbGateStart);
-        usbGateEnd    = s.readU8("cfg_stm", "usb_gate_e", usbGateEnd);
         en3v3Hold     = s.readU8("cfg_stm", "en_3v3", en3v3Hold);
         dimTimeoutS   = (uint16_t)s.readI32("cfg_stm", "dim_to", dimTimeoutS);
         sleepTimeoutS = (uint16_t)s.readI32("cfg_stm", "sleep_to", sleepTimeoutS);
@@ -101,8 +99,6 @@ struct Stm32Settings {
         s.saveU8("cfg_stm", "midi_chan", midiChannel);
         s.saveI32("cfg_stm", "note_off", noteOffset);
         s.saveBool("cfg_stm", "keypad_en", keypadEnabled);
-        s.saveU8("cfg_stm", "usb_gate_s", usbGateStart);
-        s.saveU8("cfg_stm", "usb_gate_e", usbGateEnd);
         s.saveU8("cfg_stm", "en_3v3", en3v3Hold);
         s.saveI32("cfg_stm", "dim_to", dimTimeoutS);
         s.saveI32("cfg_stm", "sleep_to", sleepTimeoutS);
