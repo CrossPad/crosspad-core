@@ -28,6 +28,10 @@ extern "C" {
  * match the STM firmware; full parity lives in stm32_hal/include/stm32_reg_map.h. */
 #define STM32_PROTO_VERSION         0x0005
 
+/* Register map mirror version — tracks this file's completeness relative to
+ * the canonical STM32 reg_map.h. Bump when new registers are mirrored here. */
+#define CROSSPAD_REG_MAP_VERSION    0x0006
+
 /* Block bases. */
 #define REG_IDENTITY_BASE           0x0000
 #define REG_INPUTS_BASE             0x0100
@@ -50,7 +54,8 @@ extern "C" {
 #define REG_IDENT_FW_MAJOR          (REG_IDENTITY_BASE + 0x06)
 #define REG_IDENT_FW_MINOR          (REG_IDENTITY_BASE + 0x07)
 #define REG_IDENT_PCB_REV           (REG_IDENTITY_BASE + 0x08)
-#define REG_IDENT_LEN               0x09
+#define REG_IDENT_BOOT_COUNT        (REG_IDENTITY_BASE + 0x09)
+#define REG_IDENT_LEN               0x0A
 
 /* Inputs (RO snapshot). */
 #define REG_IN_ENCODER              (REG_INPUTS_BASE  + 0x00)  /* low 4 bits = detent index 0..15, bit7 = enc_btn */
@@ -91,6 +96,26 @@ extern "C" {
 #define REG_CTL_USB_GATE_S          (REG_CONTROL_BASE + 0x08)
 #define REG_CTL_USB_GATE_E          (REG_CONTROL_BASE + 0x09)
 #define REG_CTL_EN_3V3_HOLD         (REG_CONTROL_BASE + 0x0A)
+#define REG_CTL_DIM_TO_S_HI         (REG_CONTROL_BASE + 0x0B)
+#define REG_CTL_DIM_TO_S_LO         (REG_CONTROL_BASE + 0x0C)
+#define REG_CTL_SLEEP_TO_S_HI       (REG_CONTROL_BASE + 0x0D)
+#define REG_CTL_SLEEP_TO_S_LO       (REG_CONTROL_BASE + 0x0E)
+#define REG_CTL_LONG_PRESS_HI       (REG_CONTROL_BASE + 0x0F)
+#define REG_CTL_LONG_PRESS_LO       (REG_CONTROL_BASE + 0x10)
+#define REG_CTL_USB_SUSP_S          (REG_CONTROL_BASE + 0x11)
+#define REG_CTL_WAKE_BRIGHT         (REG_CONTROL_BASE + 0x12)
+#define REG_CTL_ENC_CC_MODE         (REG_CONTROL_BASE + 0x13)
+#define REG_CTL_ENC_CC_NUM          (REG_CONTROL_BASE + 0x14)
+#define REG_CTL_ENC_CC_CHAN         (REG_CONTROL_BASE + 0x15)
+#define REG_CTL_ENC_CC_STEP         (REG_CONTROL_BASE + 0x16)
+
+/* Button thresholds (RW). Added in reg_map v0x0006. */
+#define REG_CTL_BTN_THR_HI          (REG_CONTROL_BASE + 0x38)
+#define REG_CTL_BTN_THR_LO          (REG_CONTROL_BASE + 0x39)
+#define REG_CTL_BTN_HYST_HI         (REG_CONTROL_BASE + 0x3A)
+#define REG_CTL_BTN_HYST_LO         (REG_CONTROL_BASE + 0x3B)
+#define REG_CTL_BTN_PRESS_DB_MS     (REG_CONTROL_BASE + 0x3C)
+#define REG_CTL_BTN_RELEASE_DB_MS   (REG_CONTROL_BASE + 0x3D)
 
 /* Analog pads — velocity curve defaults + continuous-stream config (RW).
  * Added in proto 0x0005. */
@@ -102,6 +127,9 @@ extern "C" {
 #define REG_CTL_ANALOG_MIN_MS       (REG_CONTROL_BASE + 0x43)  /* continuous-stream rate cap ms (~16=60Hz) */
 #define REG_CTL_ANALOG_DELTA        (REG_CONTROL_BASE + 0x44)  /* min pressure/pan change to send */
 #define REG_CTL_CC_CONFLICT         (REG_CONTROL_BASE + 0x45)  /* RO bitmask (Task 4) */
+
+/* Charger current limit — upper bound register used by config sync checks. */
+#define REG_CTL_CHG_ICHG_HI         (REG_CONTROL_BASE + 0x20)
 
 /* Command (WO trigger — write 1 to fire). */
 #define REG_CMD_DFU                 (REG_COMMAND_BASE + 0x00)
@@ -120,6 +148,11 @@ extern "C" {
 /* Pad mapping (RW). 16 pads × 5 bytes (mux_a, mux_b, ch_a, ch_b, swap). */
 #define REG_MAPPING_STRIDE          5U
 #define REG_MAPPING_LEN             (16U * REG_MAPPING_STRIDE)
+#define REG_MAPPING_FIELD_MUX_A     0
+#define REG_MAPPING_FIELD_MUX_B     1
+#define REG_MAPPING_FIELD_CH_A      2
+#define REG_MAPPING_FIELD_CH_B      3
+#define REG_MAPPING_FIELD_SWAP      4
 
 /* Per-pad config (RW). 16 pads × 6 bytes per stride. HI stages sensitivity,
  * LO commits. Single-byte fields commit on write. Added proto 0x0004; stride
