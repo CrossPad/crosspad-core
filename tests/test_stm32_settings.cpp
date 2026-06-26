@@ -20,6 +20,14 @@ TEST_CASE("Stm32Settings: defaults match STM compiled defaults", "[settings][stm
     REQUIRE(s.ccPanBase == 48);
     REQUIRE(s.analogMinMs == 16);
     REQUIRE(s.analogDelta == 2);
+    REQUIRE(s.en3v3Hold == 1);
+    REQUIRE(s.usbSuspendS == 30);
+    REQUIRE(s.encCcMode == 0);
+    REQUIRE(s.encCcNum == 1);
+    REQUIRE(s.encCcChan == 0);
+    REQUIRE(s.encCcStep == 1);
+    REQUIRE(s.velCurveDef == 0);
+    REQUIRE(s.panCcEn == 0);
     for (int i = 0; i < 16; ++i) {
         REQUIRE(s.padAnalogMode[i] == 2);     // ANALOG_AFTER_TOUCH
         REQUIRE(s.padSensitivity[i] == 1);
