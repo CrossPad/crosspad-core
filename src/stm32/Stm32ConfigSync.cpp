@@ -69,6 +69,19 @@ bool Stm32ConfigSync::pushAll(const Stm32Settings& s) {
     return ok;
 }
 
+bool Stm32ConfigSync::writePadConfig(uint8_t padIdx, const Stm32Settings& s) {
+    if (padIdx >= Stm32Settings::kPads) return false;
+    uint8_t buf[REG_PAD_CFG_STRIDE];
+    buf[REG_PAD_CFG_FIELD_SENS_HI]   = (uint8_t)(s.padSensitivity[padIdx] >> 8);
+    buf[REG_PAD_CFG_FIELD_SENS_LO]   = (uint8_t)(s.padSensitivity[padIdx] & 0xFF);
+    buf[REG_PAD_CFG_FIELD_LR_RATIO]  = s.padLrRatio[padIdx];
+    buf[REG_PAD_CFG_FIELD_ANALOG]    = s.padAnalogMode[padIdx];
+    buf[REG_PAD_CFG_FIELD_VEL_CURVE] = s.padVelCurve[padIdx];
+    buf[REG_PAD_CFG_FIELD_VEL_FLOOR] = s.padVelFloor[padIdx];
+    return bus_.writeReg((uint16_t)(REG_PAD_CFG_BASE + padIdx * REG_PAD_CFG_STRIDE),
+                         buf, REG_PAD_CFG_STRIDE);
+}
+
 bool Stm32ConfigSync::readBootCount(uint8_t& out) {
     return bus_.readReg8(REG_IDENT_BOOT_COUNT, &out);
 }

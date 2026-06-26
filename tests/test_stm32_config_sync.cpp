@@ -72,3 +72,32 @@ TEST_CASE("Stm32ConfigSync per-field writes", "[stm][sync]") {
     REQUIRE(bus.lastByteAt(REG_CTL_SLEEP_TO_S_HI) == 0x01);
     REQUIRE(bus.lastByteAt(REG_CTL_SLEEP_TO_S_LO) == 0x02);
 }
+
+TEST_CASE("Stm32ConfigSync::writePadConfig writes one pad's 6-byte block", "[stm][sync]") {
+    test::MockStm32Bus bus;
+    Stm32Settings s;
+    s.padSensitivity[5] = 0x0123;
+    s.padLrRatio[5]     = 40;
+    s.padAnalogMode[5]  = 3;
+    s.padVelCurve[5]    = 1;
+    s.padVelFloor[5]    = 20;
+
+    Stm32ConfigSync sync(bus);
+    REQUIRE(sync.writePadConfig(5, s) == true);
+
+    uint16_t base = REG_PAD_CFG_BASE + 5 * REG_PAD_CFG_STRIDE;
+    bool found = false;
+    for (const auto& w : bus.writes) {
+        if (w.reg == base && w.data.size() == REG_PAD_CFG_STRIDE) {
+            REQUIRE(w.data[REG_PAD_CFG_FIELD_SENS_HI]   == 0x01);
+            REQUIRE(w.data[REG_PAD_CFG_FIELD_SENS_LO]   == 0x23);
+            REQUIRE(w.data[REG_PAD_CFG_FIELD_LR_RATIO]  == 40);
+            REQUIRE(w.data[REG_PAD_CFG_FIELD_ANALOG]    == 3);
+            REQUIRE(w.data[REG_PAD_CFG_FIELD_VEL_CURVE] == 1);
+            REQUIRE(w.data[REG_PAD_CFG_FIELD_VEL_FLOOR] == 20);
+            found = true;
+        }
+    }
+    REQUIRE(found);
+    REQUIRE(sync.writePadConfig(99, s) == false); // out of range
+}

@@ -85,6 +85,10 @@ bool Stm32Manager::configWrite16(uint16_t hiReg, uint16_t v) {
     return configSync_ ? configSync_->writeReg16(hiReg, v) : false;
 }
 
+bool Stm32Manager::configWritePad(uint8_t padIdx) {
+    return (configSync_ && settings_) ? configSync_->writePadConfig(padIdx, settings_->stm) : false;
+}
+
 void Stm32Manager::taskEntry(void* param) {
     auto* self = static_cast<Stm32Manager*>(param);
     self->maintenanceLoop();

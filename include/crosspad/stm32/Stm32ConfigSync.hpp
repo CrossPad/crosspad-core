@@ -15,6 +15,7 @@ class Stm32ConfigSync {
 public:
     explicit Stm32ConfigSync(IStm32RegisterBus& bus) : bus_(bus) {}
     bool pushAll(const Stm32Settings& s);
+    bool writePadConfig(uint8_t padIdx, const Stm32Settings& s);
     bool readBootCount(uint8_t& out);
     bool writeReg8(uint16_t reg, uint8_t v);
     bool writeReg16(uint16_t hiReg, uint16_t v);

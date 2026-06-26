@@ -68,6 +68,7 @@ public:
 
     bool configWrite8(uint16_t reg, uint8_t v);
     bool configWrite16(uint16_t hiReg, uint16_t v);
+    bool configWritePad(uint8_t padIdx);
 
 private:
     static void taskEntry(void* param);
