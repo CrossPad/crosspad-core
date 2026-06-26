@@ -73,4 +73,14 @@ bool Stm32ConfigSync::readBootCount(uint8_t& out) {
     return bus_.readReg8(REG_IDENT_BOOT_COUNT, &out);
 }
 
+bool Stm32ConfigSync::writeReg8(uint16_t reg, uint8_t v) {
+    return bus_.writeReg8(reg, v);
+}
+
+bool Stm32ConfigSync::writeReg16(uint16_t hiReg, uint16_t v) {
+    bool ok = bus_.writeReg8(hiReg, (uint8_t)(v >> 8));
+    ok = bus_.writeReg8((uint16_t)(hiReg + 1), (uint8_t)(v & 0xFF)) && ok;
+    return ok;
+}
+
 } // namespace crosspad

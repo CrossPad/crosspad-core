@@ -60,3 +60,15 @@ TEST_CASE("Stm32ConfigSync::readBootCount", "[stm][sync]") {
     REQUIRE(sync.readBootCount(bc) == true);
     REQUIRE(bc == 42);
 }
+
+TEST_CASE("Stm32ConfigSync per-field writes", "[stm][sync]") {
+    test::MockStm32Bus bus;
+    Stm32ConfigSync sync(bus);
+
+    REQUIRE(sync.writeReg8(REG_CTL_MIDI_CHAN, 7) == true);
+    REQUIRE(bus.lastByteAt(REG_CTL_MIDI_CHAN) == 7);
+
+    REQUIRE(sync.writeReg16(REG_CTL_SLEEP_TO_S_HI, 0x0102) == true);
+    REQUIRE(bus.lastByteAt(REG_CTL_SLEEP_TO_S_HI) == 0x01);
+    REQUIRE(bus.lastByteAt(REG_CTL_SLEEP_TO_S_LO) == 0x02);
+}

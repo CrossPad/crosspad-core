@@ -66,6 +66,9 @@ public:
     void setDfuButtonCheckCallback(DfuButtonCheckCallback cb) { dfuButtonCb_ = std::move(cb); }
     void setConfigSync(Stm32ConfigSync* sync) { configSync_ = sync; }
 
+    bool configWrite8(uint16_t reg, uint8_t v);
+    bool configWrite16(uint16_t hiReg, uint16_t v);
+
 private:
     static void taskEntry(void* param);
     void maintenanceLoop();
