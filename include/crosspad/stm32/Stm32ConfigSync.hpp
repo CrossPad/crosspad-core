@@ -9,6 +9,14 @@ namespace crosspad {
 // the STM boot count changed (STM reset since last sync).
 bool stm32ShouldResync(int lastBootCount, uint8_t current);
 
+struct Stm32PadLive {
+    uint8_t  sum    = 0;   // 0..127 pressure (continuous while pressed)
+    int8_t   pan    = 0;   // -127..+127 L/R
+    uint8_t  velRaw = 0;   // last note-on pre-curve linear 0..127
+    uint16_t rawA   = 0;   // 0..4095 raw ADC cell A
+    uint16_t rawB   = 0;   // 0..4095 raw ADC cell B
+};
+
 // Pushes the ESP-authoritative STM config over the register bus. Charger and
 // pad-mapping registers are intentionally excluded (see plan constraints).
 class Stm32ConfigSync {
@@ -18,6 +26,7 @@ public:
     bool writePadConfig(uint8_t padIdx, const Stm32Settings& s);
     bool readBootCount(uint8_t& out);
     bool readPadVelRaw(uint8_t padIdx, uint8_t& out);
+    bool readPadLive(uint8_t padIdx, Stm32PadLive& out);
     bool writeReg8(uint16_t reg, uint8_t v);
     bool writeReg16(uint16_t hiReg, uint16_t v);
 private:

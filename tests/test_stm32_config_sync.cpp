@@ -111,3 +111,25 @@ TEST_CASE("Stm32ConfigSync::writePadConfig writes one pad's 6-byte block", "[stm
     REQUIRE(found);
     REQUIRE(sync.writePadConfig(99, s) == false); // out of range
 }
+
+TEST_CASE("Stm32ConfigSync::readPadLive unpacks A/B and reads sum/pan/velraw", "[stm][sync]") {
+    test::MockStm32Bus bus;
+    const uint8_t pad = 4;
+    bus.readValues[REG_IN_PAD_SUM_BASE + pad]    = 90;
+    bus.readValues[REG_IN_PAD_DIFF_BASE + pad]   = (uint8_t)(int8_t)-20;
+    bus.readValues[REG_IN_PAD_VELRAW_BASE + pad] = 77;
+    // rawA=0xABC (2748), rawB=0x123 (291): b0=0xAB, b1=0xC1, b2=0x23
+    uint16_t abBase = (uint16_t)(REG_IN_PAD_AB_BASE + pad * 3);
+    bus.readValues[abBase + 0] = 0xAB;
+    bus.readValues[abBase + 1] = 0xC1;
+    bus.readValues[abBase + 2] = 0x23;
+    Stm32ConfigSync sync(bus);
+    Stm32PadLive lv;
+    REQUIRE(sync.readPadLive(pad, lv) == true);
+    REQUIRE(lv.sum == 90);
+    REQUIRE(lv.pan == -20);
+    REQUIRE(lv.velRaw == 77);
+    REQUIRE(lv.rawA == 0xABC);
+    REQUIRE(lv.rawB == 0x123);
+    REQUIRE(sync.readPadLive(16, lv) == false);
+}

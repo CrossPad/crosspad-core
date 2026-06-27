@@ -93,6 +93,10 @@ bool Stm32Manager::configReadPadVelRaw(uint8_t padIdx, uint8_t& out) {
     return configSync_ ? configSync_->readPadVelRaw(padIdx, out) : false;
 }
 
+bool Stm32Manager::configReadPadLive(uint8_t padIdx, Stm32PadLive& out) {
+    return configSync_ ? configSync_->readPadLive(padIdx, out) : false;
+}
+
 void Stm32Manager::taskEntry(void* param) {
     auto* self = static_cast<Stm32Manager*>(param);
     self->maintenanceLoop();

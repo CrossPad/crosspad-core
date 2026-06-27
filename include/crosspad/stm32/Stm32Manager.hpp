@@ -70,6 +70,7 @@ public:
     bool configWrite16(uint16_t hiReg, uint16_t v);
     bool configWritePad(uint8_t padIdx);
     bool configReadPadVelRaw(uint8_t padIdx, uint8_t& out);
+    bool configReadPadLive(uint8_t padIdx, Stm32PadLive& out);
 
 private:
     static void taskEntry(void* param);

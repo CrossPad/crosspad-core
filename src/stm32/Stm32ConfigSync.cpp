@@ -91,6 +91,22 @@ bool Stm32ConfigSync::readPadVelRaw(uint8_t padIdx, uint8_t& out) {
     return bus_.readReg8((uint16_t)(REG_IN_PAD_VELRAW_BASE + padIdx), &out);
 }
 
+bool Stm32ConfigSync::readPadLive(uint8_t padIdx, Stm32PadLive& out) {
+    if (padIdx >= Stm32Settings::kPads) return false;
+    uint8_t sum = 0, pan = 0, vr = 0, ab[3] = {0,0,0};
+    bool ok = bus_.readReg8(REG_IN_PAD_SUM_BASE    + padIdx, &sum)
+           && bus_.readReg8(REG_IN_PAD_DIFF_BASE   + padIdx, &pan)
+           && bus_.readReg8(REG_IN_PAD_VELRAW_BASE + padIdx, &vr)
+           && bus_.readReg((uint16_t)(REG_IN_PAD_AB_BASE + padIdx * 3), ab, 3);
+    if (!ok) return false;
+    out.sum    = sum;
+    out.pan    = (int8_t)pan;
+    out.velRaw = vr;
+    out.rawA   = (uint16_t)((ab[0] << 4) | (ab[1] >> 4));
+    out.rawB   = (uint16_t)(((ab[1] & 0x0F) << 8) | ab[2]);
+    return true;
+}
+
 bool Stm32ConfigSync::writeReg8(uint16_t reg, uint8_t v) {
     return bus_.writeReg8(reg, v);
 }
