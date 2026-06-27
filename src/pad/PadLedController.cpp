@@ -159,6 +159,21 @@ void PadLedController::setPadColor(uint8_t padIdx, RgbColor color) {
     }
 }
 
+void PadLedController::clearPadColor(uint8_t padIdx) {
+    if (padIdx >= 16) return;
+    // Return to default-managed state. While hasCustomColor is true the pad is
+    // pinned to defaultColor (calculatePadColor's AFTERTOUCH branch shows it
+    // instead of pressedColor), so a screen that painted pads via setPadColor
+    // must clear the flag on teardown or it hijacks the normal pressed-LED feedback.
+    padStates_[padIdx].hasCustomColor = false;
+    padStates_[padIdx].defaultColor   = defaultColor_;
+    padStates_[padIdx].pressedColor   = pressedColor_;
+    padStates_[padIdx].playingColor   = playingColor_;
+    if (!padStates_[padIdx].isPressed && !padStates_[padIdx].isPlaying) {
+        updateSingleLED(padIdx);
+    }
+}
+
 void PadLedController::setPadColor(uint8_t padIdx, uint8_t r, uint8_t g, uint8_t b) {
     setPadColor(padIdx, RgbColor(r, g, b));
 }

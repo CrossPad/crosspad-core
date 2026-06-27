@@ -47,6 +47,9 @@ public:
     void setDefaultColor(RgbColor color);
     void setPressedColor(RgbColor color);
     void setPlayingColor(RgbColor color);
+    // Drop a pad's custom-color override, returning it to default-managed state
+    // (default/pressed/playing colors back to the globals, hasCustomColor=false).
+    void clearPadColor(uint8_t padIdx);
 
     // Color getters
     RgbColor getPadColor(uint8_t padIdx);

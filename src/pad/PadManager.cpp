@@ -297,6 +297,9 @@ void PadManager::setPadColor(uint8_t padIdx, RgbColor color) {
 void PadManager::setPadColor(uint8_t padIdx, uint8_t r, uint8_t g, uint8_t b) {
     if (ledController_) ledController_->setPadColor(padIdx, r, g, b);
 }
+void PadManager::clearPadColor(uint8_t padIdx) {
+    if (ledController_) ledController_->clearPadColor(padIdx);
+}
 void PadManager::setDefaultColor(RgbColor color) {
     if (ledController_) ledController_->setDefaultColor(color);
 }

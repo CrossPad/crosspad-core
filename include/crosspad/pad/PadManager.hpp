@@ -76,6 +76,7 @@ public:
     void setPressedColor(RgbColor color);
     void setPlayingColor(RgbColor color);
     void setPadColor(uint8_t padIdx, uint8_t r, uint8_t g, uint8_t b);
+    void clearPadColor(uint8_t padIdx);   // drop custom-color override → default-managed
     void setDefaultColor(uint8_t r, uint8_t g, uint8_t b);
     void setPressedColor(uint8_t r, uint8_t g, uint8_t b);
     void setPlayingColor(uint8_t r, uint8_t g, uint8_t b);
