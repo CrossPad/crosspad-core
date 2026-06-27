@@ -61,6 +61,16 @@ TEST_CASE("Stm32ConfigSync::readBootCount", "[stm][sync]") {
     REQUIRE(bc == 42);
 }
 
+TEST_CASE("Stm32ConfigSync::readPadVelRaw reads the right register, bounds-checks", "[stm][sync]") {
+    test::MockStm32Bus bus;
+    bus.readValues[REG_IN_PAD_VELRAW_BASE + 7] = 73;
+    Stm32ConfigSync sync(bus);
+    uint8_t v = 0;
+    REQUIRE(sync.readPadVelRaw(7, v) == true);
+    REQUIRE(v == 73);
+    REQUIRE(sync.readPadVelRaw(16, v) == false); // out of range (kPads == 16)
+}
+
 TEST_CASE("Stm32ConfigSync per-field writes", "[stm][sync]") {
     test::MockStm32Bus bus;
     Stm32ConfigSync sync(bus);

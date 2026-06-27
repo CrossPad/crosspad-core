@@ -89,6 +89,10 @@ bool Stm32Manager::configWritePad(uint8_t padIdx) {
     return (configSync_ && settings_) ? configSync_->writePadConfig(padIdx, settings_->stm) : false;
 }
 
+bool Stm32Manager::configReadPadVelRaw(uint8_t padIdx, uint8_t& out) {
+    return configSync_ ? configSync_->readPadVelRaw(padIdx, out) : false;
+}
+
 void Stm32Manager::taskEntry(void* param) {
     auto* self = static_cast<Stm32Manager*>(param);
     self->maintenanceLoop();

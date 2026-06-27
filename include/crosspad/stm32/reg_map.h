@@ -30,7 +30,7 @@ extern "C" {
 
 /* Register map mirror version — tracks this file's completeness relative to
  * the canonical STM32 reg_map.h. Bump when new registers are mirrored here. */
-#define CROSSPAD_REG_MAP_VERSION    0x0006
+#define CROSSPAD_REG_MAP_VERSION    0x0007
 
 /* Block bases. */
 #define REG_IDENTITY_BASE           0x0000
@@ -66,7 +66,8 @@ extern "C" {
 #define REG_IN_JACK_DET             (REG_INPUTS_BASE  + 0x23)
 #define REG_IN_COL_PRES_BASE        (REG_INPUTS_BASE  + 0x24)  /* +0..+7 — debug column-min */
 #define REG_IN_ENC_PHASE            (REG_INPUTS_BASE  + 0x2E)  /* sub-detent: [1:0]=CNT mod4, [2]=A, [3]=B, [4]=settled gate */
-#define REG_INPUTS_LEN              0x2F
+#define REG_IN_PAD_VELRAW_BASE      (REG_INPUTS_BASE  + 0x2F)  /* +0..+15 — last note-on pre-curve linear 0..127 (editor feedback) */
+#define REG_INPUTS_LEN              0x3F
 
 /* Power (RO snapshot). */
 #define REG_PWR_VBAT_HI             (REG_POWER_BASE   + 0x00)

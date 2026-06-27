@@ -17,6 +17,7 @@ public:
     bool pushAll(const Stm32Settings& s);
     bool writePadConfig(uint8_t padIdx, const Stm32Settings& s);
     bool readBootCount(uint8_t& out);
+    bool readPadVelRaw(uint8_t padIdx, uint8_t& out);
     bool writeReg8(uint16_t reg, uint8_t v);
     bool writeReg16(uint16_t hiReg, uint16_t v);
 private:
