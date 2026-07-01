@@ -44,13 +44,13 @@ struct Stm32Settings {
     uint8_t analogMinMs = BOARD_ANALOG_MIN_MS_DEF;
     uint8_t analogDelta = BOARD_ANALOG_DELTA_DEF;
 
-    // per-pad config (FULL) — access ONLY via the accessors below.
+    // per-pad config — access ONLY via the accessors below.
+#if defined(PAD_CONFIG_PER_PAD)
     uint16_t padSensitivity[kPads];
     uint8_t  padLrRatio[kPads];
     uint8_t  padAnalogMode[kPads];  // enum analog_mode (2 = AFTERTOUCH)
     uint8_t  padVelCurve[kPads];    // 0xFF = inherit
     uint8_t  padVelFloor[kPads];    // 0xFF = inherit
-
     uint16_t& sensitivity(int i)       { return padSensitivity[i]; }
     uint16_t  sensitivity(int i) const { return padSensitivity[i]; }
     uint8_t&  lrRatio(int i)           { return padLrRatio[i]; }
@@ -61,8 +61,26 @@ struct Stm32Settings {
     uint8_t   velCurve(int i) const    { return padVelCurve[i]; }
     uint8_t&  velFloor(int i)          { return padVelFloor[i]; }
     uint8_t   velFloor(int i) const    { return padVelFloor[i]; }
+#else
+    uint16_t padSensitivityG;
+    uint8_t  padLrRatioG;
+    uint8_t  padAnalogModeG;
+    uint8_t  padVelCurveG;
+    uint8_t  padVelFloorG;
+    uint16_t& sensitivity(int)       { return padSensitivityG; }
+    uint16_t  sensitivity(int) const { return padSensitivityG; }
+    uint8_t&  lrRatio(int)           { return padLrRatioG; }
+    uint8_t   lrRatio(int) const     { return padLrRatioG; }
+    uint8_t&  analogMode(int)        { return padAnalogModeG; }
+    uint8_t   analogMode(int) const  { return padAnalogModeG; }
+    uint8_t&  velCurve(int)          { return padVelCurveG; }
+    uint8_t   velCurve(int) const    { return padVelCurveG; }
+    uint8_t&  velFloor(int)          { return padVelFloorG; }
+    uint8_t   velFloor(int) const    { return padVelFloorG; }
+#endif
 
     Stm32Settings() {
+#if defined(PAD_CONFIG_PER_PAD)
         for (int i = 0; i < kPads; ++i) {
             padSensitivity[i] = BOARD_PAD_SENS_DEF;
             padLrRatio[i]     = BOARD_PAD_LR_RATIO_DEF;
@@ -70,6 +88,13 @@ struct Stm32Settings {
             padVelCurve[i]    = 0xFF;
             padVelFloor[i]    = 0xFF;
         }
+#else
+        padSensitivityG = BOARD_PAD_SENS_DEF;
+        padLrRatioG     = BOARD_PAD_LR_RATIO_DEF;
+        padAnalogModeG  = BOARD_PAD_ANALOG_MODE_DEF;
+        padVelCurveG    = 0xFF;
+        padVelFloorG    = 0xFF;
+#endif
     }
 
     void load(IKeyValueStore& s) {
@@ -95,6 +120,7 @@ struct Stm32Settings {
         ccPanBase   = s.readU8("cfg_stm", "cc_pan", ccPanBase);
         analogMinMs = s.readU8("cfg_stm", "an_min_ms", analogMinMs);
         analogDelta = s.readU8("cfg_stm", "an_delta", analogDelta);
+#if defined(PAD_CONFIG_PER_PAD)
         for (int i = 0; i < kPads; ++i) {
             char k[12];
             snprintf(k, sizeof k, "p%d_sens", i);  padSensitivity[i] = (uint16_t)s.readI32("cfg_stm", k, padSensitivity[i]);
@@ -103,6 +129,13 @@ struct Stm32Settings {
             snprintf(k, sizeof k, "p%d_vc", i);     padVelCurve[i]    = s.readU8("cfg_stm", k, padVelCurve[i]);
             snprintf(k, sizeof k, "p%d_vf", i);     padVelFloor[i]    = s.readU8("cfg_stm", k, padVelFloor[i]);
         }
+#else
+        padSensitivityG = (uint16_t)s.readI32("cfg_stm", "p_sens", padSensitivityG);
+        padLrRatioG     = s.readU8("cfg_stm", "p_lr", padLrRatioG);
+        padAnalogModeG  = s.readU8("cfg_stm", "p_an", padAnalogModeG);
+        padVelCurveG    = s.readU8("cfg_stm", "p_vc", padVelCurveG);
+        padVelFloorG    = s.readU8("cfg_stm", "p_vf", padVelFloorG);
+#endif
     }
 
     void save(IKeyValueStore& s) const {
@@ -128,6 +161,7 @@ struct Stm32Settings {
         s.saveU8("cfg_stm", "cc_pan", ccPanBase);
         s.saveU8("cfg_stm", "an_min_ms", analogMinMs);
         s.saveU8("cfg_stm", "an_delta", analogDelta);
+#if defined(PAD_CONFIG_PER_PAD)
         for (int i = 0; i < kPads; ++i) {
             char k[12];
             snprintf(k, sizeof k, "p%d_sens", i);  s.saveI32("cfg_stm", k, padSensitivity[i]);
@@ -136,6 +170,13 @@ struct Stm32Settings {
             snprintf(k, sizeof k, "p%d_vc", i);     s.saveU8("cfg_stm", k, padVelCurve[i]);
             snprintf(k, sizeof k, "p%d_vf", i);     s.saveU8("cfg_stm", k, padVelFloor[i]);
         }
+#else
+        s.saveI32("cfg_stm", "p_sens", padSensitivityG);
+        s.saveU8("cfg_stm", "p_lr", padLrRatioG);
+        s.saveU8("cfg_stm", "p_an", padAnalogModeG);
+        s.saveU8("cfg_stm", "p_vc", padVelCurveG);
+        s.saveU8("cfg_stm", "p_vf", padVelFloorG);
+#endif
     }
 };
 

@@ -19,7 +19,7 @@ TEST_CASE("Stm32ConfigSync::pushAll writes the ESP-authoritative set", "[stm][sy
     s.midiChannel = 9;
     s.noteOffset = -5;
     s.sleepTimeoutS = 1234;          // 0x04D2
-    s.padAnalogMode[2] = 1;
+    s.analogMode(2) = 1;
 
     Stm32ConfigSync sync(bus);
     REQUIRE(sync.pushAll(s) == true);
@@ -86,11 +86,11 @@ TEST_CASE("Stm32ConfigSync per-field writes", "[stm][sync]") {
 TEST_CASE("Stm32ConfigSync::writePadConfig writes one pad's 6-byte block", "[stm][sync]") {
     test::MockStm32Bus bus;
     Stm32Settings s;
-    s.padSensitivity[5] = 0x0123;
-    s.padLrRatio[5]     = 40;
-    s.padAnalogMode[5]  = 3;
-    s.padVelCurve[5]    = 1;
-    s.padVelFloor[5]    = 20;
+    s.sensitivity(5) = 0x0123;
+    s.lrRatio(5)     = 40;
+    s.analogMode(5)  = 3;
+    s.velCurve(5)    = 1;
+    s.velFloor(5)    = 20;
 
     Stm32ConfigSync sync(bus);
     REQUIRE(sync.writePadConfig(5, s) == true);

@@ -29,6 +29,7 @@ TEST_CASE("Stm32Settings: defaults match STM compiled defaults", "[settings][stm
     REQUIRE(s.encCcStep == 1);
     REQUIRE(s.velCurveDef == 0);
     REQUIRE(s.panCcEn == 0);
+#if defined(PAD_CONFIG_PER_PAD)
     for (int i = 0; i < 16; ++i) {
         REQUIRE(s.padAnalogMode[i] == 2);     // ANALOG_AFTER_TOUCH
         REQUIRE(s.padSensitivity[i] == 1);
@@ -36,6 +37,7 @@ TEST_CASE("Stm32Settings: defaults match STM compiled defaults", "[settings][stm
         REQUIRE(s.padVelCurve[i] == 0xFF);    // inherit
         REQUIRE(s.padVelFloor[i] == 0xFF);    // inherit
     }
+#endif
 }
 
 TEST_CASE("Stm32Settings: persistence round-trip", "[settings][stm]") {
@@ -44,8 +46,10 @@ TEST_CASE("Stm32Settings: persistence round-trip", "[settings][stm]") {
     a.midiChannel = 5;
     a.noteOffset = -12;
     a.sleepTimeoutS = 900;
+#if defined(PAD_CONFIG_PER_PAD)
     a.padAnalogMode[3] = 1;
     a.padSensitivity[3] = 250;
+#endif
     a.save(kv);
 
     Stm32Settings b;
@@ -53,8 +57,10 @@ TEST_CASE("Stm32Settings: persistence round-trip", "[settings][stm]") {
     REQUIRE(b.midiChannel == 5);
     REQUIRE(b.noteOffset == -12);
     REQUIRE(b.sleepTimeoutS == 900);
+#if defined(PAD_CONFIG_PER_PAD)
     REQUIRE(b.padAnalogMode[3] == 1);
     REQUIRE(b.padSensitivity[3] == 250);
+#endif
 }
 
 TEST_CASE("Stm32Settings: analog defaults sourced from board profile", "[settings][stm][config]") {
@@ -69,17 +75,20 @@ TEST_CASE("Stm32Settings: analog defaults sourced from board profile", "[setting
 
 TEST_CASE("Stm32Settings: accessors alias per-pad storage", "[settings][stm][accessor]") {
     Stm32Settings s;
-    s.sensitivity(3) = 200;
-    s.lrRatio(3)     = 40;
-    s.analogMode(3)  = 1;
-    s.velCurve(3)    = 2;
-    s.velFloor(3)    = 7;
+#if defined(PAD_CONFIG_PER_PAD)
+    s.sensitivity(3) = 200; s.lrRatio(3) = 40; s.analogMode(3) = 1;
+    s.velCurve(3) = 2; s.velFloor(3) = 7;
     const Stm32Settings& cs = s;
     REQUIRE(cs.sensitivity(3) == 200);
     REQUIRE(cs.lrRatio(3)     == 40);
     REQUIRE(cs.analogMode(3)  == 1);
     REQUIRE(cs.velCurve(3)    == 2);
     REQUIRE(cs.velFloor(3)    == 7);
-    // pad 0 still at profile defaults
     REQUIRE(cs.sensitivity(0) == BOARD_PAD_SENS_DEF);
+#else
+    s.sensitivity(3) = 200;
+    const Stm32Settings& cs = s;
+    REQUIRE(cs.sensitivity(0) == 200);   // one global value, all indices alias it
+    REQUIRE(cs.sensitivity(15) == 200);
+#endif
 }
