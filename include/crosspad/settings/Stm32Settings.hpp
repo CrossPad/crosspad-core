@@ -2,6 +2,7 @@
 #include <cstdint>
 #include <cstdio>
 #include "crosspad/settings/IKeyValueStore.hpp"
+#include "crosspad/config/crosspad_config.h"
 
 namespace crosspad {
 
@@ -35,13 +36,13 @@ struct Stm32Settings {
     uint8_t encCcStep = 1;
 
     // analog globals
-    uint8_t velCurveDef = 0;   // VEL_LINEAR
-    uint8_t velFloorDef = 1;
-    uint8_t ccPressBase = 16;
+    uint8_t velCurveDef = BOARD_VEL_CURVE_DEF;
+    uint8_t velFloorDef = BOARD_VEL_FLOOR_DEF;
+    uint8_t ccPressBase = BOARD_CC_PRESS_BASE_DEF;
     uint8_t panCcEn     = 0;
-    uint8_t ccPanBase   = 48;
-    uint8_t analogMinMs = 16;
-    uint8_t analogDelta = 2;
+    uint8_t ccPanBase   = BOARD_CC_PAN_BASE_DEF;
+    uint8_t analogMinMs = BOARD_ANALOG_MIN_MS_DEF;
+    uint8_t analogDelta = BOARD_ANALOG_DELTA_DEF;
 
     // per-pad config
     uint16_t padSensitivity[kPads];

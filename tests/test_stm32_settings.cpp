@@ -2,6 +2,7 @@
 #include "test_helpers.hpp"
 #include "crosspad/settings/Stm32Settings.hpp"
 #include "crosspad/settings/CrosspadSettings.hpp"
+#include "crosspad/config/crosspad_config.h"
 
 using namespace crosspad;
 
@@ -54,4 +55,14 @@ TEST_CASE("Stm32Settings: persistence round-trip", "[settings][stm]") {
     REQUIRE(b.sleepTimeoutS == 900);
     REQUIRE(b.padAnalogMode[3] == 1);
     REQUIRE(b.padSensitivity[3] == 250);
+}
+
+TEST_CASE("Stm32Settings: analog defaults sourced from board profile", "[settings][stm][config]") {
+    Stm32Settings s;
+    REQUIRE(s.velCurveDef == BOARD_VEL_CURVE_DEF);
+    REQUIRE(s.velFloorDef == BOARD_VEL_FLOOR_DEF);
+    REQUIRE(s.ccPressBase == BOARD_CC_PRESS_BASE_DEF);
+    REQUIRE(s.ccPanBase   == BOARD_CC_PAN_BASE_DEF);
+    REQUIRE(s.analogMinMs == BOARD_ANALOG_MIN_MS_DEF);
+    REQUIRE(s.analogDelta == BOARD_ANALOG_DELTA_DEF);
 }
