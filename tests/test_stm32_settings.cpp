@@ -37,6 +37,12 @@ TEST_CASE("Stm32Settings: defaults match STM compiled defaults", "[settings][stm
         REQUIRE(s.padVelCurve[i] == 0xFF);    // inherit
         REQUIRE(s.padVelFloor[i] == 0xFF);    // inherit
     }
+#else
+    REQUIRE(s.sensitivity(0)  == BOARD_PAD_SENS_DEF);
+    REQUIRE(s.lrRatio(0)      == BOARD_PAD_LR_RATIO_DEF);
+    REQUIRE(s.analogMode(0)   == BOARD_PAD_ANALOG_MODE_DEF);
+    REQUIRE(s.velCurve(0)     == 0xFF);
+    REQUIRE(s.velFloor(0)     == 0xFF);
 #endif
 }
 
@@ -49,6 +55,12 @@ TEST_CASE("Stm32Settings: persistence round-trip", "[settings][stm]") {
 #if defined(PAD_CONFIG_PER_PAD)
     a.padAnalogMode[3] = 1;
     a.padSensitivity[3] = 250;
+#else
+    a.sensitivity(0) = 200;
+    a.lrRatio(0)     = 40;
+    a.analogMode(0)  = 1;
+    a.velCurve(0)    = 3;
+    a.velFloor(0)    = 8;
 #endif
     a.save(kv);
 
@@ -60,6 +72,15 @@ TEST_CASE("Stm32Settings: persistence round-trip", "[settings][stm]") {
 #if defined(PAD_CONFIG_PER_PAD)
     REQUIRE(b.padAnalogMode[3] == 1);
     REQUIRE(b.padSensitivity[3] == 250);
+#else
+    REQUIRE(b.sensitivity(0)  == 200);
+    REQUIRE(b.lrRatio(0)      == 40);
+    REQUIRE(b.analogMode(0)   == 1);
+    REQUIRE(b.velCurve(0)     == 3);
+    REQUIRE(b.velFloor(0)     == 8);
+    // all indices alias the one global value
+    REQUIRE(b.sensitivity(15) == 200);
+    REQUIRE(b.velCurve(15)    == 3);
 #endif
 }
 
