@@ -44,18 +44,29 @@ struct Stm32Settings {
     uint8_t analogMinMs = BOARD_ANALOG_MIN_MS_DEF;
     uint8_t analogDelta = BOARD_ANALOG_DELTA_DEF;
 
-    // per-pad config
+    // per-pad config (FULL) — access ONLY via the accessors below.
     uint16_t padSensitivity[kPads];
     uint8_t  padLrRatio[kPads];
     uint8_t  padAnalogMode[kPads];  // enum analog_mode (2 = AFTERTOUCH)
     uint8_t  padVelCurve[kPads];    // 0xFF = inherit
     uint8_t  padVelFloor[kPads];    // 0xFF = inherit
 
+    uint16_t& sensitivity(int i)       { return padSensitivity[i]; }
+    uint16_t  sensitivity(int i) const { return padSensitivity[i]; }
+    uint8_t&  lrRatio(int i)           { return padLrRatio[i]; }
+    uint8_t   lrRatio(int i) const     { return padLrRatio[i]; }
+    uint8_t&  analogMode(int i)        { return padAnalogMode[i]; }
+    uint8_t   analogMode(int i) const  { return padAnalogMode[i]; }
+    uint8_t&  velCurve(int i)          { return padVelCurve[i]; }
+    uint8_t   velCurve(int i) const    { return padVelCurve[i]; }
+    uint8_t&  velFloor(int i)          { return padVelFloor[i]; }
+    uint8_t   velFloor(int i) const    { return padVelFloor[i]; }
+
     Stm32Settings() {
         for (int i = 0; i < kPads; ++i) {
-            padSensitivity[i] = 1;
-            padLrRatio[i]     = 50;
-            padAnalogMode[i]  = 2;
+            padSensitivity[i] = BOARD_PAD_SENS_DEF;
+            padLrRatio[i]     = BOARD_PAD_LR_RATIO_DEF;
+            padAnalogMode[i]  = BOARD_PAD_ANALOG_MODE_DEF;
             padVelCurve[i]    = 0xFF;
             padVelFloor[i]    = 0xFF;
         }

@@ -66,3 +66,20 @@ TEST_CASE("Stm32Settings: analog defaults sourced from board profile", "[setting
     REQUIRE(s.analogMinMs == BOARD_ANALOG_MIN_MS_DEF);
     REQUIRE(s.analogDelta == BOARD_ANALOG_DELTA_DEF);
 }
+
+TEST_CASE("Stm32Settings: accessors alias per-pad storage", "[settings][stm][accessor]") {
+    Stm32Settings s;
+    s.sensitivity(3) = 200;
+    s.lrRatio(3)     = 40;
+    s.analogMode(3)  = 1;
+    s.velCurve(3)    = 2;
+    s.velFloor(3)    = 7;
+    const Stm32Settings& cs = s;
+    REQUIRE(cs.sensitivity(3) == 200);
+    REQUIRE(cs.lrRatio(3)     == 40);
+    REQUIRE(cs.analogMode(3)  == 1);
+    REQUIRE(cs.velCurve(3)    == 2);
+    REQUIRE(cs.velFloor(3)    == 7);
+    // pad 0 still at profile defaults
+    REQUIRE(cs.sensitivity(0) == BOARD_PAD_SENS_DEF);
+}
