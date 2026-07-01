@@ -57,12 +57,12 @@ bool Stm32ConfigSync::pushAll(const Stm32Settings& s) {
     // per-pad config (REG_PAD_CFG_BASE = 0x0800): 6-byte stride, one write per pad
     for (int i = 0; i < Stm32Settings::kPads; ++i) {
         uint8_t buf[REG_PAD_CFG_STRIDE];
-        buf[REG_PAD_CFG_FIELD_SENS_HI]   = (uint8_t)(s.padSensitivity[i] >> 8);
-        buf[REG_PAD_CFG_FIELD_SENS_LO]   = (uint8_t)(s.padSensitivity[i] & 0xFF);
-        buf[REG_PAD_CFG_FIELD_LR_RATIO]  = s.padLrRatio[i];
-        buf[REG_PAD_CFG_FIELD_ANALOG]    = s.padAnalogMode[i];
-        buf[REG_PAD_CFG_FIELD_VEL_CURVE] = s.padVelCurve[i];
-        buf[REG_PAD_CFG_FIELD_VEL_FLOOR] = s.padVelFloor[i];
+        buf[REG_PAD_CFG_FIELD_SENS_HI]   = (uint8_t)(s.sensitivity(i) >> 8);
+        buf[REG_PAD_CFG_FIELD_SENS_LO]   = (uint8_t)(s.sensitivity(i) & 0xFF);
+        buf[REG_PAD_CFG_FIELD_LR_RATIO]  = s.lrRatio(i);
+        buf[REG_PAD_CFG_FIELD_ANALOG]    = s.analogMode(i);
+        buf[REG_PAD_CFG_FIELD_VEL_CURVE] = s.velCurve(i);
+        buf[REG_PAD_CFG_FIELD_VEL_FLOOR] = s.velFloor(i);
         ok = bus_.writeReg((uint16_t)(REG_PAD_CFG_BASE + i * REG_PAD_CFG_STRIDE),
                            buf, REG_PAD_CFG_STRIDE) && ok;
     }
@@ -72,12 +72,12 @@ bool Stm32ConfigSync::pushAll(const Stm32Settings& s) {
 bool Stm32ConfigSync::writePadConfig(uint8_t padIdx, const Stm32Settings& s) {
     if (padIdx >= Stm32Settings::kPads) return false;
     uint8_t buf[REG_PAD_CFG_STRIDE];
-    buf[REG_PAD_CFG_FIELD_SENS_HI]   = (uint8_t)(s.padSensitivity[padIdx] >> 8);
-    buf[REG_PAD_CFG_FIELD_SENS_LO]   = (uint8_t)(s.padSensitivity[padIdx] & 0xFF);
-    buf[REG_PAD_CFG_FIELD_LR_RATIO]  = s.padLrRatio[padIdx];
-    buf[REG_PAD_CFG_FIELD_ANALOG]    = s.padAnalogMode[padIdx];
-    buf[REG_PAD_CFG_FIELD_VEL_CURVE] = s.padVelCurve[padIdx];
-    buf[REG_PAD_CFG_FIELD_VEL_FLOOR] = s.padVelFloor[padIdx];
+    buf[REG_PAD_CFG_FIELD_SENS_HI]   = (uint8_t)(s.sensitivity(padIdx) >> 8);
+    buf[REG_PAD_CFG_FIELD_SENS_LO]   = (uint8_t)(s.sensitivity(padIdx) & 0xFF);
+    buf[REG_PAD_CFG_FIELD_LR_RATIO]  = s.lrRatio(padIdx);
+    buf[REG_PAD_CFG_FIELD_ANALOG]    = s.analogMode(padIdx);
+    buf[REG_PAD_CFG_FIELD_VEL_CURVE] = s.velCurve(padIdx);
+    buf[REG_PAD_CFG_FIELD_VEL_FLOOR] = s.velFloor(padIdx);
     return bus_.writeReg((uint16_t)(REG_PAD_CFG_BASE + padIdx * REG_PAD_CFG_STRIDE),
                          buf, REG_PAD_CFG_STRIDE);
 }
