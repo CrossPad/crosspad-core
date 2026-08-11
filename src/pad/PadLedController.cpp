@@ -285,20 +285,7 @@ uint8_t PadLedController::getBrightness() {
     return brightness_;
 }
 
-// ── Animations (legacy stubs) ───────────────────────────────────────────
-
-bool PadLedController::playAnimation(KeypadAnimationMode mode, KeypadAnimationParams params) {
-    isAnimating_ = true;
-    currentAnimMode_ = mode;
-    currentAnimParams_ = params;
-    // Legacy animation modes are stubs — real animations use PadAnimator
-    isAnimating_ = false;
-    return false;
-}
-
-bool PadLedController::playPadAnimation(uint8_t, KeypadAnimationParams) {
-    return false;
-}
+// ── Animation control ───────────────────────────────────────────────────
 
 void PadLedController::stopAnimation() {
     isAnimating_ = false;
@@ -306,10 +293,6 @@ void PadLedController::stopAnimation() {
         padStates_[i].isAnimating = false;
     }
     updateLEDs();
-}
-
-bool PadLedController::isAnimationActive() {
-    return isAnimating_;
 }
 
 // ── Callbacks ───────────────────────────────────────────────────────────

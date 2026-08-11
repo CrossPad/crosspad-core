@@ -346,21 +346,6 @@ KeypadFeedbackMode PadManager::getFeedbackMode() {
     return ledController_ ? ledController_->getFeedbackMode() : KeypadFeedbackMode::STANDARD;
 }
 
-// ── Animation forwarding ────────────────────────────────────────────────
-
-bool PadManager::playAnimation(KeypadAnimationMode mode, KeypadAnimationParams params) {
-    return ledController_ ? ledController_->playAnimation(mode, params) : false;
-}
-bool PadManager::playPadAnimation(uint8_t padIdx, KeypadAnimationParams params) {
-    return ledController_ ? ledController_->playPadAnimation(padIdx, params) : false;
-}
-void PadManager::stopAnimation() {
-    if (ledController_) ledController_->stopAnimation();
-}
-bool PadManager::isAnimationActive() {
-    return ledController_ ? ledController_->isAnimationActive() : false;
-}
-
 void PadManager::setCustomColorCallback(KeypadCustomColorCallback callback) {
     if (ledController_) ledController_->setCustomColorCallback(callback);
 }

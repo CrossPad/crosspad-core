@@ -92,12 +92,6 @@ public:
     void setFeedbackMode(KeypadFeedbackMode mode);
     KeypadFeedbackMode getFeedbackMode();
 
-    // Animation
-    bool playAnimation(KeypadAnimationMode mode, KeypadAnimationParams params);
-    bool playPadAnimation(uint8_t padIdx, KeypadAnimationParams params);
-    void stopAnimation();
-    bool isAnimationActive();
-
     // Custom color callback
     void setCustomColorCallback(KeypadCustomColorCallback callback);
 

@@ -65,11 +65,10 @@ public:
     void setBrightness(uint8_t brightness);
     uint8_t getBrightness();
 
-    // Animations (legacy stubs — real animations are in PadAnimator)
-    bool playAnimation(KeypadAnimationMode mode, KeypadAnimationParams params);
-    bool playPadAnimation(uint8_t padIdx, KeypadAnimationParams params);
+    // Stop animation — real animations run in PadAnimator; this clears the
+    // isAnimating_ flag/pad state and is invoked via the PadAnimator
+    // completion callback (see CrosspadPlatform.cpp).
     void stopAnimation();
-    bool isAnimationActive();
 
     // Animation flag (set by PadAnimator via callback)
     void setAnimating(bool v) { isAnimating_ = v; }
@@ -103,7 +102,6 @@ private:
     KeypadAnimationMode currentAnimMode_ = KeypadAnimationMode::NONE;
     KeypadFeedbackMode currentFeedbackMode_ = KeypadFeedbackMode::AFTERTOUCH;
     bool isAnimating_ = false;
-    KeypadAnimationParams currentAnimParams_;
 
     // Per-pad state
     PadLedState padStates_[16];
