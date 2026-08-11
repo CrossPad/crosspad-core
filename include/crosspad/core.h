@@ -17,7 +17,6 @@
 #include "crosspad/app/AppEntry.hpp"
 #include "crosspad/app/AppRegistry.hpp"
 #include "crosspad/app/AppRegistrar.hpp"
-#include "crosspad/app/AppPointers.hpp"
 
 // Settings system
 #include "crosspad/settings/CrosspadSettings.hpp"
