@@ -65,12 +65,7 @@ public:
     void setResetCallback(ResetCallback cb) { resetCb_ = std::move(cb); }
     void setDfuButtonCheckCallback(DfuButtonCheckCallback cb) { dfuButtonCb_ = std::move(cb); }
     void setConfigSync(Stm32ConfigSync* sync) { configSync_ = sync; }
-
-    bool configWrite8(uint16_t reg, uint8_t v);
-    bool configWrite16(uint16_t hiReg, uint16_t v);
-    bool configWritePad(uint8_t padIdx);
-    bool configReadPadVelRaw(uint8_t padIdx, uint8_t& out);
-    bool configReadPadLive(uint8_t padIdx, Stm32PadLive& out);
+    Stm32ConfigSync* configSync() const { return configSync_; }
 
 private:
     static void taskEntry(void* param);
