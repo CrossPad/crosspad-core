@@ -109,6 +109,7 @@ bool Drv2605Driver::initHardware() {
 
     if (timeout <= 0) {
         ESP_LOGW(TAG, "Auto-calibration timeout");
+        enterStandby();
         return false;
     }
 
