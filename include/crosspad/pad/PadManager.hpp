@@ -121,9 +121,25 @@ public:
     /// Save the currently active pad logic on an internal stack, then activate
     /// appName. Pair with popPadLogic() — used by screens/apps that overlay a
     /// temporary logic and must hand control back on teardown.
+    ///
+    /// Caveat — unregister ordering: if the saved (pre-push) logic gets
+    /// unregisterPadLogic()'d while it is sitting on the stack, popPadLogic()
+    /// will end with NO active logic — setActivePadLogic()'s lookup-miss
+    /// branch deactivates the current handler but activates nothing, since the
+    /// saved name no longer resolves. Callers must popPadLogic() BEFORE
+    /// unregistering their own handler, not after.
+    ///
+    /// Caveat — reentrancy: IPadLogicHandler::onActivate()/onDeactivate() run
+    /// OUTSIDE logicMutex_ (see setActivePadLogic()). Calling pushPadLogic()
+    /// or setActivePadLogic() from inside a handler's onActivate()/
+    /// onDeactivate() re-enters PadManager's pad-logic state and can
+    /// interleave activePadLogicName_/padLogicStack_ updates with the
+    /// in-flight call. This is a pre-existing property of setActivePadLogic()
+    /// but is more likely to bite via the stack API — don't do it.
     void pushPadLogic(const std::string& appName);
     /// Re-activate the logic saved by the matching pushPadLogic(). No-op when
-    /// the stack is empty.
+    /// the stack is empty. Same unregister-ordering and reentrancy caveats as
+    /// pushPadLogic() apply — see its doc comment.
     void popPadLogic();
 
     // Accessors
