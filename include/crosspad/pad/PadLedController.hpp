@@ -92,10 +92,11 @@ private:
     CrosspadSettings* settings_ = nullptr;
     uint8_t padCount_ = 16;
 
-    // Global color defaults
-    RgbColor defaultColor_{0, 25, 0};
-    RgbColor pressedColor_{125, 0, 0};
-    RgbColor playingColor_{50, 0, 5};
+    // Global color defaults — match Pad's kit defaults (Pad.hpp: 0x20FF10 /
+    // 0xFF1020) so pads look the same with and without an app palette loaded.
+    RgbColor defaultColor_{0x20, 0xFF, 0x10};
+    RgbColor pressedColor_{0xFF, 0x10, 0x20};
+    RgbColor playingColor_{0x32, 0x00, 0x05};
 
     // Global state
     uint8_t brightness_ = 255;
