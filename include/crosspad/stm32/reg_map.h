@@ -24,9 +24,9 @@ extern "C" {
 /* Wire protocol version (REG_IDENT_PROTO_HI/LO).
  * NOTE: this copy is a thin/older mirror — it tracks the macro names used by
  * crosspad-core command builders and omits registers added in v0x0002-v0x0004
- * that are only consumed by platform-idf / ESP app code. Bumped to 0x0005 to
+ * that are only consumed by platform-idf / ESP app code. Bumped to 0x000A to
  * match the STM firmware; full parity lives in stm32_hal/include/stm32_reg_map.h. */
-#define STM32_PROTO_VERSION         0x0005
+#define STM32_PROTO_VERSION         0x000A
 
 /* Register map mirror version — tracks this file's completeness relative to
  * the canonical STM32 reg_map.h. Bump when new registers are mirrored here. */
