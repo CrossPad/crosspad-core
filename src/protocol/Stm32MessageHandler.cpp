@@ -80,6 +80,13 @@ void Stm32MessageHandler::handleMessage(const uint8_t* data, unsigned size) {
         }
         break;
 
+    case CROSSPAD_CMD_AUDIO_ROUTE:
+        /* [F0 7D 1D <sub> <args...> F7] — pass sub+args, strip framing */
+        if (audioRouteCb_ && size >= 5) {
+            audioRouteCb_(data + 3, size - 4);
+        }
+        break;
+
     case CROSSPAD_CMD_VERSION_REPLY:
         // [pcb_rev, api_ver] — currently informational, no consumer
         if (size < 6) break;

@@ -28,6 +28,11 @@ public:
     /// @param mode USB mode byte from STM32 (0x01=DEFAULT CDC+MIDI, 0x02=AUDIO MIDI+UAC2)
     using UsbModeCallback = std::function<void(uint8_t mode)>;
 
+    /// Callback for platform-specific audio routing control (CROSSPAD_CMD_AUDIO_ROUTE)
+    /// @param args Subcommand byte followed by its arguments (SysEx payload after the command byte)
+    /// @param len Number of args bytes
+    using AudioRouteCallback = std::function<void(const uint8_t* args, unsigned len)>;
+
     Stm32MessageHandler() = default;
 
     /**
@@ -46,6 +51,11 @@ public:
      * @brief Set callback for USB mode switch requests (platform-specific)
      */
     void setUsbModeCallback(UsbModeCallback cb) { usbModeCb_ = std::move(cb); }
+
+    /**
+     * @brief Set callback for audio routing control (platform-specific)
+     */
+    void setAudioRouteCallback(AudioRouteCallback cb) { audioRouteCb_ = std::move(cb); }
 
     /**
      * @brief Handle a raw SysEx message from STM32
@@ -78,6 +88,7 @@ private:
     CrosspadStatus* status_ = nullptr;
     DfuRequestCallback dfuCb_;
     UsbModeCallback usbModeCb_;
+    AudioRouteCallback audioRouteCb_;
     bool keyPresses_[16] = {};
 };
 

@@ -26,6 +26,7 @@
 #define CROSSPAD_CMD_KEEP_ALIVE         0x1A
 #define CROSSPAD_CMD_USB_MODE           0x1B
 #define CROSSPAD_CMD_VERSION_REPLY      0x1C  /* STM->ESP: [pcb_rev, api_ver] */
+#define CROSSPAD_CMD_AUDIO_ROUTE        0x1D  /* host->ESP: [sub, args...] audio routing control; ESP replies with same cmd on query */
 
 #define CROSSPAD_CMD_ADC_VALUES         0x20
 #define CROSSPAD_CMD_ADC_BUTTONS        0x21
