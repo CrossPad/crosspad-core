@@ -41,6 +41,7 @@ public:
     // At soc == 1.0 (full) there is no frontier — all 16 pads green + drift.
     void startCharging(float soc = 0.0f);
     void setChargePercent(float soc);   // 0.0 - 1.0, live updates while charging
+    void setChargingActive(bool active); // false → static gauge (plugged, not charging)
 
     // Control
     void stop();
@@ -63,7 +64,8 @@ private:
     int64_t startTime_ = 0;
     uint32_t duration_ = 0;
     float currentProgress_ = 0.0f;
-    float chargeSoc_ = 0.0f;          // 0..1 battery state-of-charge for CHARGING
+    float chargeSoc_ = 0.0f;          // 0..1 battery state-of-charge for CHARGING (caller pre-smooths)
+    bool  chargingActive_ = true;     // false → static gauge (plugged but not charging)
     RgbColor animColor_;
     CompletionCallback completionCb_ = nullptr;
     AnimationStateCallback animStateCb_ = nullptr;

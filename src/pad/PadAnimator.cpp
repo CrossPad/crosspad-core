@@ -80,6 +80,7 @@ void PadAnimator::playBootAnim(uint32_t durationMs) {
 
 void PadAnimator::startCharging(float soc) {
     chargeSoc_ = (soc < 0.0f) ? 0.0f : (soc > 1.0f ? 1.0f : soc);
+    chargingActive_ = true;     // assume charging until the caller says otherwise
     type_ = AnimType::CHARGING;
     startTime_ = clock_->getTimeUs();
     active_ = true;
@@ -88,6 +89,10 @@ void PadAnimator::startCharging(float soc) {
 
 void PadAnimator::setChargePercent(float soc) {
     chargeSoc_ = (soc < 0.0f) ? 0.0f : (soc > 1.0f ? 1.0f : soc);
+}
+
+void PadAnimator::setChargingActive(bool active) {
+    chargingActive_ = active;
 }
 
 void PadAnimator::stop() {
@@ -281,6 +286,8 @@ void PadAnimator::renderBoot() {
 //
 // Persistent: never calls finish(); runs until stop().
 void PadAnimator::renderCharging() {
+    // chargeSoc_ is already smoothed (EMA) by the caller, so a plain round is
+    // stable — no extra hysteresis here.
     const float soc = chargeSoc_;
     int litCount = (int)(soc * (float)kPadCount + 0.5f);
     if (litCount < 0) litCount = 0;
@@ -288,6 +295,17 @@ void PadAnimator::renderCharging() {
 
     const RgbColor base = RgbColor::LinearBlend(RgbColor(255, 0, 0),
                                                 RgbColor(0, 255, 0), soc);
+    const int frontier = (litCount < kPadCount) ? (litCount - 1) : -1;
+
+    // Plugged but NOT actually charging (gate off / data port / full / fault):
+    // static gauge — solid level + colour, no breathing frontier, no drift glow.
+    // Set via setChargingActive(false); the screen shows "Not charging".
+    if (!chargingActive_) {
+        for (int i = 0; i < kPadCount; i++) {
+            setPixel(i, (i < litCount) ? base : RgbColor(0, 0, 0));
+        }
+        return;
+    }
 
     const float t = (float)(clock_->getTimeUs() - startTime_) / 1000000.0f;
 
@@ -297,8 +315,6 @@ void PadAnimator::renderCharging() {
 
     // Frontier breathing 0→1 (deep), ~2.6 s period.
     const float breath = 0.5f * (1.0f - cosf(t * (6.2831853f / 2.6f)));
-
-    const int frontier = (litCount < kPadCount) ? (litCount - 1) : -1;
 
     for (int i = 0; i < kPadCount; i++) {
         if (i >= litCount) {
