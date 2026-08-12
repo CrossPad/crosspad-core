@@ -158,14 +158,21 @@ TEST_CASE("PadManager: pushPadLogic/popPadLogic stack", "[pad]") {
 
     pm.setActivePadLogic("A");
     REQUIRE(pm.getActivePadLogic() == "A");
+    REQUIRE(a->activateCount == 1);
 
     pm.pushPadLogic("B");
     REQUIRE(pm.getActivePadLogic() == "B");
+    REQUIRE(a->deactivateCount == 1); // pushing away from A deactivates it
+    REQUIRE(b->activateCount == 1);
 
     pm.popPadLogic();
     REQUIRE(pm.getActivePadLogic() == "A");
+    REQUIRE(b->deactivateCount == 1); // popping away from B deactivates it
+    REQUIRE(a->activateCount == 2);   // restored A is re-activated
 
     // popPadLogic() on an empty stack is a no-op — no crash, state unchanged.
     pm.popPadLogic();
     REQUIRE(pm.getActivePadLogic() == "A");
+    REQUIRE(a->activateCount == 2);
+    REQUIRE(b->deactivateCount == 1);
 }

@@ -14,9 +14,11 @@ struct PadLedState {
     uint8_t pressure = 0;
     uint8_t midiNote = 0;
     RgbColor color{0, 0, 0};
-    RgbColor defaultColor{0, 25, 0};
-    RgbColor pressedColor{125, 0, 0};
-    RgbColor playingColor{50, 0, 5};
+    // Match Pad's kit defaults (Pad.hpp: 0x20FF10 / 0xFF1020) so pads look
+    // the same with and without an app palette loaded.
+    RgbColor defaultColor{0x20, 0xFF, 0x10};
+    RgbColor pressedColor{0xFF, 0x10, 0x20};
+    RgbColor playingColor{0x32, 0x00, 0x05};
     bool hasCustomColor = false;
     bool isAnimating = false;
 };
