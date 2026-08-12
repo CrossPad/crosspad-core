@@ -57,6 +57,11 @@ struct AppEntry {
 
     /// Priority for auto-selection (higher = more preferred, 0 = normal)
     int priority = 0;
+
+    /// Pad-logic name auto-activated on app start
+    /// and restored on destroy (see AppBase hooks).
+    /// nullptr = app manages pad logic manually.
+    const char* padLogic = nullptr;
 };
 
 } // namespace crosspad

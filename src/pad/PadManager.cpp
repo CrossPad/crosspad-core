@@ -530,7 +530,7 @@ void PadManager::registerPadLogic(const std::string& appName, std::shared_ptr<IP
 }
 
 void PadManager::setActivePadLogic(const std::string& appName) {
-    std::lock_guard<std::mutex> lock(logicMutex_);
+    std::unique_lock<std::mutex> lock(logicMutex_);
 
     if (activePadLogic_ && !activePadLogicName_.empty()) {
         printf("PadManager: Deactivating pad logic '%s'\n", activePadLogicName_.c_str());
@@ -539,9 +539,9 @@ void PadManager::setActivePadLogic(const std::string& appName) {
         activePadLogicName_ = "";
 
         // Unlock before calling user code to avoid deadlock
-        logicMutex_.unlock();
+        lock.unlock();
         oldLogic->onDeactivate(*this);
-        logicMutex_.lock();
+        lock.lock();
     } else {
         activePadLogic_ = nullptr;
         activePadLogicName_ = "";
@@ -559,9 +559,9 @@ void PadManager::setActivePadLogic(const std::string& appName) {
         printf("PadManager: Activating pad logic '%s'\n", appName.c_str());
 
         auto newLogic = activePadLogic_;
-        logicMutex_.unlock();
+        lock.unlock();
         newLogic->onActivate(*this);
-        logicMutex_.lock();
+        lock.lock();
     } else {
         printf("PadManager: App '%s' not found, using default pad logic\n", appName.c_str());
     }
@@ -573,16 +573,16 @@ std::string PadManager::getActivePadLogic() const {
 }
 
 void PadManager::unregisterPadLogic(const std::string& appName) {
-    std::lock_guard<std::mutex> lock(logicMutex_);
+    std::unique_lock<std::mutex> lock(logicMutex_);
 
     if (activePadLogicName_ == appName && activePadLogic_) {
         auto oldLogic = activePadLogic_;
         activePadLogic_ = nullptr;
         activePadLogicName_ = "";
 
-        logicMutex_.unlock();
+        lock.unlock();
         oldLogic->onDeactivate(*this);
-        logicMutex_.lock();
+        lock.lock();
     }
 
     auto it = padLogicHandlers_.find(appName);
@@ -593,11 +593,31 @@ void PadManager::unregisterPadLogic(const std::string& appName) {
 }
 
 std::vector<std::string> PadManager::getRegisteredPadLogics() const {
+    std::lock_guard<std::mutex> lock(logicMutex_);
     std::vector<std::string> apps;
     for (const auto& pair : padLogicHandlers_) {
         apps.push_back(pair.first);
     }
     return apps;
+}
+
+void PadManager::pushPadLogic(const std::string& appName) {
+    {
+        std::lock_guard<std::mutex> lock(logicMutex_);
+        padLogicStack_.push_back(activePadLogicName_);
+    }
+    setActivePadLogic(appName);
+}
+
+void PadManager::popPadLogic() {
+    std::string prev;
+    {
+        std::lock_guard<std::mutex> lock(logicMutex_);
+        if (padLogicStack_.empty()) return;
+        prev = padLogicStack_.back();
+        padLogicStack_.pop_back();
+    }
+    setActivePadLogic(prev);
 }
 
 } // namespace crosspad

@@ -118,6 +118,13 @@ public:
     std::string getActivePadLogic() const;
     void unregisterPadLogic(const std::string& appName);
     std::vector<std::string> getRegisteredPadLogics() const;
+    /// Save the currently active pad logic on an internal stack, then activate
+    /// appName. Pair with popPadLogic() — used by screens/apps that overlay a
+    /// temporary logic and must hand control back on teardown.
+    void pushPadLogic(const std::string& appName);
+    /// Re-activate the logic saved by the matching pushPadLogic(). No-op when
+    /// the stack is empty.
+    void popPadLogic();
 
     // Accessors
     PadLedController& getLedController() { return *ledController_; }
@@ -148,6 +155,7 @@ private:
     std::map<std::string, std::shared_ptr<IPadLogicHandler>> padLogicHandlers_;
     std::shared_ptr<IPadLogicHandler> activePadLogic_ = nullptr;
     std::string activePadLogicName_;
+    std::vector<std::string> padLogicStack_;
 
     // RGB Callback Manager
     RGBCallbackManager rgbCallbackManager_;

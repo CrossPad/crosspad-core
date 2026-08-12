@@ -1,7 +1,25 @@
 #include <catch2/catch_test_macros.hpp>
 #include "test_helpers.hpp"
+#include "crosspad/pad/IPadLogicHandler.hpp"
 
 using namespace crosspad;
+
+namespace {
+
+// Dummy pad logic handler — just tracks activation for push/pop tests.
+class DummyPadLogic : public IPadLogicHandler {
+public:
+    void onActivate(PadManager&) override { activateCount++; }
+    void onDeactivate(PadManager&) override { deactivateCount++; }
+    void onPadPress(PadManager&, uint8_t, uint8_t) override {}
+    void onPadRelease(PadManager&, uint8_t) override {}
+    void onPadPressure(PadManager&, uint8_t, uint8_t) override {}
+
+    int activateCount = 0;
+    int deactivateCount = 0;
+};
+
+} // namespace
 
 TEST_CASE("PadManager: init via platform init", "[pad]") {
     test::CoreTestPlatform platform;
@@ -125,4 +143,29 @@ TEST_CASE("PadManager: MIDI output on pad press", "[pad]") {
     // Cleanup
     settings->keypad.enableKeypad = true;
     services.setMidiOutput(nullptr);
+}
+
+TEST_CASE("PadManager: pushPadLogic/popPadLogic stack", "[pad]") {
+    test::CoreTestPlatform platform;
+    REQUIRE(platform.init());
+
+    auto& pm = platform.padManager;
+
+    auto a = std::make_shared<DummyPadLogic>();
+    auto b = std::make_shared<DummyPadLogic>();
+    pm.registerPadLogic("A", a);
+    pm.registerPadLogic("B", b);
+
+    pm.setActivePadLogic("A");
+    REQUIRE(pm.getActivePadLogic() == "A");
+
+    pm.pushPadLogic("B");
+    REQUIRE(pm.getActivePadLogic() == "B");
+
+    pm.popPadLogic();
+    REQUIRE(pm.getActivePadLogic() == "A");
+
+    // popPadLogic() on an empty stack is a no-op — no crash, state unchanged.
+    pm.popPadLogic();
+    REQUIRE(pm.getActivePadLogic() == "A");
 }

@@ -95,6 +95,53 @@ public:
 #endif // CROSSPAD_REGISTER_APP_NAMED_FUNCTIONS
 #endif // REGISTER_APP
 
+/**
+ * @brief Full registration macro with pad-logic auto-activation
+ *
+ * Same as REGISTER_APP, plus a 10th argument naming the IPadLogicHandler
+ * to activate on app start and restore on destroy (see AppEntry::padLogic).
+ *
+ * Parameters: same as REGISTER_APP, plus:
+ *   padLogicName — const char*, name passed to PadManager::registerPadLogic(),
+ *                  or nullptr if the app manages pad logic manually.
+ */
+#ifndef REGISTER_APP_PL
+#ifdef CROSSPAD_REGISTER_APP_NAMED_FUNCTIONS
+// Named-function pattern: creates _register_<appName>_app() callable by platform init.
+// Required on ESP-IDF where static constructors are unreliable.
+#ifdef USE_LVGL
+#define REGISTER_APP_PL(appName, logicFunc, iconPath, createLVGL, destroyLVGL, initSimple, refreshFunc, cleanupFunc, priority, padLogicName) \
+    void _register_##appName##_app() { \
+        static const crosspad::AppEntry entry = { \
+            #appName, iconPath, createLVGL, destroyLVGL, logicFunc, initSimple, refreshFunc, cleanupFunc, priority, padLogicName \
+        }; \
+        crosspad::AppRegistry::getInstance().registerApp(entry); \
+    }
+#else
+#define REGISTER_APP_PL(appName, logicFunc, iconPath, createLVGL, destroyLVGL, initSimple, refreshFunc, cleanupFunc, priority, padLogicName) \
+    void _register_##appName##_app() { \
+        static const crosspad::AppEntry entry = { \
+            #appName, "", logicFunc, initSimple, refreshFunc, cleanupFunc, priority, padLogicName \
+        }; \
+        crosspad::AppRegistry::getInstance().registerApp(entry); \
+    }
+#endif
+#else
+// Static constructor pattern: works on platforms with reliable static init (Arduino, Linux).
+#ifdef USE_LVGL
+#define REGISTER_APP_PL(appName, logicFunc, iconPath, createLVGL, destroyLVGL, initSimple, refreshFunc, cleanupFunc, priority, padLogicName) \
+    static crosspad::AppRegistrar reg##appName(crosspad::AppEntry{ \
+        #appName, iconPath, createLVGL, destroyLVGL, logicFunc, initSimple, refreshFunc, cleanupFunc, priority, padLogicName \
+    });
+#else
+#define REGISTER_APP_PL(appName, logicFunc, iconPath, createLVGL, destroyLVGL, initSimple, refreshFunc, cleanupFunc, priority, padLogicName) \
+    static crosspad::AppRegistrar reg##appName(crosspad::AppEntry{ \
+        #appName, "", logicFunc, initSimple, refreshFunc, cleanupFunc, priority, padLogicName \
+    });
+#endif
+#endif // CROSSPAD_REGISTER_APP_NAMED_FUNCTIONS
+#endif // REGISTER_APP_PL
+
 // --- Convenience macros ---
 
 /** Register LVGL app with icon and factory functions */
@@ -103,6 +150,15 @@ public:
     REGISTER_APP(appName, logicFunc, iconPath, createLVGL, destroyLVGL, nullptr, nullptr, nullptr, 0)
 #else
 #define REGISTER_LVGL_APP(appName, logicFunc, iconPath, createLVGL, destroyLVGL) \
+    /* LVGL disabled — app not registered */
+#endif
+
+/** Register LVGL app with icon, factory functions, and auto-activated pad logic */
+#ifdef USE_LVGL
+#define REGISTER_LVGL_APP_PAD(appName, iconPath, createLVGL, destroyLVGL, padLogicName) \
+    REGISTER_APP_PL(appName, nullptr, iconPath, createLVGL, destroyLVGL, nullptr, nullptr, nullptr, 0, padLogicName)
+#else
+#define REGISTER_LVGL_APP_PAD(appName, iconPath, createLVGL, destroyLVGL, padLogicName) \
     /* LVGL disabled — app not registered */
 #endif
 
