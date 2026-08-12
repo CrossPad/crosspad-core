@@ -13,6 +13,7 @@
  */
 
 #include <cstdint>
+#include <mutex>
 #include "crosspad/platform/IVibration.hpp"
 #include "crosspad/platform/VibrationPreset.hpp"
 #include "crosspad/settings/VibrationSettings.hpp"
@@ -88,7 +89,7 @@ private:
     // Background task
     static void taskEntry(void* param);
     void taskLoop();
-    void handleVibrationEvent(VibrationPreset preset);
+    void handleVibrationEvent(VibrationPreset preset, const VibrationSettings& settings);
     void startAudioToVibeHw(uint8_t inputMin, uint8_t inputMax,
                             uint8_t outputMin, uint8_t outputMax);
 
@@ -98,6 +99,9 @@ private:
 
     // State
     VibrationSettings settings_;
+    std::mutex settingsMutex_;  // guards settings_ — written by applySettings() (GUI/settings
+                                 // thread, e.g. on every slider drag event) and read by
+                                 // taskLoop() (background task, ~every 10ms)
     TaskHandle_t taskHandle_;
     QueueHandle_t vibrationQueue_;
     bool deviceFound_;

@@ -145,8 +145,15 @@ void Drv2605Driver::stop() {
 }
 
 void Drv2605Driver::startAudioToVibe() {
-    startAudioToVibeHw(settings_.inputMin, settings_.inputMax,
-                       settings_.outputMin, settings_.outputMax);
+    uint8_t inputMin, inputMax, outputMin, outputMax;
+    {
+        std::lock_guard<std::mutex> lock(settingsMutex_);
+        inputMin = settings_.inputMin;
+        inputMax = settings_.inputMax;
+        outputMin = settings_.outputMin;
+        outputMax = settings_.outputMax;
+    }
+    startAudioToVibeHw(inputMin, inputMax, outputMin, outputMax);
 }
 
 void Drv2605Driver::stopAudioToVibe() {
@@ -154,6 +161,7 @@ void Drv2605Driver::stopAudioToVibe() {
 }
 
 void Drv2605Driver::applySettings(const VibrationSettings& settings) {
+    std::lock_guard<std::mutex> lock(settingsMutex_);
     settings_ = settings;
 }
 
@@ -218,7 +226,12 @@ void Drv2605Driver::enterStandby() {
     writeRegister(DRV2605_REG_MODE, mode | 0x40);  // Set STANDBY bit
     standbyMode_ = true;
 
-    if (settings_.debugging) {
+    bool debugging;
+    {
+        std::lock_guard<std::mutex> lock(settingsMutex_);
+        debugging = settings_.debugging;
+    }
+    if (debugging) {
         ESP_LOGI(TAG, "Entering standby");
     }
 }
@@ -232,7 +245,12 @@ void Drv2605Driver::startAudioToVibeHw(uint8_t inputMin, uint8_t inputMax,
     setMode(DRV2605_MODE_AUDIOVIBE);
     audioToVibeActive_ = true;
 
-    if (settings_.debugging) {
+    bool debugging;
+    {
+        std::lock_guard<std::mutex> lock(settingsMutex_);
+        debugging = settings_.debugging;
+    }
+    if (debugging) {
         ESP_LOGI(TAG, "Audio-to-vibe: in[%d..%d] out[%d..%d]",
                  inputMin, inputMax, outputMin, outputMax);
     }
@@ -252,8 +270,18 @@ void Drv2605Driver::taskLoop() {
     for (;;) {
         int64_t nowMs = clock_.getTimeUs() / 1000;
 
+        // Snapshot settings once per iteration — applySettings() can be called
+        // concurrently (e.g. on every settings-UI slider drag event) from a
+        // different thread, so reading settings_.* field-by-field here would
+        // race against that assignment.
+        VibrationSettings s;
+        {
+            std::lock_guard<std::mutex> lock(settingsMutex_);
+            s = settings_;
+        }
+
         // Disabled — sleep and wait
-        if (!settings_.enable) {
+        if (!s.enable) {
             if (!standbyMode_) {
                 enterStandby();
             }
@@ -268,15 +296,15 @@ void Drv2605Driver::taskLoop() {
 
         // Process queued haptic events
         if (xQueueReceive(vibrationQueue_, &event, 0) == pdTRUE) {
-            handleVibrationEvent(event);
+            handleVibrationEvent(event, s);
             nowMs = clock_.getTimeUs() / 1000;
         }
 
         // Auto-enter audio-to-vibe if configured and idle for > 1 s
-        if (settings_.enableAudioToVibe && !audioToVibeActive_) {
+        if (s.enableAudioToVibe && !audioToVibeActive_) {
             if (nowMs - lastVibrationTimeMs_ > 1000) {
-                startAudioToVibeHw(settings_.inputMin, settings_.inputMax,
-                                   settings_.outputMin, settings_.outputMax);
+                startAudioToVibeHw(s.inputMin, s.inputMax,
+                                   s.outputMin, s.outputMax);
             }
         }
 
@@ -284,7 +312,7 @@ void Drv2605Driver::taskLoop() {
         if (nowMs - checkTimerMs > 1000) {
             uint8_t status = readRegister(DRV2605_REG_STATUS);
 
-            if (settings_.debugging) {
+            if (s.debugging) {
                 ESP_LOGI(TAG, "Status: DEV_ID=%d DIAG=%d FB=%d OT=%d OC=%d",
                          status >> 5, (status >> 3) & 1, (status >> 2) & 1,
                          (status >> 1) & 1, status & 1);
@@ -293,7 +321,10 @@ void Drv2605Driver::taskLoop() {
             if (status & 0x03) {
                 // Over-temperature or over-current — shut down
                 enterStandby();
-                settings_.enable = false;
+                {
+                    std::lock_guard<std::mutex> lock(settingsMutex_);
+                    settings_.enable = false;
+                }
                 ESP_LOGE(TAG, "Fault detected — vibration disabled");
             }
             checkTimerMs = nowMs;
@@ -303,15 +334,15 @@ void Drv2605Driver::taskLoop() {
     }
 }
 
-void Drv2605Driver::handleVibrationEvent(VibrationPreset preset) {
+void Drv2605Driver::handleVibrationEvent(VibrationPreset preset, const VibrationSettings& settings) {
     audioToVibeActive_ = false;
     setMode(DRV2605_MODE_INTTRIG);
 
-    if (!settings_.enableVibrationOnTouch) {
+    if (!settings.enableVibrationOnTouch) {
         return;
     }
 
-    if (settings_.debugging) {
+    if (settings.debugging) {
         ESP_LOGW(TAG, "Haptic event: %d", static_cast<int>(preset));
     }
 
