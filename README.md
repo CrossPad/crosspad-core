@@ -136,7 +136,8 @@ REGISTER_APP(MyApp, nullptr, "icon.png",
 
 This generates `void _register_MyApp_app()`. Platforms discover and call these at init time — ESP-IDF/PC via `generate_registry.cmake`, Arduino via static constructors.
 
-Convenience macros: `REGISTER_LVGL_APP`, `REGISTER_SIMPLE_APP`, and variants with cleanup, refresh, priority.
+Use `REGISTER_APP` directly. Apps that declare framework-managed pad logic use
+`REGISTER_APP_PL` with the pad-logic name as its final argument.
 
 ## Singleton Accessors
 
