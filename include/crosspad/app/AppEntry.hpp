@@ -55,7 +55,7 @@ struct AppEntry {
     /// Application cleanup callback
     void (*cleanup)() = nullptr;
 
-    /// Priority for auto-selection (higher = more preferred, 0 = normal)
+    /// Launcher order (higher = earlier; equal priorities keep registration order).
     int priority = 0;
 
     /// Pad-logic name auto-activated on app start
