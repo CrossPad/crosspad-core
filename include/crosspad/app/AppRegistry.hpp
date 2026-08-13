@@ -5,7 +5,7 @@
  * @brief Portable application registry singleton
  *
  * Stores registered AppEntry descriptors. Pure C++ — no platform dependencies.
- * Apps register via static constructors (AppRegistrar) or explicit registerApp() calls.
+ * Platform-generated registration functions call registerApp() during startup.
  */
 
 #include "crosspad/app/AppEntry.hpp"
@@ -16,9 +16,8 @@ namespace crosspad {
 /**
  * @brief Singleton registry of all known applications
  *
- * Thread-safety note: registration happens during static initialization
- * (before main), so no mutex is needed. Runtime registration (e.g. Power OFF)
- * should happen from a single thread before app enumeration begins.
+ * Thread-safety note: startup registration and runtime registration (e.g. Power
+ * OFF) must happen from a single thread before app enumeration begins.
  */
 class AppRegistry {
 public:

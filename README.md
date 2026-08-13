@@ -134,7 +134,8 @@ REGISTER_APP(MyApp, nullptr, "icon.png",
              nullptr, nullptr, nullptr, 0);
 ```
 
-This generates `void _register_MyApp_app()`. Platforms discover and call these at init time — ESP-IDF/PC via `generate_registry.cmake`, Arduino via static constructors.
+This generates `void _register_MyApp_app()`. Platform registry generators discover
+and call these functions at initialization.
 
 Use `REGISTER_APP` directly. Apps that declare framework-managed pad logic use
 `REGISTER_APP_PL` with the pad-logic name as its final argument.

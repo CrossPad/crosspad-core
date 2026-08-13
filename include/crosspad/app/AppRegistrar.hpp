@@ -4,48 +4,20 @@
  * @file AppRegistrar.hpp
  * @brief Registration helpers and REGISTER_APP macros
  *
- * Two registration strategies are provided:
- *
- * 1. REGISTER_APP (default) — creates a named function `_register_<name>_app()`
- *    that the platform calls at init time. Reliable on all platforms.
- *    ESP-IDF: generate_registry.cmake scans sources and generates AppRegistry_InitAll().
- *    Arduino/Linux: can scan or call explicitly.
- *
- * 2. AppRegistrar class — static-constructor pattern. Use directly on platforms
- *    where static initializers are guaranteed to be preserved (Arduino, Linux).
- *    NOT reliable on ESP-IDF due to component linker stripping.
+ * REGISTER_APP creates a named function `_register_<name>_app()` that the
+ * platform registry generator calls during initialization.
  */
 
 #include "crosspad/app/AppRegistry.hpp"
-
-namespace crosspad {
-
-/**
- * @brief Helper class whose constructor registers an app at static init time
- *
- * Use on platforms where static constructors are reliable (Arduino, Linux).
- * On ESP-IDF, use REGISTER_APP macro + generate_registry.cmake instead.
- */
-class AppRegistrar {
-public:
-    AppRegistrar(const AppEntry& entry) {
-        AppRegistry::getInstance().registerApp(entry);
-    }
-};
-
-} // namespace crosspad
 
 // ============================================================================
 // Registration macros
 // ============================================================================
 
 /**
- * @brief Full registration macro — static constructor pattern
+ * @brief Full registration macro
  *
- * Creates a static AppRegistrar whose constructor registers the app
- * at program startup. Works on all platforms when combined with
- * --whole-archive linker flag for library archives (see appLibrary
- * flag in library.json and force_link_app_libs.py).
+ * Creates a named registration function invoked by the platform registry.
  *
  * Parameters:
  *   appName      — Identifier (used as stringified name and variable suffix)
@@ -59,9 +31,6 @@ public:
  *   priority     — int, higher = more preferred for auto-selection
  */
 #ifndef REGISTER_APP
-#ifdef CROSSPAD_REGISTER_APP_NAMED_FUNCTIONS
-// Named-function pattern: creates _register_<appName>_app() callable by platform init.
-// Required on ESP-IDF where static constructors are unreliable.
 #ifdef USE_LVGL
 #define REGISTER_APP(appName, logicFunc, iconPath, createLVGL, destroyLVGL, initSimple, refreshFunc, cleanupFunc, priority) \
     void _register_##appName##_app() { \
@@ -79,20 +48,6 @@ public:
         crosspad::AppRegistry::getInstance().registerApp(entry); \
     }
 #endif
-#else
-// Static constructor pattern: works on platforms with reliable static init (Arduino, Linux).
-#ifdef USE_LVGL
-#define REGISTER_APP(appName, logicFunc, iconPath, createLVGL, destroyLVGL, initSimple, refreshFunc, cleanupFunc, priority) \
-    static crosspad::AppRegistrar reg##appName(crosspad::AppEntry{ \
-        #appName, iconPath, createLVGL, destroyLVGL, logicFunc, initSimple, refreshFunc, cleanupFunc, priority \
-    });
-#else
-#define REGISTER_APP(appName, logicFunc, iconPath, createLVGL, destroyLVGL, initSimple, refreshFunc, cleanupFunc, priority) \
-    static crosspad::AppRegistrar reg##appName(crosspad::AppEntry{ \
-        #appName, "", logicFunc, initSimple, refreshFunc, cleanupFunc, priority \
-    });
-#endif
-#endif // CROSSPAD_REGISTER_APP_NAMED_FUNCTIONS
 #endif // REGISTER_APP
 
 /**
@@ -106,9 +61,6 @@ public:
  *                  or nullptr if the app manages pad logic manually.
  */
 #ifndef REGISTER_APP_PL
-#ifdef CROSSPAD_REGISTER_APP_NAMED_FUNCTIONS
-// Named-function pattern: creates _register_<appName>_app() callable by platform init.
-// Required on ESP-IDF where static constructors are unreliable.
 #ifdef USE_LVGL
 #define REGISTER_APP_PL(appName, logicFunc, iconPath, createLVGL, destroyLVGL, initSimple, refreshFunc, cleanupFunc, priority, padLogicName) \
     void _register_##appName##_app() { \
@@ -126,18 +78,4 @@ public:
         crosspad::AppRegistry::getInstance().registerApp(entry); \
     }
 #endif
-#else
-// Static constructor pattern: works on platforms with reliable static init (Arduino, Linux).
-#ifdef USE_LVGL
-#define REGISTER_APP_PL(appName, logicFunc, iconPath, createLVGL, destroyLVGL, initSimple, refreshFunc, cleanupFunc, priority, padLogicName) \
-    static crosspad::AppRegistrar reg##appName(crosspad::AppEntry{ \
-        #appName, iconPath, createLVGL, destroyLVGL, logicFunc, initSimple, refreshFunc, cleanupFunc, priority, padLogicName \
-    });
-#else
-#define REGISTER_APP_PL(appName, logicFunc, iconPath, createLVGL, destroyLVGL, initSimple, refreshFunc, cleanupFunc, priority, padLogicName) \
-    static crosspad::AppRegistrar reg##appName(crosspad::AppEntry{ \
-        #appName, "", logicFunc, initSimple, refreshFunc, cleanupFunc, priority, padLogicName \
-    });
-#endif
-#endif // CROSSPAD_REGISTER_APP_NAMED_FUNCTIONS
 #endif // REGISTER_APP_PL
