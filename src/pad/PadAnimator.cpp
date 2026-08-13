@@ -304,6 +304,7 @@ void PadAnimator::renderCharging() {
         for (int i = 0; i < kPadCount; i++) {
             setPixel(i, (i < litCount) ? base : RgbColor(0, 0, 0));
         }
+        refresh();
         return;
     }
 
