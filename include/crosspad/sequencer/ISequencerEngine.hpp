@@ -40,6 +40,9 @@ public:
     virtual void setClickAudible(bool audible) = 0;
     virtual void setClickBpm(float bpm) = 0;
     virtual void resetClick() = 0;
+    virtual float getClickBpm() const = 0;
+    /// Index of the current beat in the bar.
+    virtual int getClickPos() const = 0;
 };
 
 } // namespace crosspad
