@@ -195,6 +195,12 @@ void PadManager::notifyPadPressure(uint8_t padIdx, uint8_t pressure) {
 // ── MIDI event handling ─────────────────────────────────────────────────
 
 void PadManager::handleMidiNoteOn(uint8_t channel, uint8_t note, uint8_t velocity) {
+    // MIDI convention: a note-on with velocity 0 is a note-off. Route it there
+    // so it clears the pad press state instead of lighting the pad.
+    if (velocity == 0) {
+        handleMidiNoteOff(channel, note);
+        return;
+    }
     uint8_t padIdx = getPadForMidiNote(note);
     if (padIdx < 16) {
         {
