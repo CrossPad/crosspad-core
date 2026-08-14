@@ -346,10 +346,10 @@ RgbColor PadLedController::calculatePadColor(uint8_t padIdx) {
     }
 
     // Aftertouch feedback — modulate brightness by live pressure. Use the pad's
-    // app-assigned color (sampler sets it via setPadColor → defaultColor) so the
-    // gradient keeps the pad's identity; fall back to pressedColor otherwise.
+    // PRESSED color (kit color_pressed): it contrasts with the resting color,
+    // so the pressure gradient stays clearly visible on the RGB grid.
     if (currentFeedbackMode_ == KeypadFeedbackMode::AFTERTOUCH && state.isPressed) {
-        RgbColor color = state.hasCustomColor ? state.defaultColor : state.pressedColor;
+        RgbColor color = state.pressedColor;
         uint8_t pressureBrightness = mapRange(state.pressure, 0, 127, 10, 255);
         color = color.Dim(pressureBrightness);
         applyBrightness(color);
