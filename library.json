@@ -21,6 +21,7 @@
             "+<protocol/Stm32CommandSender.cpp>",
             "+<protocol/Stm32MessageHandler.cpp>",
             "+<stm32/Stm32Manager.cpp>",
+            "+<stm32/Stm32ConfigSync.cpp>",
             "+<music/MusicTheory.cpp>",
             "+<midi/MidiInputHandler.cpp>",
             "+<platform/CrosspadPlatformInit.cpp>",
