@@ -2,6 +2,7 @@
 #pragma once
 
 #include <crosspad/kit/IKitManager.hpp>
+#include <ArduinoJson.h>
 #include <string>
 #include <vector>
 
@@ -42,7 +43,13 @@ public:
     void setRootPrefix(const std::string& prefix) { rootPrefix_ = prefix; }
     const std::string& rootPrefix() const { return rootPrefix_; }
 
+    /// Optional allocator for the transient kit JSON documents. Embedded
+    /// targets whose internal heap can't hold a full kit parse pass a
+    /// PSRAM-backed allocator; nullptr (default) uses the ArduinoJson default.
+    void setJsonAllocator(ArduinoJson::Allocator* alloc) { jsonAllocator_ = alloc; }
+
 protected:
+    ArduinoJson::Allocator* jsonAllocator_ = nullptr;
     std::string rootPrefix_;
     std::vector<KitInfo> kits_;
     int currentKitId_ = -1;

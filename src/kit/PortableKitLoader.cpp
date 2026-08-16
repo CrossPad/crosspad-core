@@ -202,7 +202,9 @@ bool PortableKitLoader::readKitJson(const std::string& path, KitInfo& kit,
     std::ifstream file(path);
     if (!file.is_open()) return false;
 
-    JsonDocument doc;
+    JsonDocument doc(jsonAllocator_
+                         ? jsonAllocator_
+                         : ArduinoJson::detail::DefaultAllocator::instance());
     DeserializationError err = deserializeJson(doc, file);
     file.close();
 
@@ -226,7 +228,9 @@ bool PortableKitLoader::writeKitJson(const std::string& path,
     std::ofstream file(path);
     if (!file.is_open()) return false;
 
-    JsonDocument doc;
+    JsonDocument doc(jsonAllocator_
+                         ? jsonAllocator_
+                         : ArduinoJson::detail::DefaultAllocator::instance());
     kit_serialize(kit, doc);
     serializeJson(doc, file);
     file.close();
