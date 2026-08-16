@@ -34,9 +34,31 @@ void PadLedController::begin() {
 
 void PadLedController::update() {
     if (isAnimating_) return;
+    // Coalesced mode: flush at most one refresh() per tick. On hardware a
+    // refresh is an RMT transmission that interferes with I2S audio DMA
+    // (random output clicks), so per-note-event refreshes must not reach the
+    // strip directly. The unlocked dirty read is benign — a missed flush is
+    // caught on the next tick.
+    if (!coalesceRefresh_ || !ledsDirty_ || !ledStrip_) return;
+    ledStrip_->lock();
+    if (ledsDirty_) {
+        ledsDirty_ = false;
+        ledStrip_->refresh();
+    }
+    ledStrip_->unlock();
 }
 
 // ── LED update methods ──────────────────────────────────────────────────
+
+// Push buffered pixels, or just mark them dirty for the next update() tick
+// when coalescing is on. Caller must hold the strip lock.
+void PadLedController::refreshOrMarkDirty() {
+    if (coalesceRefresh_) {
+        ledsDirty_ = true;
+    } else {
+        ledStrip_->refresh();
+    }
+}
 
 void PadLedController::updateLEDs() {
     if (isAnimating_ || !ledStrip_) return;
@@ -46,7 +68,7 @@ void PadLedController::updateLEDs() {
         RgbColor color = calculatePadColor(i);
         ledStrip_->setPixel(i, color);
     }
-    ledStrip_->refresh();
+    refreshOrMarkDirty();
     ledStrip_->unlock();
 }
 
@@ -57,7 +79,7 @@ void PadLedController::updateSingleLED(uint8_t padIdx) {
     if (isAnimating_) { ledStrip_->unlock(); return; }
     RgbColor color = calculatePadColor(padIdx);
     ledStrip_->setPixel(padIdx, color);
-    ledStrip_->refresh();
+    refreshOrMarkDirty();
     ledStrip_->unlock();
 }
 

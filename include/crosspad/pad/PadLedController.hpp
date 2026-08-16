@@ -26,6 +26,16 @@ public:
 
     void update();
 
+    // Coalesced LED refresh: when enabled, updateLEDs()/updateSingleLED() only
+    // write the pixel buffer and set a dirty flag; the actual ILedStrip
+    // refresh() happens at most once per update() tick. On hardware refresh()
+    // is an RMT transmission that interferes with the I2S audio DMA (random
+    // output clicks), so audio platforms should enable this — but ONLY when
+    // something ticks update() periodically, otherwise LEDs never repaint.
+    // Off by default (refresh() fires immediately, the historical behavior).
+    void setCoalescedRefresh(bool on) { coalesceRefresh_ = on; }
+    bool getCoalescedRefresh() const { return coalesceRefresh_; }
+
     // MIDI event handling
     void handleNoteOn(uint8_t channel, uint8_t note, uint8_t velocity);
     void handleNoteOff(uint8_t channel, uint8_t note);
@@ -103,6 +113,8 @@ private:
     KeypadAnimationMode currentAnimMode_ = KeypadAnimationMode::NONE;
     KeypadFeedbackMode currentFeedbackMode_ = KeypadFeedbackMode::AFTERTOUCH;
     bool isAnimating_ = false;
+    bool coalesceRefresh_ = false;
+    bool ledsDirty_ = false; // guarded by the strip lock
 
     // Per-pad state
     PadLedState padStates_[16];
@@ -117,6 +129,7 @@ private:
     SubscriptionHandle samplePlaybackSub_ = nullptr;
 
     // Internal
+    void refreshOrMarkDirty();
     void updateSingleLED(uint8_t padIdx);
     void updateDefaultColors();
     RgbColor calculatePadColor(uint8_t padIdx);
