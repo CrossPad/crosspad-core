@@ -173,10 +173,10 @@ bool EspEventBus::postGuiUpdateRequired(EventSource source) {
     return postEvent(EventType::GuiUpdateRequired, &source, sizeof(source));
 }
 
-bool EspEventBus::postSamplePlayback(uint8_t note, uint8_t wavIdx, bool isOn, EventSource source) {
-    SamplePlaybackData data = { .note = note, .wavIdx = wavIdx, .isOn = isOn, .source = source };
-    ESP_LOGD(TAG, "Post SamplePlayback: note=%d wav=%d on=%s src=%s",
-             note, wavIdx, isOn ? "true" : "false", getSourceName(source));
+bool EspEventBus::postSamplePlayback(uint8_t note, uint8_t wavIdx, bool isOn, EventSource source, uint8_t velocity) {
+    SamplePlaybackData data = { .note = note, .wavIdx = wavIdx, .isOn = isOn, .velocity = velocity, .source = source };
+    ESP_LOGD(TAG, "Post SamplePlayback: note=%d wav=%d on=%s vel=%d src=%s",
+             note, wavIdx, isOn ? "true" : "false", velocity, getSourceName(source));
     return postEvent(EventType::SamplePlayback, &data, sizeof(data));
 }
 

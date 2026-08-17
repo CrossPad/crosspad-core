@@ -181,8 +181,8 @@ bool FreeRtosEventBus::postGuiUpdateRequired(EventSource source) {
     return enqueue(EventType::GuiUpdateRequired, &source, sizeof(source));
 }
 
-bool FreeRtosEventBus::postSamplePlayback(uint8_t note, uint8_t wavIdx, bool isOn, EventSource source) {
-    SamplePlaybackData data{note, wavIdx, isOn, source};
+bool FreeRtosEventBus::postSamplePlayback(uint8_t note, uint8_t wavIdx, bool isOn, EventSource source, uint8_t velocity) {
+    SamplePlaybackData data{note, wavIdx, isOn, velocity, source};
     return enqueue(EventType::SamplePlayback, &data, sizeof(data));
 }
 

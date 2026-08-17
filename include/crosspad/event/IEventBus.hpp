@@ -83,7 +83,10 @@ public:
     virtual bool postTempoChanged(float bpm, EventSource source = EventSource::SequencerCallback) = 0;
     virtual bool postLiveModeChanged(bool enabled, EventSource source = EventSource::System) = 0;
     virtual bool postGuiUpdateRequired(EventSource source = EventSource::Gui) = 0;
-    virtual bool postSamplePlayback(uint8_t note, uint8_t wavIdx, bool isOn, EventSource source = EventSource::SamplePlayback) = 0;
+    /// @param velocity 1-127 playback velocity; defaults to full scale so
+    ///        callers that have no velocity (preview, kit stop-all) are
+    ///        unaffected. Ignored when isOn = false.
+    virtual bool postSamplePlayback(uint8_t note, uint8_t wavIdx, bool isOn, EventSource source = EventSource::SamplePlayback, uint8_t velocity = 127) = 0;
 
     // ── Sync posting (immediate dispatch, use from ISR or time-critical) ─
 

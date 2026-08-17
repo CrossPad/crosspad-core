@@ -98,8 +98,8 @@ bool SyncEventBus::postGuiUpdateRequired(EventSource source) {
     return true;
 }
 
-bool SyncEventBus::postSamplePlayback(uint8_t note, uint8_t wavIdx, bool isOn, EventSource source) {
-    SamplePlaybackData data{note, wavIdx, isOn, source};
+bool SyncEventBus::postSamplePlayback(uint8_t note, uint8_t wavIdx, bool isOn, EventSource source, uint8_t velocity) {
+    SamplePlaybackData data{note, wavIdx, isOn, velocity, source};
     dispatch(EventType::SamplePlayback, &data, sizeof(data));
     return true;
 }

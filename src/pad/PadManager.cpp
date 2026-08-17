@@ -538,6 +538,11 @@ void PadManager::registerPadLogic(const std::string& appName, std::shared_ptr<IP
 void PadManager::setActivePadLogic(const std::string& appName) {
     std::unique_lock<std::mutex> lock(logicMutex_);
 
+    // An empty name means "no app owns the pads" — which is not the same as
+    // "the pads go dead". When a base instrument is installed it takes over,
+    // so pads keep playing everywhere in the system until an app preempts it.
+    const std::string target = appName.empty() ? basePadLogicName_ : appName;
+
     if (activePadLogic_ && !activePadLogicName_.empty()) {
         printf("PadManager: Deactivating pad logic '%s'\n", activePadLogicName_.c_str());
         auto oldLogic = activePadLogic_;
@@ -553,24 +558,41 @@ void PadManager::setActivePadLogic(const std::string& appName) {
         activePadLogicName_ = "";
     }
 
-    if (appName.empty()) {
+    if (target.empty()) {
         printf("PadManager: No app specified, using default pad logic\n");
         return;
     }
 
-    auto it = padLogicHandlers_.find(appName);
+    auto it = padLogicHandlers_.find(target);
     if (it != padLogicHandlers_.end()) {
         activePadLogic_ = it->second;
-        activePadLogicName_ = appName;
-        printf("PadManager: Activating pad logic '%s'\n", appName.c_str());
+        activePadLogicName_ = target;
+        printf("PadManager: Activating pad logic '%s'\n", target.c_str());
 
         auto newLogic = activePadLogic_;
         lock.unlock();
         newLogic->onActivate(*this);
         lock.lock();
     } else {
-        printf("PadManager: App '%s' not found, using default pad logic\n", appName.c_str());
+        printf("PadManager: App '%s' not found, using default pad logic\n", target.c_str());
     }
+}
+
+void PadManager::setBasePadLogic(const std::string& appName) {
+    {
+        std::lock_guard<std::mutex> lock(logicMutex_);
+        if (basePadLogicName_ == appName) return;
+        basePadLogicName_ = appName;
+    }
+    // Take effect now if nothing else currently owns the pads.
+    if (getActivePadLogic().empty()) {
+        setActivePadLogic("");
+    }
+}
+
+std::string PadManager::getBasePadLogic() const {
+    std::lock_guard<std::mutex> lock(logicMutex_);
+    return basePadLogicName_;
 }
 
 std::string PadManager::getActivePadLogic() const {

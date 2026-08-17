@@ -58,6 +58,7 @@ struct SamplePlaybackData {
     uint8_t note;       ///< Pad index (0-15), or 16+ for preview channel
     uint8_t wavIdx;     ///< Actual sample index being played
     bool isOn;          ///< true = note on, false = note off
+    uint8_t velocity;   ///< 1-127 playback velocity (ignored when isOn = false)
     EventSource source;
 };
 

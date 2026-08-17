@@ -114,7 +114,19 @@ public:
 
     // Pad Logic Application Management
     void registerPadLogic(const std::string& appName, std::shared_ptr<IPadLogicHandler> handler);
+    /// Activate appName's logic. An empty name hands the pads to the base
+    /// logic (see setBasePadLogic()) rather than leaving them dead.
     void setActivePadLogic(const std::string& appName);
+    /// Install the system instrument: the logic that owns the pads whenever no
+    /// app has claimed them, so pads keep playing outside any app. Apps preempt
+    /// it through pushPadLogic()/setActivePadLogic() and hand it back on
+    /// teardown. Pass "" to remove it (pads go silent with no app again).
+    ///
+    /// The handler must stay registered for as long as it is the base — do not
+    /// unregisterPadLogic() a base handler on app teardown, or the fallback
+    /// resolves to nothing.
+    void setBasePadLogic(const std::string& appName);
+    std::string getBasePadLogic() const;
     std::string getActivePadLogic() const;
     void unregisterPadLogic(const std::string& appName);
     std::vector<std::string> getRegisteredPadLogics() const;
@@ -171,6 +183,7 @@ private:
     std::map<std::string, std::shared_ptr<IPadLogicHandler>> padLogicHandlers_;
     std::shared_ptr<IPadLogicHandler> activePadLogic_ = nullptr;
     std::string activePadLogicName_;
+    std::string basePadLogicName_;   ///< system instrument; owns pads when no app does
     std::vector<std::string> padLogicStack_;
 
     // RGB Callback Manager
