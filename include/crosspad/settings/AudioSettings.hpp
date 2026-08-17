@@ -205,6 +205,19 @@ public:
         json["mute"] = mute;
         json["inVolume"] = inVolume;
         json["outVolume"] = outVolume;
+        // speakersEnabled and the per-codec matrices are what the hardware
+        // actually plays at — without them a settings file round-trips silent.
+        json["speakersEnabled"] = speakersEnabled;
+        JsonArray outCodec = json["outVolumeCodec"].to<JsonArray>();
+        JsonArray inCodec = json["inVolumeCodec"].to<JsonArray>();
+        for (int c = 0; c < 2; c++) {
+            JsonArray outRow = outCodec.add<JsonArray>();
+            JsonArray inRow = inCodec.add<JsonArray>();
+            for (int o = 0; o < 2; o++) {
+                outRow.add(outVolumeCodec[c][o]);
+                inRow.add(inVolumeCodec[c][o]);
+            }
+        }
         JsonObject delayJson = json["delay"].to<JsonObject>();
         delay.toJson(delayJson);
         JsonObject reverbJson = json["reverb"].to<JsonObject>();
@@ -231,6 +244,17 @@ public:
         mute = json["mute"];
         inVolume = json["inVolume"];
         outVolume = json["outVolume"];
+        // Guarded: files written before these keys existed must keep the
+        // constructor's volumes rather than being muted to 0.
+        speakersEnabled = json["speakersEnabled"] | speakersEnabled;
+        JsonVariantConst outCodec = json["outVolumeCodec"];
+        JsonVariantConst inCodec = json["inVolumeCodec"];
+        for (int c = 0; c < 2; c++) {
+            for (int o = 0; o < 2; o++) {
+                outVolumeCodec[c][o] = outCodec[c][o] | outVolumeCodec[c][o];
+                inVolumeCodec[c][o] = inCodec[c][o] | inVolumeCodec[c][o];
+            }
+        }
         delay.fromJson(json["delay"]);
         reverb.fromJson(json["reverb"]);
         distortion.fromJson(json["distortion"]);

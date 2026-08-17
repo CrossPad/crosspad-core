@@ -8,12 +8,14 @@ using namespace crosspad;
 
 TEST_CASE("Stm32Settings: defaults match STM compiled defaults", "[settings][stm]") {
     Stm32Settings s;
-    REQUIRE(s.audioEn == 0);
+    // audioEn defaults ON and mirrors AudioSettings::speakersEnabled; it used to
+    // be 0, which muted the amp on every config push.
+    REQUIRE(s.audioEn == 1);
     REQUIRE(s.autoSleep == 1);
     REQUIRE(s.midiChannel == 0);
     REQUIRE(s.noteOffset == 0);
     REQUIRE(s.keypadEnabled == true);
-    REQUIRE(s.dimTimeoutS == 1000);
+    REQUIRE(s.dimTimeoutS == 600);   // matches a preset the settings UI can show
     REQUIRE(s.sleepTimeoutS == 1800);
     REQUIRE(s.longPressMs == 2000);
     REQUIRE(s.wakeBrightness == 50);

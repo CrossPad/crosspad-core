@@ -18,6 +18,7 @@
             "+<pad/PadAnimator.cpp>",
             "+<pad/RGBCallbackManager.cpp>",
             "+<settings/CrosspadSettings.cpp>",
+            "+<settings/SettingsIo.cpp>",
             "+<protocol/Stm32CommandSender.cpp>",
             "+<protocol/Stm32MessageHandler.cpp>",
             "+<stm32/Stm32Manager.cpp>",

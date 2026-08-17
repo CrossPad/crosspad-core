@@ -53,6 +53,7 @@ set(CORE_SOURCES
     # Settings
     ${CORE_DIR}/src/settings/CrosspadSettings.cpp
     ${CORE_DIR}/src/settings/ISettingsUI.cpp
+    ${CORE_DIR}/src/settings/SettingsIo.cpp
 
     # Protocol
     ${CORE_DIR}/src/protocol/Stm32CommandSender.cpp

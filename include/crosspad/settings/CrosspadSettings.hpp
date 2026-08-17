@@ -54,6 +54,9 @@ public:
     uint8_t RGBbrightness;
     bool quickSettingsEnabled; // status-bar drawer (header dropdown + arrow) enabled
     bool AudioEngineEnabled;
+    /// Preferred USB device profile applied at boot: false = CDC+MIDI (OTA/console
+    /// available), true = USB Audio (UAC2). Switching re-enumerates the device.
+    bool usbAudioEnabled;
     uint8_t Kit;
 
 private:
@@ -71,6 +74,7 @@ private:
         RGBbrightness = 100;
         quickSettingsEnabled = true;
         AudioEngineEnabled = true;
+        usbAudioEnabled = false;   // CDC+MIDI by default — keeps OTA/console reachable
         Kit = 0;
         masterFX = AudioSettings();
         previewAudio = AudioSettings();

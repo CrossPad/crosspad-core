@@ -86,6 +86,10 @@ bool Stm32ConfigSync::readBootCount(uint8_t& out) {
     return bus_.readReg8(REG_IDENT_BOOT_COUNT, &out);
 }
 
+bool Stm32ConfigSync::readReg8(uint16_t reg, uint8_t& out) {
+    return bus_.readReg8(reg, &out);
+}
+
 bool Stm32ConfigSync::readPadVelRaw(uint8_t padIdx, uint8_t& out) {
     if (padIdx >= Stm32Settings::kPads) return false;
     return bus_.readReg8((uint16_t)(REG_IN_PAD_VELRAW_BASE + padIdx), &out);

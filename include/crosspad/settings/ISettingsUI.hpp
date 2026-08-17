@@ -28,6 +28,18 @@ public:
     /// Request STM32 co-processor to enter DFU mode. Default no-op for platforms
     /// without an STM32 (PC sim). Implementers send the DFU sysex command.
     virtual void enterStm32Dfu() {}
+
+    /// Rows for the Info page: firmware/library revisions, co-processor identity,
+    /// serial number — whatever the platform can report. The UI walks 0..count-1
+    /// and shows label/value pairs, so platforms stay free to add entries without
+    /// touching the shared settings UI. Strings must stay valid until the next
+    /// call (a static/member buffer is fine).
+    virtual int getInfoRowCount() { return 0; }
+    virtual bool getInfoRow(int /*idx*/, const char** /*label*/, const char** /*value*/) { return false; }
+
+    /// Directory for settings backup files (e.g. "/sdcard"). nullptr = the
+    /// platform has no removable storage, and the UI hides the backup actions.
+    virtual const char* getBackupDir() { return nullptr; }
 };
 
 /// Set the active settings UI callback (called by platform before opening Settings)

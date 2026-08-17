@@ -1,8 +1,10 @@
 #pragma once
 #include <cstdint>
 #include <cstdio>
+#include <ArduinoJson.h>
 #include "crosspad/settings/IKeyValueStore.hpp"
 #include "crosspad/config/crosspad_config.h"
+#include "crosspad/stm32/VelocityCurve.hpp"   // STM32_VEL_INHERIT sentinel
 
 namespace crosspad {
 
@@ -183,6 +185,118 @@ struct Stm32Settings {
         s.saveU8("cfg_stm", "p_vc", padVelCurveG);
         s.saveU8("cfg_stm", "p_vf", padVelFloorG);
 #endif
+    }
+
+    // ── JSON (settings files on the SD card) ────────────────────────────────
+    // Kept apart from the KV-store path above because the source is different:
+    // a file can be hand-edited or copied from another unit, so every numeric
+    // read saturates into the field's valid range. A plain narrowing assign
+    // would wrap (99999 -> 0x9F) and push a nonsense value to the STM.
+
+    /// Pad tuning subset — split out so the standalone pad file and the "stm"
+    /// section of a full settings file use one set of key names.
+    void padsToJson(JsonObject& json) const {
+        json["velCurveDef"] = velCurveDef;
+        json["velFloorDef"] = velFloorDef;
+        json["ccPressBase"] = ccPressBase;
+        json["panCcEn"]     = panCcEn;
+        json["ccPanBase"]   = ccPanBase;
+        json["analogMinMs"] = analogMinMs;
+        json["analogDelta"] = analogDelta;
+        JsonArray sens = json["padSensitivity"].to<JsonArray>();
+        JsonArray lr   = json["padLrRatio"].to<JsonArray>();
+        JsonArray an   = json["padAnalogMode"].to<JsonArray>();
+        JsonArray vc   = json["padVelCurve"].to<JsonArray>();
+        JsonArray vf   = json["padVelFloor"].to<JsonArray>();
+        for (int i = 0; i < kPads; ++i) {
+            sens.add(sensitivity(i));
+            lr.add(lrRatio(i));
+            an.add(analogMode(i));
+            vc.add(velCurve(i));
+            vf.add(velFloor(i));
+        }
+    }
+
+    void padsFromJson(const JsonObject& json) {
+        velCurveDef = (uint8_t)jsonInt(json["velCurveDef"], velCurveDef, 0, 2);
+        velFloorDef = (uint8_t)jsonInt(json["velFloorDef"], velFloorDef, 0, 127);
+        ccPressBase = (uint8_t)jsonInt(json["ccPressBase"], ccPressBase, 0, 127);
+        panCcEn     = (uint8_t)jsonInt(json["panCcEn"], panCcEn, 0, 1);
+        ccPanBase   = (uint8_t)jsonInt(json["ccPanBase"], ccPanBase, 0, 127);
+        analogMinMs = (uint8_t)jsonInt(json["analogMinMs"], analogMinMs, 0, 255);
+        analogDelta = (uint8_t)jsonInt(json["analogDelta"], analogDelta, 0, 255);
+
+        JsonVariantConst sens = json["padSensitivity"];
+        JsonVariantConst lr   = json["padLrRatio"];
+        JsonVariantConst an   = json["padAnalogMode"];
+        JsonVariantConst vc   = json["padVelCurve"];
+        JsonVariantConst vf   = json["padVelFloor"];
+        // Descending, so pad 0 is the value that sticks on GLOBAL pad-config
+        // builds where all five accessors alias a single variable. On FULL
+        // builds the direction makes no difference.
+        for (int i = kPads - 1; i >= 0; --i) {
+            sensitivity(i) = (uint16_t)jsonInt(sens[i], sensitivity(i), 1, 4095);
+            lrRatio(i)     = (uint8_t)jsonInt(lr[i], lrRatio(i), 1, 99);
+            analogMode(i)  = (uint8_t)jsonInt(an[i], analogMode(i), 0, 3);
+            velCurve(i)    = (uint8_t)jsonInherit(vc[i], velCurve(i), 0, 2);
+            velFloor(i)    = (uint8_t)jsonInherit(vf[i], velFloor(i), 0, 127);
+        }
+    }
+
+    void toJson(JsonObject& json) const {
+        json["audioEn"]        = audioEn;
+        json["autoSleep"]      = autoSleep;
+        json["midiChannel"]    = midiChannel;
+        json["noteOffset"]     = noteOffset;
+        json["keypadEnabled"]  = keypadEnabled;
+        json["en3v3Hold"]      = en3v3Hold;
+        json["dimTimeoutS"]    = dimTimeoutS;
+        json["sleepTimeoutS"]  = sleepTimeoutS;
+        json["longPressMs"]    = longPressMs;
+        json["usbSuspendS"]    = usbSuspendS;
+        json["wakeBrightness"] = wakeBrightness;
+        json["encCcMode"]      = encCcMode;
+        json["encCcNum"]       = encCcNum;
+        json["encCcChan"]      = encCcChan;
+        json["encCcStep"]      = encCcStep;
+        JsonObject pads = json["pads"].to<JsonObject>();
+        padsToJson(pads);
+    }
+
+    void fromJson(const JsonObject& json) {
+        audioEn        = (uint8_t)jsonInt(json["audioEn"], audioEn, 0, 1);
+        autoSleep      = (uint8_t)jsonInt(json["autoSleep"], autoSleep, 0, 1);
+        midiChannel    = (uint8_t)jsonInt(json["midiChannel"], midiChannel, 0, 15);
+        noteOffset     = (int8_t)jsonInt(json["noteOffset"], noteOffset, -127, 127);
+        keypadEnabled  = json["keypadEnabled"] | keypadEnabled;
+        en3v3Hold      = (uint8_t)jsonInt(json["en3v3Hold"], en3v3Hold, 0, 1);
+        dimTimeoutS    = (uint16_t)jsonInt(json["dimTimeoutS"], dimTimeoutS, 0, 65535);
+        sleepTimeoutS  = (uint16_t)jsonInt(json["sleepTimeoutS"], sleepTimeoutS, 0, 65535);
+        longPressMs    = (uint16_t)jsonInt(json["longPressMs"], longPressMs, 0, 65535);
+        usbSuspendS    = (uint8_t)jsonInt(json["usbSuspendS"], usbSuspendS, 0, 255);
+        wakeBrightness = (uint8_t)jsonInt(json["wakeBrightness"], wakeBrightness, 0, 100);
+        encCcMode      = (uint8_t)jsonInt(json["encCcMode"], encCcMode, 0, 3);
+        encCcNum       = (uint8_t)jsonInt(json["encCcNum"], encCcNum, 0, 127);
+        encCcChan      = (uint8_t)jsonInt(json["encCcChan"], encCcChan, 0, 15);
+        encCcStep      = (uint8_t)jsonInt(json["encCcStep"], encCcStep, 1, 127);
+        if (json["pads"].is<JsonObject>()) {
+            padsFromJson(json["pads"]);
+        }
+    }
+
+    /// Clamped read. An absent or non-numeric key leaves `cur` alone, so a file
+    /// written by an older firmware keeps this field's current value.
+    static long long jsonInt(JsonVariantConst v, long long cur, long long lo, long long hi) {
+        if (!v.is<long long>()) return cur;
+        long long n = v.as<long long>();
+        return n < lo ? lo : (n > hi ? hi : n);
+    }
+
+    /// Same, plus the per-pad 0xFF "inherit the global default" sentinel, which
+    /// is legal even though it sits outside the value range.
+    static long long jsonInherit(JsonVariantConst v, long long cur, long long lo, long long hi) {
+        if (v.is<long long>() && v.as<long long>() == STM32_VEL_INHERIT) return STM32_VEL_INHERIT;
+        return jsonInt(v, cur, lo, hi);
     }
 };
 

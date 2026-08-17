@@ -25,6 +25,9 @@ public:
     bool pushAll(const Stm32Settings& s);
     bool writePadConfig(uint8_t padIdx, const Stm32Settings& s);
     bool readBootCount(uint8_t& out);
+    /// Generic single-register read — used by the Info page to report the STM
+    /// firmware/protocol identity without teaching this class every register.
+    bool readReg8(uint16_t reg, uint8_t& out);
     bool readPadVelRaw(uint8_t padIdx, uint8_t& out);
     bool readPadLive(uint8_t padIdx, Stm32PadLive& out);
     bool writeReg8(uint16_t reg, uint8_t v);
