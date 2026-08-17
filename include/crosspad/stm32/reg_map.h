@@ -140,6 +140,9 @@ extern "C" {
 #define REG_CMD_RESET_ESP           (REG_COMMAND_BASE + 0x03)
 #define REG_CMD_SOFT_RESET          (REG_COMMAND_BASE + 0x04)
 #define REG_CMD_FIND_PADS           (REG_COMMAND_BASE + 0x05)
+/* ESP-side user input (touch/GUI). Resets the STM idle timer; KEEPALIVE must not,
+ * or the 5 s link watchdog would make dim/sleep unreachable. */
+#define REG_CMD_USER_ACTIVITY       (REG_COMMAND_BASE + 0x0D)
 
 /* LED override (RW). */
 #define REG_LED1_MODE               (REG_LED_BASE     + 0x00)

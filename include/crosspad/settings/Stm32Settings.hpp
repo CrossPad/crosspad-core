@@ -13,7 +13,11 @@ struct Stm32Settings {
     static constexpr int kPads = 16;
 
     // system
-    uint8_t audioEn       = 0;
+    // Speaker amplifier enable (REG_CTL_AUDIO_EN → power_set_amp_enable).
+    // Mirrors AudioSettings::speakersEnabled — CrosspadSettings::loadFrom keeps
+    // the two in sync, so the amp state has one owner (the Audio settings page).
+    // Was 0, which silently muted the speakers on every push.
+    uint8_t audioEn       = 1;
     uint8_t autoSleep     = 1;
     uint8_t midiChannel   = 0;     // 0..15
     int8_t  noteOffset    = 0;     // signed semitone offset
@@ -23,7 +27,9 @@ struct Stm32Settings {
     uint8_t en3v3Hold     = 1;
 
     // timeouts
-    uint16_t dimTimeoutS  = 1000;
+    // 600 s, not 1000: the settings UI offers a fixed preset list and 1000 is not
+    // in it, so the dropdown fell back to "Never" while a live 1000 s timeout ran.
+    uint16_t dimTimeoutS  = 600;
     uint16_t sleepTimeoutS = 1800;
     uint16_t longPressMs  = 2000;
     uint8_t  usbSuspendS  = 30;

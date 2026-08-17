@@ -1,5 +1,6 @@
 #include "crosspad/stm32/Stm32Manager.hpp"
 #include "crosspad/stm32/Stm32ConfigSync.hpp"
+#include "crosspad/stm32/reg_map.h"
 #include <cstdio>
 
 namespace crosspad {
@@ -108,12 +109,36 @@ void Stm32Manager::maintenanceLoop() {
             lastRouting = now;
         }
 
+        // ESP-side user input (touch/GUI) — tell the STM so its idle timer sees
+        // interaction that never touches the pad scan.
+        if (userActivityPending_) {
+            userActivityPending_ = false;
+            if (configSync_) configSync_->writeReg8(REG_CMD_USER_ACTIVITY, 1);
+        }
+
+        // Speaker amp: enable only while the output bus actually carries signal
+        // (peaks fed from the audio thread). Writes only on a decision change so
+        // the I2C bus stays quiet; ampApplied_ < 0 forces a write after a
+        // config push, which sets REG_CTL_AUDIO_EN from settings behind our back.
+        if (configSync_) {
+            if (settings_) ampGate_.setAllowed(settings_->masterFX.speakersEnabled);
+            bool wantAmp = ampGate_.poll((uint32_t)(now * portTICK_PERIOD_MS));
+            if (ampApplied_ < 0 || (bool)ampApplied_ != wantAmp) {
+                if (configSync_->writeReg8(REG_CTL_AUDIO_EN, wantAmp ? 1 : 0)) {
+                    ampApplied_ = wantAmp ? 1 : 0;
+                }
+            }
+        }
+
         // Detect STM reset (boot count changed) -> re-push full config.
         // now - lastRouting == 0 only on the tick the routing block above just set lastRouting = now -> polls boot count on the 3s routing cadence.
         if (configSync_ && settings_ && (now - lastRouting == 0)) {
             uint8_t bc = 0;
             if (configSync_->readBootCount(bc) && stm32ShouldResync(lastBootCount_, bc)) {
-                if (configSync_->pushAll(settings_->stm)) lastBootCount_ = bc;
+                if (configSync_->pushAll(settings_->stm)) {
+                    lastBootCount_ = bc;
+                    ampApplied_ = -1;   // pushAll wrote AUDIO_EN — re-assert the gate
+                }
             }
         }
 

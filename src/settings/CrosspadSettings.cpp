@@ -22,6 +22,7 @@ void CrosspadSettings::loadFrom(IKeyValueStore& store) {
         }
     }
     masterFX.mute            = store.readBool("cfg_audio", "mute", false);
+    masterFX.speakersEnabled = store.readBool("cfg_audio", "spk_en", true);
     masterFX.inVolume        = store.readU8("cfg_audio", "in_vol", 50);
     masterFX.outVolume       = store.readU8("cfg_audio", "out_vol", 50);
     masterFX.delay.bypass    = store.readBool("cfg_audio", "delay_byp", true);
@@ -73,6 +74,8 @@ void CrosspadSettings::loadFrom(IKeyValueStore& store) {
     wireless.enableUDP       = store.readBool("cfg_wireless", "udp", true);
     wireless.enableTCP       = store.readBool("cfg_wireless", "tcp", true);
     wireless.enableWebServer = store.readBool("cfg_wireless", "websrv", true);
+    wireless.bleMidiMode       = store.readU8("cfg_wireless", "ble_mode", 0);
+    wireless.bleMidiNoteOffset = (int8_t)store.readU8("cfg_wireless", "ble_noff", 0);
 
     // STM Routing
     stmRouting.RoutingMatrixEnabled = store.readBool("cfg_stm_rt", "routing_en", true);
@@ -101,6 +104,12 @@ void CrosspadSettings::loadFrom(IKeyValueStore& store) {
 
     // STM running config
     stm.load(store);
+
+    // The speaker amplifier has two representations: AudioSettings::speakersEnabled
+    // (what the UI edits) and Stm32Settings::audioEn (what Stm32ConfigSync pushes
+    // to REG_CTL_AUDIO_EN). Let the UI-facing one win so a stale audio_en=0 in NVS
+    // cannot keep muting the speakers on every config push.
+    stm.audioEn = masterFX.speakersEnabled ? 1 : 0;
 }
 
 void CrosspadSettings::saveTo(IKeyValueStore& store) {
@@ -125,6 +134,7 @@ void CrosspadSettings::saveTo(IKeyValueStore& store) {
         store.saveU8("cfg_audio_eng", "fc_idx", fcIdx);
     }
     store.saveBool("cfg_audio", "mute", masterFX.mute);
+    store.saveBool("cfg_audio", "spk_en", masterFX.speakersEnabled);
     store.saveU8("cfg_audio", "in_vol", masterFX.inVolume);
     store.saveU8("cfg_audio", "out_vol", masterFX.outVolume);
     store.saveBool("cfg_audio", "delay_byp", masterFX.delay.bypass);
@@ -176,6 +186,8 @@ void CrosspadSettings::saveTo(IKeyValueStore& store) {
     store.saveBool("cfg_wireless", "udp", wireless.enableUDP);
     store.saveBool("cfg_wireless", "tcp", wireless.enableTCP);
     store.saveBool("cfg_wireless", "websrv", wireless.enableWebServer);
+    store.saveU8("cfg_wireless", "ble_mode", wireless.bleMidiMode);
+    store.saveU8("cfg_wireless", "ble_noff", (uint8_t)wireless.bleMidiNoteOffset);
 
     // STM Routing
     store.saveBool("cfg_stm_rt", "routing_en", stmRouting.RoutingMatrixEnabled);
@@ -203,6 +215,7 @@ void CrosspadSettings::saveTo(IKeyValueStore& store) {
     store.saveU8("cfg_system", "kit", Kit);
 
     // STM running config
+    stm.audioEn = masterFX.speakersEnabled ? 1 : 0;
     stm.save(store);
 }
 

@@ -8,6 +8,7 @@
 #include "crosspad/settings/CrosspadSettings.hpp"
 #include "crosspad/status/CrosspadStatus.hpp"
 #include "crosspad/stm32/Stm32ConfigSync.hpp"
+#include "crosspad/audio/SpeakerAmpGate.hpp"
 
 namespace crosspad {
 
@@ -58,6 +59,15 @@ public:
     void requestKeepAlive() { keepAliveRequested_ = true; }
 
     /**
+     * @brief Report ESP-side user input (touch, GUI navigation) to the STM.
+     *
+     * Touch never reaches the STM pad scan, so without this the idle timer would
+     * only see pads/encoder/buttons. Flags only — the maintenance task does the
+     * I2C write, so this is safe from LVGL/input callbacks.
+     */
+    void notifyUserActivity() { userActivityPending_ = true; }
+
+    /**
      * @brief Blocking DFU poll loop — checks status and waits for button
      */
     void checkDfuMode();
@@ -66,6 +76,15 @@ public:
     void setDfuButtonCheckCallback(DfuButtonCheckCallback cb) { dfuButtonCb_ = std::move(cb); }
     void setConfigSync(Stm32ConfigSync* sync) { configSync_ = sync; }
     Stm32ConfigSync* configSync() const { return configSync_; }
+
+    /**
+     * @brief Level-driven speaker amp policy.
+     *
+     * The audio thread feeds it peaks via submitLevel(); the maintenance loop
+     * polls it and writes REG_CTL_AUDIO_EN only when the decision changes, so
+     * the amp draws no current while nothing is playing.
+     */
+    SpeakerAmpGate& ampGate() { return ampGate_; }
 
 private:
     static void taskEntry(void* param);
@@ -78,6 +97,7 @@ private:
     TaskHandle_t taskHandle_ = nullptr;
     bool running_ = false;
     volatile bool keepAliveRequested_ = false;
+    volatile bool userActivityPending_ = false;
     uint8_t lastBrightness_ = 0xFF; // impossible initial value → first call always sends
 
     ResetCallback resetCb_;
@@ -85,6 +105,9 @@ private:
 
     Stm32ConfigSync* configSync_ = nullptr;
     int lastBootCount_ = -1;   // <0 = never synced
+
+    SpeakerAmpGate ampGate_;
+    int ampApplied_ = -1;      // <0 = unknown, forces the next decision to be written
 };
 
 } // namespace crosspad

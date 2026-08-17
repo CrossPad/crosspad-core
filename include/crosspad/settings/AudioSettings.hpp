@@ -171,7 +171,15 @@ public:
     bool speakersEnabled;
     uint8_t inVolume;
     uint8_t outVolume;
-    // Per-codec per-output volumes: [codec][out] where codec in {0,1}, out in {0=OUT1,1=OUT2}
+    // Per-codec per-output volumes: [codec][out] where codec in {0,1}, out in {0=OUT1,1=OUT2}.
+    // Range is 0..100 (the ES8388 volume range) — UI sliders must not exceed it.
+    //
+    // Platform mapping (same NVS keys, different wiring — do not "unify" without
+    // touching the hardware):
+    //   ESP-IDF (dual codec): [0][0] = codec 0 = speakers, [1][0] = codec 1 =
+    //       headphones. The BSP only exposes whole-codec volume, so [*][1] is unused.
+    //   Arduino: OUT1 (=[c][0]) is the headphone amp and OUT2 (=[c][1]) the speaker
+    //       amp, both codecs driven together.
     uint8_t outVolumeCodec[2][2];
     uint8_t inVolumeCodec[2][2];
     Delay delay;
