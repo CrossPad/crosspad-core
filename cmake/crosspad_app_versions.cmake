@@ -73,6 +73,13 @@ function(_crosspad_appver_entry out_var dir app_id manifest_text)
         set(_dirty "true")
     endif()
 
+    # A directory that is not its own repository (an app kept in-tree rather
+    # than as a submodule) resolves to the PARENT repo's commit. Say so, or the
+    # reader compares that hash against the app repo and sees noise.
+    if(NOT EXISTS "${dir}/.git")
+        set(_ref "in-tree")
+    endif()
+
     get_filename_component(_name "${dir}" NAME)
     set(${out_var}
         "    { \"${_name}\", \"${app_id}\", \"${_commit}\", \"${_ref}\", ${_dirty} },\n"
