@@ -1,0 +1,62 @@
+{
+  "version": 1,
+  "description": "Machine-readable catalog of CrossPad compile-time config. Mirrors Configuration.h / Configuration_adv.h; the headers stay the documented, hand-editable source of defaults, this file is what the app manager TUI renders and what generates -D overrides.",
+  "groups": [
+    { "id": "board", "title": "Board", "help": "PCB revision the firmware targets." },
+    { "id": "pads", "title": "Pads", "help": "Pad data model depth and pad editors." },
+    { "id": "ui", "title": "User interface", "help": "Optional settings screens and overlays." }
+  ],
+  "flags": [
+    {
+      "name": "CROSSPAD_BOARD",
+      "type": "enum",
+      "group": "board",
+      "default": "BOARD_CROSSPAD_PC",
+      "values": [
+        { "value": "BOARD_CROSSPAD_V1", "label": "CrossPad v1" },
+        { "value": "BOARD_CROSSPAD_V2", "label": "CrossPad v2" },
+        { "value": "BOARD_CROSSPAD_PC", "label": "PC simulator" }
+      ],
+      "help": "Selects the per-revision board profile (board_v1.h / board_v2.h / board_pc.h) that supplies tuned default values.",
+      "managed_by": { "esp-idf": "kconfig" },
+      "platforms": ["esp-idf", "arduino", "pc"]
+    },
+    {
+      "name": "CROSSPAD_PAD_CONFIG_LEVEL",
+      "type": "enum",
+      "group": "pads",
+      "default": "CROSSPAD_PAD_CONFIG_FULL",
+      "values": [
+        { "value": "CROSSPAD_PAD_CONFIG_FULL", "label": "FULL — 16 per-pad values" },
+        { "value": "CROSSPAD_PAD_CONFIG_GLOBAL", "label": "GLOBAL — one value for all pads" }
+      ],
+      "help": "Pad tuning depth. GLOBAL collapses the 16-element arrays to a single value: less RAM, fewer NVS keys, and the per-pad editors compile out.",
+      "platforms": ["esp-idf", "arduino", "pc"]
+    },
+    {
+      "name": "FEAT_PAD_EDITOR",
+      "type": "bool",
+      "group": "pads",
+      "default": true,
+      "help": "Interactive per-pad STM analog tuning screen (Settings -> Analog/Velocity -> Per-Pad Tuning).",
+      "requires": ["CROSSPAD_PAD_CONFIG_LEVEL==CROSSPAD_PAD_CONFIG_FULL"],
+      "platforms": ["esp-idf", "arduino", "pc"]
+    },
+    {
+      "name": "FEAT_SETTINGS_BACKUP",
+      "type": "bool",
+      "group": "ui",
+      "default": true,
+      "help": "Settings -> Backup (SD): export/import settings and pad tuning as JSON. Drop on units without a card slot.",
+      "platforms": ["esp-idf", "arduino", "pc"]
+    },
+    {
+      "name": "FEAT_PERF_STATS",
+      "type": "bool",
+      "group": "ui",
+      "default": true,
+      "help": "Settings -> System -> Perf Stats: FPS / CPU / memory overlays in the status bar.",
+      "platforms": ["esp-idf", "arduino", "pc"]
+    }
+  ]
+}

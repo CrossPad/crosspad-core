@@ -35,7 +35,24 @@
 // Comment a line out to drop the feature (Marlin convention). Each is
 // #ifndef-guarded so the build system can force it on with -D.
 
+// Feature toggles are 1/0 values rather than Marlin's bare presence, because a
+// bare #define cannot be switched OFF from the build system — and the whole
+// point of the #ifndef guard is that a profile can force a flag either way with
+// -DFEAT_X=0. Editing the value here still works exactly like commenting a
+// Marlin line out.
+
 // Full STM per-pad tuning editor (LVGL screen). Auto-dropped unless level==FULL.
 #ifndef FEAT_PAD_EDITOR
-#  define FEAT_PAD_EDITOR
+#  define FEAT_PAD_EDITOR 1
+#endif
+
+// Settings -> Backup (SD): export/import of the settings and pad-tuning JSON
+// files. Drop on units with no card slot, or to save flash.
+#ifndef FEAT_SETTINGS_BACKUP
+#  define FEAT_SETTINGS_BACKUP 1
+#endif
+
+// Settings -> System -> Perf Stats: FPS/CPU/memory overlays in the status bar.
+#ifndef FEAT_PERF_STATS
+#  define FEAT_PERF_STATS 1
 #endif
