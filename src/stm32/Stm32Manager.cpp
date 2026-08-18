@@ -123,6 +123,10 @@ void Stm32Manager::maintenanceLoop() {
         if (configSync_) {
             if (settings_) ampGate_.setAllowed(settings_->masterFX.speakersEnabled);
             bool wantAmp = ampGate_.poll((uint32_t)(now * portTICK_PERIOD_MS));
+            if (ampResyncPending_) {
+                ampResyncPending_ = false;
+                ampApplied_ = -1;
+            }
             if (ampApplied_ < 0 || (bool)ampApplied_ != wantAmp) {
                 if (configSync_->writeReg8(REG_CTL_AUDIO_EN, wantAmp ? 1 : 0)) {
                     ampApplied_ = wantAmp ? 1 : 0;

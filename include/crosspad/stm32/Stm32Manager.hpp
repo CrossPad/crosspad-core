@@ -86,6 +86,17 @@ public:
      */
     SpeakerAmpGate& ampGate() { return ampGate_; }
 
+    /**
+     * @brief Forget what we believe the STM's amp register holds.
+     *
+     * The STM gates the amp off by itself when it dims into LIGHT sleep, without
+     * touching REG_CTL_AUDIO_EN. Our cached value therefore still reads "on" and
+     * the change-detecting write never fires — the speakers stay dead after wake
+     * while headphones keep playing. Call this on every wake notify so the next
+     * poll re-asserts the gate unconditionally.
+     */
+    void invalidateAmpState() { ampResyncPending_ = true; }
+
 private:
     static void taskEntry(void* param);
     void maintenanceLoop();
@@ -98,6 +109,7 @@ private:
     bool running_ = false;
     volatile bool keepAliveRequested_ = false;
     volatile bool userActivityPending_ = false;
+    volatile bool ampResyncPending_ = false;
     uint8_t lastBrightness_ = 0xFF; // impossible initial value → first call always sends
 
     ResetCallback resetCb_;

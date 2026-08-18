@@ -46,9 +46,9 @@ public:
         enableUDP = json["enableUDP"];
         enableTCP = json["enableTCP"];
         enableWebServer = json["enableWebServer"];
-        if (json.containsKey("bleMidiMode"))
+        if (json["bleMidiMode"].is<uint8_t>())
             bleMidiMode = json["bleMidiMode"].as<uint8_t>();
-        if (json.containsKey("bleMidiNoteOffset"))
+        if (json["bleMidiNoteOffset"].is<int8_t>())
             bleMidiNoteOffset = json["bleMidiNoteOffset"].as<int8_t>();
     }
 };
