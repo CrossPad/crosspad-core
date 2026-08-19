@@ -57,6 +57,11 @@ public:
     /// Preferred USB device profile applied at boot: false = CDC+MIDI (OTA/console
     /// available), true = USB Audio (UAC2). Switching re-enumerates the device.
     bool usbAudioEnabled;
+    /// What the USB host records, as an index into the platform's route preset
+    /// table (0 = built-in microphones). Re-applied at boot so a device set up
+    /// once keeps recording the same source. 0x7F means the routing was put
+    /// somewhere no preset describes and should not be re-applied.
+    uint8_t usbAudioPreset;
     uint8_t Kit;
 
 private:
@@ -75,6 +80,7 @@ private:
         quickSettingsEnabled = true;
         AudioEngineEnabled = true;
         usbAudioEnabled = false;   // CDC+MIDI by default — keeps OTA/console reachable
+        usbAudioPreset = 0;        // built-in microphones
         Kit = 0;
         masterFX = AudioSettings();
         previewAudio = AudioSettings();
