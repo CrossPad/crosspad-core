@@ -76,8 +76,11 @@ void CrosspadSettings::loadFrom(IKeyValueStore& store) {
     wireless.enableUDP       = store.readBool("cfg_wireless", "udp", true);
     wireless.enableTCP       = store.readBool("cfg_wireless", "tcp", true);
     wireless.enableWebServer = store.readBool("cfg_wireless", "websrv", true);
-    wireless.bleMidiMode       = store.readU8("cfg_wireless", "ble_mode", 0);
+    // Fallbacks must match WirelessSettings' own defaults: a device that has
+    // never saved this section should behave the same as one that never had it.
+    wireless.bleMidiMode       = store.readU8("cfg_wireless", "ble_mode", 1);
     wireless.bleMidiNoteOffset = (int8_t)store.readU8("cfg_wireless", "ble_noff", 0);
+    wireless.bleMidiTxOffset   = store.readU8("cfg_wireless", "ble_toff", 0);
 
     // STM Routing
     stmRouting.RoutingMatrixEnabled = store.readBool("cfg_stm_rt", "routing_en", true);
@@ -192,6 +195,7 @@ void CrosspadSettings::saveTo(IKeyValueStore& store) {
     store.saveBool("cfg_wireless", "websrv", wireless.enableWebServer);
     store.saveU8("cfg_wireless", "ble_mode", wireless.bleMidiMode);
     store.saveU8("cfg_wireless", "ble_noff", (uint8_t)wireless.bleMidiNoteOffset);
+    store.saveU8("cfg_wireless", "ble_toff", wireless.bleMidiTxOffset);
 
     // STM Routing
     store.saveBool("cfg_stm_rt", "routing_en", stmRouting.RoutingMatrixEnabled);

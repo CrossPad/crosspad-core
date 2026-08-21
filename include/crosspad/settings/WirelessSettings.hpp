@@ -13,8 +13,14 @@ public:
     bool enableUDP;
     bool enableTCP;
     bool enableWebServer;
-    uint8_t bleMidiMode = 0;       ///< 0=Host (Central), 1=Server (Peripheral)
+    /// 0=Host (Central), 1=Server (Peripheral). A pad controller is something
+    /// a phone or a DAW connects *to*, so it advertises by default; Host mode
+    /// is for driving another BLE MIDI peripheral from the pad.
+    uint8_t bleMidiMode = 1;
     int8_t  bleMidiNoteOffset = 0; ///< Semitone offset for BLE MIDI input
+    /// Index into crosspad::kBleMidiTxOffsets — the transpose applied to notes
+    /// *sent* over BLE. 0 = Default, i.e. the same note USB MIDI gets.
+    uint8_t bleMidiTxOffset = 0;
 
     WirelessSettings() {
         enableWiFi = false;
@@ -36,6 +42,7 @@ public:
         json["enableWebServer"] = enableWebServer;
         json["bleMidiMode"] = bleMidiMode;
         json["bleMidiNoteOffset"] = bleMidiNoteOffset;
+        json["bleMidiTxOffset"] = bleMidiTxOffset;
     }
 
     void fromJson(const JsonObject& json) {
@@ -50,6 +57,8 @@ public:
             bleMidiMode = json["bleMidiMode"].as<uint8_t>();
         if (json["bleMidiNoteOffset"].is<int8_t>())
             bleMidiNoteOffset = json["bleMidiNoteOffset"].as<int8_t>();
+        if (json["bleMidiTxOffset"].is<uint8_t>())
+            bleMidiTxOffset = json["bleMidiTxOffset"].as<uint8_t>();
     }
 };
 

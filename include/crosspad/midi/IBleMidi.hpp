@@ -78,9 +78,16 @@ public:
     void setOnConnectionChanged(ConnectionCallback cb)    { connCb_ = std::move(cb); }
     void setOnScanResults(ScanResultCallback cb)          { scanCb_ = std::move(cb); }
 
-    // ── Note offset (applied transparently in dispatch) ─────────────
+    // ── Note offsets ────────────────────────────────────────────────
+    /// Inbound transpose, applied transparently in dispatch.
     void   setNoteOffset(int8_t offset) { noteOffset_ = offset; }
     int8_t getNoteOffset() const        { return noteOffset_; }
+
+    /// Outbound transpose, applied by the implementation on the way out (see
+    /// BleMidiOffsets.hpp for the picklist the UI offers). 0 sends exactly what
+    /// the router handed over — the same note USB MIDI is sending.
+    void   setTxNoteOffset(int8_t offset) { txNoteOffset_ = offset; }
+    int8_t getTxNoteOffset() const        { return txNoteOffset_; }
 
 protected:
     /// Subclasses call these from their BLE notification handlers.
@@ -109,7 +116,18 @@ protected:
         if (scanCb_) scanCb_(devices);
     }
 
+    /// Shift a note for transmission. False when the result leaves 0..127, in
+    /// which case the message must be dropped rather than wrapped: a wrapped
+    /// note is a wrong note, and a silent one is at least honest.
+    bool applyTxOffset(uint8_t note, uint8_t& out) const {
+        int shifted = (int)note + txNoteOffset_;
+        if (shifted < 0 || shifted > 127) return false;
+        out = (uint8_t)shifted;
+        return true;
+    }
+
     int8_t noteOffset_ = 0;
+    int8_t txNoteOffset_ = 0;
 
 private:
     NoteOnCallback        noteOnCb_;

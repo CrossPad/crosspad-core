@@ -114,6 +114,11 @@ public:
     bool isQuickSettingsOpened = false;
     uint8_t cpu0Usage = 0;
     uint8_t cpu1Usage = 0;
+    /// Radio up: advertising, scanning or connected. The status bar shows the
+    /// Bluetooth glyph dimmed for this and solid once a peer is on the other
+    /// end, so "on but nobody there" is visible rather than indistinguishable
+    /// from "off".
+    bool bluetoothActive = false;
     bool bluetoothConnected = false;
     bool wifiConnected = false;
     bool sdCardDetected = false;
