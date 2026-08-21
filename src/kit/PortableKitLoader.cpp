@@ -77,12 +77,44 @@ KitLoadResult PortableKitLoader::loadKit(KitInfo& kit) {
     int id = findKitIdByPath(kit.path);
     if (id >= 0) {
         kits_[id] = kit;
+        // Every kit ever loaded used to stay parsed for the life of the
+        // session. The pad payload is hundreds of small std::strings, and on
+        // ESP32-S3 an allocation under CONFIG_SPIRAM_MALLOC_ALWAYSINTERNAL
+        // (128 B) comes out of internal RAM — so a session that worked through
+        // the kit list quietly spent ~1.4 kB of internal RAM per distinct kit
+        // and never got it back. With ~19 kB free after the BLE stack is up,
+        // the card's 17 kits are more than the board has: SD DMA buffers stop
+        // allocating long before the last one. Re-parsing costs one JSON read
+        // on the load task, which is already off the LVGL thread.
+        if (currentKitId_ >= 0 && currentKitId_ != id) {
+            releaseParsedPads(kits_[currentKitId_]);
+        }
         currentKitId_ = id;
     }
 
     result.success = true;
     result.padsLoaded = KIT_PADS;
     return result;
+}
+
+void PortableKitLoader::releaseParsedPads(KitInfo& kit) {
+    if (!kit.parsed) return;
+
+    // Unsaved edits live only here — dropping them would lose the user's work
+    // silently. A kit that was merely played has nothing to keep.
+    for (const auto& pad : kit.pads) {
+        if (pad.dirty || pad.dirtyModified) return;
+    }
+
+    for (auto& pad : kit.pads) {
+        pad.samples.clear();
+        pad.samples.shrink_to_fit();   // clear() alone keeps the capacity
+        pad.sampleCount = 0;
+    }
+    kit.total_samples = 0;
+    // Metadata (path, name, author, …) stays: the launcher lists it, and
+    // re-reading it per redraw would put the SD card on the LVGL thread.
+    kit.parsed = false;
 }
 
 bool PortableKitLoader::saveKit(const KitInfo& kit) {

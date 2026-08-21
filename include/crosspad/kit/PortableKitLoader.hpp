@@ -69,6 +69,11 @@ protected:
 
     /// Serialize and write a kit JSON file (creates parent dirs if needed).
     bool writeKitJson(const std::string& path, const KitInfo& kit);
+
+    /// Free the sample payload of a kit that is no longer current, so it can
+    /// be re-parsed on demand. Metadata survives; a kit holding unsaved pad
+    /// edits is left alone. Called when the current kit changes.
+    void releaseParsedPads(KitInfo& kit);
 };
 
 } // namespace crosspad
