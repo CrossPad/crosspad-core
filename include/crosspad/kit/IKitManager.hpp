@@ -44,6 +44,24 @@ public:
 
     /// Serialize kit metadata + pads back to JSON on disk.
     virtual bool saveKit(const KitInfo& kit) = 0;
+
+    // ── Memory ────────────────────────────────────────────────────────
+
+    /// Free the sample payload of the kit that stopped being current at
+    /// the last loadKit(), if any.
+    ///
+    /// Deliberately not done inside loadKit(). A KitInfo* handed out by
+    /// getCurrentKit() stays valid, but its pads[].samples vectors do not
+    /// survive this call — and the GUI holds such a pointer across blocking
+    /// reads, because drawing a waveform goes to the SD card. Freeing from
+    /// the loader thread pulled the vector out from under a GUI thread
+    /// parked mid-callback, which surfaces as a null dereference at
+    /// samples[i].end. Call this from the same thread that reads kit pad
+    /// data: then it can only run between callbacks, never inside one.
+    ///
+    /// Default is a no-op — an implementation that keeps every kit parsed
+    /// has nothing to retire.
+    virtual void releaseRetiredKit() {}
 };
 
 } // namespace crosspad

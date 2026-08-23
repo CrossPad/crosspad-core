@@ -86,8 +86,14 @@ KitLoadResult PortableKitLoader::loadKit(KitInfo& kit) {
         // the card's 17 kits are more than the board has: SD DMA buffers stop
         // allocating long before the last one. Re-parsing costs one JSON read
         // on the load task, which is already off the LVGL thread.
+        //
+        // The free itself is deferred to releaseRetiredKit(). Doing it
+        // here runs it on the loader thread, and the GUI reads
+        // getCurrentKit()->pads[i].samples across calls that block on the
+        // SD card — so the vector went away underneath a reader that was
+        // parked mid-callback and came back to a null data pointer.
         if (currentKitId_ >= 0 && currentKitId_ != id) {
-            releaseParsedPads(kits_[currentKitId_]);
+            retiredKitId_ = currentKitId_;
         }
         currentKitId_ = id;
     }
@@ -95,6 +101,15 @@ KitLoadResult PortableKitLoader::loadKit(KitInfo& kit) {
     result.success = true;
     result.padsLoaded = KIT_PADS;
     return result;
+}
+
+void PortableKitLoader::releaseRetiredKit() {
+    if (retiredKitId_ < 0) return;
+    const int id = retiredKitId_;
+    retiredKitId_ = -1;
+    // A kit that became current again in the meantime is in use, not retired.
+    if (id == currentKitId_) return;
+    if (id < static_cast<int>(kits_.size())) releaseParsedPads(kits_[id]);
 }
 
 void PortableKitLoader::releaseParsedPads(KitInfo& kit) {

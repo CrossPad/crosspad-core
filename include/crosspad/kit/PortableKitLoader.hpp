@@ -33,6 +33,9 @@ public:
     KitLoadResult loadKit(KitInfo& kit) override;
     bool saveKit(const KitInfo& kit) override;
 
+    // ── IKitManager (memory) ───────────────────────────────────────
+    void releaseRetiredKit() override;
+
     // ── Non-virtual helpers ─────────────────────────────────────────────────
     int  findKitIdByPath(const std::string& path) const;
     bool isKitKnown(const std::string& path) const;
@@ -53,6 +56,10 @@ protected:
     std::string rootPrefix_;
     std::vector<KitInfo> kits_;
     int currentKitId_ = -1;
+
+    /// Kit whose pads are still parsed but which is no longer current.
+    /// Held until releaseRetiredKit() is called from the reader thread.
+    int retiredKitId_ = -1;
 
     /// Prepend rootPrefix to a logical path for actual file I/O.
     std::string toFsPath(const std::string& logicalPath) const;
