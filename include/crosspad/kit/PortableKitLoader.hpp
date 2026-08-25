@@ -2,6 +2,7 @@
 #pragma once
 
 #include <crosspad/kit/IKitManager.hpp>
+#include <crosspad/kit/KitPathUtils.hpp>
 #include <ArduinoJson.h>
 #include <string>
 #include <vector>
@@ -18,7 +19,7 @@ namespace crosspad {
 class PortableKitLoader : public IKitManager {
 public:
     explicit PortableKitLoader(const std::string& rootPrefix = "")
-        : rootPrefix_(rootPrefix) {}
+        : rootPrefix_(rootPrefix) { setKitPathFsPrefix(rootPrefix_); }
 
     // ── IKitManager (runtime state) ─────────────────────────────────────────
     int      getKitCount() const override;
@@ -43,7 +44,10 @@ public:
     const std::vector<KitInfo>& kits() const;
 
     /// Set or change the root prefix (e.g. "/sdcard").
-    void setRootPrefix(const std::string& prefix) { rootPrefix_ = prefix; }
+    void setRootPrefix(const std::string& prefix) {
+        rootPrefix_ = prefix;
+        setKitPathFsPrefix(rootPrefix_);
+    }
     const std::string& rootPrefix() const { return rootPrefix_; }
 
     /// Optional allocator for the transient kit JSON documents. Embedded

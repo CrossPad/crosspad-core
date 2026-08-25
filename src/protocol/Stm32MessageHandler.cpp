@@ -10,6 +10,7 @@ void Stm32MessageHandler::init(PadManager& padManager, CrosspadStatus& status) {
 }
 
 void Stm32MessageHandler::handleMessage(const uint8_t* data, unsigned size) {
+    ++input.stmFrames;
     if (size < 3) return;
     if (!status_ || !padManager_) return;
 
@@ -112,6 +113,7 @@ void Stm32MessageHandler::handleMessage(const uint8_t* data, unsigned size) {
 }
 
 void Stm32MessageHandler::parseDigitalButtons(const uint8_t* data, unsigned size) {
+    ++input.powerBtnFrames;
     if (!padManager_) return;
 
     // Button index decode table: 3 bytes × 7 bits each → up to 21 button indices
@@ -135,6 +137,7 @@ void Stm32MessageHandler::parseDigitalButtons(const uint8_t* data, unsigned size
         }
         if (i == 2) {
             input.powerBtnPressed = x & 1;
+            input.powerBtnRawByte = x;
         }
     }
 

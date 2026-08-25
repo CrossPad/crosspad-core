@@ -187,11 +187,28 @@ const std::vector<KitInfo>& PortableKitLoader::kits() const {
 
 // ── Free function (KitPathUtils) ────────────────────────────────────────────
 
+/* Callers hand us logical paths, but deciding between the two layouts means
+ * asking the filesystem, which needs the mount prefix. PortableKitLoader
+ * publishes it here whenever its own root prefix is set. */
+static std::string g_fsPrefix;
+
+void setKitPathFsPrefix(const std::string& prefix) { g_fsPrefix = prefix; }
+
 std::string resolveKitSamplePath(const std::string& kitJsonPath,
                                   const std::string& sampleFile) {
     if (sampleFile.empty()) return "";
     if (sampleFile[0] == '/') return sampleFile;
-    return parentDir(kitJsonPath) + "/" + sampleFile;
+
+    const std::string dir  = parentDir(kitJsonPath);
+    const std::string flat = dir + "/" + sampleFile;
+    if (pathExists(g_fsPrefix + flat)) return flat;
+
+    const std::string nested = dir + "/SAMPLES/" + sampleFile;
+    if (pathExists(g_fsPrefix + nested)) return nested;
+
+    /* Neither exists — hand back the flat form so the "file not found" the
+     * caller reports still names the place a flat kit would have kept it. */
+    return flat;
 }
 
 // ── Kit discovery ───────────────────────────────────────────────────────────

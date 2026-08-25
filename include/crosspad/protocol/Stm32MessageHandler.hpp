@@ -79,6 +79,12 @@ public:
         int8_t  encoderLeft = 0;
         bool encoderPressed = false;
         bool powerBtnPressed = false;
+        /* Raw third digital-button byte, so the power-button bit can be
+         * checked against what the STM actually sends rather than against an
+         * assumption about its polarity. */
+        uint8_t powerBtnRawByte = 0;
+        uint32_t powerBtnFrames = 0;   /* CMD_BUTTONS_DIGITAL frames seen */
+        uint32_t stmFrames = 0;        /* any STM32 message dispatched */
     };
 
     Stm32InputState input;
