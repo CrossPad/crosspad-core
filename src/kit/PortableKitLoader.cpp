@@ -211,6 +211,11 @@ std::string resolveKitSamplePath(const std::string& kitJsonPath,
     return flat;
 }
 
+std::string kitAssetPath(const std::string& kitJsonPath,
+                         const std::string& fileName) {
+    return g_fsPrefix + parentDir(kitJsonPath) + "/" + fileName;
+}
+
 // ── Kit discovery ───────────────────────────────────────────────────────────
 
 bool PortableKitLoader::discoverKitsRecursive(const std::string& dirPath,

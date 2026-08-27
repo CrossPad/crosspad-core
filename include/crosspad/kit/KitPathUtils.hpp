@@ -20,4 +20,11 @@ void setKitPathFsPrefix(const std::string& prefix);
 std::string resolveKitSamplePath(const std::string& kitJsonPath,
                                   const std::string& sampleFile);
 
+/// Filesystem path of a file that lives beside a kit's JSON — artwork such as
+/// cover.png / thumb.png, or anything else a kit ships next to itself. Unlike
+/// the sample resolver this returns the real path (mount prefix included),
+/// because the caller hands it straight to a file API or an image widget.
+std::string kitAssetPath(const std::string& kitJsonPath,
+                         const std::string& fileName);
+
 } // namespace crosspad
