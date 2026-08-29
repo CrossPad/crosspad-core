@@ -1,6 +1,17 @@
 #pragma once
 
+#include <cstddef>
+
 namespace crosspad {
+
+/// What Settings → Programming shows about a co-processor the platform can
+/// reflash by itself from an image it carries.
+struct CoprocFwInfo {
+    char running[32];   ///< e.g. "1.2 (proto 0x000E)"; "" = link down
+    char bundled[32];   ///< the image the platform ships
+    bool due;           ///< bundled is newer or speaks another protocol
+    bool canUpdate;     ///< an update can be started right now
+};
 
 /**
  * @brief Platform callback interface for the shared Settings UI.
@@ -28,6 +39,14 @@ public:
     /// Request STM32 co-processor to enter DFU mode. Default no-op for platforms
     /// without an STM32 (PC sim). Implementers send the DFU sysex command.
     virtual void enterStm32Dfu() {}
+
+    /// Co-processor firmware the platform can flash itself. false = nothing to
+    /// show (no co-processor, or no bundled image) and the rows are hidden.
+    virtual bool getCoprocFwInfo(CoprocFwInfo& /*out*/) { return false; }
+
+    /// Start the platform's own update flow (its confirm dialog, progress and
+    /// failure guidance) — the UI only asks, it never flashes.
+    virtual void requestCoprocFwUpdate() {}
 
     /// Rows for the Info page: firmware/library revisions, co-processor identity,
     /// serial number — whatever the platform can report. The UI walks 0..count-1

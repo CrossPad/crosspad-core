@@ -10,7 +10,8 @@
  * config sync), crosspad-gui, the ESP-IDF stm32_hal component (which includes
  * this file through stm32_reg_map.h) and the Arduino Wire implementation.
  *
- * Last sync: 2026-08-25 (mirror of STM 0x000B — REG_IDENT_BOOT_COUNT,
+ * Last sync: 2026-08-29 (0x000E adds REG_CMD_FW_UPDATE / FW_UPDATE_MAGIC —
+ * the ESP-driven STM reflash). Previous: 2026-08-25 (mirror of STM 0x000B — REG_IDENT_BOOT_COUNT,
  * REG_IN_PAD_VELRAW_BASE/REG_IN_PAD_AB_BASE, LED1/LED2 FREQ_HI/LO,
  * REG_CTL_BL_FREQ_HI/LO, REG_CTL_BATT_CAP_MAH_HI/LO, REG_ESP_RST_* block,
  * REG_EXP_* I2C-expander block).
@@ -38,9 +39,10 @@ extern "C" {
  * FREQ_HI/LO, REG_CTL_BL_FREQ_HI/LO, REG_CTL_BATT_CAP_MAH_HI/LO, the
  * REG_ESP_RST_* reset-reason counter block, and the REG_EXP_* I2C-expander
  * block. Bumped 2026-08-25 to 0x000B for power-button wake-hold time and
- * active/qualified flags. Keep in sync with CrossPad_STM32_r20
+ * active/qualified flags. Bumped 2026-08-28 to 0x000C for the link-watchdog
+ * reset telemetry (REG_ESP_RST_WD_*). Keep in sync with CrossPad_STM32_r20
  * app/inc/reg_map.h. */
-#define STM32_PROTO_VERSION         0x000B
+#define STM32_PROTO_VERSION         0x000E
 
 /* Block bases. */
 #define REG_IDENTITY_BASE           0x0000
@@ -62,7 +64,12 @@ extern "C" {
 #define REG_ESP_RST_TOTAL_HI        (REG_ESP_RST_BASE + 2U * REG_ESP_RST_COUNT_N)       /* 0x0928 */
 #define REG_ESP_RST_TOTAL_LO        (REG_ESP_RST_BASE + 2U * REG_ESP_RST_COUNT_N + 1U)  /* 0x0929 */
 #define REG_ESP_RST_LAST_CODE       (REG_ESP_RST_BASE + 2U * REG_ESP_RST_COUNT_N + 2U)  /* 0x092A */
-#define REG_ESP_RST_LEN             (2U * REG_ESP_RST_COUNT_N + 3U)                     /* 0x2B */
+/* Link-watchdog telemetry (STM esp_sync): ESP resets the STM itself forced
+ * after heartbeat silence, cumulative since STM boot, and whether it gave up. */
+#define REG_ESP_RST_WD_TOTAL_HI     (REG_ESP_RST_BASE + 2U * REG_ESP_RST_COUNT_N + 3U)  /* 0x092B */
+#define REG_ESP_RST_WD_TOTAL_LO     (REG_ESP_RST_BASE + 2U * REG_ESP_RST_COUNT_N + 4U)  /* 0x092C */
+#define REG_ESP_RST_WD_DEAD         (REG_ESP_RST_BASE + 2U * REG_ESP_RST_COUNT_N + 5U)  /* 0x092D */
+#define REG_ESP_RST_LEN             (2U * REG_ESP_RST_COUNT_N + 6U)                     /* 0x2E */
 
 /* Identity (RO). */
 #define REG_IDENT_MAGIC0            (REG_IDENTITY_BASE + 0x00) /* 'C' */
@@ -272,6 +279,13 @@ extern "C" {
 #define REG_CTL_CC_CONFLICT         (REG_CONTROL_BASE + 0x45)  /* RO bitmask (Task 4) */
 #define REG_CTL_BATT_CAP_MAH_HI     (REG_CONTROL_BASE + 0x46)  /* SoC nominal capacity mAh, BE */
 #define REG_CTL_BATT_CAP_MAH_LO     (REG_CONTROL_BASE + 0x47)
+/* Virtual pad stimulus (STM vpad.c): staged config, REG_CMD_VPAD runs it. */
+#define REG_CTL_VPAD_RATE_HI        (REG_CONTROL_BASE + 0x48)  /* hits/s, BE */
+#define REG_CTL_VPAD_RATE_LO        (REG_CONTROL_BASE + 0x49)
+#define REG_CTL_VPAD_COUNT_HI       (REG_CONTROL_BASE + 0x4A)  /* hits per run, BE */
+#define REG_CTL_VPAD_COUNT_LO       (REG_CONTROL_BASE + 0x4B)
+#define REG_CTL_VPAD_HOLD_MS        (REG_CONTROL_BASE + 0x4C)
+#define REG_CTL_VPAD_MODE           (REG_CONTROL_BASE + 0x4D)  /* bits1:0 pad rr/single/random, bits3:2 vel sweep/random/fixed */
 
 /* Command (WO trigger — write any byte to fire). */
 #define REG_CMD_DFU                 (REG_COMMAND_BASE + 0x00)
@@ -288,6 +302,11 @@ extern "C" {
 #define REG_CMD_CHG_PUMPX_DN        (REG_COMMAND_BASE + 0x0B)
 #define REG_CMD_PWR_ACK             (REG_COMMAND_BASE + 0x0C)  /* ESP write PWR_ACK_MAGIC */
 #define REG_CMD_USER_ACTIVITY       (REG_COMMAND_BASE + 0x0D)  /* ESP-side user input (touch/GUI) — resets STM idle timer */
+#define REG_CMD_VPAD                (REG_COMMAND_BASE + 0x0E)  /* 1 = start staged vpad run, 0 = stop */
+#define REG_CMD_FW_UPDATE           (REG_COMMAND_BASE + 0x0F)  /* write FW_UPDATE_MAGIC: STM enters its LPUART1 flasher (proto 0x000E) */
+#define FW_UPDATE_MAGIC             0xA5
+/* REG_DEBUG +0x58..0x78: vpad sent, remaining, short esp, short usb, esp DMA busy, usb busy, esp hwm, usb hwm, pressure sent */
+#define REG_DEBUG_VPAD              (REG_DEBUG_BASE + 0x58)
 
 /* SysEx vendor command bytes — wire: F0 7D <CMD> <ARG...> F7. */
 #define CROSSPAD_SYSEX_PWR_IRQ      0x50   /* ARG = PWR_STATE_* — IRQ z STM */
