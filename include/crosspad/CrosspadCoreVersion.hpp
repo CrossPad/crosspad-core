@@ -12,9 +12,9 @@
 #include <cstdint>
 
 #define CROSSPAD_CORE_VERSION_MAJOR 0
-#define CROSSPAD_CORE_VERSION_MINOR 5
+#define CROSSPAD_CORE_VERSION_MINOR 6
 #define CROSSPAD_CORE_VERSION_PATCH 0
-#define CROSSPAD_CORE_VERSION "0.5.0"
+#define CROSSPAD_CORE_VERSION "0.6.0"
 
 namespace crosspad {
 
