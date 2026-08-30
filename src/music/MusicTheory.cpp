@@ -2,9 +2,6 @@
 
 namespace crosspad {
 
-// ============================================================================
-// Static data
-// ============================================================================
 
 static const ScaleDef scales[] = {
     {"Chromatic",     {0,1,2,3,4,5,6,7,8,9,10,11}, 12},
@@ -76,9 +73,6 @@ static const uint8_t BUILTIN_PROG_COUNT = sizeof(builtinProgs) / sizeof(builtinP
 
 static const char* noteNames[] = {"C","C#","D","D#","E","F","F#","G","G#","A","A#","B"};
 
-// ============================================================================
-// Static accessors
-// ============================================================================
 
 uint8_t MusicTheory::scaleCount() { return SCALE_COUNT; }
 uint8_t MusicTheory::chordDefCount() { return CHORD_COUNT; }
@@ -102,9 +96,6 @@ char MusicTheory::chordQualChar(uint8_t chordTypeIdx) {
     }
 }
 
-// ============================================================================
-// Instance methods
-// ============================================================================
 
 uint8_t MusicTheory::totalChordCount() const {
     return CHORD_COUNT + BUILTIN_PROG_COUNT + customProgCount_;
@@ -141,9 +132,7 @@ const char* MusicTheory::chordShortName(uint8_t idx) const {
     return chordName(idx);
 }
 
-// ============================================================================
-// rebuildPadMap — compute MIDI notes for each pad based on scale/chord settings
-// ============================================================================
+// rebuildPadMap — MIDI note per pad, from the scale/chord settings.
 void MusicTheory::rebuildPadMap(PlaySettings& ps) const {
     const ScaleDef& scale = scales[ps.scaleIndex < SCALE_COUNT ? ps.scaleIndex : 0];
     uint8_t safeScaleIdx = ps.scaleIndex < SCALE_COUNT ? ps.scaleIndex : 0;

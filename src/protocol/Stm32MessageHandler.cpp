@@ -22,14 +22,11 @@ void Stm32MessageHandler::handleMessage(const uint8_t* data, unsigned size) {
 
     case CROSSPAD_CMD_ENCODER_COUNTER:
         if (size < 5) break;
-        // Frame length distinguishes the STM firmware generation:
-        //   6 bytes (… detent|btn, phase, END) → new STM: detent index 0..15
-        //     plus a sub-detent phase byte for hold-to-auto-repeat fast scroll.
-        //   5 bytes (… cnt|btn, END)           → legacy STM: raw LPTIM CNT 0..63.
-        //     Derive the centered detent index and a phase byte on the host so
-        //     downstream code is firmware-agnostic. Assumes the legacy board's
-        //     encoder also rests at CNT ≡ 1 (mod 4); a different encoder would
-        //     need its own constant.
+        // Frame length says which STM generation sent this:
+        //   6 bytes → detent index 0..15 plus a sub-detent phase byte.
+        //   5 bytes → legacy raw LPTIM CNT 0..63; the detent index and phase
+        //     are derived here so downstream code stays firmware-agnostic.
+        //     Assumes the legacy encoder also rests at CNT ≡ 1 (mod 4).
         if (size >= 6) {
             input.encoderTop   = (data[3] & 0x0F);
             input.encoderPhase = data[4];
@@ -55,7 +52,7 @@ void Stm32MessageHandler::handleMessage(const uint8_t* data, unsigned size) {
         break;
 
     case CROSSPAD_CMD_BUTTONS_ANALOG:
-        // Analog pressure values — currently just decoded, not dispatched
+        // Decoded, not yet dispatched.
         break;
 
     case CROSSPAD_CMD_STATUS_REGISTER:
@@ -89,15 +86,14 @@ void Stm32MessageHandler::handleMessage(const uint8_t* data, unsigned size) {
         break;
 
     case CROSSPAD_CMD_VERSION_REPLY:
-        // [pcb_rev, api_ver] — currently informational, no consumer
+        // [pcb_rev, api_ver] — informational, no consumer yet.
         if (size < 6) break;
         break;
 
     case CROSSPAD_CMD_DFU_REQUEST:
         if (size < 5) break;
-        // Unified semantics in both directions:
-        //   data[3] == 1 -> STM32 is going to / requested to enter DFU
-        //   data[3] == 0 -> ESP is going to / requested to enter DFU
+        // Same in both directions: data[3] == 1 means the STM32 enters DFU,
+        // 0 means the ESP does.
         status_->stm32.isDfuMode = (data[3] == 1);
         if (dfuCb_) {
             dfuCb_(data[3] == 1);
@@ -141,12 +137,10 @@ void Stm32MessageHandler::parseDigitalButtons(const uint8_t* data, unsigned size
         }
     }
 
-    // Detect state changes and forward to PadManager.
-    // Press: do not call handlePadPress(i, 127) — that would clobber the real
-    // velocity already written by the MIDI note-on pipe (handleSampleNoteOn →
-    // handleMidiNoteOn).  The CMD_BUTTONS_DIGITAL path carries no velocity byte;
-    // the MIDI pipe owns velocity.  Release: handlePadRelease cleans up LED +
-    // EventBus and sends NoteOff via keypad settings routing.
+    // Presses do NOT call handlePadPress(): this path carries no velocity
+    // byte, and a fixed 127 would clobber what the MIDI note-on pipe already
+    // wrote. Releases do go through handlePadRelease(), which cleans up the
+    // LED and EventBus state and sends the NoteOff.
     for (int i = 0; i < 16; i++) {
         if (keyPresses_[i] != oldPresses[i]) {
             if (!keyPresses_[i]) {

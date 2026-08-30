@@ -106,15 +106,15 @@ extern "C" {
 #define PWR_WAKE_FLAG_QUALIFIED     0x02
 #define REG_INPUTS_LEN              0x72
 
-/* Wartości REG_IN_PWR_STATE. STM ustawia + wysyła IRQ przez SysEx na UART
- * (F0 7D 50 <state> F7). ESP zapisuje PWR_ACK_MAGIC do REG_CMD_PWR_ACK
- * gdy gotowy — STM dopiero wtedy kontynuuje teardown (timeout 3 s). */
+/* REG_IN_PWR_STATE values. The STM sets one and announces it over UART SysEx
+ * (F0 7D 50 <state> F7); the ESP writes PWR_ACK_MAGIC to REG_CMD_PWR_ACK when
+ * ready, and only then does the STM continue its teardown (3 s timeout). */
 #define PWR_STATE_AWAKE             0x00
 #define PWR_STATE_SLEEP_PENDING     0x01   /* STOP1 entry */
 #define PWR_STATE_SHIP_PENDING      0x02   /* BATFET off (hard power down) */
-#define PWR_STATE_WOKE              0x03   /* wybudzony ze STOP1; backlight OFF — ESP musi wysłać jasność + przerysować */
+#define PWR_STATE_WOKE              0x03   /* woke from STOP1, backlight off — the ESP redraws, then sets brightness */
 #define PWR_STATE_LIGHT             0x04   /* LIGHT sleep (backlight off, slow scan; ESP zasilony — ściemnij ARGB/display) */
-#define PWR_STATE_CHARGE            0x05   /* charger-idle gdy off (ESP minimal repower — charge UI) */
+#define PWR_STATE_CHARGE            0x05   /* charger-idle while off (ESP minimally repowered for the charge UI) */
 #define PWR_ACK_MAGIC               0x55
 
 /* Power (RO snapshot). Mix of MCU ADC measurements (VBAT, VBUS_STM/ESP, temp)
@@ -216,24 +216,24 @@ extern "C" {
 #define REG_CTL_USB_GATE_S          (REG_CONTROL_BASE + 0x08)
 #define REG_CTL_USB_GATE_E          (REG_CONTROL_BASE + 0x09)
 #define REG_CTL_EN_3V3_HOLD         (REG_CONTROL_BASE + 0x0A)
-/* Sleep / power management timeouts (RW, BE u16 dla 16-bit, 0 = wyłączone). */
-#define REG_CTL_DIM_TO_S_HI         (REG_CONTROL_BASE + 0x0B)  /* dim backlight po N s */
+/* Sleep / power management timeouts (RW, BE u16 for 16-bit, 0 = disabled). */
+#define REG_CTL_DIM_TO_S_HI         (REG_CONTROL_BASE + 0x0B)  /* dim backlight after N s */
 #define REG_CTL_DIM_TO_S_LO         (REG_CONTROL_BASE + 0x0C)
-#define REG_CTL_SLEEP_TO_S_HI       (REG_CONTROL_BASE + 0x0D)  /* STOP1 entry po N s */
+#define REG_CTL_SLEEP_TO_S_HI       (REG_CONTROL_BASE + 0x0D)  /* STOP1 entry after N s */
 #define REG_CTL_SLEEP_TO_S_LO       (REG_CONTROL_BASE + 0x0E)
 #define REG_CTL_LONG_PRESS_HI       (REG_CONTROL_BASE + 0x0F)  /* power btn long-press ms */
 #define REG_CTL_LONG_PRESS_LO       (REG_CONTROL_BASE + 0x10)
 #define REG_CTL_USB_SUSP_S          (REG_CONTROL_BASE + 0x11)  /* USB suspend grace s */
-#define REG_CTL_WAKE_BRIGHT         (REG_CONTROL_BASE + 0x12)  /* brightness po wake 0..100 */
+#define REG_CTL_WAKE_BRIGHT         (REG_CONTROL_BASE + 0x12)  /* brightness after wake, 0..100 */
 /* Encoder → MIDI CC (RW, opt-in). Default = OFF (ENC drives LVGL GUI only).
- * Mode 0 off, 1 absolute, 2 relative (64±). Master pisze mode != 0 by włączyć. */
+ * Mode 0 off, 1 absolute, 2 relative (64±). The master writes mode != 0 to enable. */
 #define REG_CTL_ENC_CC_MODE         (REG_CONTROL_BASE + 0x13)
 #define REG_CTL_ENC_CC_NUM          (REG_CONTROL_BASE + 0x14)  /* CC# 0..127 */
 #define REG_CTL_ENC_CC_CHAN         (REG_CONTROL_BASE + 0x15)  /* 0 = inherit REG_CTL_MIDI_CHAN */
-#define REG_CTL_ENC_CC_STEP         (REG_CONTROL_BASE + 0x16)  /* delta na detent (abs) */
+#define REG_CTL_ENC_CC_STEP         (REG_CONTROL_BASE + 0x16)  /* delta per detent (absolute mode) */
 #define REG_CTL_ENC_CC_VAL          (REG_CONTROL_BASE + 0x17)  /* absolute current value 0..127 */
-/* Charger config knobs (RW, BE u16 dla 16-bit). Side-effect na LO write only.
- * Added in proto 0x0003. */
+/* Charger config knobs (RW, BE u16 for 16-bit); the LO write applies them.
+ * Proto 0x0003. */
 #define REG_CTL_CHG_ICHG_HI         (REG_CONTROL_BASE + 0x20)  /* fast charge mA */
 #define REG_CTL_CHG_ICHG_LO         (REG_CONTROL_BASE + 0x21)
 #define REG_CTL_CHG_VREG_HI         (REG_CONTROL_BASE + 0x22)  /* charge voltage mV */
@@ -258,10 +258,10 @@ extern "C" {
 #define REG_CTL_CHG_SRC_MODE        (REG_CONTROL_BASE + 0x35)  /* enum charger_src_mode */
 #define REG_CTL_CHG_AUTO_LIM_HI     (REG_CONTROL_BASE + 0x36)  /* soft-ICO ceiling mA */
 #define REG_CTL_CHG_AUTO_LIM_LO     (REG_CONTROL_BASE + 0x37)
-/* Buttons globals (RW). BE u16 dla 16-bit; LO write commits. Thresholdy =
- * surowe 12-bit ADC counts (presum < thr-hyst → press, > thr+hyst → release).
- * Debounce gate'uje transition — średnia ADC musi trzymać się po jednej
- * stronie progu przez N ms. Added in proto 0x0004. */
+/* Buttons globals (RW). BE u16 for 16-bit, committed on the LO write.
+ * Thresholds are raw 12-bit ADC counts (presum < thr-hyst → press,
+ * > thr+hyst → release); the debounce gates the transition, so the ADC
+ * average must stay on one side of the threshold for N ms. Proto 0x0004. */
 #define REG_CTL_BTN_THR_HI          (REG_CONTROL_BASE + 0x38)
 #define REG_CTL_BTN_THR_LO          (REG_CONTROL_BASE + 0x39)
 #define REG_CTL_BTN_HYST_HI         (REG_CONTROL_BASE + 0x3A)

@@ -21,9 +21,9 @@ constexpr const char* kErrKind      = "not a CrossPad settings file";
 constexpr const char* kErrVersion   = "file is newer than this firmware";
 constexpr const char* kErrMalformed = "malformed settings file";
 
-// ArduinoJson ships readers/writers for Arduino Stream and std::istream only.
-// stdio is the one file API shared by the SD VFS on the device and the host, and
-// it avoids pulling <fstream>'s locale machinery onto the LVGL task's stack.
+// ArduinoJson only ships Arduino Stream and std::istream adapters. stdio is
+// the one file API shared by the device's SD VFS and the host, and it keeps
+// <fstream>'s locale machinery off the LVGL task's stack.
 struct FileReader {
     FILE* f;
     int read() { return fgetc(f); }
@@ -70,9 +70,8 @@ SettingsIoResult writeDoc(const JsonDocument& doc, const char* path) {
     return okResult(kSettingsFileVersion);
 }
 
-/// Reads the envelope and hands back the payload object. Kind and version are
-/// checked before the caller touches any settings, so a foreign or too-new file
-/// costs nothing but a parse.
+/// Read the envelope and return the payload. Kind and version are checked
+/// first, so a foreign or too-new file costs nothing but a parse.
 SettingsIoResult readEnvelope(const char* path, const char* kind, const char* payloadKey,
                               JsonDocument& doc, JsonObject& payload) {
     FILE* f = fopen(path, "r");
@@ -88,8 +87,8 @@ SettingsIoResult readEnvelope(const char* path, const char* kind, const char* pa
 
     long long version = doc["version"].as<long long>();
     if (version < 1 || version > 0xFFFF) return fail(kErrMalformed);
-    // Older files are fine — missing keys keep their current value — but a
-    // newer schema may reinterpret keys we already know, so refuse it.
+    // Older files are fine (missing keys keep their value), but a newer schema
+    // may reinterpret keys we already know.
     if (version > kSettingsFileVersion) return fail(kErrVersion, (uint16_t)version);
 
     if (!doc[payloadKey].is<JsonObject>()) return fail(kErrMalformed, (uint16_t)version);
@@ -124,8 +123,8 @@ SettingsIoResult settingsExportAll(const CrosspadSettings& s, const char* path) 
     JsonObject masterFX = out["masterFX"].to<JsonObject>();
     s.masterFX.toJson(masterFX);
 
-    // AudioEngineSettings has no toJson of its own — two restart-time fields,
-    // both validated on import against its own isValid* helpers.
+    // AudioEngineSettings has no toJson: two restart-time fields, validated on
+    // import against its own isValid* helpers.
     JsonObject audioEngine = out["audioEngine"].to<JsonObject>();
     audioEngine["sampleRate"] = s.audioEngine.sampleRate;
     audioEngine["frameCount"] = s.audioEngine.frameCount;
@@ -154,10 +153,9 @@ SettingsIoResult settingsImportAll(CrosspadSettings& s, const char* path) {
     SettingsIoResult res = readEnvelope(path, kKindAll, "settings", doc, in);
     if (!res.ok) return res;
 
-    // Parse into a copy first: the live settings are read by the audio and STM
-    // tasks, and a half-applied file would push nonsense to the hardware.
-    // Heap, not stack — CrosspadSettings is a few kB (18 x AudioSettings) and
-    // this runs on the LVGL task.
+    // Parse into a copy: the audio and STM tasks read the live settings, and a
+    // half-applied file would reach the hardware. On the heap — this is a few
+    // kB on the LVGL task's stack otherwise.
     std::unique_ptr<CrosspadSettings> tmp(new CrosspadSettings(s));
 
     if (in["keypad"].is<JsonObject>())       tmp->keypad.fromJson(in["keypad"]);
@@ -167,8 +165,7 @@ SettingsIoResult settingsImportAll(CrosspadSettings& s, const char* path) {
 
     if (in["audio"].is<JsonArray>()) {
         JsonArray audio = in["audio"].as<JsonArray>();
-        // Only the entries the file actually carries — a shorter array leaves
-        // the remaining pads as they were.
+        // A shorter array leaves the remaining pads as they were.
         for (int i = 0; i < CROSSPAD_MAX_PADS && i < (int)audio.size(); i++) {
             if (audio[i].is<JsonObject>()) tmp->audio[i].fromJson(audio[i]);
         }
@@ -218,8 +215,7 @@ SettingsIoResult settingsImportPads(CrosspadSettings& s, const char* path) {
     SettingsIoResult res = readEnvelope(path, kKindPads, "pads", doc, in);
     if (!res.ok) return res;
 
-    // A copy of the STM section only — everything outside pad tuning, including
-    // the rest of Stm32Settings, must survive this call untouched.
+    // The STM section only: everything outside pad tuning must survive.
     Stm32Settings tmp = s.stm;
     tmp.padsFromJson(in);
     s.stm = tmp;

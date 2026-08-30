@@ -53,7 +53,7 @@ std::string PortableKitLoader::toLogicalPath(const std::string& fsPath) const {
 std::vector<KitInfo> PortableKitLoader::listKits(const std::string& rootDir) {
     kits_.clear();
     currentKitId_ = -1;
-    // rootDir is a logical path (e.g. "/crosspad/kits"), add prefix for POSIX
+    // rootDir is logical ("/crosspad/kits"); add the mount prefix for POSIX.
     discoverKitsRecursive(toFsPath(rootDir), kits_);
     return kits_;
 }
@@ -73,25 +73,18 @@ KitLoadResult PortableKitLoader::loadKit(KitInfo& kit) {
         }
     }
 
-    // Update the kit in our internal list if it exists there
     int id = findKitIdByPath(kit.path);
     if (id >= 0) {
         kits_[id] = kit;
-        // Every kit ever loaded used to stay parsed for the life of the
-        // session. The pad payload is hundreds of small std::strings, and on
-        // ESP32-S3 an allocation under CONFIG_SPIRAM_MALLOC_ALWAYSINTERNAL
-        // (128 B) comes out of internal RAM — so a session that worked through
-        // the kit list quietly spent ~1.4 kB of internal RAM per distinct kit
-        // and never got it back. With ~19 kB free after the BLE stack is up,
-        // the card's 17 kits are more than the board has: SD DMA buffers stop
-        // allocating long before the last one. Re-parsing costs one JSON read
-        // on the load task, which is already off the LVGL thread.
+        // A kit that is no longer current drops its parsed pads. The payload
+        // is hundreds of small std::strings, which on ESP32-S3 come out of
+        // internal RAM under CONFIG_SPIRAM_MALLOC_ALWAYSINTERNAL — ~1.4 kB per
+        // distinct kit, permanently, against the ~19 kB free once BLE is up.
+        // Re-parsing costs one JSON read on the load task.
         //
-        // The free itself is deferred to releaseRetiredKit(). Doing it
-        // here runs it on the loader thread, and the GUI reads
-        // getCurrentKit()->pads[i].samples across calls that block on the
-        // SD card — so the vector went away underneath a reader that was
-        // parked mid-callback and came back to a null data pointer.
+        // The free is deferred to releaseRetiredKit(): done here it runs on
+        // the loader thread, and the GUI reads getCurrentKit()->pads across
+        // calls that block on the SD card.
         if (currentKitId_ >= 0 && currentKitId_ != id) {
             retiredKitId_ = currentKitId_;
         }
@@ -115,8 +108,7 @@ void PortableKitLoader::releaseRetiredKit() {
 void PortableKitLoader::releaseParsedPads(KitInfo& kit) {
     if (!kit.parsed) return;
 
-    // Unsaved edits live only here — dropping them would lose the user's work
-    // silently. A kit that was merely played has nothing to keep.
+    // Unsaved edits live only here; a kit that was merely played does not.
     for (const auto& pad : kit.pads) {
         if (pad.dirty || pad.dirtyModified) return;
     }
@@ -127,8 +119,8 @@ void PortableKitLoader::releaseParsedPads(KitInfo& kit) {
         pad.sampleCount = 0;
     }
     kit.total_samples = 0;
-    // Metadata (path, name, author, …) stays: the launcher lists it, and
-    // re-reading it per redraw would put the SD card on the LVGL thread.
+    // Metadata stays: the launcher lists it, and re-reading it per redraw
+    // would put the SD card on the LVGL thread.
     kit.parsed = false;
 }
 
@@ -187,9 +179,8 @@ const std::vector<KitInfo>& PortableKitLoader::kits() const {
 
 // ── Free function (KitPathUtils) ────────────────────────────────────────────
 
-/* Callers hand us logical paths, but deciding between the two layouts means
- * asking the filesystem, which needs the mount prefix. PortableKitLoader
- * publishes it here whenever its own root prefix is set. */
+/* Callers pass logical paths, but choosing between the two layouts means
+ * asking the filesystem, which needs the mount prefix. */
 static std::string g_fsPrefix;
 
 void setKitPathFsPrefix(const std::string& prefix) { g_fsPrefix = prefix; }
@@ -206,8 +197,8 @@ std::string resolveKitSamplePath(const std::string& kitJsonPath,
     const std::string nested = dir + "/SAMPLES/" + sampleFile;
     if (pathExists(g_fsPrefix + nested)) return nested;
 
-    /* Neither exists — hand back the flat form so the "file not found" the
-     * caller reports still names the place a flat kit would have kept it. */
+    /* Neither exists: return the flat form, so the caller's "file not found"
+     * still names where a flat kit would have kept it. */
     return flat;
 }
 
@@ -233,7 +224,6 @@ bool PortableKitLoader::discoverKitsRecursive(const std::string& dirPath,
 
         if (!isDir(entryPath)) continue;
 
-        // Skip if already known
         std::string kitJsonPath = entryPath + "/kit.json";
         std::string altJsonPath = entryPath + "/" + ent->d_name + ".json";
 
@@ -255,7 +245,7 @@ bool PortableKitLoader::discoverKitsRecursive(const std::string& dirPath,
                 }
             }
         } else {
-            // No kit.json here — recurse into subdirectory
+            // No kit.json here; recurse.
             found |= discoverKitsRecursive(entryPath, out);
         }
     }
@@ -279,7 +269,7 @@ bool PortableKitLoader::readKitJson(const std::string& path, KitInfo& kit,
 
     if (err) return false;
 
-    // Don't overwrite kit.path — caller sets it to the logical path
+    // Not kit.path: the caller sets that to the logical path.
     kit_parse_metadata(kit, doc);
 
     if (parsePads) {
@@ -291,7 +281,6 @@ bool PortableKitLoader::readKitJson(const std::string& path, KitInfo& kit,
 
 bool PortableKitLoader::writeKitJson(const std::string& path,
                                       const KitInfo& kit) {
-    // Ensure parent directory exists
     mkdirRecursive(parentDir(path));
 
     std::ofstream file(path);
