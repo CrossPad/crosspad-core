@@ -43,18 +43,6 @@ struct AppEntry {
     void (*destroyLVGL)(lv_obj_t* app) = nullptr;
 #endif
 
-    /// Application logic callback (called on start or per-update)
-    void (*appLogic)(App* self) = nullptr;
-
-    /// Simple GUI initialization (non-LVGL path)
-    void (*initSimpleGUI)() = nullptr;
-
-    /// GUI refresh callback (for apps that need forced redraw)
-    void (*refreshGUI)() = nullptr;
-
-    /// Application cleanup callback
-    void (*cleanup)() = nullptr;
-
     /// Launcher order (higher = earlier; equal priorities keep registration order).
     int priority = 0;
 

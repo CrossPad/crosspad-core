@@ -35,7 +35,7 @@
 #define REGISTER_APP(appName, logicFunc, iconPath, createLVGL, destroyLVGL, initSimple, refreshFunc, cleanupFunc, priority) \
     void _register_##appName##_app() { \
         static const crosspad::AppEntry entry = { \
-            #appName, iconPath, createLVGL, destroyLVGL, logicFunc, initSimple, refreshFunc, cleanupFunc, priority \
+            #appName, iconPath, createLVGL, destroyLVGL, priority \
         }; \
         crosspad::AppRegistry::getInstance().registerApp(entry); \
     }
@@ -43,7 +43,7 @@
 #define REGISTER_APP(appName, logicFunc, iconPath, createLVGL, destroyLVGL, initSimple, refreshFunc, cleanupFunc, priority) \
     void _register_##appName##_app() { \
         static const crosspad::AppEntry entry = { \
-            #appName, "", logicFunc, initSimple, refreshFunc, cleanupFunc, priority \
+            #appName, "", priority \
         }; \
         crosspad::AppRegistry::getInstance().registerApp(entry); \
     }
@@ -65,7 +65,7 @@
 #define REGISTER_APP_PL(appName, logicFunc, iconPath, createLVGL, destroyLVGL, initSimple, refreshFunc, cleanupFunc, priority, padLogicName) \
     void _register_##appName##_app() { \
         static const crosspad::AppEntry entry = { \
-            #appName, iconPath, createLVGL, destroyLVGL, logicFunc, initSimple, refreshFunc, cleanupFunc, priority, padLogicName \
+            #appName, iconPath, createLVGL, destroyLVGL, priority, padLogicName \
         }; \
         crosspad::AppRegistry::getInstance().registerApp(entry); \
     }
@@ -73,7 +73,7 @@
 #define REGISTER_APP_PL(appName, logicFunc, iconPath, createLVGL, destroyLVGL, initSimple, refreshFunc, cleanupFunc, priority, padLogicName) \
     void _register_##appName##_app() { \
         static const crosspad::AppEntry entry = { \
-            #appName, "", logicFunc, initSimple, refreshFunc, cleanupFunc, priority, padLogicName \
+            #appName, "", priority, padLogicName \
         }; \
         crosspad::AppRegistry::getInstance().registerApp(entry); \
     }

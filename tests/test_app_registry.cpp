@@ -4,8 +4,8 @@
 
 using namespace crosspad;
 
-static const AppEntry testEntry1 = { "CoreTestApp1", "", nullptr, nullptr, nullptr, nullptr, 10 };
-static const AppEntry testEntry2 = { "CoreTestApp2", "", nullptr, nullptr, nullptr, nullptr, 20 };
+static const AppEntry testEntry1 = { "CoreTestApp1", "", 10 };
+static const AppEntry testEntry2 = { "CoreTestApp2", "", 20 };
 
 void registerTestApps() {
     static bool registered = false;
