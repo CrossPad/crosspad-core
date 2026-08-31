@@ -12,10 +12,7 @@ namespace crosspad {
  */
 enum AppFlags : uint8_t {
     APP_FLAG_NONE              = 0,
-    APP_FLAG_HIDDEN            = 1,
     APP_FLAG_MSGBOX            = 2,
-    APP_FLAG_SETTINGS_MODULE   = 4,
-    APP_FLAG_AUTO_REGISTERED   = 8,
     APP_FLAG_MAX               = UINT8_MAX
 };
 

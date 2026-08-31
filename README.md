@@ -59,7 +59,7 @@ Each platform provides concrete implementations of these interfaces:
 - **AppRegistry** — singleton holding up to 16 registered apps
 - **AppEntry** — metadata struct (name, icon, LVGL factory functions, callbacks, priority)
 - **REGISTER_APP macro** — generates `_register_<Name>_app()` functions, auto-discovered by cmake or called explicitly
-- **AppFlags** — HIDDEN, MSGBOX, SETTINGS_MODULE, AUTO_REGISTERED
+- **AppFlags** — MSGBOX
 - **IApp** — lifecycle callbacks (onAppInit, onAppDeinit, onAppUpdate, onAppActivated)
 
 ### Pad System
