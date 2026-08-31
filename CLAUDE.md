@@ -64,12 +64,9 @@ Global singletons are accessed via free functions: `crosspad::getEventBus()`, `c
 - Post = async (queued), Send = sync (ISR-safe)
 
 ### App System (`app/`)
-- `IApp`: base interface with `onNoteOn()`, `onPadPressed()`, lifecycle hooks
+- `IApp`: base interface with lifecycle hooks (`onAppInit`, `onAppDeinit`, `onAppUpdate`, `onAppActivated`)
 - `AppRegistry`: singleton holding up to 16 registered `AppEntry` descriptors
-- `AppManagerBase`: cross-platform app switching, event forwarding to active app
 - `AppRegistrar.hpp`: named `REGISTER_APP` / `REGISTER_APP_PL` registration macros
-- `AppEntry` supports both LVGL callbacks and simple GUI callbacks
-- Consumer projects subclass `AppManagerBase` to add LVGL or platform-specific lifecycle
 
 ### Pad System (`pad/`)
 - `PadManager`: central orchestrator for 16 pads — handles press/release, MIDI mapping, chord notes, delegates to `PadLedController` and `PadAnimator`
