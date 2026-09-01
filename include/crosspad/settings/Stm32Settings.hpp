@@ -33,7 +33,7 @@ struct Stm32Settings {
     // in it, so the dropdown fell back to "Never" while a live 1000 s timeout ran.
     uint16_t dimTimeoutS  = 600;
     uint16_t sleepTimeoutS = 1800;
-    uint16_t longPressMs  = 2000;
+    uint16_t longPressMs  = 4000;
     uint8_t  usbSuspendS  = 30;
     uint8_t  wakeBrightness = 50;
 
