@@ -267,7 +267,10 @@ bool PortableKitLoader::readKitJson(const std::string& path, KitInfo& kit,
     DeserializationError err = deserializeJson(doc, file);
     file.close();
 
-    if (err) return false;
+    if (err) {
+        printf("KitLoader: %s: %s\n", path.c_str(), err.c_str());
+        return false;
+    }
 
     // Not kit.path: the caller sets that to the logical path.
     kit_parse_metadata(kit, doc);
