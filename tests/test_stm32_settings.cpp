@@ -17,7 +17,7 @@ TEST_CASE("Stm32Settings: defaults match STM compiled defaults", "[settings][stm
     REQUIRE(s.keypadEnabled == true);
     REQUIRE(s.dimTimeoutS == 600);   // matches a preset the settings UI can show
     REQUIRE(s.sleepTimeoutS == 1800);
-    REQUIRE(s.longPressMs == 2000);
+    REQUIRE(s.longPressMs == 4000);
     REQUIRE(s.wakeBrightness == 50);
     REQUIRE(s.ccPressBase == 16);
     REQUIRE(s.ccPanBase == 48);
