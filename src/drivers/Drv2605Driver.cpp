@@ -113,7 +113,19 @@ bool Drv2605Driver::initHardware() {
         return false;
     }
 
+    // GO clearing only says the run ended. DIAG_RESULT says whether it worked,
+    // and OC/OT say the actuator drew too much doing it; an "init success" on
+    // a failed run left the periodic status check to find the same bits a
+    // second later and report a fault mid-boot.
+    const uint8_t status = readRegister(DRV2605_REG_STATUS);
+    const bool diagFailed = (status >> 3) & 1;
+    const bool fault = (status & 0x03) != 0;
     enterStandby();
+    if (diagFailed || fault) {
+        ESP_LOGW(TAG, "Auto-calibration failed (DIAG=%d OT=%d OC=%d) — haptics disabled",
+                 (status >> 3) & 1, (status >> 1) & 1, status & 1);
+        return false;
+    }
     ESP_LOGI(TAG, "DRV2605 init success");
     return true;
 }
