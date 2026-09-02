@@ -2,9 +2,26 @@
 
 namespace crosspad {
 
+namespace {
+
+/// Clamp at the NVS boundary. Consumers clamp too (the STM, the styles, the
+/// dropdowns), so a corrupt or foreign value never reached hardware -- but it
+/// did sit in RAM, went back out in JSON backups, and could not be told apart
+/// from a legitimate setting. The ranges are the ones the Settings sliders offer.
+uint8_t readU8In(IKeyValueStore& store, const char* ns, const char* key,
+                 uint8_t def, uint8_t lo, uint8_t hi) {
+    const uint8_t v = store.readU8(ns, key, def);
+    return v < lo ? lo : (v > hi ? hi : v);
+}
+
+constexpr uint8_t kLcdBrightnessMin = 5;    // Settings -> Display slider floor
+constexpr uint8_t kPercentMax       = 100;  // brightness and every volume field
+
+} // namespace
+
 void CrosspadSettings::loadFrom(IKeyValueStore& store) {
     // Display
-    LCDbrightness     = store.readU8("cfg_display", "brightness", 100);
+    LCDbrightness     = readU8In(store, "cfg_display", "brightness", 100, kLcdBrightnessMin, kPercentMax);
     themeColorIndex   = store.readU8("cfg_display", "theme_clr", 0);
     perfStatsFlags    = store.readU8("cfg_display", "perf_stats", 0);
     quickSettingsEnabled = store.readBool("cfg_display", "drawer_en", true);
@@ -25,21 +42,21 @@ void CrosspadSettings::loadFrom(IKeyValueStore& store) {
     }
     masterFX.mute            = store.readBool("cfg_audio", "mute", false);
     masterFX.speakersEnabled = store.readBool("cfg_audio", "spk_en", true);
-    masterFX.inVolume        = store.readU8("cfg_audio", "in_vol", 50);
-    masterFX.outVolume       = store.readU8("cfg_audio", "out_vol", 50);
+    masterFX.inVolume        = readU8In(store, "cfg_audio", "in_vol", 50, 0, kPercentMax);
+    masterFX.outVolume       = readU8In(store, "cfg_audio", "out_vol", 50, 0, kPercentMax);
     masterFX.delay.bypass    = store.readBool("cfg_audio", "delay_byp", true);
     masterFX.reverb.bypass   = store.readBool("cfg_audio", "reverb_byp", true);
     masterFX.distortion.bypass = store.readBool("cfg_audio", "dist_byp", true);
     masterFX.chorus.bypass   = store.readBool("cfg_audio", "chorus_byp", true);
     masterFX.flanger.bypass  = store.readBool("cfg_audio", "flangr_byp", true);
-    masterFX.outVolumeCodec[0][0] = store.readU8("cfg_audio", "ovc00", masterFX.outVolumeCodec[0][0]);
-    masterFX.outVolumeCodec[0][1] = store.readU8("cfg_audio", "ovc01", masterFX.outVolumeCodec[0][1]);
-    masterFX.outVolumeCodec[1][0] = store.readU8("cfg_audio", "ovc10", masterFX.outVolumeCodec[1][0]);
-    masterFX.outVolumeCodec[1][1] = store.readU8("cfg_audio", "ovc11", masterFX.outVolumeCodec[1][1]);
-    masterFX.inVolumeCodec[0][0]  = store.readU8("cfg_audio", "ivc00", masterFX.inVolumeCodec[0][0]);
-    masterFX.inVolumeCodec[0][1]  = store.readU8("cfg_audio", "ivc01", masterFX.inVolumeCodec[0][1]);
-    masterFX.inVolumeCodec[1][0]  = store.readU8("cfg_audio", "ivc10", masterFX.inVolumeCodec[1][0]);
-    masterFX.inVolumeCodec[1][1]  = store.readU8("cfg_audio", "ivc11", masterFX.inVolumeCodec[1][1]);
+    masterFX.outVolumeCodec[0][0] = readU8In(store, "cfg_audio", "ovc00", masterFX.outVolumeCodec[0][0], 0, kPercentMax);
+    masterFX.outVolumeCodec[0][1] = readU8In(store, "cfg_audio", "ovc01", masterFX.outVolumeCodec[0][1], 0, kPercentMax);
+    masterFX.outVolumeCodec[1][0] = readU8In(store, "cfg_audio", "ovc10", masterFX.outVolumeCodec[1][0], 0, kPercentMax);
+    masterFX.outVolumeCodec[1][1] = readU8In(store, "cfg_audio", "ovc11", masterFX.outVolumeCodec[1][1], 0, kPercentMax);
+    masterFX.inVolumeCodec[0][0] = readU8In(store, "cfg_audio", "ivc00", masterFX.inVolumeCodec[0][0], 0, kPercentMax);
+    masterFX.inVolumeCodec[0][1] = readU8In(store, "cfg_audio", "ivc01", masterFX.inVolumeCodec[0][1], 0, kPercentMax);
+    masterFX.inVolumeCodec[1][0] = readU8In(store, "cfg_audio", "ivc10", masterFX.inVolumeCodec[1][0], 0, kPercentMax);
+    masterFX.inVolumeCodec[1][1] = readU8In(store, "cfg_audio", "ivc11", masterFX.inVolumeCodec[1][1], 0, kPercentMax);
 
     // RGB
     RGBbrightness = store.readU8("cfg_rgb", "brightness", 100);

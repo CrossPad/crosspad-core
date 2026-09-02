@@ -51,3 +51,38 @@ TEST_CASE("CrosspadSettings: missing keys use defaults", "[settings]") {
     settings->loadFrom(store);
     REQUIRE(settings->keypad.enableKeypad == originalKeypad);
 }
+
+
+TEST_CASE("CrosspadSettings: out-of-range NVS values are clamped on load", "[settings]") {
+    test::MemoryKVStore store;
+    store.init();
+    auto* settings = crosspad::CrosspadSettings::getInstance();
+
+    // A corrupt or foreign NVS: brightness above the slider, a volume at 255,
+    // a per-codec volume at 200, and a brightness below the slider floor.
+    store.saveU8("cfg_display", "brightness", 250);
+    store.saveU8("cfg_audio", "out_vol", 255);
+    store.saveU8("cfg_audio", "in_vol", 101);
+    store.saveU8("cfg_audio", "ovc10", 200);
+    settings->loadFrom(store);
+    REQUIRE(settings->LCDbrightness == 100);
+    REQUIRE(settings->masterFX.outVolume == 100);
+    REQUIRE(settings->masterFX.inVolume == 100);
+    REQUIRE(settings->masterFX.outVolumeCodec[1][0] == 100);
+
+    store.saveU8("cfg_display", "brightness", 0);
+    settings->loadFrom(store);
+    REQUIRE(settings->LCDbrightness == 5);
+
+    // In-range values pass through untouched.
+    store.saveU8("cfg_display", "brightness", 42);
+    store.saveU8("cfg_audio", "out_vol", 7);
+    settings->loadFrom(store);
+    REQUIRE(settings->LCDbrightness == 42);
+    REQUIRE(settings->masterFX.outVolume == 7);
+
+    // Cleanup — back to defaults for the tests that follow.
+    settings->LCDbrightness = 100;
+    settings->masterFX.outVolume = 50;
+    settings->masterFX.inVolume = 50;
+}
