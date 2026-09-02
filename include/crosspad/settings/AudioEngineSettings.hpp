@@ -15,7 +15,7 @@ namespace crosspad {
  * Frame count: power-of-two from 32 to 512 (latency vs CPU tradeoff).
  */
 struct AudioEngineSettings {
-    uint32_t sampleRate = 48000;
+    uint32_t sampleRate = 44100;
     uint32_t frameCount = 64;
 
     static constexpr uint32_t kSampleRates[]    = {44100, 48000, 96000};

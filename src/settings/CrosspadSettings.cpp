@@ -31,7 +31,7 @@ void CrosspadSettings::loadFrom(IKeyValueStore& store) {
     usbAudioEnabled          = store.readBool("cfg_audio", "usb_audio", false);
     usbAudioPreset           = store.readU8("cfg_audio", "usb_preset", 0);
     {
-        uint32_t sr = store.readU8("cfg_audio_eng", "sr_idx", 1); // 0=44100, 1=48000, 2=96000
+        uint32_t sr = store.readU8("cfg_audio_eng", "sr_idx", 0); // 0=44100, 1=48000, 2=96000
         if (sr < AudioEngineSettings::kSampleRatesCount) {
             audioEngine.sampleRate = AudioEngineSettings::kSampleRates[sr];
         }

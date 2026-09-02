@@ -32,7 +32,7 @@ class IAudioNode;
 // ── Audio configuration ──────────────────────────────────────────────────
 
 struct AudioModuleConfig {
-    uint32_t sampleRate   = 48000;
+    uint32_t sampleRate   = 44100;
     uint32_t frameCount   = 64;
     uint8_t  channelCount = 2;
     uint8_t  streamCount  = 2;
