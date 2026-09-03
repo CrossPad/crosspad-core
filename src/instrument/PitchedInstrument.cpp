@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MIT
 #include "crosspad/instrument/PitchedInstrument.hpp"
 
+#include <algorithm>
 #include <cmath>
 
 namespace crosspad {
@@ -18,6 +19,14 @@ constexpr int kPadPanMax = 100;
 /// Mix a note that did not come from the grid at full volume, dead centre.
 constexpr int kUngriddedVolume = kPadVolumeMax;
 constexpr int kUngriddedPan = 0;
+/// Equal-tempered pitch: A4 = 440 Hz sits at MIDI note 69.
+constexpr float kA4Hz = 440.0f;
+constexpr float kA4Note = 69.0f;
+constexpr float kSemitonesPerOctave = 12.0f;
+
+float noteToHz(uint8_t midiNote) {
+    return kA4Hz * std::pow(2.0f, (static_cast<float>(midiNote) - kA4Note) / kSemitonesPerOctave);
+}
 
 int16_t tapAt(const Zone& z, int64_t i) {
     if (i < 0 || i >= static_cast<int64_t>(z.length)) return 0;
@@ -243,7 +252,10 @@ void PitchedInstrument::noteOn(uint8_t midiNote, uint8_t velocity, uint8_t pad) 
     // in, the note is dropped rather than left pointing at freed PCM.
     if (mutating_.load(std::memory_order_seq_cst)) {
         v.active.store(false, std::memory_order_relaxed);
+        return;
     }
+
+    lastNoteHz_.store(noteToHz(midiNote), std::memory_order_relaxed);
 }
 
 void PitchedInstrument::noteOff(uint8_t midiNote) {
@@ -268,6 +280,8 @@ void PitchedInstrument::onPrepare(uint32_t maxFrames, uint32_t sampleRate) {
     if (sampleRate > 0) sampleRate_ = sampleRate;
     scratch_.assign(maxFrames, 0.0f);
     panTmp_.assign(maxFrames, 0.0f);
+    monoSum_.assign(maxFrames, 0.0f);
+    scopeTap_.setSampleRate(sampleRate_);
 }
 
 void PitchedInstrument::renderVoice(Voice& v, uint32_t frames) {
@@ -340,28 +354,47 @@ void PitchedInstrument::mix(float* out, uint32_t frames) {
     rendering_.store(true, std::memory_order_seq_cst);
     if (gated_.load(std::memory_order_seq_cst)) {
         rendering_.store(false, std::memory_order_seq_cst);
+        // A gated block still happened, and it was silent. Say so, or the view
+        // would hold the last waveform for the whole kit swap.
+        publishScope(frames, true);
         return;
     }
-    renderBlock(out, frames);
+    renderBlock(out, frames);   // publishes its own mono sum
     rendering_.store(false, std::memory_order_seq_cst);
+}
+
+void PitchedInstrument::publishScope(uint32_t frames, bool silent) {
+    if (monoSum_.empty() || frames == 0) return;
+    if (frames > maxFrames_) frames = maxFrames_;
+    if (silent) std::fill(monoSum_.begin(), monoSum_.begin() + frames, 0.0f);
+    scopeTap_.write(monoSum_.data(), frames);
 }
 
 void PitchedInstrument::renderBlock(float* out, uint32_t frames) {
     if (!out || frames == 0) return;
-    if (!bank_.load(std::memory_order_acquire)) return;
     if (maxFrames_ == 0 || scratch_.empty()) return;
     if (frames > maxFrames_) frames = maxFrames_;
 
-    for (uint8_t i = 0; i < kMaxVoices; ++i) {
-        Voice& v = voices_[i];
-        // Pairs with the release store in noteOn(): a voice seen active here
-        // has its zone, phase and gains fully written. A slot that has never
-        // been used still has a null zone, so it is skipped.
-        if (!v.active.load(std::memory_order_acquire) || !v.zone) continue;
-        renderVoice(v, frames);
-        detail::accumulatePanned(scratch_.data(), out, frames, v.gainL, v.gainR,
-                                 panTmp_.data());
+    // The scope sum is built here rather than derived from `out`: `out` is the
+    // mixer's bus and already carries whatever ran before this node.
+    float* mono = monoSum_.data();
+    std::fill(mono, mono + frames, 0.0f);
+
+    if (bank_.load(std::memory_order_acquire)) {
+        for (uint8_t i = 0; i < kMaxVoices; ++i) {
+            Voice& v = voices_[i];
+            // Pairs with the release store in noteOn(): a voice seen active
+            // here has its zone, phase and gains fully written. A slot that
+            // has never been used still has a null zone, so it is skipped.
+            if (!v.active.load(std::memory_order_acquire) || !v.zone) continue;
+            renderVoice(v, frames);
+            for (uint32_t n = 0; n < frames; ++n) mono[n] += scratch_[n];
+            detail::accumulatePanned(scratch_.data(), out, frames, v.gainL, v.gainR,
+                                     panTmp_.data());
+        }
     }
+
+    publishScope(frames, false);
 }
 
 uint8_t PitchedInstrument::activeVoices() const {

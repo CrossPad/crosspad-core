@@ -42,6 +42,7 @@ class CrosspadSettings;
 class CrosspadStatus;
 class SequencerController;
 class ISequencerEngine;
+class PitchedInstrument;
 
 /**
  * @brief Central registry of all platform service pointers.
@@ -79,6 +80,11 @@ struct PlatformServices {
     ISequencerEngine* sequencerEngine = nullptr;
     IBleMidi*         bleMidi         = nullptr;  // defaults to NullBleMidi
 
+    /// The varispeed sample engine, when the platform runs one. Portable apps
+    /// reach it for what only the engine knows — its scope tap, its last note.
+    /// Null on a platform without one; every user must check.
+    PitchedInstrument* pitchedInstrument = nullptr;
+
     // ── Typed setters — auto-update PlatformCapabilities ────────────────
 
     /// Set MIDI output + toggle Capability::Midi.
@@ -106,6 +112,10 @@ struct PlatformServices {
 
     /// Set HTTP client + toggle Capability::Http.
     void setHttpClient(IHttpClient* http);
+
+    /// Publish the pitched sample engine. No capability flag: the engine is a
+    /// concrete object a port owns, not an interface a port may or may not have.
+    void setPitchedInstrument(PitchedInstrument* instrument);
 
     /// Set BLE MIDI interface + toggle Capability::Bluetooth.
     /// Also wires into MidiInputHandler::setBleOutput().

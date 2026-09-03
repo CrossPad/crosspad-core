@@ -110,6 +110,10 @@ void PlatformServices::setAudioModule(IAudioModule* module) {
     }
 }
 
+void PlatformServices::setPitchedInstrument(PitchedInstrument* instrument) {
+    pitchedInstrument = instrument;
+}
+
 void PlatformServices::setSynthEngine(ISynthEngine* synth) {
     synthEngine = synth;
 

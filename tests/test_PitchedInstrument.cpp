@@ -520,3 +520,103 @@ TEST_CASE("PitchedInstrument: gateEnter yields while a render is in flight",
 
     delete inst.installBank(nullptr, params(8), nullptr, 10, nullptr, &safe);
 }
+
+TEST_CASE("PitchedInstrument: the scope tap carries the rendered mono sum",
+          "[instrument][scope]") {
+    // A ramp zone at its own root plays 1:1, so the block content is known
+    // sample by sample and the tap can be checked against the audio, not
+    // against itself.
+    SampleBank* bank = makeBank(10000, 60.0f, 0, 0, rampFill);
+    PitchedInstrument inst;
+    inst.onPrepare(kFrames, kSr);
+    inst.setParams(params(24));
+    inst.setBank(bank);
+    REQUIRE(inst.scopeTap().sampleRate() == kSr);
+
+    inst.noteOn(60, 127, 0);
+    const uint32_t blocks = 4;
+    std::vector<float> audio(blocks * kFrames * 2, 0.0f);
+    for (uint32_t b = 0; b < blocks; ++b) {
+        inst.mix(audio.data() + b * kFrames * 2, kFrames);
+    }
+
+    std::vector<float> tapped(blocks * kFrames, 0.0f);
+    REQUIRE(inst.scopeTap().snapshot(tapped.data(), blocks * kFrames) == blocks * kFrames);
+
+    // One voice, centred: L and R are the same mono signal times cos/sin of a
+    // 45-degree pan, so L + R is the mono sum scaled by 2 * cos(45).
+    for (uint32_t k = 0; k < blocks * kFrames; ++k) {
+        const float lr = audio[2 * k] + audio[2 * k + 1];
+        REQUIRE(lr == Catch::Approx(tapped[k] * 2.0f * kCenterGain).margin(1e-5));
+    }
+    // And it really is the waveform: the ramp at 1:1 is sample k of the zone.
+    for (uint32_t k = 0; k < blocks * kFrames; ++k) {
+        REQUIRE(tapped[k] == Catch::Approx(static_cast<float>(k) / 32768.0f).margin(1e-6));
+    }
+    delete bank;
+}
+
+TEST_CASE("PitchedInstrument: silent blocks are written too", "[instrument][scope]") {
+    // A view that stops being fed freezes on the last loud waveform. Every
+    // block has to arrive, including the ones between notes.
+    SampleBank* bank = makeBank(4096, 60.0f, 0, 0, constFill);
+    PitchedInstrument inst;
+    inst.onPrepare(kFrames, kSr);
+    inst.setParams(params(24, 0.0f, 0.0f));
+    inst.setBank(bank);
+
+    std::vector<float> out(kFrames * 2, 0.0f);
+    inst.mix(out.data(), kFrames);                 // no note has been played yet
+    REQUIRE(inst.scopeTap().written() == kFrames);
+
+    std::vector<float> tapped(kFrames, 1.0f);
+    REQUIRE(inst.scopeTap().snapshot(tapped.data(), kFrames) == kFrames);
+    for (float v : tapped) REQUIRE(v == 0.0f);
+
+    inst.noteOn(60, 127, 0);
+    inst.mix(out.data(), kFrames);
+    REQUIRE(inst.scopeTap().snapshot(tapped.data(), kFrames) == kFrames);
+    REQUIRE(std::fabs(tapped[0]) > 0.0f);
+
+    inst.noteOff(60);                              // releaseMs 0: gone next block
+    inst.mix(out.data(), kFrames);
+    inst.mix(out.data(), kFrames);
+    REQUIRE(inst.activeVoices() == 0);
+    REQUIRE(inst.scopeTap().written() == 4u * kFrames);
+    REQUIRE(inst.scopeTap().snapshot(tapped.data(), kFrames) == kFrames);
+    for (float v : tapped) REQUIRE(v == 0.0f);     // decayed to a flat line
+
+    // A block rendered while the loader holds the gate is silent, and says so.
+    inst.gateEnter(10, nullptr);
+    inst.mix(out.data(), kFrames);
+    inst.gateExit();
+    REQUIRE(inst.scopeTap().written() == 5u * kFrames);
+    delete bank;
+}
+
+TEST_CASE("PitchedInstrument: lastNoteHz follows the notes that sounded",
+          "[instrument][scope]") {
+    SampleBank* bank = makeBank(4096, 60.0f, 0, 0, constFill);
+    PitchedInstrument inst;
+    inst.onPrepare(kFrames, kSr);
+    inst.setParams(params(24));
+
+    REQUIRE(inst.lastNoteHz() == 0.0f);
+    inst.noteOn(69, 127, 0);                       // no bank: nothing sounded
+    REQUIRE(inst.lastNoteHz() == 0.0f);
+
+    inst.setBank(bank);
+    inst.noteOn(69, 127, 0);
+    REQUIRE(inst.lastNoteHz() == Catch::Approx(440.0f).margin(1e-3));
+    inst.noteOn(60, 127, 0);
+    REQUIRE(inst.lastNoteHz() == Catch::Approx(261.6255653f).margin(1e-3));
+    inst.noteOn(81, 127, 0);
+    REQUIRE(inst.lastNoteHz() == Catch::Approx(880.0f).margin(1e-3));
+
+    // A note refused while the loader is mutating never sounded either.
+    inst.beginMutation();
+    inst.noteOn(69, 127, 0);
+    inst.endMutation();
+    REQUIRE(inst.lastNoteHz() == Catch::Approx(880.0f).margin(1e-3));
+    delete bank;
+}

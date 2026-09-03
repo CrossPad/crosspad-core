@@ -40,6 +40,7 @@
             "+<dsp/FftFactory.cpp>",
             "+<dsp/PitchDetector.cpp>",
             "+<dsp/FftResampler.cpp>",
+            "+<dsp/ScopeTrigger.cpp>",
             "+<instrument/WavPcm.cpp>",
             "+<instrument/SampleBank.cpp>",
             "+<instrument/PitchedInstrument.cpp>",

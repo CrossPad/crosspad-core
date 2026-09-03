@@ -15,8 +15,8 @@ Zero platform-specific code — every hardware dependency is behind a pure virtu
 ```
 include/crosspad/
   app/         App registry, lifecycle, flags, manager base
-  audio/       Ring buffer, peak metering
-  dsp/         FFT seam (portable + esp-dsp) and factory, pitch detection, rate conversion
+  audio/       Ring buffer, peak metering, scope tap (waveform view)
+  dsp/         FFT seam (portable + esp-dsp) and factory, pitch detection, rate conversion, scope trigger
   event/       Event bus interface and implementations
   instrument/  Pitched sample engine: WAV reader, sample bank, kit loader, voices
   kit/         Kit loading interface

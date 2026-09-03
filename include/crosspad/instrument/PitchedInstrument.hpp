@@ -19,9 +19,12 @@
  * one at a time (an unload, say).
  *
  * mix() allocates nothing and takes no lock.
+ *
+ * Every block also lands in scopeTap() as a mono sum, for a waveform view.
  */
 
 #include "crosspad/audio/IAudioNode.hpp"
+#include "crosspad/audio/ScopeTap.hpp"
 #include "crosspad/instrument/SampleBank.hpp"
 #include "crosspad/kit/KitInfo.hpp"
 
@@ -154,6 +157,26 @@ public:
     void onPrepare(uint32_t maxFrames, uint32_t sampleRate) override;
     void mix(float* out, uint32_t frames) override;
 
+    /**
+     * @brief The engine's own output, mono, as a UI thread can read it.
+     *
+     * Written once per mix() — including the all-zero blocks between notes, so
+     * a view decays to a flat line instead of freezing on the last waveform
+     * that happened to be loud. Pre-pan and pre-master: this is what the
+     * instrument produced, not what came out of the mixer.
+     */
+    ScopeTap& scopeTap() { return scopeTap_; }
+    const ScopeTap& scopeTap() const { return scopeTap_; }
+
+    /**
+     * @brief Fundamental of the most recent note that actually started a voice.
+     *
+     * 440 * 2^((note - 69) / 12); 0 before any note. A view sizes its window
+     * from this, so a note that was dropped (no bank, mutation in flight) must
+     * not move it — the window would then describe a wave that is not there.
+     */
+    float lastNoteHz() const { return lastNoteHz_.load(std::memory_order_relaxed); }
+
     // ── telemetry ──
     uint8_t activeVoices() const;
     uint32_t stealCount() const { return steals_.load(std::memory_order_relaxed); }
@@ -196,6 +219,9 @@ private:
     void renderVoice(Voice& v, uint32_t frames);
     /// mix() minus the render gate — everything the audio thread actually does.
     void renderBlock(float* out, uint32_t frames);
+    /// Push the block's mono sum to the tap. @p silent zeroes it first, for
+    /// the paths that produced no audio at all.
+    void publishScope(uint32_t frames, bool silent);
 
     std::atomic<SampleBank*> bank_{nullptr};
     std::atomic<bool> mutating_{false};
@@ -207,6 +233,7 @@ private:
     std::atomic<int16_t> padVolume_[kPads];
     std::atomic<int16_t> padPan_[kPads];
     std::atomic<uint32_t> steals_{0};
+    std::atomic<float> lastNoteHz_{0.0f};
 
     Voice voices_[kMaxVoices];
     uint64_t nextOrder_ = 1;
@@ -215,6 +242,8 @@ private:
     uint32_t maxFrames_ = 0;
     std::vector<float> scratch_;   ///< per-voice mono render
     std::vector<float> panTmp_;    ///< unit-stride intermediate for ESP-DSP
+    std::vector<float> monoSum_;   ///< block sum of every voice, for the tap
+    ScopeTap scopeTap_;
 };
 
 } // namespace crosspad
