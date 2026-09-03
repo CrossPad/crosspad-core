@@ -9,6 +9,17 @@
 # Collect portable core sources
 file(GLOB_RECURSE CORE_SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/src/*.cpp")
 
+# esp-dsp is not a platform dependency: it ships with ESP-IDF *and* with
+# Arduino-ESP32, so the sources that use it (dsp/EspDspFft.cpp, the SIMD pan
+# accumulate in PitchedInstrument) live here and are guarded by
+# CROSSPAD_USE_ESP_DSP && __has_include(<esp_dsp.h>). Without both they
+# compile to nothing and the portable paths take over.
+if(IDF_TARGET STREQUAL "esp32s3")
+    set(CORE_DSP_REQUIRES espressif__esp-dsp)
+else()
+    set(CORE_DSP_REQUIRES "")
+endif()
+
 idf_component_register(
     SRCS ${CORE_SOURCES}
     INCLUDE_DIRS
@@ -17,4 +28,12 @@ idf_component_register(
         bblanchon__ArduinoJson
         freertos
         esp_event
+        ${CORE_DSP_REQUIRES}
 )
+
+if(IDF_TARGET STREQUAL "esp32s3")
+    # PUBLIC, not PRIVATE: PitchedInstrument.hpp picks its accumulate loop from
+    # this macro, so core and every consumer that includes the header have to
+    # agree on it or the inline function has two definitions.
+    target_compile_definitions(${COMPONENT_LIB} PUBLIC CROSSPAD_USE_ESP_DSP=1)
+endif()

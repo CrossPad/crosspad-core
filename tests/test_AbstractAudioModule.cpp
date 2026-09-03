@@ -207,16 +207,16 @@ TEST_CASE("AbstractAudioModule: onSampleRateChange propagates", "[audio][module]
         REQUIRE(a.srCalls == 1);
     }
 
-    SECTION("addNode before setup — addNode triggers with default 48000, then setup re-triggers") {
+    SECTION("addNode before setup — addNode triggers with default 44100, then setup re-triggers") {
         TestAudioModule m;
         ConstGenerator a(0.0f);
         m.addNode(&a);
-        REQUIRE(a.lastSr == 48000);   // default from AudioModuleConfig
+        REQUIRE(a.lastSr == 44100);   // default from AudioModuleConfig
         REQUIRE(a.srCalls == 1);
 
-        AudioModuleConfig cfg; cfg.sampleRate = 44100; cfg.frameCount = 16;
+        AudioModuleConfig cfg; cfg.sampleRate = 48000; cfg.frameCount = 16;
         REQUIRE(m.setup(cfg));
-        REQUIRE(a.lastSr == 44100);
+        REQUIRE(a.lastSr == 48000);
         REQUIRE(a.srCalls == 2);
     }
 

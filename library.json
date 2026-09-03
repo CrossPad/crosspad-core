@@ -30,10 +30,20 @@
             "+<platform/PlatformServices.cpp>",
             "+<kit/KitJsonParser.cpp>",
             "+<kit/PortableKitLoader.cpp>",
+            "+<kit/KitPathUtils.cpp>",
             "+<event/FreeRtosEventBus.cpp>",
             "+<event/SyncEventBus.cpp>",
             "+<settings/ISettingsUI.cpp>",
-            "+<drivers/Drv2605Driver.cpp>"
+            "+<drivers/Drv2605Driver.cpp>",
+            "+<dsp/PortableFft.cpp>",
+            "+<dsp/EspDspFft.cpp>",
+            "+<dsp/FftFactory.cpp>",
+            "+<dsp/PitchDetector.cpp>",
+            "+<dsp/FftResampler.cpp>",
+            "+<instrument/WavPcm.cpp>",
+            "+<instrument/SampleBank.cpp>",
+            "+<instrument/PitchedInstrument.cpp>",
+            "+<instrument/PitchedKitLoader.cpp>"
         ]
     }
 }

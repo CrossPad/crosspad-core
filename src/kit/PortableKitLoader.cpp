@@ -177,36 +177,6 @@ const std::vector<KitInfo>& PortableKitLoader::kits() const {
     return kits_;
 }
 
-// ── Free function (KitPathUtils) ────────────────────────────────────────────
-
-/* Callers pass logical paths, but choosing between the two layouts means
- * asking the filesystem, which needs the mount prefix. */
-static std::string g_fsPrefix;
-
-void setKitPathFsPrefix(const std::string& prefix) { g_fsPrefix = prefix; }
-
-std::string resolveKitSamplePath(const std::string& kitJsonPath,
-                                  const std::string& sampleFile) {
-    if (sampleFile.empty()) return "";
-    if (sampleFile[0] == '/') return sampleFile;
-
-    const std::string dir  = parentDir(kitJsonPath);
-    const std::string flat = dir + "/" + sampleFile;
-    if (pathExists(g_fsPrefix + flat)) return flat;
-
-    const std::string nested = dir + "/SAMPLES/" + sampleFile;
-    if (pathExists(g_fsPrefix + nested)) return nested;
-
-    /* Neither exists: return the flat form, so the caller's "file not found"
-     * still names where a flat kit would have kept it. */
-    return flat;
-}
-
-std::string kitAssetPath(const std::string& kitJsonPath,
-                         const std::string& fileName) {
-    return g_fsPrefix + parentDir(kitJsonPath) + "/" + fileName;
-}
-
 // ── Kit discovery ───────────────────────────────────────────────────────────
 
 bool PortableKitLoader::discoverKitsRecursive(const std::string& dirPath,

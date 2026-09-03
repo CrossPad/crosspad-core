@@ -64,6 +64,25 @@ set(CORE_SOURCES
 
     # STM32 config sync
     ${CORE_DIR}/src/stm32/Stm32ConfigSync.cpp
+
+    # Kit JSON and sample-path resolution
+    ${CORE_DIR}/src/kit/KitJsonParser.cpp
+    ${CORE_DIR}/src/kit/KitPathUtils.cpp
+
+    # DSP (FFT seam + factory, pitch detection, rate conversion).
+    # EspDspFft.cpp is here on purpose: without esp-dsp it compiles to nothing,
+    # and building it on the host is what keeps that guard honest.
+    ${CORE_DIR}/src/dsp/PortableFft.cpp
+    ${CORE_DIR}/src/dsp/EspDspFft.cpp
+    ${CORE_DIR}/src/dsp/FftFactory.cpp
+    ${CORE_DIR}/src/dsp/PitchDetector.cpp
+    ${CORE_DIR}/src/dsp/FftResampler.cpp
+
+    # Pitched instrument engine
+    ${CORE_DIR}/src/instrument/WavPcm.cpp
+    ${CORE_DIR}/src/instrument/SampleBank.cpp
+    ${CORE_DIR}/src/instrument/PitchedInstrument.cpp
+    ${CORE_DIR}/src/instrument/PitchedKitLoader.cpp
 )
 
 # ── Test sources ──
