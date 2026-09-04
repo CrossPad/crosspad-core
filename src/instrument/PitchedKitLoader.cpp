@@ -7,6 +7,7 @@
 
 #include <cstdarg>
 #include <cstdio>
+#include <cstring>
 #include <new>
 
 namespace crosspad {
@@ -43,11 +44,58 @@ unsigned asUnsigned(uint64_t v) {
     return (v > 0xFFFFFFFFull) ? 0xFFFFFFFFu : static_cast<unsigned>(v);
 }
 
+/// Input frames handed to the converter per step. 4096 frames is 8 kB of
+/// scratch, one analysis block of the resampler, and one turn of the WAV
+/// reader's own 4 kB chunk loop -- small enough that the whole load costs the
+/// bank plus a block whatever the file's length.
+constexpr uint32_t kReadChunkFrames = 4096;
+
+/**
+ * @brief Read @p reader through a rate conversion straight into @p out.
+ *
+ * Stops as soon as @p outFrames are written, which is what makes a
+ * budget-truncated zone cheap: the tail of the file is never read at all.
+ *
+ * @return frames written; @p ok says whether the conversion itself held up.
+ */
+uint32_t streamResampleZone(const PitchedLoadEnv& env, IFft& fft, WavPcmReader& reader,
+                            uint32_t inRate, int16_t* out, uint32_t outFrames, bool& ok) {
+    ok = false;
+    FftResamplerStream stream;
+    if (!stream.begin(fft, inRate, env.engineRate, env.alloc, env.free)) return 0;
+
+    int16_t* chunk = static_cast<int16_t*>(
+        env.alloc(static_cast<size_t>(kReadChunkFrames) * sizeof(int16_t)));
+    if (!chunk) return 0;
+
+    uint32_t written = 0;
+    while (written < outFrames) {
+        const uint32_t n = reader.readMono16(chunk, kReadChunkFrames);
+        if (n == 0) break;
+        written += stream.push(chunk, n, out + written, outFrames - written);
+        if (!stream.ok()) break;
+    }
+    if (stream.ok() && written < outFrames) {
+        written += stream.flush(out + written, outFrames - written);
+    }
+    ok = stream.ok();
+    env.free(chunk);
+    stream.end();
+    return written;
+}
+
 } // namespace
 
 bool pitchedBuildBank(const KitInfo& kit, const PitchedLoadEnv& env, IFft& fft,
                       SampleBank*& outBank, char* err, size_t errLen) {
+    return pitchedBuildBank(kit, env, fft, outBank, err, errLen, nullptr);
+}
+
+bool pitchedBuildBank(const KitInfo& kit, const PitchedLoadEnv& env, IFft& fft,
+                      SampleBank*& outBank, char* err, size_t errLen,
+                      PitchedLoadReport* report) {
     if (err && errLen) err[0] = '\0';
+    if (report) *report = PitchedLoadReport{};
 
     if (!env.alloc || !env.free) {
         fail(err, errLen, "no allocator");
@@ -77,69 +125,68 @@ bool pitchedBuildBank(const KitInfo& kit, const PitchedLoadEnv& env, IFft& fft,
         const std::string path = env.resolvePath ? env.resolvePath(kit.path, spec.sample)
                                                  : resolveKitSamplePath(kit.path, spec.sample);
 
-        WavInfo info;
-        if (!wavReadInfo(path.c_str(), info) || info.frames == 0) {
+        WavPcmReader reader;
+        if (!reader.open(path.c_str()) || reader.info().frames == 0) {
             fail(err, errLen, "zone %u: bad wav '%s'", (unsigned)i, spec.sample.c_str());
             delete bank;
             return false;
         }
+        const WavInfo info = reader.info();
 
         const bool needResample = (info.sampleRate != env.engineRate);
-        const uint32_t outFrames = needResample
+        const uint32_t fullFrames = needResample
             ? resampledLength(info.frames, info.sampleRate, env.engineRate)
             : info.frames;
-        if (outFrames == 0) {
+        if (fullFrames == 0) {
             fail(err, errLen, "zone %u: empty", (unsigned)i);
             delete bank;
             return false;
         }
 
-        // 64-bit: outFrames comes from a file header by way of
-        // resampledLength(), and size_t is 32 bits on the device — a corrupt
-        // header that overflowed the product would have passed the budget
-        // check.
-        const uint64_t zoneBytes = static_cast<uint64_t>(outFrames) * sizeof(int16_t);
-        if (env.maxBankBytes != 0 && used + zoneBytes > env.maxBankBytes) {
-            fail(err, errLen, "zone %u: budget %u B > %u B", (unsigned)i,
-                 asUnsigned(used + zoneBytes), asUnsigned(env.maxBankBytes));
-            delete bank;
-            return false;
+        // The budget is settled in 64-bit: fullFrames comes from a file header
+        // by way of resampledLength(), size_t is 32 bits on the device, and a
+        // corrupt header that overflowed the product would otherwise look
+        // like a zone that fits.
+        uint32_t frames = fullFrames;
+        bool truncated = false;
+        if (env.maxBankBytes != 0) {
+            const uint64_t roomBytes = (used < env.maxBankBytes) ? (env.maxBankBytes - used) : 0;
+            const uint64_t roomFrames = roomBytes / sizeof(int16_t);
+            if (roomFrames == 0) {
+                fail(err, errLen, "zone %u: budget %u B exhausted", (unsigned)i,
+                     asUnsigned(env.maxBankBytes));
+                delete bank;
+                return false;
+            }
+            if (roomFrames < frames) {
+                frames = static_cast<uint32_t>(roomFrames);
+                truncated = true;
+            }
         }
+        const uint64_t zoneBytes = static_cast<uint64_t>(frames) * sizeof(int16_t);
 
-        int16_t* pcm = bank->allocPcm(outFrames);
+        int16_t* pcm = bank->allocPcm(frames);
         if (!pcm) {
             fail(err, errLen, "zone %u: no memory (%u B)", (unsigned)i, asUnsigned(zoneBytes));
             delete bank;
             return false;
         }
 
+        uint32_t got = 0;
         if (!needResample) {
-            if (!wavReadMono16(path.c_str(), pcm, outFrames)) {
-                fail(err, errLen, "zone %u: read failed", (unsigned)i);
-                delete bank;
-                return false;
+            while (got < frames) {
+                const uint32_t n = reader.readMono16(pcm + got, frames - got);
+                if (n == 0) break;
+                got += n;
             }
         } else {
-            // The source PCM does not belong to the bank: only the converted
-            // copy is kept, so bytes() reports what is actually resident.
-            int16_t* src = static_cast<int16_t*>(
-                env.alloc(static_cast<size_t>(info.frames) * sizeof(int16_t)));
-            if (!src) {
-                fail(err, errLen, "zone %u: no memory for source", (unsigned)i);
-                delete bank;
-                return false;
-            }
-            const bool ok = wavReadMono16(path.c_str(), src, info.frames)
-                         && fftResample(fft, src, info.frames, info.sampleRate,
-                                        pcm, outFrames, env.engineRate, env.alloc, env.free);
-            env.free(src);
+            bool ok = false;
+            got = streamResampleZone(env, fft, reader, info.sampleRate, pcm, frames, ok);
             if (!ok) {
-                // Rate conversion is the one step whose transient cost dwarfs
-                // the zone: source + converted copy + the overlap-add scratch
-                // (up to ~200 kB for an 8 kHz source into 44.1 kHz, the widest
-                // ratio a kit ships), all live at once. At the launcher's
-                // headroom that caps a converted zone at roughly half a
-                // second, and the failure is an allocation, not the maths.
+                // Rate conversion is the one step with scratch of its own: one
+                // analysis block, taken and released per zone. The failure is
+                // an allocation or a transform the backend refused, never the
+                // length of the file — that is the point of streaming it.
                 fail(err, errLen, "zone %u: resample %u->%u failed", (unsigned)i,
                      (unsigned)info.sampleRate, (unsigned)env.engineRate);
                 delete bank;
@@ -147,12 +194,37 @@ bool pitchedBuildBank(const KitInfo& kit, const PitchedLoadEnv& env, IFft& fft,
             }
             logLine(env, "zone %u '%s': %u Hz -> %u Hz, %u frames", (unsigned)i,
                     spec.sample.c_str(), (unsigned)info.sampleRate,
-                    (unsigned)env.engineRate, (unsigned)outFrames);
+                    (unsigned)env.engineRate, (unsigned)frames);
+        }
+        // A file that ends early leaves the rest of its buffer as the
+        // allocator handed it over; the engine renders every sample it is told
+        // the zone has.
+        if (got < frames) {
+            std::memset(pcm + got, 0, static_cast<size_t>(frames - got) * sizeof(int16_t));
+        }
+        reader.close();
+
+        if (truncated) {
+            const double rate = static_cast<double>(env.engineRate);
+            const double fullSec = fullFrames / rate;
+            const double keptSec = frames / rate;
+            char note[sizeof(PitchedLoadReport::warning)] = {};
+            snprintf(note, sizeof(note), "zone %u '%s': %.1f s cut to %.1f s (bank budget)",
+                     (unsigned)i, spec.sample.c_str(), fullSec, keptSec);
+            logLine(env, "%s", note);
+            if (report) {
+                ++report->truncatedZones;
+                report->droppedSeconds += static_cast<float>(fullSec - keptSec);
+                if (report->warning[0] == '\0') {
+                    std::memcpy(report->warning, note, sizeof(report->warning));
+                    report->warning[sizeof(report->warning) - 1] = '\0';
+                }
+            }
         }
 
         Zone z;
         z.pcm    = pcm;
-        z.length = outFrames;
+        z.length = frames;
 
         if (spec.root >= 0.0f) {
             z.rootMidi = spec.root;
@@ -160,7 +232,7 @@ bool pitchedBuildBank(const KitInfo& kit, const PitchedLoadEnv& env, IFft& fft,
                     spec.sample.c_str(), (double)z.rootMidi);
         } else {
             PitchResult pr;
-            if (!detectPitch(fft, pcm, outFrames, env.engineRate, pr)) {
+            if (!detectPitch(fft, pcm, frames, env.engineRate, pr)) {
                 fail(err, errLen, "zone %u: pitch detection failed", (unsigned)i);
                 delete bank;
                 return false;
@@ -174,11 +246,12 @@ bool pitchedBuildBank(const KitInfo& kit, const PitchedLoadEnv& env, IFft& fft,
         uint32_t loopStart = spec.loopStart;
         uint32_t loopEnd   = spec.loopEnd;
         if (needResample && info.frames > 0) {
-            const double r = static_cast<double>(outFrames) / static_cast<double>(info.frames);
+            const double r = static_cast<double>(fullFrames) / static_cast<double>(info.frames);
             loopStart = static_cast<uint32_t>(loopStart * r);
             loopEnd   = static_cast<uint32_t>(loopEnd * r);
         }
-        if (loopEnd > outFrames) loopEnd = outFrames;
+        // A truncated zone loses its loop end with the audio it named.
+        if (loopEnd > frames) loopEnd = frames;
         if (loopEnd <= loopStart) { loopStart = 0; loopEnd = 0; }
         z.loopStart = loopStart;
         z.loopEnd   = loopEnd;
@@ -200,6 +273,7 @@ bool pitchedBuildBank(const KitInfo& kit, const PitchedLoadEnv& env, IFft& fft,
 
     logLine(env, "kit '%s': %u zones, %u B", kit.name.c_str(), (unsigned)zoneCount,
             asUnsigned(bank->bytes()));
+    if (report) report->zones = zoneCount;
     outBank = bank;
     return true;
 }

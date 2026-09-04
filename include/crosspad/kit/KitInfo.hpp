@@ -37,6 +37,15 @@ struct InstrumentSpec {
     uint16_t attackMs           = 2;
     uint8_t  maxVoices          = 24;
 
+    /**
+     * @brief Instrument edits made since the kit was read, not yet written.
+     *
+     * The counterpart of Pad::dirtyModified for the pitched engine: the editor
+     * sets it when a root or a loop point moves, the save path clears it. It
+     * describes the session, not the kit, so nothing serialises it.
+     */
+    bool     dirty              = false;
+
     /// Explicit pad_notes when given, otherwise a chromatic run from base_note.
     uint8_t noteForPad(uint8_t pad) const {
         if (pad >= KIT_PADS) return baseNote;

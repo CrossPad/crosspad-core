@@ -35,7 +35,8 @@
  * At N = 4096 the fixed part is 28672 floats (112 KiB) and the accumulator
  * scales with the ratio. Upsampling is the expensive direction: 8 k -> 44.1 k
  * needs ~200 KiB in total, 48 k -> 44.1 k ~127 KiB. Budget for the upsample,
- * not the average.
+ * not the average. FftResamplerStream adds one more block (N floats) for the
+ * input it assembles, and in exchange never sees the signal it is converting.
  */
 
 #include "crosspad/dsp/IFft.hpp"
@@ -47,6 +48,92 @@ namespace crosspad {
 
 /// Frame count the conversion produces: round(inCount * outRate / inRate).
 uint32_t resampledLength(uint32_t inCount, uint32_t inRate, uint32_t outRate);
+
+/**
+ * @brief The same conversion, fed a piece at a time.
+ *
+ * The algorithm above, with its state named rather than held on the stack of
+ * one call: nothing here ever sees the whole signal, so a zone longer than the
+ * memory budget can be read, converted and written straight into its final
+ * buffer. fftResample() is a push() of everything plus a flush(), so there is
+ * one implementation of the maths and both forms produce the same samples.
+ *
+ * Working memory is one allocation from begin(), block-sized (the fixed part
+ * of the budget above plus one analysis block for the input), and is released
+ * by end() or the destructor.
+ *
+ * Output is positional and monotonic: successive calls continue where the last
+ * one stopped. **Whatever does not fit @p outCapacity is discarded**, which is
+ * what makes a budget-truncated load a truncation rather than a corruption —
+ * a caller that wants everything either sizes each destination to
+ * resampledLength(n, inRate, outRate) + kStreamOutSlack or stops pushing once
+ * a call comes back short.
+ */
+class FftResamplerStream {
+public:
+    /// Frames a push() may emit beyond the ratio, from block alignment.
+    static constexpr uint32_t kStreamOutSlack = 8;
+
+    FftResamplerStream() = default;
+    ~FftResamplerStream() { end(); }
+
+    FftResamplerStream(const FftResamplerStream&) = delete;
+    FftResamplerStream& operator=(const FftResamplerStream&) = delete;
+
+    /**
+     * @brief Size the blocks and take the scratch.
+     * @return false on a zero rate, a backend too small for a block, a missing
+     *         allocator, or a failed allocation.
+     */
+    bool begin(IFft& fft, uint32_t inRate, uint32_t outRate,
+               void* (*alloc)(size_t), void (*free)(void*));
+
+    /// @return frames written to @p out (never more than @p outCapacity).
+    uint32_t push(const int16_t* in, uint32_t n, int16_t* out, uint32_t outCapacity);
+
+    /**
+     * @brief Finish the signal: the tail is analysed against zeros, as the
+     *        whole-buffer form does past its last input sample.
+     * @return frames written. push() after this does nothing until begin().
+     */
+    uint32_t flush(int16_t* out, uint32_t outCapacity);
+
+    /// False once a transform has failed; the stream then produces nothing.
+    bool ok() const { return ok_; }
+
+    void end();
+
+private:
+    /// One analysis block at @p p0, already assembled in inBuf_.
+    void processBlock(int16_t* out, uint32_t outCapacity, uint32_t& written);
+    /// Move the accumulator up to @p n0, emitting what that finishes.
+    void slideTo(int64_t n0, int16_t* out, uint32_t outCapacity, uint32_t& written);
+
+    IFft* fft_ = nullptr;
+    void* (*alloc_)(size_t) = nullptr;
+    void (*free_)(void*) = nullptr;
+    float* mem_ = nullptr;
+    float* fbuf_ = nullptr;   ///< forward FFT buffer, 2 * block_ floats
+    float* ybuf_ = nullptr;   ///< zero-padded spectrum / oversampled block
+    float* win_ = nullptr;    ///< Hann analysis window
+    float* acc_ = nullptr;    ///< output accumulator
+    float* inBuf_ = nullptr;  ///< the analysis block being assembled
+
+    uint32_t block_ = 0;
+    uint32_t hop_ = 0;
+    uint32_t padded_ = 0;
+    uint32_t accLen_ = 0;
+    uint32_t cutoff_ = 0;
+    uint32_t inFill_ = 0;     ///< samples of inBuf_ that are assembled
+    double ratio_ = 1.0;
+
+    int64_t p0_ = 0;          ///< input position of the block being assembled
+    int64_t accBase_ = 0;     ///< output frame acc_[0] stands for
+    int64_t accEnd_ = 0;      ///< highest output frame any block has touched
+    uint64_t inTotal_ = 0;    ///< input frames pushed so far
+    bool flushed_ = false;
+    bool ok_ = false;
+};
 
 /**
  * @brief Convert @p in from @p inRate to @p outRate, writing @p outCount frames.

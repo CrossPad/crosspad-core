@@ -39,7 +39,11 @@ namespace crosspad {
  * logical path is already the real one (PC, tests) and wherever
  * setKitPathFsPrefix() has been told the mount.
  * @c log receives one already-formatted line; null discards.
- * @c maxBankBytes caps the resident PCM of one bank; 0 means unlimited.
+ * @c maxBankBytes caps the resident PCM of one bank; 0 means unlimited. A zone
+ * that does not fit what is left of it is **truncated to what fits**, not
+ * refused: the arena holds about a minute of mono 16-bit at 44.1 kHz, and a
+ * kit built around a longer take should play its first minute rather than
+ * fail to load. Only a zone with no room left at all is an error.
  */
 struct PitchedLoadEnv {
     void* (*alloc)(size_t) = nullptr;
@@ -52,6 +56,19 @@ struct PitchedLoadEnv {
 };
 
 /**
+ * @brief What a load did beyond succeeding, for the caller to show.
+ *
+ * @c warning names the first truncated zone and is empty when nothing was
+ * cut; @c truncatedZones and @c droppedSeconds cover all of them.
+ */
+struct PitchedLoadReport {
+    uint8_t zones = 0;
+    uint32_t truncatedZones = 0;
+    float droppedSeconds = 0;
+    char warning[96] = {};
+};
+
+/**
  * @brief Build the sample bank for @p kit.
  *
  * On success @p outBank holds a bank the caller owns and must eventually
@@ -60,12 +77,23 @@ struct PitchedLoadEnv {
  * returning, @p outBank is left alone and @p err carries a one-line reason
  * naming the zone at fault.
  *
+ * Each zone is read, converted and written straight into its final buffer a
+ * block at a time, so peak memory is the bank plus one resampler block --
+ * loading a zone never costs a second copy of it.
+ *
  * @param fft transform for pitch detection and rate conversion; its
  *        maxSize() decides the resampler's block.
- * @return false on a bad env, an unreadable or unsupported WAV, a bank over
- *         @c maxBankBytes, an allocation failure, or a zone whose root could
- *         neither be read from kit.json nor detected.
+ * @param report filled in when non-null: zone count, and what @c maxBankBytes
+ *        cut short. A truncated zone is a warning, not a failure.
+ * @return false on a bad env, an unreadable or unsupported WAV, a zone with no
+ *         budget left at all, an allocation failure, or a zone whose root
+ *         could neither be read from kit.json nor detected.
  */
+bool pitchedBuildBank(const KitInfo& kit, const PitchedLoadEnv& env, IFft& fft,
+                      SampleBank*& outBank, char* err, size_t errLen,
+                      PitchedLoadReport* report);
+
+/// The same load, for a caller with nothing to say about truncation.
 bool pitchedBuildBank(const KitInfo& kit, const PitchedLoadEnv& env, IFft& fft,
                       SampleBank*& outBank, char* err, size_t errLen);
 

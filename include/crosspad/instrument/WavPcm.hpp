@@ -18,6 +18,7 @@
  */
 
 #include <cstdint>
+#include <cstdio>
 
 namespace crosspad {
 
@@ -26,6 +27,56 @@ struct WavInfo {
     uint16_t channels = 0;
     uint16_t bits = 0;
     uint32_t frames = 0;
+};
+
+/**
+ * @brief An open WAV, read a piece at a time.
+ *
+ * The whole-file helpers below are wrappers over this, so there is one copy of
+ * the chunk walking. A zone longer than the bank budget is loaded through this
+ * class rather than read whole and then cut: peak memory is the destination
+ * plus the 4 kB chunk buffer, whatever the file's length.
+ *
+ * One file per instance, no copies; close() is idempotent and the destructor
+ * calls it.
+ */
+class WavPcmReader {
+public:
+    WavPcmReader() = default;
+    ~WavPcmReader() { close(); }
+
+    WavPcmReader(const WavPcmReader&) = delete;
+    WavPcmReader& operator=(const WavPcmReader&) = delete;
+
+    /**
+     * @brief Open @p path and parse its header.
+     * @return false if the file is unreadable, not RIFF/WAVE, or not 16-bit
+     *         mono/stereo PCM. Nothing is left open on failure.
+     */
+    bool open(const char* path);
+
+    /// Valid after a successful open(); zeroed before one.
+    const WavInfo& info() const { return info_; }
+
+    /**
+     * @brief Read the next @p frames frames as mono 16-bit PCM; stereo averaged.
+     *
+     * @return frames actually written, 0 at the end of the data chunk. A short
+     *         count is the end of the file, not an error — the caller decides
+     *         whether the remainder of its buffer should be zeroed.
+     */
+    uint32_t readMono16(int16_t* out, uint32_t frames);
+
+    void close();
+
+private:
+    /// Drop the file and its chunk buffer, keeping whatever info() reports.
+    void release();
+
+    FILE* f_ = nullptr;
+    WavInfo info_{};
+    uint8_t* buf_ = nullptr;
+    uint32_t left_ = 0;        ///< frames still unread in the data chunk
 };
 
 /**

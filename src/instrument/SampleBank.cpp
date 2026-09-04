@@ -33,6 +33,22 @@ int16_t* SampleBank::allocPcm(uint32_t length) {
     return p;
 }
 
+bool SampleBank::loopValid(uint32_t length, uint32_t loopStart, uint32_t loopEnd) {
+    if (loopEnd <= loopStart) return true;          // one-shot
+    if (loopEnd > length) return false;
+    return (loopEnd - loopStart) >= kMinLoopSamples;
+}
+
+bool SampleBank::editZone(uint8_t i, float rootMidi, uint32_t loopStart, uint32_t loopEnd) {
+    if (i >= zoneCount_) return false;
+    if (!loopValid(zones_[i].length, loopStart, loopEnd)) return false;
+    if (loopEnd <= loopStart) { loopStart = 0; loopEnd = 0; }
+    zones_[i].rootMidi  = rootMidi;
+    zones_[i].loopStart = loopStart;
+    zones_[i].loopEnd   = loopEnd;
+    return true;
+}
+
 bool SampleBank::addZone(const Zone& z) {
     if (zoneCount_ >= kMaxZones || !z.pcm || z.length == 0) return false;
     bool owned = false;
@@ -42,12 +58,10 @@ bool SampleBank::addZone(const Zone& z) {
     if (!owned) return false;
 
     Zone copy = z;
+    if (!loopValid(copy.length, copy.loopStart, copy.loopEnd)) return false;
     if (copy.loopEnd <= copy.loopStart) {
         copy.loopStart = 0;
         copy.loopEnd = 0;
-    } else {
-        if (copy.loopEnd > copy.length) return false;
-        if (copy.loopEnd - copy.loopStart < kMinLoopSamples) return false;
     }
     zones_[zoneCount_++] = copy;
     return true;

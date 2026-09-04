@@ -158,3 +158,77 @@ TEST_CASE("wavReadInfo: a header cut short is refused", "[instrument][wav]") {
     REQUIRE_FALSE(wavReadInfo(p.c_str(), info));
     std::filesystem::remove(p);
 }
+
+TEST_CASE("WavPcmReader: the chunk size the caller picks changes nothing",
+          "[instrument][wav]") {
+    // The reader is what a streaming load pulls a zone through, so the piece
+    // size has to be the caller's business: 1 frame, either side of the
+    // internal 4 kB buffer, or the whole file at once.
+    std::vector<int16_t> s(9000);
+    for (size_t i = 0; i < s.size(); ++i) s[i] = static_cast<int16_t>((i * 7) % 30000 - 15000);
+    const std::string p = writeWav("cp_wav_chunks.wav", 1, 16, 44100, s);
+
+    for (uint32_t chunk : { 1u, 4095u, 4096u, 9000u }) {
+        WavPcmReader r;
+        REQUIRE(r.open(p.c_str()));
+        REQUIRE(r.info().frames == 9000);
+
+        std::vector<int16_t> out(9000, 0);
+        uint32_t done = 0;
+        while (done < 9000) {
+            const uint32_t got = r.readMono16(out.data() + done, chunk);
+            if (got == 0) break;
+            done += got;
+        }
+        INFO("chunk = " << chunk);
+        REQUIRE(done == 9000);
+        REQUIRE(out == s);
+        REQUIRE(r.readMono16(out.data(), chunk) == 0u);   // and the file is spent
+    }
+
+    std::filesystem::remove(p);
+}
+
+TEST_CASE("WavPcmReader: stereo is averaged across chunk boundaries",
+          "[instrument][wav]") {
+    std::vector<int16_t> s(2 * 3000);
+    for (size_t i = 0; i < 3000; ++i) {
+        s[2 * i]     = static_cast<int16_t>(i);
+        s[2 * i + 1] = static_cast<int16_t>(i + 100);
+    }
+    const std::string p = writeWav("cp_wav_chunks_st.wav", 2, 16, 48000, s);
+
+    WavPcmReader r;
+    REQUIRE(r.open(p.c_str()));
+    REQUIRE(r.info().channels == 2);
+    REQUIRE(r.info().frames == 3000);
+
+    // 1023 frames is 4092 bytes: every read stops just short of the internal
+    // buffer, so a stereo pair straddles one only if the reader lets it.
+    std::vector<int16_t> out(3000, -1);
+    uint32_t done = 0;
+    while (done < 3000) {
+        const uint32_t got = r.readMono16(out.data() + done, 1023);
+        if (got == 0) break;
+        done += got;
+    }
+    REQUIRE(done == 3000);
+    for (size_t i = 0; i < 3000; ++i) REQUIRE(out[i] == static_cast<int16_t>(i + 50));
+
+    std::filesystem::remove(p);
+}
+
+TEST_CASE("WavPcmReader: a rejected file still reports what was parsed",
+          "[instrument][wav]") {
+    std::vector<int16_t> s(100, 0);
+    const std::string p = writeWav("cp_wav_reader_8bit.wav", 1, 8, 44100, s);
+
+    WavPcmReader r;
+    REQUIRE_FALSE(r.open(p.c_str()));
+    REQUIRE(r.info().bits == 8);
+    REQUIRE(r.info().sampleRate == 44100);
+    std::vector<int16_t> out(10, 0);
+    REQUIRE(r.readMono16(out.data(), 10) == 0u);
+
+    std::filesystem::remove(p);
+}

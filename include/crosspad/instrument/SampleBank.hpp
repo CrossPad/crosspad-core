@@ -62,6 +62,29 @@ public:
      */
     bool addZone(const Zone& z);
 
+    /**
+     * @brief Is this a loop the renderer can play on a zone of @p length?
+     *
+     * A disabled loop (`loopEnd <= loopStart`) always is. A real one must end
+     * inside the zone and span at least kMinLoopSamples. addZone() and every
+     * later edit ask the same question, so an editor can offer the same
+     * verdict before it commits anything.
+     */
+    static bool loopValid(uint32_t length, uint32_t loopStart, uint32_t loopEnd);
+
+    /**
+     * @brief Change a registered zone's root and loop, keeping its PCM.
+     *
+     * What a kit editor changes while the kit is loaded: nothing here reads or
+     * writes sample data. The caller owns the concurrency — the bank is
+     * published to the audio thread, so this belongs inside
+     * PitchedInstrument::editZone()'s gate, not on its own.
+     *
+     * @return false for an unknown zone or a loop loopValid() rejects; the
+     *         zone is then untouched.
+     */
+    bool editZone(uint8_t i, float rootMidi, uint32_t loopStart, uint32_t loopEnd);
+
     uint8_t zoneCount() const { return zoneCount_; }
     const Zone& zone(uint8_t i) const;
 

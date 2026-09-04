@@ -104,68 +104,94 @@ bool parseHeader(FILE* f, WavInfo& info, long& dataOffset, uint32_t& dataBytes,
 
 } // namespace
 
-bool wavReadInfo(const char* path, WavInfo& out) {
-    out = WavInfo{};
+bool WavPcmReader::open(const char* path) {
+    close();
     if (!path) return false;
-    FILE* f = std::fopen(path, "rb");
-    if (!f) return false;
+    f_ = std::fopen(path, "rb");
+    if (!f_) return false;
 
     long dataOffset = 0;
     uint32_t dataBytes = 0;
     bool supported = false;
-    const bool parsed = parseHeader(f, out, dataOffset, dataBytes, supported);
-    std::fclose(f);
-    return parsed && supported;
-}
-
-bool wavReadMono16(const char* path, int16_t* out, uint32_t frames) {
-    if (!path || !out) return false;
-    FILE* f = std::fopen(path, "rb");
-    if (!f) return false;
-
-    WavInfo info;
-    long dataOffset = 0;
-    uint32_t dataBytes = 0;
-    bool supported = false;
-    const bool parsed = parseHeader(f, info, dataOffset, dataBytes, supported);
-    if (!parsed || !supported || std::fseek(f, dataOffset, SEEK_SET) != 0) {
-        std::fclose(f);
+    // info_ keeps whatever the walk understood even when the format is
+    // rejected: wavReadInfo() promises its caller that much, and a rejected
+    // file with a plausible header is exactly what a diagnostic wants to see.
+    const bool parsed = parseHeader(f_, info_, dataOffset, dataBytes, supported);
+    if (!parsed || !supported || std::fseek(f_, dataOffset, SEEK_SET) != 0) {
+        release();
         return false;
     }
 
-    std::memset(out, 0, static_cast<size_t>(frames) * sizeof(int16_t));
+    buf_ = new (std::nothrow) uint8_t[kChunkBytes];
+    if (!buf_) {
+        release();
+        return false;
+    }
+    left_ = info_.frames;
+    return true;
+}
 
-    uint8_t* buf = new (std::nothrow) uint8_t[kChunkBytes];
-    if (!buf) { std::fclose(f); return false; }
-
-    const uint32_t frameBytes = static_cast<uint32_t>(info.channels) * 2u;
-    const uint32_t wantFrames = (frames < info.frames) ? frames : info.frames;
-    uint32_t done = 0;
-    uint32_t remaining = wantFrames * frameBytes;
+uint32_t WavPcmReader::readMono16(int16_t* out, uint32_t frames) {
+    if (!f_ || !buf_ || !out) return 0;
+    const uint32_t frameBytes = static_cast<uint32_t>(info_.channels) * 2u;
+    if (frameBytes == 0) return 0;
+    if (frames > left_) frames = left_;
 
     // Whole frames per read so a stereo pair never straddles two chunks.
     const uint32_t chunkFrames = kChunkBytes / frameBytes;
-    while (remaining > 0 && done < wantFrames) {
-        uint32_t batch = (wantFrames - done < chunkFrames) ? (wantFrames - done) : chunkFrames;
+    uint32_t done = 0;
+    while (done < frames) {
+        uint32_t batch = (frames - done < chunkFrames) ? (frames - done) : chunkFrames;
         const size_t want = static_cast<size_t>(batch) * frameBytes;
-        const size_t got = std::fread(buf, 1, want, f);
+        const size_t got = std::fread(buf_, 1, want, f_);
         if (got < frameBytes) break;
         batch = static_cast<uint32_t>(got / frameBytes);
         for (uint32_t i = 0; i < batch; ++i) {
-            const uint8_t* p = buf + static_cast<size_t>(i) * frameBytes;
+            const uint8_t* p = buf_ + static_cast<size_t>(i) * frameBytes;
             int32_t s = static_cast<int16_t>(rdU16(p));
-            if (info.channels == 2) {
+            if (info_.channels == 2) {
                 s = (s + static_cast<int16_t>(rdU16(p + 2))) / 2;
             }
             out[done + i] = static_cast<int16_t>(s);
         }
         done += batch;
-        remaining -= static_cast<uint32_t>(got);
         if (got < want) break;
     }
+    left_ -= done;
+    return done;
+}
 
-    delete[] buf;
-    std::fclose(f);
+void WavPcmReader::release() {
+    if (f_) { std::fclose(f_); f_ = nullptr; }
+    delete[] buf_;
+    buf_ = nullptr;
+    left_ = 0;
+}
+
+void WavPcmReader::close() {
+    release();
+    info_ = WavInfo{};
+}
+
+bool wavReadInfo(const char* path, WavInfo& out) {
+    WavPcmReader r;
+    const bool ok = r.open(path);
+    out = r.info();
+    return ok;
+}
+
+bool wavReadMono16(const char* path, int16_t* out, uint32_t frames) {
+    if (!out) return false;
+    WavPcmReader r;
+    if (!r.open(path)) return false;
+
+    std::memset(out, 0, static_cast<size_t>(frames) * sizeof(int16_t));
+    uint32_t done = 0;
+    while (done < frames) {
+        const uint32_t got = r.readMono16(out + done, frames - done);
+        if (got == 0) break;
+        done += got;
+    }
     return true;
 }
 

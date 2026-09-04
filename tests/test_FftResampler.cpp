@@ -172,3 +172,83 @@ TEST_CASE("fftResample: refuses a backend too small to hold a block", "[dsp][res
     REQUIRE_FALSE(fftResample(tiny, in.data(), (uint32_t)in.size(), 48000,
                               out.data(), outCount, 44100, testAlloc, testFree));
 }
+
+TEST_CASE("FftResamplerStream: irregular chunks give the whole-buffer answer",
+          "[dsp][resample]") {
+    // fftResample() is a push of everything plus a flush, so the only thing
+    // that could differ is where the caller cut the input — which is exactly
+    // what a streaming load does differently.
+    PortableFft fft;
+    const auto in = tone(997.0, 48000, 0.5, 16000.0);
+    const uint32_t outCount = resampledLength((uint32_t)in.size(), 48000, 44100);
+
+    std::vector<int16_t> whole(outCount, 0);
+    REQUIRE(fftResample(fft, in.data(), (uint32_t)in.size(), 48000,
+                        whole.data(), outCount, 44100, testAlloc, testFree));
+
+    FftResamplerStream st;
+    REQUIRE(st.begin(fft, 48000, 44100, testAlloc, testFree));
+    std::vector<int16_t> streamed(outCount, 0);
+
+    const uint32_t sizes[] = { 1, 7, 4095, 4096, 100, 1, 2048, 8191, 33 };
+    uint32_t fed = 0, written = 0, k = 0;
+    while (fed < in.size()) {
+        uint32_t n = sizes[k++ % (sizeof(sizes) / sizeof(sizes[0]))];
+        if (n > in.size() - fed) n = (uint32_t)in.size() - fed;
+        written += st.push(in.data() + fed, n, streamed.data() + written, outCount - written);
+        REQUIRE(st.ok());
+        fed += n;
+    }
+    written += st.flush(streamed.data() + written, outCount - written);
+    REQUIRE(st.ok());
+    st.end();
+
+    INFO("streamed " << written << " of " << outCount << " frames");
+    REQUIRE(written >= outCount - 1);
+
+    int worst = 0;
+    for (uint32_t i = 0; i < written; ++i) {
+        worst = std::max(worst, std::abs((int)streamed[i] - (int)whole[i]));
+    }
+    INFO("worst deviation from the whole-buffer conversion = " << worst << " LSB");
+    REQUIRE(worst <= 1);
+}
+
+TEST_CASE("FftResamplerStream: output past the capacity is dropped, not shifted",
+          "[dsp][resample]") {
+    // What a budget-truncated zone relies on: the frames that do fit are the
+    // first frames of the conversion, in place.
+    PortableFft fft;
+    const auto in = tone(440.0, 48000, 0.3, 12000.0);
+    const uint32_t outCount = resampledLength((uint32_t)in.size(), 48000, 44100);
+    std::vector<int16_t> whole(outCount, 0);
+    REQUIRE(fftResample(fft, in.data(), (uint32_t)in.size(), 48000,
+                        whole.data(), outCount, 44100, testAlloc, testFree));
+
+    const uint32_t cap = 5000;
+    FftResamplerStream st;
+    REQUIRE(st.begin(fft, 48000, 44100, testAlloc, testFree));
+    std::vector<int16_t> cut(cap, 0);
+    const uint32_t written = st.push(in.data(), (uint32_t)in.size(), cut.data(), cap);
+    st.end();
+
+    REQUIRE(written == cap);
+    for (uint32_t i = 0; i < cap; ++i) REQUIRE(std::abs((int)cut[i] - (int)whole[i]) <= 1);
+}
+
+TEST_CASE("FftResamplerStream: refuses what it cannot run", "[dsp][resample]") {
+    PortableFft fft;
+    PortableFft tiny(64);
+    FftResamplerStream st;
+    REQUIRE_FALSE(st.begin(fft, 0, 44100, testAlloc, testFree));
+    REQUIRE_FALSE(st.begin(fft, 48000, 0, testAlloc, testFree));
+    REQUIRE_FALSE(st.begin(fft, 48000, 44100, nullptr, testFree));
+    REQUIRE_FALSE(st.begin(tiny, 48000, 44100, testAlloc, testFree));
+    REQUIRE_FALSE(st.ok());
+
+    // A stream that never began produces nothing rather than reading its
+    // (absent) scratch.
+    std::vector<int16_t> in(100, 0), out(100, 0);
+    REQUIRE(st.push(in.data(), 100, out.data(), 100) == 0u);
+    REQUIRE(st.flush(out.data(), 100) == 0u);
+}

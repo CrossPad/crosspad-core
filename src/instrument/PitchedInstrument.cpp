@@ -19,6 +19,9 @@ constexpr int kPadPanMax = 100;
 /// Mix a note that did not come from the grid at full volume, dead centre.
 constexpr int kUngriddedVolume = kPadVolumeMax;
 constexpr int kUngriddedPan = 0;
+/// Range a zone root may be edited to, in (fractional) MIDI notes.
+constexpr float kMinRootMidi = 0.0f;
+constexpr float kMaxRootMidi = 127.0f;
 /// Equal-tempered pitch: A4 = 440 Hz sits at MIDI note 69.
 constexpr float kA4Hz = 440.0f;
 constexpr float kA4Note = 69.0f;
@@ -113,6 +116,27 @@ SampleBank* PitchedInstrument::installBank(SampleBank* bank, const InstrumentPar
     return old;
 }
 
+bool PitchedInstrument::editZone(uint8_t zoneIdx, float rootMidi, uint32_t loopStart,
+                                 uint32_t loopEnd, uint32_t maxSpins, void (*yield)()) {
+    // Everything is checked before anything moves: a rejected edit must leave
+    // the zone exactly as the renderer already knows it.
+    SampleBank* bank = bank_.load(std::memory_order_acquire);
+    if (!bank || zoneIdx >= bank->zoneCount()) return false;
+    if (std::isnan(rootMidi) || rootMidi < kMinRootMidi || rootMidi > kMaxRootMidi) return false;
+    if (!SampleBank::loopValid(bank->zone(zoneIdx).length, loopStart, loopEnd)) return false;
+
+    // The same bracket installBank() uses, for the same reason: a voice reads
+    // the loop bounds every block. Nothing is freed here, so gateEnter()'s
+    // answer carries no decision — the notes are silenced either way.
+    gateEnter(maxSpins, yield);
+    beginMutation();
+    allNotesOff();
+    const bool ok = bank->editZone(zoneIdx, rootMidi, loopStart, loopEnd);
+    endMutation();
+    gateExit();
+    return ok;
+}
+
 void PitchedInstrument::setBank(SampleBank* bank) {
     // Voices hold Zone pointers into the old bank; silence them before the
     // swap. reset() keeps Voice::zone as it is on purpose -- see its comment.
@@ -123,24 +147,31 @@ void PitchedInstrument::setBank(SampleBank* bank) {
 void PitchedInstrument::setParams(const InstrumentParams& p) {
     uint8_t mv = p.maxVoices;
     if (mv == 0) mv = 1;
-    if (mv > kMaxVoices) mv = kMaxVoices;
+    if (mv > kMaxSounding) mv = kMaxSounding;
     maxVoices_.store(mv, std::memory_order_relaxed);
     attackMs_.store(p.attackMs < 0.0f ? 0.0f : p.attackMs, std::memory_order_relaxed);
     const float rel = p.releaseMs < 0.0f ? 0.0f : p.releaseMs;
     releaseMs_.store(rel, std::memory_order_relaxed);
 
-    // findVoiceSlot() only scans [0, maxVoices_), so lowering the cap strands
-    // whatever is still sounding above it: nothing would ever reallocate or
-    // steal those slots and they would ring until the next allNotesOff().
-    // mix() and noteOff() do scan the full array, so putting them into release
-    // is enough to retire them.
-    const float relSamples = rel * static_cast<float>(sampleRate_) * kMsToSeconds;
-    for (uint8_t i = mv; i < kMaxVoices; ++i) {
-        Voice& v = voices_[i];
-        if (v.active.load(std::memory_order_relaxed) && !v.releasing) {
-            v.releasing = true;
-            v.releaseStep = (relSamples > 0.0f) ? (v.env / relSamples) : v.env;
+    // Lowering the cap has to retire what is now over it. Oldest first, the
+    // order a steal would pick, but through the normal release: this is a
+    // parameter change, not a note fighting for a slot. Retiring is what makes
+    // the loop terminate — a retired voice stops counting as sounding.
+    for (;;) {
+        uint8_t sounding = 0;
+        int oldest = -1;
+        uint64_t oldestOrder = 0;
+        for (uint8_t i = 0; i < kMaxVoices; ++i) {
+            Voice& v = voices_[i];
+            if (!v.active.load(std::memory_order_relaxed) || v.fading) continue;
+            ++sounding;
+            if (oldest < 0 || v.order < oldestOrder) {
+                oldest = i;
+                oldestOrder = v.order;
+            }
         }
+        if (sounding <= mv || oldest < 0) break;
+        retire(voices_[oldest], rel);
     }
 }
 
@@ -152,31 +183,63 @@ void PitchedInstrument::setPadMix(uint8_t pad, int volume, int pan) {
                        std::memory_order_relaxed);
 }
 
+void PitchedInstrument::retire(Voice& v, float ms) {
+    const float samples = ms * static_cast<float>(sampleRate_) * kMsToSeconds;
+    v.fading = true;
+    v.releasing = true;
+    // Below one sample there is no ramp to run: the step is the whole envelope
+    // and the voice is gone on the next frame it renders.
+    v.releaseStep = (samples >= 1.0f) ? (v.env / samples) : v.env;
+}
+
 int PitchedInstrument::findVoiceSlot() {
     const uint8_t maxV = maxVoices_.load(std::memory_order_relaxed);
-    for (uint8_t i = 0; i < maxV; ++i) {
-        if (!voices_[i].active.load(std::memory_order_relaxed)) return i;
-    }
-    // All busy: prefer the quietest voice already in release, else the oldest.
-    int pick = -1;
-    float lowest = 0.0f;
-    for (uint8_t i = 0; i < maxV; ++i) {
-        if (voices_[i].releasing && (pick < 0 || voices_[i].env < lowest)) {
-            pick = i;
-            lowest = voices_[i].env;
+
+    // One pass answers all three questions: how many voices count against the
+    // cap, where a free slot is, and which of the counted ones is oldest.
+    uint8_t sounding = 0;
+    int freeSlot = -1;
+    int oldestSounding = -1;
+    uint64_t oldestOrder = 0;
+    for (uint8_t i = 0; i < kMaxVoices; ++i) {
+        Voice& v = voices_[i];
+        if (!v.active.load(std::memory_order_relaxed)) {
+            if (freeSlot < 0) freeSlot = i;
+            continue;
+        }
+        if (v.fading) continue;
+        ++sounding;
+        if (oldestSounding < 0 || v.order < oldestOrder) {
+            oldestSounding = i;
+            oldestOrder = v.order;
         }
     }
-    if (pick < 0) {
-        uint64_t oldest = 0;
-        for (uint8_t i = 0; i < maxV; ++i) {
-            if (pick < 0 || voices_[i].order < oldest) {
-                pick = i;
-                oldest = voices_[i].order;
-            }
-        }
-    }
+    if (sounding < maxV && freeSlot >= 0) return freeSlot;
+
+    // At the cap: the oldest sounding voice gives way. It keeps its own slot
+    // and fades there, so the new note takes a free one — kFadeSlots exist so
+    // that there is one.
+    if (oldestSounding >= 0) retire(voices_[oldestSounding], kStealFadeMs);
     steals_.fetch_add(1, std::memory_order_relaxed);
-    return pick;
+    if (freeSlot >= 0) return freeSlot;
+
+    // Steals arriving faster than kStealFadeMs can retire them: every slot is
+    // busy and the only thing left to take is a fade in progress. Cutting the
+    // oldest of those is a click on a voice that is already most of the way
+    // down, which is still the better answer than dropping the note.
+    int oldestFading = -1;
+    oldestOrder = 0;
+    for (uint8_t i = 0; i < kMaxVoices; ++i) {
+        Voice& v = voices_[i];
+        if (!v.active.load(std::memory_order_relaxed) || !v.fading) continue;
+        if (oldestFading < 0 || v.order < oldestOrder) {
+            oldestFading = i;
+            oldestOrder = v.order;
+        }
+    }
+    if (oldestFading < 0) return -1;
+    voices_[oldestFading].reset();
+    return oldestFading;
 }
 
 void PitchedInstrument::noteOn(uint8_t midiNote, uint8_t velocity, uint8_t pad) {
@@ -211,6 +274,7 @@ void PitchedInstrument::noteOn(uint8_t midiNote, uint8_t velocity, uint8_t pad) 
     v.order = nextOrder_++;
     v.note = midiNote;
     v.releasing = false;
+    v.fading = false;
 
     const int vol = (pad < kPads) ? padVolume_[pad].load(std::memory_order_relaxed)
                                   : kUngriddedVolume;
@@ -401,6 +465,15 @@ uint8_t PitchedInstrument::activeVoices() const {
     uint8_t n = 0;
     for (uint8_t i = 0; i < kMaxVoices; ++i) {
         if (voices_[i].active.load(std::memory_order_relaxed)) ++n;
+    }
+    return n;
+}
+
+uint8_t PitchedInstrument::soundingVoices() const {
+    uint8_t n = 0;
+    for (uint8_t i = 0; i < kMaxVoices; ++i) {
+        const Voice& v = voices_[i];
+        if (v.active.load(std::memory_order_relaxed) && !v.fading) ++n;
     }
     return n;
 }

@@ -118,31 +118,85 @@ TEST_CASE("PitchedInstrument: 16 notes fit 24 voices without stealing", "[instru
     delete bank;
 }
 
-TEST_CASE("PitchedInstrument: the 33rd note steals the oldest voice", "[instrument][engine]") {
+TEST_CASE("PitchedInstrument: maxVoices keeps the fade slots back", "[instrument][engine]") {
     SampleBank* bank = makeBank(10000, 60.0f, 0, 0, constFill);
     PitchedInstrument inst;
     inst.onPrepare(kFrames, kSr);
-    inst.setParams(params(32, 0.0f, 0.0f));
+    inst.setParams(params(PitchedInstrument::kMaxVoices, 0.0f, 0.0f));   // ask for every slot
     inst.setBank(bank);
 
-    for (int n = 0; n < 32; ++n) inst.noteOn(static_cast<uint8_t>(40 + n), 100, 0);
-    REQUIRE(inst.activeVoices() == 32);
+    // The cap is the slot count minus the fade reserve, whatever was asked for.
+    for (int n = 0; n < PitchedInstrument::kMaxSounding; ++n) {
+        inst.noteOn(static_cast<uint8_t>(40 + n), 100, 0);
+    }
+    REQUIRE(inst.soundingVoices() == PitchedInstrument::kMaxSounding);
+    REQUIRE(inst.activeVoices() == PitchedInstrument::kMaxSounding);
     REQUIRE(inst.stealCount() == 0u);
 
-    inst.noteOn(100, 100, 0);          // 33rd, a note none of the others use
-    REQUIRE(inst.activeVoices() == 32);
+    inst.noteOn(100, 100, 0);          // one past the cap
     REQUIRE(inst.stealCount() == 1u);
+    // The new note sounds; the stolen one is still in the array, fading in a
+    // slot of its own.
+    REQUIRE(inst.soundingVoices() == PitchedInstrument::kMaxSounding);
+    REQUIRE(inst.activeVoices() == PitchedInstrument::kMaxSounding + 1);
+    delete bank;
+}
 
-    // releaseMs 0 makes noteOff observable within one block: the oldest note
-    // (40) no longer exists, so releasing it changes nothing, while the
-    // second-oldest (41) still frees a voice.
+TEST_CASE("PitchedInstrument: a stolen voice fades instead of cutting",
+          "[instrument][engine]") {
+    SampleBank* bank = makeBank(200000, 60.0f, 0, 0, constFill);
+    PitchedInstrument inst;
+    inst.onPrepare(kFrames, kSr);
+    inst.setParams(params(1, 0.0f, 150.0f));    // one sounding voice: note 2 steals note 1
+    inst.setBank(bank);
+
+    inst.noteOn(60, 100, 0);
+    std::vector<float> alone(kFrames * 2, 0.0f);
+    inst.mix(alone.data(), kFrames);
+
+    inst.noteOn(72, 100, 0);
+    REQUIRE(inst.stealCount() == 1u);
+    REQUIRE(inst.soundingVoices() == 1);
+    REQUIRE(inst.activeVoices() == 2);
+
+    // 2 ms is 88 frames at 44.1 kHz: the fade is still running after one
+    // 64-frame block and its level is falling, which a hard cut would not do.
     std::vector<float> out(kFrames * 2, 0.0f);
-    inst.noteOff(40);
     inst.mix(out.data(), kFrames);
-    REQUIRE(inst.activeVoices() == 32);
-    inst.noteOff(41);
+    REQUIRE(inst.activeVoices() == 2);
+    REQUIRE(out[0] > out[2 * (kFrames - 1)]);
+    REQUIRE(out[2 * (kFrames - 1)] > alone[0]);      // both voices are still in it
+
+    // ...and gone by the end of the second block.
     inst.mix(out.data(), kFrames);
-    REQUIRE(inst.activeVoices() == 31);
+    REQUIRE(inst.activeVoices() == 1);
+    REQUIRE(inst.soundingVoices() == 1);
+    delete bank;
+}
+
+TEST_CASE("PitchedInstrument: a fade is never stolen, only cut when nothing is left",
+          "[instrument][engine]") {
+    SampleBank* bank = makeBank(200000, 60.0f, 0, 0, constFill);
+    PitchedInstrument inst;
+    inst.onPrepare(kFrames, kSr);
+    inst.setParams(params(1, 0.0f, 150.0f));
+    inst.setBank(bank);
+
+    // No mix() between notes, so no fade ever finishes: each note retires the
+    // one sounding voice and takes a fresh slot until the array is full.
+    for (int n = 0; n < PitchedInstrument::kMaxVoices; ++n) {
+        inst.noteOn(static_cast<uint8_t>(40 + n), 100, 0);
+    }
+    REQUIRE(inst.activeVoices() == PitchedInstrument::kMaxVoices);
+    REQUIRE(inst.soundingVoices() == 1);
+    REQUIRE(inst.stealCount() == PitchedInstrument::kMaxVoices - 1);
+
+    // Nothing free and nothing but fades to take: the oldest fade is cut, and
+    // that is still counted as a steal.
+    inst.noteOn(100, 100, 0);
+    REQUIRE(inst.activeVoices() == PitchedInstrument::kMaxVoices);
+    REQUIRE(inst.soundingVoices() == 1);
+    REQUIRE(inst.stealCount() == PitchedInstrument::kMaxVoices);
     delete bank;
 }
 
@@ -395,10 +449,67 @@ TEST_CASE("PitchedInstrument: lowering maxVoices releases the voices above the c
     inst.mix(out.data(), kFrames);
     REQUIRE(inst.activeVoices() == 2);
 
-    // And the two that survive are still the ones the allocator can reach.
+    // And the next note is over the cap: the oldest of the two gives way, and
+    // it is still audible while it fades.
     inst.noteOn(90, 100, 0);
-    REQUIRE(inst.activeVoices() == 2);
+    REQUIRE(inst.soundingVoices() == 2);
+    REQUIRE(inst.activeVoices() == 3);
     REQUIRE(inst.stealCount() == 1u);
+    delete bank;
+}
+
+TEST_CASE("PitchedInstrument: editZone moves the loop the next note plays",
+          "[instrument][engine]") {
+    SampleBank* bank = makeBank(10000, 60.0f, 0, 0, rampFill);
+    PitchedInstrument inst;
+    inst.onPrepare(kFrames, kSr);
+    inst.setParams(params(4));
+    inst.setBank(bank);
+
+    REQUIRE(inst.editZone(0, 60.0f, 100, 200, 0, nullptr));
+    REQUIRE(bank->zone(0).loopStart == 100);
+    REQUIRE(bank->zone(0).loopEnd == 200);
+
+    // At its root the zone plays 1:1, so the frame index is the sample index:
+    // it starts at the loop start and wraps to it 100 samples later.
+    inst.noteOn(60, 127, 0);
+    std::vector<float> a(kFrames * 2, 0.0f), b(kFrames * 2, 0.0f);
+    inst.mix(a.data(), kFrames);
+    inst.mix(b.data(), kFrames);
+
+    const float scale = 1.0f / 32768.0f * kCenterGain;
+    REQUIRE(a[0] == Catch::Approx(100.0f * scale).margin(1e-6));
+    REQUIRE(a[2 * 63] == Catch::Approx(163.0f * scale).margin(1e-6));
+    REQUIRE(b[2 * 35] == Catch::Approx(199.0f * scale).margin(1e-6));
+    REQUIRE(b[2 * 36] == Catch::Approx(100.0f * scale).margin(1e-6));
+
+    // A root edit lands too, and clears the loop when asked to.
+    REQUIRE(inst.editZone(0, 72.0f, 0, 0, 0, nullptr));
+    REQUIRE(bank->zone(0).rootMidi == Catch::Approx(72.0f));
+    REQUIRE(bank->zone(0).loopEnd == 0);
+    delete bank;
+}
+
+TEST_CASE("PitchedInstrument: editZone changes nothing it cannot accept",
+          "[instrument][engine]") {
+    PitchedInstrument inst;
+    inst.onPrepare(kFrames, kSr);
+
+    // No bank at all.
+    REQUIRE_FALSE(inst.editZone(0, 60.0f, 0, 0, 0, nullptr));
+
+    SampleBank* bank = makeBank(10000, 60.0f, 100, 200, rampFill);
+    inst.setBank(bank);
+
+    REQUIRE_FALSE(inst.editZone(1, 60.0f, 0, 0, 0, nullptr));          // no such zone
+    REQUIRE_FALSE(inst.editZone(0, 60.0f, 9000, 20000, 0, nullptr));   // past the end
+    REQUIRE_FALSE(inst.editZone(0, 60.0f, 300, 302, 0, nullptr));      // shorter than the taps
+    REQUIRE_FALSE(inst.editZone(0, 200.0f, 0, 0, 0, nullptr));         // not a MIDI note
+    REQUIRE_FALSE(inst.editZone(0, -1.0f, 0, 0, 0, nullptr));
+
+    REQUIRE(bank->zone(0).rootMidi == Catch::Approx(60.0f));
+    REQUIRE(bank->zone(0).loopStart == 100);
+    REQUIRE(bank->zone(0).loopEnd == 200);
     delete bank;
 }
 

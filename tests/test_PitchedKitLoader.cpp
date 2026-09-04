@@ -8,11 +8,13 @@
 #include "../src/kit/KitJsonParser.hpp"
 #include "wav_fixture.hpp"
 
+#include <algorithm>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <filesystem>
+#include <map>
 #include <string>
 #include <vector>
 
@@ -22,6 +24,48 @@ namespace {
 
 void* loadAlloc(size_t n) { return std::malloc(n); }
 void  loadFree(void* p)   { std::free(p); }
+
+/// The allocator, watched: what the loader asks for is the claim under test in
+/// the streaming cases — a zone is never held twice, whatever its length.
+struct AllocWatch {
+    size_t largest = 0;
+    size_t live = 0;
+    size_t peak = 0;
+    std::map<void*, size_t> blocks;
+};
+AllocWatch g_alloc;
+
+void* watchAlloc(size_t n) {
+    void* p = std::malloc(n);
+    if (!p) return nullptr;
+    g_alloc.largest = std::max(g_alloc.largest, n);
+    g_alloc.blocks[p] = n;
+    g_alloc.live += n;
+    g_alloc.peak = std::max(g_alloc.peak, g_alloc.live);
+    return p;
+}
+
+void watchFree(void* p) {
+    auto it = g_alloc.blocks.find(p);
+    if (it != g_alloc.blocks.end()) {
+        g_alloc.live -= it->second;
+        g_alloc.blocks.erase(it);
+    }
+    std::free(p);
+}
+
+/// A kit of exactly one zone, rooted where the caller says.
+KitInfo oneZoneKit(const char* sample, float root) {
+    KitInfo kit;
+    kit.name = "ONE ZONE";
+    kit.path = "/kits/one/kit.json";
+    kit.engine = KitEngine::Pitched;
+    InstrumentZoneSpec z;
+    z.sample = sample;
+    z.root = root;
+    kit.instrument.zones = {z};
+    return kit;
+}
 
 std::vector<std::string> g_log;
 void captureLog(const char* line) { g_log.push_back(line); }
@@ -125,22 +169,151 @@ TEST_CASE("pitchedBuildBank: builds both zones, converting the 48 kHz one",
     delete bank;
 }
 
-TEST_CASE("pitchedBuildBank: a bank over budget is refused by name",
+TEST_CASE("pitchedBuildBank: a zone over budget is truncated, not refused",
           "[instrument][loader]") {
     KitDir dir;
     PortableFft fft;
     const KitInfo kit = makeKit();
-    // Zone 0 alone is 44100 B; this admits it and refuses zone 1.
+    // Zone 0 alone is 44100 B; this admits it whole and leaves 7950 frames for
+    // zone 1, which wants 22050.
     PitchedLoadEnv env = makeEnv(60000);
 
     SampleBank* bank = nullptr;
+    char err[128] = {'x', 0};
+    PitchedLoadReport report;
+    REQUIRE(pitchedBuildBank(kit, env, fft, bank, err, sizeof(err), &report));
+    REQUIRE(bank != nullptr);
+    REQUIRE(err[0] == '\0');
+    REQUIRE(bank->zoneCount() == 2);
+    REQUIRE(bank->zone(0).length == 22050);
+    REQUIRE(bank->zone(1).length == 7950);
+    REQUIRE(bank->bytes() <= 60000u);
+
+    REQUIRE(report.zones == 2);
+    REQUIRE(report.truncatedZones == 1u);
+    REQUIRE(report.droppedSeconds == Catch::Approx((22050.0 - 7950.0) / 44100.0).margin(0.01));
+    INFO("warning = " << report.warning);
+    REQUIRE(std::string(report.warning).find("zone 1 'a4.wav'") != std::string::npos);
+    REQUIRE(std::string(report.warning).find("cut to") != std::string::npos);
+    REQUIRE(std::string(report.warning).find("bank budget") != std::string::npos);
+    REQUIRE(logContains("cut to"));
+
+    delete bank;
+}
+
+TEST_CASE("pitchedBuildBank: a long zone is cut to the budget, loop and all",
+          "[instrument][loader]") {
+    KitDir dir;
+    PortableFft fft;
+    test::writeSineWav(g_root + "/long.wav", 220.0, 44100, 3.0);
+
+    KitInfo kit = oneZoneKit("long.wav", 57.0f);
+    kit.instrument.zones[0].loopStart = 1000;
+    kit.instrument.zones[0].loopEnd = 100000;        // inside the file, past the budget
+
+    const uint32_t budgetFrames = 44100;             // one second
+    PitchedLoadEnv env = makeEnv(budgetFrames * sizeof(int16_t));
+
+    SampleBank* bank = nullptr;
     char err[128] = {0};
-    REQUIRE_FALSE(pitchedBuildBank(kit, env, fft, bank, err, sizeof(err)));
-    REQUIRE(bank == nullptr);          // the partial bank was freed, not handed back
+    PitchedLoadReport report;
     INFO("err = " << err);
+    REQUIRE(pitchedBuildBank(kit, env, fft, bank, err, sizeof(err), &report));
+    REQUIRE(bank->zoneCount() == 1);
+    REQUIRE(bank->zone(0).length == budgetFrames);
+    REQUIRE(bank->zone(0).loopStart == 1000);
+    REQUIRE(bank->zone(0).loopEnd == budgetFrames);  // clamped with the audio it named
+    REQUIRE(report.truncatedZones == 1u);
+    REQUIRE(report.droppedSeconds == Catch::Approx(2.0).margin(0.01));
+    INFO("warning = " << report.warning);
+    REQUIRE(std::string(report.warning).find("3.0 s cut to 1.0 s") != std::string::npos);
+
+    // The kept second is the file's first second, not silence.
+    REQUIRE(bank->zone(0).pcm[0] == 0);
+    int32_t peak = 0;
+    for (uint32_t i = 0; i < budgetFrames; ++i) {
+        peak = std::max<int32_t>(peak, std::abs(bank->zone(0).pcm[i]));
+    }
+    REQUIRE(peak > 19000);
+    delete bank;
+}
+
+TEST_CASE("pitchedBuildBank: a 48 kHz zone is truncated at the output rate",
+          "[instrument][loader]") {
+    KitDir dir;
+    PortableFft fft;
+    test::writeSineWav(g_root + "/long48.wav", 440.0, 48000, 1.0);
+
+    // 48000 source frames become 44100; the budget admits 20000 of those.
+    const uint32_t budgetFrames = 20000;
+    KitInfo kit = oneZoneKit("long48.wav", -1.0f);   // and detect the root from what is kept
+    PitchedLoadEnv env = makeEnv(budgetFrames * sizeof(int16_t));
+
+    SampleBank* bank = nullptr;
+    char err[128] = {0};
+    PitchedLoadReport report;
+    INFO("err = " << err);
+    REQUIRE(pitchedBuildBank(kit, env, fft, bank, err, sizeof(err), &report));
+    REQUIRE(bank->zone(0).length == budgetFrames);
+    REQUIRE(report.truncatedZones == 1u);
+    REQUIRE(report.droppedSeconds
+            == Catch::Approx((44100.0 - budgetFrames) / 44100.0).margin(0.01));
+
+    // Converted audio, not a raw copy of the 48 kHz samples: A4 at the engine
+    // rate is what the detector has to find in it.
+    REQUIRE(std::fabs(bank->zone(0).rootMidi - 69.0f) < 0.05f);
+    delete bank;
+}
+
+TEST_CASE("pitchedBuildBank: a 30 s zone never costs more than a block of scratch",
+          "[instrument][loader]") {
+    KitDir dir;
+    PortableFft fft;
+    test::writeSineWav(g_root + "/huge48.wav", 440.0, 48000, 30.0);
+
+    const uint32_t budgetFrames = 200000;            // ~4.5 s of the ~27.6 s it converts to
+    const size_t budgetBytes = budgetFrames * sizeof(int16_t);
+    KitInfo kit = oneZoneKit("huge48.wav", 69.0f);
+
+    PitchedLoadEnv env = makeEnv(budgetBytes);
+    env.alloc = watchAlloc;
+    env.free = watchFree;
+    g_alloc = AllocWatch{};
+
+    SampleBank* bank = nullptr;
+    char err[128] = {0};
+    PitchedLoadReport report;
+    INFO("err = " << err);
+    REQUIRE(pitchedBuildBank(kit, env, fft, bank, err, sizeof(err), &report));
+    REQUIRE(bank->zone(0).length == budgetFrames);
+    REQUIRE(report.truncatedZones == 1u);
+
+    // The zone itself is the biggest thing ever asked for: no request holds a
+    // copy of the file, and the transient scratch is one resampler block.
+    const size_t kScratchCeiling = 512u * 1024u;
+    INFO("largest request = " << g_alloc.largest << " B, peak live = " << g_alloc.peak << " B");
+    REQUIRE(g_alloc.largest <= budgetBytes);
+    REQUIRE(g_alloc.largest < kScratchCeiling);
+    REQUIRE(g_alloc.peak < budgetBytes + kScratchCeiling);
+
+    delete bank;
+    REQUIRE(g_alloc.live == 0u);
+}
+
+TEST_CASE("pitchedBuildBank: a zone with no budget left at all is refused by name",
+          "[instrument][loader]") {
+    KitDir dir;
+    PortableFft fft;
+    const KitInfo kit = makeKit();
+    PitchedLoadEnv env = makeEnv(1);                 // not even one frame
+
+    SampleBank* bank = nullptr;
+    char err[128] = {0};
+    REQUIRE_FALSE(pitchedBuildBank(kit, env, fft, bank, err, sizeof(err), nullptr));
+    REQUIRE(bank == nullptr);
+    INFO("err = " << err);
+    REQUIRE(std::string(err).find("zone 0") != std::string::npos);
     REQUIRE(std::string(err).find("budget") != std::string::npos);
-    REQUIRE(std::string(err).find("zone 1") != std::string::npos);
-    REQUIRE(std::string(err).find("60000") != std::string::npos);
 }
 
 TEST_CASE("pitchedBuildBank: a missing sample names the zone and the file",

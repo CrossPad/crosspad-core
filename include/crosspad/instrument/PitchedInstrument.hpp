@@ -46,6 +46,7 @@
 namespace crosspad {
 
 struct InstrumentParams {
+    /// Voices that may sound at once, clamped to PitchedInstrument::kMaxSounding.
     uint8_t maxVoices = 24;
     float attackMs = 2.0f;
     float releaseMs = 150.0f;
@@ -80,7 +81,35 @@ inline void accumulatePanned(const float* mono, float* out, uint32_t frames,
 
 class PitchedInstrument : public IAudioNode {
 public:
+    /// Voice slots. Not the polyphony: see kFadeSlots.
     static constexpr uint8_t kMaxVoices = 32;
+
+    /**
+     * @brief Slots held back from the polyphony for voices being stolen.
+     *
+     * A stolen voice does not stop, it fades over kStealFadeMs — and it does
+     * that in the slot it already occupies, because the phase, envelope and
+     * gains it is fading are in there. So the note that stole it needs a
+     * *different* slot, and InstrumentParams::maxVoices is clamped to
+     * kMaxVoices - kFadeSlots to guarantee one. Four is the depth at which a
+     * burst of steals inside a single 2 ms fade stops finding free slots; past
+     * that the oldest fade is cut short instead.
+     */
+    static constexpr uint8_t kFadeSlots = 4;
+
+    /// Highest polyphony maxVoices can ask for, once the fade slots are kept back.
+    static constexpr uint8_t kMaxSounding = kMaxVoices - kFadeSlots;
+
+    /**
+     * @brief Fade applied to a stolen voice, in milliseconds.
+     *
+     * Long enough that cutting a loud sustain is inaudible, short enough that
+     * the fading voice is gone before the next steal wants its slot. A hard
+     * cut at an arbitrary phase is a click at full scale — the one artefact a
+     * sampler cannot hide.
+     */
+    static constexpr float kStealFadeMs = 2.0f;
+
     static constexpr uint8_t kPads = 16;
 
     PitchedInstrument();
@@ -147,6 +176,28 @@ public:
     /// @param pad grid position the note came from, for its volume/pan. Any
     ///        value >= kPads means "not from the grid" (MIDI in) and takes the
     ///        unattenuated, centred mix.
+    /**
+     * @brief Change a zone's root and loop in the bank that is playing.
+     *
+     * The kit editor's spinboxes: no PCM is read, allocated or rebuilt, so a
+     * loop point can move while the kit is loaded. The write is bracketed the
+     * way installBank() brackets a swap — gate, mutate, silence, write, let
+     * everyone back — because a voice reads the loop bounds every block.
+     * Notes started after it return use the new loop.
+     *
+     * Nothing is changed unless everything is accepted: there must be a bank,
+     * @p zoneIdx must name one of its zones, @p rootMidi must be a real MIDI
+     * note, and the loop must satisfy SampleBank::loopValid() for that zone's
+     * length (a loop with `loopEnd <= loopStart` turns the loop off).
+     *
+     * @param maxSpins,yield as in gateEnter(). Nothing is freed here, so a
+     *        renderer that never answers is not fatal — the notes are already
+     *        silenced.
+     * @return false when anything above was rejected.
+     */
+    bool editZone(uint8_t zoneIdx, float rootMidi, uint32_t loopStart, uint32_t loopEnd,
+                  uint32_t maxSpins, void (*yield)());
+
     void noteOn(uint8_t midiNote, uint8_t velocity, uint8_t pad);
     void noteOff(uint8_t midiNote);
     void allNotesOff();
@@ -178,7 +229,13 @@ public:
     float lastNoteHz() const { return lastNoteHz_.load(std::memory_order_relaxed); }
 
     // ── telemetry ──
+
+    /// Slots that still render — the fading ones included.
     uint8_t activeVoices() const;
+
+    /// Voices that count against maxVoices: everything but the fades.
+    uint8_t soundingVoices() const;
+
     uint32_t stealCount() const { return steals_.load(std::memory_order_relaxed); }
     void resetStats() { steals_.store(0, std::memory_order_relaxed); }
 
@@ -198,6 +255,15 @@ private:
         /// Publication flag: everything above is valid once this reads true.
         std::atomic<bool> active{false};
         bool releasing = false;
+        /**
+         * @brief Retired: rendering its tail, and out of the running.
+         *
+         * Set on a stolen voice and on one the cap dropped below. It no longer
+         * counts towards maxVoices (the note that replaced it does), and it is
+         * never picked to be stolen again — stealing a fade would cut the very
+         * click the fade exists to avoid.
+         */
+        bool fading = false;
 
         /**
          * @brief Silence the voice without dropping its zone.
@@ -211,11 +277,14 @@ private:
         void reset() {
             active.store(false, std::memory_order_relaxed);
             releasing = false;
+            fading = false;
             env = 0.0f;
         }
     };
 
     int findVoiceSlot();
+    /// Retire @p v over @p ms, leaving it in its slot and out of the count.
+    void retire(Voice& v, float ms);
     void renderVoice(Voice& v, uint32_t frames);
     /// mix() minus the render gate — everything the audio thread actually does.
     void renderBlock(float* out, uint32_t frames);
