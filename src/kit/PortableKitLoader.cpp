@@ -55,6 +55,10 @@ std::vector<KitInfo> PortableKitLoader::listKits(const std::string& rootDir) {
     currentKitId_ = -1;
     // rootDir is logical ("/crosspad/kits"); add the mount prefix for POSIX.
     discoverKitsRecursive(toFsPath(rootDir), kits_);
+    // The vector grew by doubling; at 79 kits of ~1 kB that is a 128-slot
+    // block, and the launcher keeps it for the rest of the boot. Trim it —
+    // PSRAM outside the engine arena is the UI's whole budget.
+    kits_.shrink_to_fit();
     return kits_;
 }
 
