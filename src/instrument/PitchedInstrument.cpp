@@ -428,7 +428,7 @@ void PitchedInstrument::mix(float* out, uint32_t frames) {
 }
 
 void PitchedInstrument::publishScope(uint32_t frames, bool silent) {
-    if (monoSum_.empty() || frames == 0) return;
+    if (!scopeTap_.enabled() || monoSum_.empty() || frames == 0) return;
     if (frames > maxFrames_) frames = maxFrames_;
     if (silent) std::fill(monoSum_.begin(), monoSum_.begin() + frames, 0.0f);
     scopeTap_.write(monoSum_.data(), frames);
@@ -439,10 +439,11 @@ void PitchedInstrument::renderBlock(float* out, uint32_t frames) {
     if (maxFrames_ == 0 || scratch_.empty()) return;
     if (frames > maxFrames_) frames = maxFrames_;
 
-    // The scope sum is built here rather than derived from `out`: `out` is the
+    // The scope sum is built only while a live view consumes it. `out` is the
     // mixer's bus and already carries whatever ran before this node.
-    float* mono = monoSum_.data();
-    std::fill(mono, mono + frames, 0.0f);
+    const bool captureScope = scopeTap_.enabled();
+    float* mono = captureScope ? monoSum_.data() : nullptr;
+    if (captureScope) std::fill(mono, mono + frames, 0.0f);
 
     if (bank_.load(std::memory_order_acquire)) {
         for (uint8_t i = 0; i < kMaxVoices; ++i) {
@@ -452,13 +453,15 @@ void PitchedInstrument::renderBlock(float* out, uint32_t frames) {
             // has never been used still has a null zone, so it is skipped.
             if (!v.active.load(std::memory_order_acquire) || !v.zone) continue;
             renderVoice(v, frames);
-            for (uint32_t n = 0; n < frames; ++n) mono[n] += scratch_[n];
+            if (captureScope) {
+                for (uint32_t n = 0; n < frames; ++n) mono[n] += scratch_[n];
+            }
             detail::accumulatePanned(scratch_.data(), out, frames, v.gainL, v.gainR,
                                      panTmp_.data());
         }
     }
 
-    publishScope(frames, false);
+    if (captureScope) publishScope(frames, false);
 }
 
 uint8_t PitchedInstrument::activeVoices() const {

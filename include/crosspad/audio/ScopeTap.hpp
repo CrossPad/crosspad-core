@@ -58,7 +58,7 @@ public:
      * the sample count still advances by @p n, so the fill level stays honest.
      */
     void write(const float* mono, uint32_t n) {
-        if (!mono || n == 0) return;
+        if (!enabled_.load(std::memory_order_acquire) || !mono || n == 0) return;
         if (buf_.empty()) reserve();
         const uint64_t w = written_.load(std::memory_order_relaxed);
 
@@ -104,11 +104,20 @@ public:
     /// Total samples ever written. Wraps after 13 million years at 44.1 kHz.
     uint64_t written() const { return written_.load(std::memory_order_acquire); }
 
+    /// Disable the producer-side copy when no live display consumes it.
+    bool enabled() const { return enabled_.load(std::memory_order_acquire); }
+    void setEnabled(bool enabled) {
+        // Enabling is intentionally allowed to be slower: reserve before the
+        // producer can observe true, so the audio thread never allocates.
+        if (enabled) reserve();
+        enabled_.store(enabled, std::memory_order_release);
+    }
+
     /// Rate of the samples in the ring, set by whoever writes them.
     uint32_t sampleRate() const { return sampleRate_.load(std::memory_order_relaxed); }
     void setSampleRate(uint32_t hz) {
         sampleRate_.store(hz, std::memory_order_relaxed);
-        reserve();
+        if (enabled()) reserve();
     }
 
     /// Take the ring up front, so no write() ever has to. Idempotent.
@@ -123,6 +132,7 @@ private:
     std::vector<float> buf_;
     std::atomic<uint64_t> written_{0};
     std::atomic<uint32_t> sampleRate_{0};
+    std::atomic<bool> enabled_{true};
 };
 
 } // namespace crosspad

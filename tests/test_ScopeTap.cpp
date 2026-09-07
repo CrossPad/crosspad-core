@@ -25,6 +25,24 @@ TEST_CASE("ScopeTap: empty tap copies nothing", "[audio][scope]") {
     REQUIRE(tap.written() == 0u);
 }
 
+TEST_CASE("ScopeTap: disabled producer does no capture work", "[audio][scope]") {
+    ScopeTap tap;
+    const float in[] = {0.25f, -0.5f, 0.75f};
+    float out[3]{};
+
+    tap.setEnabled(false);
+    tap.write(in, 3);
+    REQUIRE(tap.written() == 0);
+    REQUIRE(tap.snapshot(out, 3) == 0);
+
+    tap.setEnabled(true);
+    tap.write(in, 3);
+    REQUIRE(tap.snapshot(out, 3) == 3);
+    REQUIRE(out[0] == in[0]);
+    REQUIRE(out[1] == in[1]);
+    REQUIRE(out[2] == in[2]);
+}
+
 TEST_CASE("ScopeTap: a partial fill answers with what it has", "[audio][scope]") {
     ScopeTap tap;
     const std::vector<float> in = ramp(0, 100);

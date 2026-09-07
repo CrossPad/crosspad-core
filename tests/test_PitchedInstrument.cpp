@@ -705,6 +705,23 @@ TEST_CASE("PitchedInstrument: silent blocks are written too", "[instrument][scop
     delete bank;
 }
 
+TEST_CASE("PitchedInstrument: disabled scope does not capture", "[instrument][scope]") {
+    SampleBank* bank = makeBank(4096, 60.0f, 0, 0, constFill);
+    PitchedInstrument inst;
+    inst.scopeTap().setEnabled(false);
+    inst.onPrepare(kFrames, kSr);
+    inst.setParams(params(24));
+    inst.setBank(bank);
+    inst.noteOn(60, 127, 0);
+
+    std::vector<float> out(kFrames * 2, 0.0f);
+    inst.mix(out.data(), kFrames);
+
+    REQUIRE(inst.scopeTap().written() == 0);
+    REQUIRE(std::any_of(out.begin(), out.end(), [](float v) { return std::fabs(v) > 0.0f; }));
+    delete bank;
+}
+
 TEST_CASE("PitchedInstrument: lastNoteHz follows the notes that sounded",
           "[instrument][scope]") {
     SampleBank* bank = makeBank(4096, 60.0f, 0, 0, constFill);
