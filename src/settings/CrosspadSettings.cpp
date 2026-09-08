@@ -87,7 +87,7 @@ void CrosspadSettings::loadFrom(IKeyValueStore& store) {
 
     // Wireless
     wireless.enableWiFi      = store.readBool("cfg_wireless", "wifi", false);
-    wireless.enableBLE       = store.readBool("cfg_wireless", "ble", true);
+    wireless.enableBLE       = store.readBool("cfg_wireless", "ble", false);
     wireless.enableOSC       = store.readBool("cfg_wireless", "osc", false);
     wireless.enableOSCServer = store.readBool("cfg_wireless", "osc_srv", true);
     wireless.enableUDP       = store.readBool("cfg_wireless", "udp", true);

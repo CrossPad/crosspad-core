@@ -24,7 +24,7 @@ public:
 
     WirelessSettings() {
         enableWiFi = false;
-        enableBLE = true;
+        enableBLE = false;
         enableOSC = false;
         enableOSCServer = true;
         enableUDP = true;
