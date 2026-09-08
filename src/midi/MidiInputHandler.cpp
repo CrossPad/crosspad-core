@@ -96,6 +96,11 @@ void MidiInputHandler::sendNoteOff(uint8_t note, uint8_t channel) {
     sendNoteOff(note, 0, channel);
 }
 
+void MidiInputHandler::sendSysEx(const uint8_t* frame, size_t len) {
+    if (usbOutput_) usbOutput_->sendSysEx(frame, len);
+    if (bleOutput_) bleOutput_->sendSysEx(frame, len);
+}
+
 void MidiInputHandler::sendNoteOn(uint8_t note, uint8_t velocity, uint8_t channel) {
     if (!settings_) return;
     if (settings_->keypad.send2STM && stm32Output_)

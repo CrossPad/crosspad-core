@@ -1,4 +1,5 @@
 #pragma once
+#include <cstddef>
 #include <cstdint>
 
 namespace crosspad {
@@ -43,6 +44,11 @@ public:
     }
     virtual void sendPitchBend(int16_t value, uint8_t channel) {
         (void)value; (void)channel;
+    }
+    /// Whole frame including F0 and F7. Default drops it: only the USB
+    /// output talks to a host that speaks the CrossPad SysEx catalog.
+    virtual void sendSysEx(const uint8_t* frame, size_t len) {
+        (void)frame; (void)len;
     }
 };
 

@@ -13,6 +13,10 @@ void Stm32MessageHandler::handleMessage(const uint8_t* data, unsigned size) {
     ++input.stmFrames;
     if (size < 3) return;
     if (!status_ || !padManager_) return;
+    // A DAW host shares the USB MIDI port with tools that speak other SysEx
+    // dialects; a foreign manufacturer byte must never reach the command
+    // switch below (0x15 is POWEROFF, 0x19 a DFU request).
+    if (data[0] != CROSSPAD_SYSEX_START || data[1] != CROSSPAD_SYSEX_MANUFACTURER) return;
 
     uint8_t cmd = data[2];
     switch (cmd) {
@@ -82,6 +86,13 @@ void Stm32MessageHandler::handleMessage(const uint8_t* data, unsigned size) {
         /* [F0 7D 1D <sub> <args...> F7] — pass sub+args, strip framing */
         if (audioRouteCb_ && size >= 5) {
             audioRouteCb_(data + 3, size - 4);
+        }
+        break;
+
+    case CROSSPAD_CMD_DAW:
+        /* [F0 7D 1E <sub> <args...> F7] — same framing as AUDIO_ROUTE */
+        if (dawCb_ && size >= 5) {
+            dawCb_(data + 3, size - 4);
         }
         break;
 

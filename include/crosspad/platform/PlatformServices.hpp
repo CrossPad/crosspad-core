@@ -43,6 +43,7 @@ class CrosspadStatus;
 class SequencerController;
 class ISequencerEngine;
 class PitchedInstrument;
+class Stm32MessageHandler;
 
 /**
  * @brief Central registry of all platform service pointers.
@@ -84,6 +85,11 @@ struct PlatformServices {
     /// reach it for what only the engine knows — its scope tap, its last note.
     /// Null on a platform without one; every user must check.
     PitchedInstrument* pitchedInstrument = nullptr;
+
+    /// Decoder of the CrossPad SysEx catalog (STM32 frames and host frames
+    /// alike). A portable app hangs its host-protocol callback here
+    /// (setDawCallback). Null on a platform that has no such link; check.
+    Stm32MessageHandler* stm32MessageHandler = nullptr;
 
     // ── Typed setters — auto-update PlatformCapabilities ────────────────
 

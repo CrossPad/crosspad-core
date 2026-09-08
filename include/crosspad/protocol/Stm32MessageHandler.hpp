@@ -33,6 +33,11 @@ public:
     /// @param len Number of args bytes
     using AudioRouteCallback = std::function<void(const uint8_t* args, unsigned len)>;
 
+    /// Callback for the DAW controller protocol (CROSSPAD_CMD_DAW), same payload shape
+    /// as AudioRouteCallback: sub byte followed by its arguments. Owned by whichever
+    /// app is showing the DAW surface; cleared (empty function) when it closes.
+    using DawCallback = std::function<void(const uint8_t* args, unsigned len)>;
+
     Stm32MessageHandler() = default;
 
     /**
@@ -56,6 +61,11 @@ public:
      * @brief Set callback for audio routing control (platform-specific)
      */
     void setAudioRouteCallback(AudioRouteCallback cb) { audioRouteCb_ = std::move(cb); }
+
+    /**
+     * @brief Set callback for the DAW controller protocol (app-owned)
+     */
+    void setDawCallback(DawCallback cb) { dawCb_ = std::move(cb); }
 
     /**
      * @brief Handle a raw SysEx message from STM32
@@ -95,6 +105,7 @@ private:
     DfuRequestCallback dfuCb_;
     UsbModeCallback usbModeCb_;
     AudioRouteCallback audioRouteCb_;
+    DawCallback dawCb_;
     bool keyPresses_[16] = {};
 };
 

@@ -65,6 +65,10 @@ public:
     void sendNoteOn(uint8_t note, uint8_t channel) override;
     void sendNoteOff(uint8_t note, uint8_t channel) override;
     void sendNoteOn(uint8_t note, uint8_t velocity, uint8_t channel) override;
+    /// Host-protocol replies (CrossPad SysEx catalog) go to every host-facing
+    /// output — USB and BLE — regardless of the keypad send flags, which gate
+    /// notes, not protocol traffic.
+    void sendSysEx(const uint8_t* frame, size_t len) override;
     void sendNoteOff(uint8_t note, uint8_t velocity, uint8_t channel) override;
     void sendControlChange(uint8_t controller, uint8_t value, uint8_t channel) override;
     void sendAftertouch(uint8_t note, uint8_t pressure, uint8_t channel) override;
