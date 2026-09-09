@@ -13,8 +13,15 @@
 
 #define CROSSPAD_CORE_VERSION_MAJOR 1
 #define CROSSPAD_CORE_VERSION_MINOR 7
-#define CROSSPAD_CORE_VERSION_PATCH 0
-#define CROSSPAD_CORE_VERSION "1.7.0"
+#define CROSSPAD_CORE_VERSION_PATCH 1
+
+/* Built from the triple rather than written out, so a bump cannot leave the
+ * string a version behind — which is what happened to crosspad-gui. */
+#define CROSSPAD_CORE_VERSION_STR_(x) #x
+#define CROSSPAD_CORE_VERSION_STR3_(a, b, c) \
+    CROSSPAD_CORE_VERSION_STR_(a) "." CROSSPAD_CORE_VERSION_STR_(b) "." CROSSPAD_CORE_VERSION_STR_(c)
+#define CROSSPAD_CORE_VERSION CROSSPAD_CORE_VERSION_STR3_( \
+    CROSSPAD_CORE_VERSION_MAJOR, CROSSPAD_CORE_VERSION_MINOR, CROSSPAD_CORE_VERSION_PATCH)
 
 namespace crosspad {
 

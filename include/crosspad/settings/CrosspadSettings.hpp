@@ -56,8 +56,11 @@ public:
     uint8_t RGBbrightness;
     bool quickSettingsEnabled; // status-bar drawer (header dropdown + arrow) enabled
     bool AudioEngineEnabled;
-    /// Preferred USB device profile applied at boot: false = CDC+MIDI (OTA/console
-    /// available), true = USB Audio (UAC2). Switching re-enumerates the device.
+    /// Preferred USB device profile applied at boot: true = USB Audio (UAC2),
+    /// false = CDC+MIDI. Switching re-enumerates the device. Audio is the
+    /// default because that is what the instrument is for; it costs the CDC
+    /// endpoint, so a board in it is reached over SysEx on USB MIDI, which
+    /// exists in both profiles.
     bool usbAudioEnabled;
     /// What the USB host records, as an index into the platform's route preset
     /// table (0 = built-in microphones). Re-applied at boot so a device set up
@@ -82,7 +85,7 @@ private:
         RGBbrightness = 100;
         quickSettingsEnabled = true;
         AudioEngineEnabled = true;
-        usbAudioEnabled = false;   // CDC+MIDI by default — keeps OTA/console reachable
+        usbAudioEnabled = true;    // UAC2 by default; console/OTA need the CDC profile
         usbAudioPreset = 0;        // built-in microphones
         Kit = 0;
         masterFX = AudioSettings();

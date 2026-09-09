@@ -29,7 +29,9 @@ void CrosspadSettings::loadFrom(IKeyValueStore& store) {
 
     // Audio (master)
     AudioEngineEnabled       = store.readBool("cfg_audio", "engine_en", true);
-    usbAudioEnabled          = store.readBool("cfg_audio", "usb_audio", false);
+    /* The fallback here, not the constructor's, is what an unprovisioned board
+     * boots with — the constructor value is overwritten by this load(). */
+    usbAudioEnabled          = store.readBool("cfg_audio", "usb_audio", true);
     usbAudioPreset           = store.readU8("cfg_audio", "usb_preset", 0);
     {
         uint32_t sr = store.readU8("cfg_audio_eng", "sr_idx", 0); // 0=44100, 1=48000, 2=96000
