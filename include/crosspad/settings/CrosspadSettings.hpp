@@ -17,6 +17,7 @@
 #include "crosspad/settings/AudioEngineSettings.hpp"
 #include "crosspad/settings/VibrationSettings.hpp"
 #include "crosspad/settings/Stm32Settings.hpp"
+#include "crosspad/settings/ImuMidiSettings.hpp"
 #include "crosspad/settings/IKeyValueStore.hpp"
 
 namespace crosspad {
@@ -47,6 +48,7 @@ public:
     AudioSettings masterFX;
     AudioEngineSettings audioEngine;
     VibrationSettings vibration;
+    ImuMidiSettings imuMidi;
     Stm32Settings stm;
     uint8_t LCDbrightness;
     uint8_t themeColorIndex;
@@ -73,6 +75,7 @@ private:
         esp32Routing = ESPRoutingSettings();
         wireless = WirelessSettings();
         vibration = VibrationSettings();
+        imuMidi = ImuMidiSettings();
         LCDbrightness = 100;
         themeColorIndex = 0;
         perfStatsFlags = 0;

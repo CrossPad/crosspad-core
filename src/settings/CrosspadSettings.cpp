@@ -1,3 +1,4 @@
+#include <cstdio>
 #include "crosspad/settings/CrosspadSettings.hpp"
 
 namespace crosspad {
@@ -84,6 +85,37 @@ void CrosspadSettings::loadFrom(IKeyValueStore& store) {
     vibration.outputMin             = store.readU8("cfg_vibrate", "out_min", 5);
     vibration.outputMax             = store.readU8("cfg_vibrate", "out_max", 200);
     vibration.debugging             = store.readBool("cfg_vibrate", "debug", false);
+
+    /* IMU -> MIDI. Every fallback below is the value ImuMidiSettings' constructor
+     * uses; a board that never saved this section must behave like one that never
+     * had it. (The enableBLE slip of 8.09 was exactly this going wrong.) The span
+     * persists as an integer because the store has no float and degrees need no
+     * fraction. */
+    {
+        const ImuMidiSettings d{};
+        imuMidi.enabled       = store.readBool("cfg_imu_midi", "en", d.enabled);
+        imuMidi.minIntervalMs = store.readU8("cfg_imu_midi", "ival", d.minIntervalMs);
+        char key[16];
+        for (size_t i = 0; i < kImuMidiSlots; ++i) {
+            auto &slot = imuMidi.slots[i];
+            const auto &dd = d.slots[i];
+            snprintf(key, sizeof(key), "s%u_en", (unsigned)i);
+            slot.enabled = store.readBool("cfg_imu_midi", key, dd.enabled);
+            snprintf(key, sizeof(key), "s%u_src", (unsigned)i);
+            slot.source = store.readU8("cfg_imu_midi", key, dd.source);
+            snprintf(key, sizeof(key), "s%u_tgt", (unsigned)i);
+            slot.target = store.readU8("cfg_imu_midi", key, dd.target);
+            snprintf(key, sizeof(key), "s%u_cc", (unsigned)i);
+            slot.cc = store.readU8("cfg_imu_midi", key, dd.cc);
+            snprintf(key, sizeof(key), "s%u_ch", (unsigned)i);
+            slot.channel = store.readU8("cfg_imu_midi", key, dd.channel);
+            snprintf(key, sizeof(key), "s%u_inv", (unsigned)i);
+            slot.invert = store.readBool("cfg_imu_midi", key, dd.invert);
+            snprintf(key, sizeof(key), "s%u_span", (unsigned)i);
+            slot.inputSpan = (float)store.readI32("cfg_imu_midi", key,
+                                                  (int32_t)dd.inputSpan);
+        }
+    }
 
     // Wireless
     wireless.enableWiFi      = store.readBool("cfg_wireless", "wifi", false);
@@ -190,6 +222,30 @@ void CrosspadSettings::saveTo(IKeyValueStore& store) {
     store.saveBool("cfg_keypad", "send_ble", keypad.send2BLE);
     store.saveBool("cfg_keypad", "send_usb", keypad.send2USB);
     store.saveBool("cfg_keypad", "send_cc", keypad.sendCC);
+
+    // IMU -> MIDI
+    store.saveBool("cfg_imu_midi", "en", imuMidi.enabled);
+    store.saveU8("cfg_imu_midi", "ival", imuMidi.minIntervalMs);
+    {
+        char key[16];
+        for (size_t i = 0; i < kImuMidiSlots; ++i) {
+            const auto &slot = imuMidi.slots[i];
+            snprintf(key, sizeof(key), "s%u_en", (unsigned)i);
+            store.saveBool("cfg_imu_midi", key, slot.enabled);
+            snprintf(key, sizeof(key), "s%u_src", (unsigned)i);
+            store.saveU8("cfg_imu_midi", key, slot.source);
+            snprintf(key, sizeof(key), "s%u_tgt", (unsigned)i);
+            store.saveU8("cfg_imu_midi", key, slot.target);
+            snprintf(key, sizeof(key), "s%u_cc", (unsigned)i);
+            store.saveU8("cfg_imu_midi", key, slot.cc);
+            snprintf(key, sizeof(key), "s%u_ch", (unsigned)i);
+            store.saveU8("cfg_imu_midi", key, slot.channel);
+            snprintf(key, sizeof(key), "s%u_inv", (unsigned)i);
+            store.saveBool("cfg_imu_midi", key, slot.invert);
+            snprintf(key, sizeof(key), "s%u_span", (unsigned)i);
+            store.saveI32("cfg_imu_midi", key, (int32_t)slot.inputSpan);
+        }
+    }
 
     // Vibration
     store.saveBool("cfg_vibrate", "enable", vibration.enable);
