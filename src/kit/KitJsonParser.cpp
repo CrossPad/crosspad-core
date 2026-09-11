@@ -86,6 +86,7 @@ bool kit_parse_metadata(KitInfo& kit, JsonDocument& doc)
     kit.description = doc["description"] | "";
     kit.version     = doc["version"]     | "";
     kit.created_at  = doc["created_at"]  | "";
+    kit.bpm         = doc["bpm"]         | (uint16_t)0;
 
     if (doc["type"].is<int>())
         kit.type = static_cast<KitInfo::Type>(doc["type"].as<int>());
@@ -163,6 +164,7 @@ bool kit_serialize(const KitInfo& kit, JsonDocument& doc)
     doc["description"] = kit.description;
     doc["version"]     = kit.version;
     doc["created_at"]  = kit.created_at;
+    if (kit.bpm) doc["bpm"] = kit.bpm;   // absent rather than 0 when unset
     doc["type"]        = static_cast<int>(kit.type);
 
     if (kit.engine == KitEngine::Pitched) {
