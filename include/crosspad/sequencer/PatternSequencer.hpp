@@ -20,10 +20,13 @@ namespace crosspad {
 /// read from the same counter, so a hit cannot land on the grid and off the
 /// click at once.
 ///
-/// Positions are samples from the loop start, and the loop is the metronome's
-/// own (`bars x beatsPerBar`). Changing the bar count therefore changes the
-/// length of the pattern and the click together, which is what "set the number
-/// of bars" has to mean for the two to stay locked.
+/// **Scenes, not layers.** One sequence sounds at a time and each carries its
+/// own bar count; selecting another queues it and the swap happens at the loop
+/// end, never mid-bar. That is what makes per-scene lengths simple: the active
+/// scene's length *is* the loop, pushed into the metronome so the click's
+/// downbeat and the pattern's bar one are the same instant. Layering scenes
+/// with different lengths would be polymetric and is deliberately not what this
+/// does.
 ///
 /// Threading, which is the whole reason for the ring below: hits arrive on
 /// whichever thread runs the pads and must be stamped *there*, at the moment
@@ -37,8 +40,15 @@ public:
     using NoteSink = void (*)(void* ctx, uint8_t pad, uint8_t velocity);
 
     static constexpr uint8_t  kNumSequences = SequencerLimits::MAX_SEQ_INDEX + 1;
-    static constexpr uint16_t kMaxEvents    = 192;   ///< per sequence
+    static constexpr uint16_t kMaxEvents    = 192;   ///< per scene
     static constexpr uint8_t  kInputRing    = 32;    ///< hits in flight
+    static constexpr uint8_t  kMaxBars      = 8;     ///< per scene
+    static constexpr uint8_t  kDefaultBars  = 4;
+    /// Ticks per quarter note, for storage only. A saved pattern must survive
+    /// being loaded at another tempo or sample rate, and a position in samples
+    /// does not -- so the file holds ticks and the conversion happens on the
+    /// way in and out. 96 divides a sixteenth (24) and a triplet (32) exactly.
+    static constexpr uint16_t kPpq = 96;
 
     void attach(MetronomeNode* clock) { clock_ = clock; }
     /// The controller mirrors transport state for the UI. It is the caller's
@@ -67,11 +77,18 @@ public:
     void setLoop(bool loop) override { loop_ = loop; }
     void setPreLen(uint8_t len) override { preLen_ = len; }
 
-    void selectSeqRecord(uint8_t seq) override { if (seq < kNumSequences) recSeq_ = seq; }
+    /// Recording always targets the scene that is sounding -- you record into
+    /// what you hear -- so this only moves the selection.
+    void selectSeqRecord(uint8_t seq) override { select(seq); }
+    /// Whether a scene takes part in "next scene" cycling. An empty scene you
+    /// are not using is worth stepping over rather than through.
     void selectDirect(uint8_t seq, bool enabled) override {
-        if (seq < kNumSequences) seqEnabled_[seq] = enabled;
+        if (seq < kNumSequences) sceneEnabled_[seq] = enabled;
     }
-    void select(uint8_t seq) override { if (seq < kNumSequences) plySeq_ = seq; }
+    /// Queue a scene. It becomes active at the end of the current loop, or at
+    /// once when nothing is running.
+    void select(uint8_t seq) override;
+    void selectScene(uint8_t seq) override { select(seq); }
 
     void playback() override;
     void record() override;
@@ -92,25 +109,55 @@ public:
 
     SequencerMode  mode()  const { return mode_; }
     SequencerState state() const { return state_; }
-    uint8_t recordSequence() const { return recSeq_; }
-    bool    sequenceEnabled(uint8_t s) const { return s < kNumSequences && seqEnabled_[s]; }
+    uint8_t  activeScene()  const override { return activeSeq_; }
+    uint8_t  pendingScene() const override { return pendingSeq_; }
+    uint8_t  recordSequence() const { return activeSeq_; }
+    bool     sceneEnabled(uint8_t s) const { return s < kNumSequences && sceneEnabled_[s]; }
     uint16_t eventCount(uint8_t s) const { return s < kNumSequences ? counts_[s] : 0; }
+    uint16_t sceneEventCount(uint8_t s) const override { return eventCount(s); }
     uint16_t eventCount() const;
-    /// Bars the loop spans -- the metronome owns it, this is the readback.
-    uint8_t  bars() const { return clock_ ? clock_->barCount() : 0; }
+    /// Bars of the scene that is sounding.
+    uint8_t  bars() const { return sceneBars(activeSeq_); }
+    uint8_t  sceneBars(uint8_t seq) const override { return seq < kNumSequences ? bars_[seq] : 0; }
     /// 0..1 through the loop, for a playhead.
     float    progress() const;
 
-    /// Bars directly, which is how the UI thinks about it.
-    void setBars(uint8_t bars);
+    /// Bars of the scene that is sounding. Applied at once: the loop this sets
+    /// is the loop the click counts.
+    void setBars(uint8_t bars) { setSceneBars(activeSeq_, bars); }
+    void setSceneBars(uint8_t seq, uint8_t bars) override;
 
-    /// One recorded event, for tests and any UI that draws the pattern.
+    /// One recorded event, for storage, tests and any UI that draws the pattern.
     bool eventAt(uint8_t seq, uint16_t i, uint32_t& pos, uint8_t& pad, uint8_t& vel) const {
         if (seq >= kNumSequences || i >= counts_[seq]) return false;
         pos = events_[seq][i].pos;
         pad = events_[seq][i].pad;
         vel = events_[seq][i].vel;
         return true;
+    }
+
+    // ── Storage ───────────────────────────────────────────────────────────
+    // Positions cross this boundary as ticks, never samples: see kPpq.
+
+    /// Back to what a kit nobody has recorded into looks like: no events,
+    /// default lengths, scene one active. Clearing only the events would leave
+    /// the previous kit's bar counts behind, which is not "empty".
+    void resetScenes();
+
+    /// Add an event straight into a scene, position in ticks. For loading.
+    /// Not RT-safe against a running poll(); load while stopped.
+    bool addEventTicks(uint8_t seq, uint32_t ticks, uint8_t pad, uint8_t vel);
+    /// One event with its position in ticks, for saving.
+    bool eventAtTicks(uint8_t seq, uint16_t i, uint32_t& ticks, uint8_t& pad, uint8_t& vel) const;
+    /// True when something changed that the card does not have yet. The store
+    /// clears it once the write lands. Atomic because the flag is set on the
+    /// poll thread and read on whichever thread owns the card.
+    bool dirty() const { return dirty_.load(std::memory_order_relaxed); }
+    void clearDirty() { dirty_.store(false, std::memory_order_relaxed); }
+    void markDirty()  { dirty_.store(true,  std::memory_order_relaxed); }
+    bool isRecording() const {
+        return (mode_ == SequencerMode::Record || mode_ == SequencerMode::Overdub)
+               && state_ == SequencerState::Running;
     }
 
 private:
@@ -128,6 +175,12 @@ private:
     void     drainInput(uint32_t loop);
     void     fireWindow(uint32_t from, uint32_t to);
     void     addEvent(uint8_t seq, uint32_t pos, uint8_t pad, uint8_t vel);
+    /// Make a queued scene the one that sounds, and hand its length to the
+    /// click. Only ever called at a loop end, or while stopped.
+    void     applyScene(uint8_t seq);
+    /// One place that moves the transport, so the controller can never
+    /// disagree with the engine about what is running.
+    void     setTransport(SequencerMode m, SequencerState st);
 
     MetronomeNode* clock_   = nullptr;
     NoteSink       sink_    = nullptr;
@@ -135,7 +188,8 @@ private:
 
     Event    events_[kNumSequences][kMaxEvents] = {};
     uint16_t counts_[kNumSequences] = {};
-    bool     seqEnabled_[kNumSequences] = { true, true, true, true };
+    uint8_t  bars_[kNumSequences] = { kDefaultBars, kDefaultBars, kDefaultBars, kDefaultBars };
+    bool     sceneEnabled_[kNumSequences] = { true, true, true, true };
 
     Hit                   ring_[kInputRing] = {};
     std::atomic<uint32_t> ringHead_{0};   // producer
@@ -144,13 +198,11 @@ private:
     SequencerMode  mode_  = SequencerMode::None;
     SequencerState state_ = SequencerState::Idle;
     Quantization   quant_ = SequencerLimits::DEFAULT_QUANTIZATION;
-    uint8_t  recSeq_  = 0;
-    uint8_t  plySeq_  = 0;
-    uint8_t  preLen_  = 4;
-    bool     loop_    = true;
-    /// One place that moves the transport, so the controller can never
-    /// disagree with the engine about what is running.
-    void setTransport(SequencerMode m, SequencerState st);
+    uint8_t  activeSeq_  = 0;
+    uint8_t  pendingSeq_ = 0;
+    uint8_t  preLen_     = 4;
+    bool     loop_       = true;
+    std::atomic<bool> dirty_{false};
 
     SequencerController* controller_ = nullptr;
     uint32_t lastPos_ = 0;

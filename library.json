@@ -15,6 +15,7 @@
             "+<app/AppRegistry.cpp>",
             "+<pad/PadManager.cpp>",
             "+<sequencer/PatternSequencer.cpp>",
+            "+<sequencer/SequenceStore.cpp>",
             "+<pad/PadLedController.cpp>",
             "+<pad/PadAnimator.cpp>",
             "+<pad/RGBCallbackManager.cpp>",

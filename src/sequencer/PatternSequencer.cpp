@@ -46,6 +46,7 @@ void PatternSequencer::addEvent(uint8_t seq, uint32_t pos, uint8_t pad, uint8_t 
 {
     if (seq >= kNumSequences || counts_[seq] >= kMaxEvents) return;
     events_[seq][counts_[seq]++] = { pos, pad, vel, 1 };
+    markDirty();
 }
 
 void PatternSequencer::drainInput(uint32_t loop)
@@ -57,7 +58,8 @@ void PatternSequencer::drainInput(uint32_t loop)
 
     while (tail != head) {
         const Hit& h = ring_[tail];
-        if (recording) addEvent(recSeq_, quantise(h.pos, loop), h.pad, h.vel);
+        /* Into the scene that is sounding: you record into what you hear. */
+        if (recording) addEvent(activeSeq_, quantise(h.pos, loop), h.pad, h.vel);
         tail = (tail + 1) % kInputRing;
     }
     ringTail_.store(tail, std::memory_order_release);
@@ -68,13 +70,10 @@ void PatternSequencer::drainInput(uint32_t loop)
 void PatternSequencer::fireWindow(uint32_t from, uint32_t to)
 {
     if (!sink_ || from >= to) return;
-    for (uint8_t s = 0; s < kNumSequences; ++s) {
-        if (!seqEnabled_[s]) continue;
-        for (uint16_t i = 0; i < counts_[s]; ++i) {
-            const Event& e = events_[s][i];
-            if (e.fresh) continue;
-            if (e.pos >= from && e.pos < to) sink_(sinkCtx_, e.pad, e.vel);
-        }
+    for (uint16_t i = 0; i < counts_[activeSeq_]; ++i) {
+        const Event& e = events_[activeSeq_][i];
+        if (e.fresh) continue;
+        if (e.pos >= from && e.pos < to) sink_(sinkCtx_, e.pad, e.vel);
     }
 }
 
@@ -101,11 +100,66 @@ void PatternSequencer::poll()
          * ended is now part of the pattern and plays from here on. */
         for (uint8_t s = 0; s < kNumSequences; ++s)
             for (uint16_t i = 0; i < counts_[s]; ++i) events_[s][i].fresh = 0;
+
+        /* The only moment a queued scene may take over. Doing it here rather
+         * than when the button was pressed is what keeps a swap on the bar
+         * line instead of cutting the pattern in half. */
+        if (pendingSeq_ != activeSeq_) applyScene(pendingSeq_);
+
         fireWindow(0, now);
 
         if (!loop_) stop();
     }
     lastPos_ = now;
+}
+
+// ── Scenes ─────────────────────────────────────────────────────────────────
+
+void PatternSequencer::applyScene(uint8_t seq)
+{
+    if (seq >= kNumSequences) return;
+    activeSeq_  = seq;
+    pendingSeq_ = seq;
+    /* The scene's length is the loop, and the click counts that same loop --
+     * handing it to the metronome is what keeps bar one and the downbeat the
+     * same instant. */
+    if (clock_) clock_->setBarCount(bars_[seq]);
+    lastPos_ = 0;
+    markDirty();   // the file records which scene was left playing
+}
+
+void PatternSequencer::select(uint8_t seq)
+{
+    if (seq >= kNumSequences) return;
+    if (state_ == SequencerState::Running && clock_ && clock_->running()) {
+        pendingSeq_ = seq;          // takes effect at the loop end
+        return;
+    }
+    applyScene(seq);
+    if (clock_) clock_->resetPosition();
+}
+
+void PatternSequencer::setSceneBars(uint8_t seq, uint8_t bars)
+{
+    if (seq >= kNumSequences || !bars) return;
+    if (bars > kMaxBars) bars = kMaxBars;
+    bars_[seq] = bars;
+    markDirty();
+
+    if (!clock_) return;
+    const uint32_t loop = (uint32_t)clock_->samplesPerBeat() * clock_->beatsPerBar() * bars;
+    /* Events past the new loop end would never be reached again; drop them so
+     * the count the UI shows is the count that plays. */
+    uint16_t kept = 0;
+    for (uint16_t i = 0; i < counts_[seq]; ++i) {
+        if (events_[seq][i].pos < loop) events_[seq][kept++] = events_[seq][i];
+    }
+    counts_[seq] = kept;
+
+    if (seq == activeSeq_) {
+        clock_->setBarCount(bars);
+        if (lastPos_ >= loop) lastPos_ = 0;
+    }
 }
 
 // ── Transport ──────────────────────────────────────────────────────────────
@@ -132,7 +186,8 @@ void PatternSequencer::record()
     if (!clock_) return;
     /* Record replaces; overdub adds. Clearing here rather than at the wrap is
      * what makes the button honest -- you hear the old take stop immediately. */
-    if (recSeq_ < kNumSequences) counts_[recSeq_] = 0;
+    counts_[activeSeq_] = 0;
+    markDirty();
     if (!clock_->running()) clock_->start();
     lastPos_ = clock_->positionSamples();
     setTransport(SequencerMode::Record, SequencerState::Running);
@@ -160,6 +215,19 @@ void PatternSequencer::reset()
     lastPos_ = 0;
 }
 
+void PatternSequencer::resetScenes()
+{
+    for (uint8_t s = 0; s < kNumSequences; ++s) {
+        counts_[s]       = 0;
+        bars_[s]         = kDefaultBars;
+        sceneEnabled_[s] = true;
+    }
+    applyScene(0);
+    if (clock_) clock_->resetPosition();
+    lastPos_ = 0;
+    clearDirty();
+}
+
 // ── Erase ──────────────────────────────────────────────────────────────────
 
 void PatternSequencer::clearAll(uint8_t startPad, uint8_t endPad)
@@ -171,6 +239,7 @@ void PatternSequencer::clearAll(uint8_t startPad, uint8_t endPad)
 void PatternSequencer::clearSeq(uint8_t seqIdx, uint8_t endPad)
 {
     if (seqIdx >= kNumSequences) return;
+    markDirty();
     if (endPad >= 127) { counts_[seqIdx] = 0; return; }
 
     uint16_t kept = 0;
@@ -186,24 +255,7 @@ void PatternSequencer::setLength(uint8_t beats)
 {
     if (!clock_) return;
     const uint8_t bpb = clock_->beatsPerBar() ? clock_->beatsPerBar() : 4;
-    setBars(beats / bpb);
-}
-
-void PatternSequencer::setBars(uint8_t bars)
-{
-    if (!clock_ || !bars) return;
-    clock_->setBarCount(bars);
-    /* Events past the new loop end would never be reached again; drop them so
-     * the count the UI shows is the count that plays. */
-    const uint32_t loop = clock_->loopSamples();
-    for (uint8_t s = 0; s < kNumSequences; ++s) {
-        uint16_t kept = 0;
-        for (uint16_t i = 0; i < counts_[s]; ++i) {
-            if (events_[s][i].pos < loop) events_[s][kept++] = events_[s][i];
-        }
-        counts_[s] = kept;
-    }
-    if (lastPos_ >= loop) lastPos_ = 0;
+    setSceneBars(activeSeq_, beats / bpb);
 }
 
 uint16_t PatternSequencer::eventCount() const
@@ -218,6 +270,35 @@ float PatternSequencer::progress() const
     if (!clock_) return 0.0f;
     const uint32_t loop = clock_->loopSamples();
     return loop ? (float)clock_->positionSamples() / (float)loop : 0.0f;
+}
+
+// ── Storage ────────────────────────────────────────────────────────────────
+
+bool PatternSequencer::addEventTicks(uint8_t seq, uint32_t ticks, uint8_t pad, uint8_t vel)
+{
+    if (seq >= kNumSequences || !clock_ || counts_[seq] >= kMaxEvents) return false;
+    const uint32_t spb = clock_->samplesPerBeat();
+    const uint32_t pos = (uint32_t)(((uint64_t)ticks * spb) / kPpq);
+    /* A file written for a longer scene must not smuggle events past this
+     * scene's end, where they would never play and would confuse the count. */
+    const uint32_t loop = spb * clock_->beatsPerBar() * bars_[seq];
+    if (loop && pos >= loop) return false;
+
+    events_[seq][counts_[seq]++] = { pos, pad, vel, 0 };
+    return true;
+}
+
+bool PatternSequencer::eventAtTicks(uint8_t seq, uint16_t i,
+                                    uint32_t& ticks, uint8_t& pad, uint8_t& vel) const
+{
+    if (seq >= kNumSequences || i >= counts_[seq] || !clock_) return false;
+    const uint32_t spb = clock_->samplesPerBeat();
+    if (!spb) return false;
+    const uint32_t pos = events_[seq][i].pos;
+    ticks = (uint32_t)(((uint64_t)pos * kPpq + spb / 2) / spb);
+    pad   = events_[seq][i].pad;
+    vel   = events_[seq][i].vel;
+    return true;
 }
 
 } // namespace crosspad

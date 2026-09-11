@@ -161,6 +161,19 @@ public:
         if (soloMode_) applySoloMute();
     }
 
+    // ---------- scenes ----------
+    // One scene sounds at a time, each with its own length; selecting another
+    // queues it for the loop end. An engine without scenes answers with the
+    // interface defaults and these become no-ops, which is why the UI can call
+    // them unconditionally.
+
+    void    selectScene(uint8_t s)   { if (engine_) engine_->selectScene(s); }
+    uint8_t getActiveScene()  const  { return engine_ ? engine_->activeScene() : 0; }
+    uint8_t getPendingScene() const  { return engine_ ? engine_->pendingScene() : 0; }
+    void    setSceneBars(uint8_t s, uint8_t bars) { if (engine_) engine_->setSceneBars(s, bars); }
+    uint8_t getSceneBars(uint8_t s) const { return engine_ ? engine_->sceneBars(s) : 0; }
+    uint16_t getSceneEventCount(uint8_t s) const { return engine_ ? engine_->sceneEventCount(s) : 0; }
+
     // ---------- transport ----------
 
     void playback() { if (engine_) engine_->playback(); }
