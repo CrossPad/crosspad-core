@@ -67,6 +67,13 @@ public:
     /// once keeps recording the same source. 0x7F means the routing was put
     /// somewhere no preset describes and should not be re-applied.
     uint8_t usbAudioPreset;
+    /// Gain on the capture bus the USB mic endpoint carries, in dB above unity.
+    /// The digital tap has none of the codec ADC's input gain, which is why a
+    /// take is quiet next to the old analogue capture: a velocity-127 hit lands
+    /// at -16.7 dBFS, so roughly 11 dB buys a -6 dBFS recording. Raising the
+    /// channel instead would raise the speakers with it, so recording gets its
+    /// own knob. Percent would not fit -- 343 % is past a uint8_t.
+    uint8_t usbAudioGainDb;
     uint8_t Kit;
 
 private:
@@ -87,6 +94,7 @@ private:
         AudioEngineEnabled = true;
         usbAudioEnabled = true;    // UAC2 by default; console/OTA need the CDC profile
         usbAudioPreset = 0;        // built-in microphones
+        usbAudioGainDb = 0;        // unity; the bus is what the speakers get
         Kit = 0;
         masterFX = AudioSettings();
         previewAudio = AudioSettings();

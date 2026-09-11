@@ -33,6 +33,7 @@ void CrosspadSettings::loadFrom(IKeyValueStore& store) {
      * boots with — the constructor value is overwritten by this load(). */
     usbAudioEnabled          = store.readBool("cfg_audio", "usb_audio", true);
     usbAudioPreset           = store.readU8("cfg_audio", "usb_preset", 0);
+    usbAudioGainDb           = store.readU8("cfg_audio", "usb_gain_db", 0);
     {
         uint32_t sr = store.readU8("cfg_audio_eng", "sr_idx", 0); // 0=44100, 1=48000, 2=96000
         if (sr < AudioEngineSettings::kSampleRatesCount) {
@@ -179,6 +180,7 @@ void CrosspadSettings::saveTo(IKeyValueStore& store) {
     store.saveBool("cfg_audio", "engine_en", AudioEngineEnabled);
     store.saveBool("cfg_audio", "usb_audio", usbAudioEnabled);
     store.saveU8("cfg_audio", "usb_preset", usbAudioPreset);
+    store.saveU8("cfg_audio", "usb_gain_db", usbAudioGainDb);
     {
         uint8_t srIdx = 1;
         for (uint8_t i = 0; i < AudioEngineSettings::kSampleRatesCount; ++i) {
