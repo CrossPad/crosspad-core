@@ -14,6 +14,7 @@
             "+<event/EspEventBus.cpp>",
             "+<app/AppRegistry.cpp>",
             "+<pad/PadManager.cpp>",
+            "+<sequencer/PatternSequencer.cpp>",
             "+<pad/PadLedController.cpp>",
             "+<pad/PadAnimator.cpp>",
             "+<pad/RGBCallbackManager.cpp>",
