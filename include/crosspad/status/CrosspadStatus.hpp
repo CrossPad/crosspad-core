@@ -125,6 +125,25 @@ public:
     bool imuDetected = false;
     int8_t batteryPct = 0;
 
+    /// What a host companion (a DAW script's worker, a browser tab) last
+    /// reported through the HOST_INFO companion verb. hostSeenUs is IClock
+    /// time of that report, 0 = never.
+    int64_t hostSeenUs = 0;
+    uint8_t hostCpuPct = 0;
+    uint32_t hostRamUsedMb = 0;
+    uint32_t hostRamTotalMb = 0;
+    /// Newest firmware a host reported (FW_LATEST, persisted by the platform so
+    /// it survives a reset with no host attached) and whether it is newer than
+    /// the running one.
+    char fwLatest[16] = {};
+    bool fwUpdateAvailable = false;
+
+    /// Three missed reports of a host that sends one every 2 s.
+    static constexpr int64_t kHostAliveUs = 6000000;
+    bool hostAlive(int64_t nowUs) const {
+        return hostSeenUs != 0 && nowUs - hostSeenUs < kHostAliveUs;
+    }
+
     void* CurrentApp = nullptr;
     void* PreviousApp = nullptr;
 
