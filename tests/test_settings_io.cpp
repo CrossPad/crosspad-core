@@ -70,6 +70,7 @@ TEST_CASE("SettingsIo: full settings round-trip", "[settings][io]") {
     src.quickSettingsEnabled = false;
     src.AudioEngineEnabled = false;
     src.usbAudioEnabled = true;
+    src.usbSerialGuard = false;
     src.Kit = 4;
 
     SettingsIoResult wrote = settingsExportAll(src, file.c_str());
@@ -114,6 +115,7 @@ TEST_CASE("SettingsIo: full settings round-trip", "[settings][io]") {
     REQUIRE(dst.quickSettingsEnabled == false);
     REQUIRE(dst.AudioEngineEnabled == false);
     REQUIRE(dst.usbAudioEnabled == true);
+    REQUIRE(dst.usbSerialGuard == false);
     REQUIRE(dst.Kit == 4);
 }
 

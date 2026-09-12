@@ -28,6 +28,7 @@
 #define CROSSPAD_CMD_VERSION_REPLY      0x1C  /* STM->ESP: [pcb_rev, api_ver] */
 #define CROSSPAD_CMD_AUDIO_ROUTE        0x1D  /* host->ESP: [sub, args...] audio routing control; ESP replies with same cmd on query */
 #define CROSSPAD_CMD_DAW                0x1E  /* host<->ESP: [sub, args...] DAW controller protocol (LED/text/beat/transport); catalog: crosspad-hil knowledge/sysex.yaml `daw` */
+#define CROSSPAD_CMD_COMPANION          0x1F  /* host<->ESP: 0x01 <ASCII verb> request; reply chunks 0x02 (more follow) / 0x03 (last); catalog: crosspad-hil knowledge/sysex.yaml `companion` */
 
 #define CROSSPAD_CMD_ADC_VALUES         0x20
 #define CROSSPAD_CMD_ADC_BUTTONS        0x21

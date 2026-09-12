@@ -96,6 +96,13 @@ void Stm32MessageHandler::handleMessage(const uint8_t* data, unsigned size) {
         }
         break;
 
+    case CROSSPAD_CMD_COMPANION:
+        /* [F0 7D 1F <sub> <ascii...> F7] — same framing as AUDIO_ROUTE */
+        if (companionCb_ && size >= 5) {
+            companionCb_(data + 3, size - 4);
+        }
+        break;
+
     case CROSSPAD_CMD_VERSION_REPLY:
         // [pcb_rev, api_ver] — informational, no consumer yet.
         if (size < 6) break;

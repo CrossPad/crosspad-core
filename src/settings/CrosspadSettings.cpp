@@ -32,6 +32,7 @@ void CrosspadSettings::loadFrom(IKeyValueStore& store) {
     /* The fallback here, not the constructor's, is what an unprovisioned board
      * boots with — the constructor value is overwritten by this load(). */
     usbAudioEnabled          = store.readBool("cfg_audio", "usb_audio", true);
+    usbSerialGuard           = store.readBool("cfg_audio", "usb_guard", true);
     usbAudioPreset           = store.readU8("cfg_audio", "usb_preset", 0);
     usbAudioGainDb           = store.readU8("cfg_audio", "usb_gain_db", 0);
     {
@@ -179,6 +180,7 @@ void CrosspadSettings::saveTo(IKeyValueStore& store) {
     // Audio (master)
     store.saveBool("cfg_audio", "engine_en", AudioEngineEnabled);
     store.saveBool("cfg_audio", "usb_audio", usbAudioEnabled);
+    store.saveBool("cfg_audio", "usb_guard", usbSerialGuard);
     store.saveU8("cfg_audio", "usb_preset", usbAudioPreset);
     store.saveU8("cfg_audio", "usb_gain_db", usbAudioGainDb);
     {

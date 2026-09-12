@@ -141,6 +141,7 @@ SettingsIoResult settingsExportAll(const CrosspadSettings& s, const char* path) 
     out["quickSettingsEnabled"] = s.quickSettingsEnabled;
     out["AudioEngineEnabled"] = s.AudioEngineEnabled;
     out["usbAudioEnabled"] = s.usbAudioEnabled;
+    out["usbSerialGuard"] = s.usbSerialGuard;
     out["usbAudioPreset"] = s.usbAudioPreset;
     out["usbAudioGainDb"] = s.usbAudioGainDb;
     out["Kit"] = s.Kit;
@@ -193,6 +194,7 @@ SettingsIoResult settingsImportAll(CrosspadSettings& s, const char* path) {
     tmp->quickSettingsEnabled = in["quickSettingsEnabled"] | tmp->quickSettingsEnabled;
     tmp->AudioEngineEnabled = in["AudioEngineEnabled"] | tmp->AudioEngineEnabled;
     tmp->usbAudioEnabled = in["usbAudioEnabled"] | tmp->usbAudioEnabled;
+    tmp->usbSerialGuard = in["usbSerialGuard"] | tmp->usbSerialGuard;
     tmp->usbAudioPreset = in["usbAudioPreset"] | tmp->usbAudioPreset;
     tmp->usbAudioGainDb = in["usbAudioGainDb"] | tmp->usbAudioGainDb;
     tmp->Kit = (uint8_t)jsonInt(in["Kit"], tmp->Kit, 0, 255);

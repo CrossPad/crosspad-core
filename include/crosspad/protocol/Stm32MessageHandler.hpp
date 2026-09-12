@@ -38,6 +38,11 @@ public:
     /// app is showing the DAW surface; cleared (empty function) when it closes.
     using DawCallback = std::function<void(const uint8_t* args, unsigned len)>;
 
+    /// Callback for companion control over SysEx (CROSSPAD_CMD_COMPANION): the
+    /// payload after the command byte — sub 0x01 followed by an ASCII verb line.
+    /// The platform answers on the same MIDI port with 0x02/0x03 reply chunks.
+    using CompanionCallback = std::function<void(const uint8_t* args, unsigned len)>;
+
     Stm32MessageHandler() = default;
 
     /**
@@ -66,6 +71,11 @@ public:
      * @brief Set callback for the DAW controller protocol (app-owned)
      */
     void setDawCallback(DawCallback cb) { dawCb_ = std::move(cb); }
+
+    /**
+     * @brief Set callback for companion control over SysEx (platform-specific)
+     */
+    void setCompanionCallback(CompanionCallback cb) { companionCb_ = std::move(cb); }
 
     /**
      * @brief Handle a raw SysEx message from STM32
@@ -106,6 +116,7 @@ private:
     UsbModeCallback usbModeCb_;
     AudioRouteCallback audioRouteCb_;
     DawCallback dawCb_;
+    CompanionCallback companionCb_;
     bool keyPresses_[16] = {};
 };
 

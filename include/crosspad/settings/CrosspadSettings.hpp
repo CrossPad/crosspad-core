@@ -62,6 +62,11 @@ public:
     /// endpoint, so a board in it is reached over SysEx on USB MIDI, which
     /// exists in both profiles.
     bool usbAudioEnabled;
+    /// Ask on the device before a host-originated switch to the CDC profile
+    /// (SysEx 0x1B 0x01) is honoured. The CDC profile is the console, OTA and
+    /// file plane, so an unknown computer should not get it unattended. The
+    /// switch back to audio, the Settings dropdown and CDC USB_DEFAULT never ask.
+    bool usbSerialGuard;
     /// What the USB host records, as an index into the platform's route preset
     /// table (0 = built-in microphones). Re-applied at boot so a device set up
     /// once keeps recording the same source. 0x7F means the routing was put
@@ -93,6 +98,7 @@ private:
         quickSettingsEnabled = true;
         AudioEngineEnabled = true;
         usbAudioEnabled = true;    // UAC2 by default; console/OTA need the CDC profile
+        usbSerialGuard = true;     // a host must be allowed on the device before it gets CDC
         usbAudioPreset = 0;        // built-in microphones
         usbAudioGainDb = 0;        // unity; the bus is what the speakers get
         Kit = 0;
