@@ -31,6 +31,7 @@ public:
 
     // ── IKitManager (persistence) ───────────────────────────────────────────
     std::vector<KitInfo> listKits(const std::string& rootDir) override;
+    void                 scanKits(const std::string& rootDir) override;
     KitLoadResult loadKit(KitInfo& kit) override;
     bool saveKit(const KitInfo& kit) override;
 

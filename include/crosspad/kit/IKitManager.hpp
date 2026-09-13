@@ -38,6 +38,15 @@ public:
     /// Returns metadata-only KitInfo entries (pads NOT parsed).
     virtual std::vector<KitInfo> listKits(const std::string& rootDir) = 0;
 
+    /// Same scan, no copy: rebuilds the list read back through getKitCount()
+    /// and getKit(). Use it when the caller only wants the card scanned — the
+    /// vector listKits() returns is one contiguous block of
+    /// kits × sizeof(KitInfo) plus a string copy per field, and on the ESP32
+    /// that copy alone was a std::bad_alloc at boot (80 kits, 412 kB of PSRAM
+    /// left beside the sample engine). Default keeps old implementations
+    /// correct; they still pay for the copy.
+    virtual void scanKits(const std::string& rootDir) { (void)listKits(rootDir); }
+
     /// Full-parse a kit: read JSON, parse metadata + pads array.
     /// kit.path must already be set before calling.
     virtual KitLoadResult loadKit(KitInfo& kit) = 0;

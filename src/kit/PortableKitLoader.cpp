@@ -50,7 +50,7 @@ std::string PortableKitLoader::toLogicalPath(const std::string& fsPath) const {
     return fsPath;
 }
 
-std::vector<KitInfo> PortableKitLoader::listKits(const std::string& rootDir) {
+void PortableKitLoader::scanKits(const std::string& rootDir) {
     kits_.clear();
     currentKitId_ = -1;
     // rootDir is logical ("/crosspad/kits"); add the mount prefix for POSIX.
@@ -59,6 +59,10 @@ std::vector<KitInfo> PortableKitLoader::listKits(const std::string& rootDir) {
     // block, and the launcher keeps it for the rest of the boot. Trim it —
     // PSRAM outside the engine arena is the UI's whole budget.
     kits_.shrink_to_fit();
+}
+
+std::vector<KitInfo> PortableKitLoader::listKits(const std::string& rootDir) {
+    scanKits(rootDir);
     return kits_;
 }
 
