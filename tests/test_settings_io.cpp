@@ -47,12 +47,14 @@ TEST_CASE("SettingsIo: full settings round-trip", "[settings][io]") {
     src.wireless.enableWiFi = true;
     src.wireless.bleMidiMode = 1;
     src.wireless.bleMidiNoteOffset = -12;
-    src.audio[3].outVolume = 77;
-    src.audio[3].speakersEnabled = false;
-    src.audio[3].outVolumeCodec[1][0] = 31;
-    src.audio[3].reverb.roomSize = 12;
-    src.previewAudio.inVolume = 21;
-    src.masterFX.eq[2].mid = 66;
+    src.masterFX.mute = true;
+    src.masterFX.outVolume = 77;
+    src.masterFX.inVolume = 21;
+    src.masterFX.speakersEnabled = false;
+    src.masterFX.outVolumeCodec[1][0] = 31;
+    src.masterFX.inVolumeCodec[0][1] = 9;
+    src.masterFX.reverb.bypass = false;
+    src.masterFX.flanger.bypass = false;
     src.audioEngine.sampleRate = 96000;
     src.audioEngine.frameCount = 128;
     src.vibration.enable = false;
@@ -92,12 +94,15 @@ TEST_CASE("SettingsIo: full settings round-trip", "[settings][io]") {
     REQUIRE(dst.wireless.enableWiFi == true);
     REQUIRE(dst.wireless.bleMidiMode == 1);
     REQUIRE(dst.wireless.bleMidiNoteOffset == -12);
-    REQUIRE(dst.audio[3].outVolume == 77);
-    REQUIRE(dst.audio[3].speakersEnabled == false);
-    REQUIRE(dst.audio[3].outVolumeCodec[1][0] == 31);
-    REQUIRE(dst.audio[3].reverb.roomSize == 12);
-    REQUIRE(dst.previewAudio.inVolume == 21);
-    REQUIRE(dst.masterFX.eq[2].mid == 66);
+    REQUIRE(dst.masterFX.mute == true);
+    REQUIRE(dst.masterFX.outVolume == 77);
+    REQUIRE(dst.masterFX.inVolume == 21);
+    REQUIRE(dst.masterFX.speakersEnabled == false);
+    REQUIRE(dst.masterFX.outVolumeCodec[1][0] == 31);
+    REQUIRE(dst.masterFX.inVolumeCodec[0][1] == 9);
+    REQUIRE(dst.masterFX.reverb.bypass == false);
+    REQUIRE(dst.masterFX.flanger.bypass == false);
+    REQUIRE(dst.masterFX.delay.bypass == true);
     REQUIRE(dst.audioEngine.sampleRate == 96000);
     REQUIRE(dst.audioEngine.frameCount == 128);
     REQUIRE(dst.vibration.enable == false);
@@ -181,6 +186,55 @@ TEST_CASE("SettingsIo: pad tuning round-trip", "[settings][io]") {
 #endif
 }
 
+TEST_CASE("SettingsIo: export carries only what NVS persists", "[settings][io]") {
+    TempFile file("cp_io_shape.json");
+    REQUIRE(settingsExportAll(snapshot(), file.c_str()).ok);
+
+    FILE* f = fopen(file.c_str(), "r");
+    REQUIRE(f != nullptr);
+    std::string text;
+    for (int c; (c = fgetc(f)) != EOF;) text.push_back((char)c);
+    fclose(f);
+
+    // Version-1 files were 30 kB: sixteen per-pad effect chains plus a preview
+    // chain that nothing read and nothing saved.
+    REQUIRE(text.size() < 3000);
+    REQUIRE(text.find("\"audio\"") == std::string::npos);
+    REQUIRE(text.find("\"previewAudio\"") == std::string::npos);
+    REQUIRE(text.find("\"eq\"") == std::string::npos);
+    REQUIRE(text.find("\"roomSize\"") == std::string::npos);
+    REQUIRE(text.find("\"masterFX\"") != std::string::npos);
+    REQUIRE(text.find("\"reverb\":{\"bypass\":") != std::string::npos);
+}
+
+TEST_CASE("SettingsIo: version-1 file imports, per-pad sections ignored", "[settings][io]") {
+    TempFile file("cp_io_v1.json");
+    writeRaw(file.c_str(),
+             "{\"kind\":\"crosspad-settings\",\"version\":1,\"settings\":{"
+             "\"audio\":[{\"outVolume\":3,\"reverb\":{\"bypass\":false,\"roomSize\":12}}],"
+             "\"previewAudio\":{\"inVolume\":4},"
+             "\"masterFX\":{\"outVolume\":61,\"delay\":{\"bypass\":false,\"length\":70,\"feedback\":20},"
+             "\"eq\":[{\"bypass\":false,\"mid\":66}]},"
+             "\"LCDbrightness\":21}}");
+
+    CrosspadSettings dst = snapshot();
+    dst.audio[0].outVolume = 44;
+    dst.previewAudio.inVolume = 45;
+    dst.masterFX.delay.length = 50;
+
+    SettingsIoResult read = settingsImportAll(dst, file.c_str());
+    REQUIRE(read.ok);
+    REQUIRE(read.version == 1);
+
+    REQUIRE(dst.LCDbrightness == 21);
+    REQUIRE(dst.masterFX.outVolume == 61);
+    REQUIRE(dst.masterFX.delay.bypass == false);
+    // Effect parameters and the per-pad chains are not settings any more.
+    REQUIRE(dst.masterFX.delay.length == 50);
+    REQUIRE(dst.audio[0].outVolume == 44);
+    REQUIRE(dst.previewAudio.inVolume == 45);
+}
+
 TEST_CASE("SettingsIo: wrong kind is rejected", "[settings][io]") {
     TempFile file("cp_io_kind.json");
 
@@ -218,7 +272,7 @@ TEST_CASE("SettingsIo: newer file version is rejected", "[settings][io]") {
 
     TempFile padFile("cp_io_version_pads.json");
     writeRaw(padFile.c_str(),
-             "{\"kind\":\"crosspad-pads\",\"version\":2,\"pads\":{\"velFloorDef\":9}}");
+             "{\"kind\":\"crosspad-pads\",\"version\":3,\"pads\":{\"velFloorDef\":9}}");
     uint8_t floorBefore = dst.stm.velFloorDef;
     REQUIRE_FALSE(settingsImportPads(dst, padFile.c_str()).ok);
     REQUIRE(dst.stm.velFloorDef == floorBefore);

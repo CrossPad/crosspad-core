@@ -113,13 +113,6 @@ SettingsIoResult settingsExportAll(const CrosspadSettings& s, const char* path) 
     JsonObject wireless = out["wireless"].to<JsonObject>();
     s.wireless.toJson(wireless);
 
-    JsonArray audio = out["audio"].to<JsonArray>();
-    for (int i = 0; i < CROSSPAD_MAX_PADS; i++) {
-        JsonObject a = audio.add<JsonObject>();
-        s.audio[i].toJson(a);
-    }
-    JsonObject previewAudio = out["previewAudio"].to<JsonObject>();
-    s.previewAudio.toJson(previewAudio);
     JsonObject masterFX = out["masterFX"].to<JsonObject>();
     s.masterFX.toJson(masterFX);
 
@@ -165,14 +158,6 @@ SettingsIoResult settingsImportAll(CrosspadSettings& s, const char* path) {
     if (in["esp32Routing"].is<JsonObject>()) tmp->esp32Routing.fromJson(in["esp32Routing"]);
     if (in["wireless"].is<JsonObject>())     tmp->wireless.fromJson(in["wireless"]);
 
-    if (in["audio"].is<JsonArray>()) {
-        JsonArray audio = in["audio"].as<JsonArray>();
-        // A shorter array leaves the remaining pads as they were.
-        for (int i = 0; i < CROSSPAD_MAX_PADS && i < (int)audio.size(); i++) {
-            if (audio[i].is<JsonObject>()) tmp->audio[i].fromJson(audio[i]);
-        }
-    }
-    if (in["previewAudio"].is<JsonObject>()) tmp->previewAudio.fromJson(in["previewAudio"]);
     if (in["masterFX"].is<JsonObject>())     tmp->masterFX.fromJson(in["masterFX"]);
 
     if (in["audioEngine"].is<JsonObject>()) {

@@ -27,7 +27,11 @@ struct SettingsIoResult {
     const char* error = nullptr; ///< static string, nullptr when ok
 };
 
-constexpr uint16_t kSettingsFileVersion = 1;
+/// 2: masterFX carries only what NVS persists; the per-pad `audio[]` and
+///    `previewAudio` sections are gone (nothing read or saved them — 2 kB of
+///    file instead of 30). Version-1 files still import, the dropped keys
+///    are ignored.
+constexpr uint16_t kSettingsFileVersion = 2;
 
 /// Whole-settings snapshot.
 SettingsIoResult settingsExportAll(const CrosspadSettings& s, const char* path);

@@ -17,14 +17,6 @@ public:
 
         Delay() : bypass(true), length(50), feedback(50), dry(50), wet(50), inVolume(50), outVolume(50) {}
 
-        void toJson(JsonObject& json) const {
-            json["bypass"] = bypass; json["length"] = length; json["feedback"] = feedback;
-            json["dry"] = dry; json["wet"] = wet; json["inVolume"] = inVolume; json["outVolume"] = outVolume;
-        }
-        void fromJson(const JsonObject& json) {
-            bypass = json["bypass"]; length = json["length"]; feedback = json["feedback"];
-            dry = json["dry"]; wet = json["wet"]; inVolume = json["inVolume"]; outVolume = json["outVolume"];
-        }
     };
 
     struct Reverb {
@@ -38,14 +30,6 @@ public:
 
         Reverb() : bypass(true), roomSize(50), damping(50), dry(50), wet(50), inVolume(50), outVolume(50) {}
 
-        void toJson(JsonObject& json) const {
-            json["bypass"] = bypass; json["roomSize"] = roomSize; json["damping"] = damping;
-            json["dry"] = dry; json["wet"] = wet; json["inVolume"] = inVolume; json["outVolume"] = outVolume;
-        }
-        void fromJson(const JsonObject& json) {
-            bypass = json["bypass"]; roomSize = json["roomSize"]; damping = json["damping"];
-            dry = json["dry"]; wet = json["wet"]; inVolume = json["inVolume"]; outVolume = json["outVolume"];
-        }
     };
 
     struct Distortion {
@@ -58,14 +42,6 @@ public:
 
         Distortion() : bypass(true), gain(50), tone(50), level(50), inVolume(50), outVolume(50) {}
 
-        void toJson(JsonObject& json) const {
-            json["bypass"] = bypass; json["gain"] = gain; json["tone"] = tone;
-            json["level"] = level; json["inVolume"] = inVolume; json["outVolume"] = outVolume;
-        }
-        void fromJson(const JsonObject& json) {
-            bypass = json["bypass"]; gain = json["gain"]; tone = json["tone"];
-            level = json["level"]; inVolume = json["inVolume"]; outVolume = json["outVolume"];
-        }
     };
 
     struct Chorus {
@@ -80,14 +56,6 @@ public:
 
         Chorus() : bypass(true), rate(50), depth(50), feedback(50), dry(50), wet(50), inVolume(50), outVolume(50) {}
 
-        void toJson(JsonObject& json) const {
-            json["bypass"] = bypass; json["rate"] = rate; json["depth"] = depth; json["feedback"] = feedback;
-            json["dry"] = dry; json["wet"] = wet; json["inVolume"] = inVolume; json["outVolume"] = outVolume;
-        }
-        void fromJson(const JsonObject& json) {
-            bypass = json["bypass"]; rate = json["rate"]; depth = json["depth"]; feedback = json["feedback"];
-            dry = json["dry"]; wet = json["wet"]; inVolume = json["inVolume"]; outVolume = json["outVolume"];
-        }
     };
 
     struct Flanger {
@@ -102,14 +70,6 @@ public:
 
         Flanger() : bypass(true), rate(50), depth(50), feedback(50), dry(50), wet(50), inVolume(50), outVolume(50) {}
 
-        void toJson(JsonObject& json) const {
-            json["bypass"] = bypass; json["rate"] = rate; json["depth"] = depth; json["feedback"] = feedback;
-            json["dry"] = dry; json["wet"] = wet; json["inVolume"] = inVolume; json["outVolume"] = outVolume;
-        }
-        void fromJson(const JsonObject& json) {
-            bypass = json["bypass"]; rate = json["rate"]; depth = json["depth"]; feedback = json["feedback"];
-            dry = json["dry"]; wet = json["wet"]; inVolume = json["inVolume"]; outVolume = json["outVolume"];
-        }
     };
 
     struct Controller {
@@ -121,14 +81,6 @@ public:
 
         Controller() : bypass(true), rate(50), depth(50), feedback(50), output(50) {}
 
-        void toJson(JsonObject& json) const {
-            json["bypass"] = bypass; json["rate"] = rate; json["depth"] = depth;
-            json["feedback"] = feedback; json["output"] = output;
-        }
-        void fromJson(const JsonObject& json) {
-            bypass = json["bypass"]; rate = json["rate"]; depth = json["depth"];
-            feedback = json["feedback"]; output = json["output"];
-        }
     };
 
     struct Eq {
@@ -146,24 +98,6 @@ public:
                mid(50), midQ(50), midHigh(50), midHighQ(50),
                high(50), highQ(50), inVolume(50), outVolume(50) {}
 
-        void toJson(JsonObject& json) const {
-            json["bypass"] = bypass;
-            json["low"] = low; json["lowQ"] = lowQ;
-            json["midLow"] = midLow; json["midLowQ"] = midLowQ;
-            json["mid"] = mid; json["midQ"] = midQ;
-            json["midHigh"] = midHigh; json["midHighQ"] = midHighQ;
-            json["high"] = high; json["highQ"] = highQ;
-            json["inVolume"] = inVolume; json["outVolume"] = outVolume;
-        }
-        void fromJson(const JsonObject& json) {
-            bypass = json["bypass"];
-            low = json["low"]; lowQ = json["lowQ"];
-            midLow = json["midLow"]; midLowQ = json["midLowQ"];
-            mid = json["mid"]; midQ = json["midQ"];
-            midHigh = json["midHigh"]; midHighQ = json["midHighQ"];
-            high = json["high"]; highQ = json["highQ"];
-            inVolume = json["inVolume"]; outVolume = json["outVolume"];
-        }
     };
 
     // --- Main fields ---
@@ -201,6 +135,9 @@ public:
         outVolumeCodec[1][1] = 50;  // Codec 1, OUT2 (Line Out 3/4)
     }
 
+    // The JSON form is what CrosspadSettings::saveTo() persists: levels, the
+    // codec matrices and each effect's bypass flag. Effect parameters never
+    // reach NVS, so a backup carrying them would promise what a reboot forgets.
     void toJson(JsonObject& json) const {
         json["mute"] = mute;
         json["inVolume"] = inVolume;
@@ -218,32 +155,17 @@ public:
                 inRow.add(inVolumeCodec[c][o]);
             }
         }
-        JsonObject delayJson = json["delay"].to<JsonObject>();
-        delay.toJson(delayJson);
-        JsonObject reverbJson = json["reverb"].to<JsonObject>();
-        reverb.toJson(reverbJson);
-        JsonObject distortionJson = json["distortion"].to<JsonObject>();
-        distortion.toJson(distortionJson);
-        JsonObject chorusJson = json["chorus"].to<JsonObject>();
-        chorus.toJson(chorusJson);
-        JsonObject flangerJson = json["flanger"].to<JsonObject>();
-        flanger.toJson(flangerJson);
-        JsonArray eqArray = json["eq"].to<JsonArray>();
-        for (int i = 0; i < EQ_MAX_COUNT; i++) {
-            JsonObject eqJson = eqArray.add<JsonObject>();
-            eq[i].toJson(eqJson);
-        }
-        JsonArray controllerArray = json["controller"].to<JsonArray>();
-        for (int i = 0; i < LFO_MAX_COUNT; i++) {
-            JsonObject controllerJson = controllerArray.add<JsonObject>();
-            controler[i].toJson(controllerJson);
-        }
+        json["delay"]["bypass"] = delay.bypass;
+        json["reverb"]["bypass"] = reverb.bypass;
+        json["distortion"]["bypass"] = distortion.bypass;
+        json["chorus"]["bypass"] = chorus.bypass;
+        json["flanger"]["bypass"] = flanger.bypass;
     }
 
     void fromJson(const JsonObject& json) {
-        mute = json["mute"];
-        inVolume = json["inVolume"];
-        outVolume = json["outVolume"];
+        mute = json["mute"] | mute;
+        inVolume = json["inVolume"] | inVolume;
+        outVolume = json["outVolume"] | outVolume;
         // Guarded: files written before these keys existed must keep the
         // constructor's volumes rather than being muted to 0.
         speakersEnabled = json["speakersEnabled"] | speakersEnabled;
@@ -255,19 +177,13 @@ public:
                 inVolumeCodec[c][o] = inCodec[c][o] | inVolumeCodec[c][o];
             }
         }
-        delay.fromJson(json["delay"]);
-        reverb.fromJson(json["reverb"]);
-        distortion.fromJson(json["distortion"]);
-        chorus.fromJson(json["chorus"]);
-        flanger.fromJson(json["flanger"]);
-        JsonArray eqArray = json["eq"];
-        for (int i = 0; i < EQ_MAX_COUNT; i++) {
-            eq[i].fromJson(eqArray[i]);
-        }
-        JsonArray controllerArray = json["controller"];
-        for (int i = 0; i < LFO_MAX_COUNT; i++) {
-            controler[i].fromJson(controllerArray[i]);
-        }
+        // Same nesting as the version-1 files, whose effect objects carried
+        // the parameters too; only the flag is read.
+        delay.bypass = json["delay"]["bypass"] | delay.bypass;
+        reverb.bypass = json["reverb"]["bypass"] | reverb.bypass;
+        distortion.bypass = json["distortion"]["bypass"] | distortion.bypass;
+        chorus.bypass = json["chorus"]["bypass"] | chorus.bypass;
+        flanger.bypass = json["flanger"]["bypass"] | flanger.bypass;
     }
 };
 
