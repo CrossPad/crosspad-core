@@ -42,7 +42,12 @@ public:
     /// "is this pad pressed" answering yes forever.
     using NoteSink = void (*)(void* ctx, uint8_t pad, uint8_t velocity, bool on);
 
-    static constexpr uint8_t  kNumSequences = SequencerLimits::MAX_SEQ_INDEX + 1;
+    /// Scene slots. Not MAX_SEQ_INDEX + 1 any more: that constant is the
+    /// controller's own bookkeeping for solo and sequence navigation, while
+    /// this is how many scenes a kit may hold. How many it actually holds is
+    /// sceneCount(), which a player grows and shrinks; the rest of the slots
+    /// cost their .bss and nothing else.
+    static constexpr uint8_t  kNumSequences = 8;
     static constexpr uint16_t kMaxEvents    = 192;   ///< per scene
     static constexpr uint8_t  kInputRing    = 32;    ///< hits in flight
     static constexpr uint8_t  kMaxBars      = 8;     ///< per scene
@@ -115,6 +120,11 @@ public:
 
     SequencerMode  mode()  const { return mode_; }
     SequencerState state() const { return state_; }
+    uint8_t  sceneCount() const override { return sceneCount_; }
+    bool     addScene() override;
+    bool     removeScene(uint8_t seq) override;
+    /// For the store: how many scenes the file held.
+    void     setSceneCount(uint8_t n);
     uint8_t  activeScene()  const override { return activeSeq_; }
     uint8_t  pendingScene() const override { return pendingSeq_; }
     uint8_t  recordSequence() const { return activeSeq_; }
@@ -204,6 +214,8 @@ private:
     SequencerMode  mode_  = SequencerMode::None;
     SequencerState state_ = SequencerState::Idle;
     Quantization   quant_ = SequencerLimits::DEFAULT_QUANTIZATION;
+    /// A kit starts with one scene and gets more when somebody asks for them.
+    uint8_t  sceneCount_ = 1;
     uint8_t  activeSeq_  = 0;
     uint8_t  pendingSeq_ = 0;
     uint8_t  preLen_     = 4;

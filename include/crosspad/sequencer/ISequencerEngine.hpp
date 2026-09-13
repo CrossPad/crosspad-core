@@ -48,6 +48,12 @@ public:
     virtual uint8_t  pendingScene() const { return activeScene(); }
     virtual void     setSceneBars(uint8_t seq, uint8_t bars) { (void)seq; (void)bars; }
     virtual uint8_t  sceneBars(uint8_t seq) const { (void)seq; return 0; }
+    /// How many scenes the kit has. An engine with a fixed set says so here.
+    virtual uint8_t  sceneCount() const { return 1; }
+    /// Append an empty scene and make it current; false when there is no room.
+    virtual bool     addScene() { return false; }
+    /// Drop a scene and close the gap. The last one never goes.
+    virtual bool     removeScene(uint8_t seq) { (void)seq; return false; }
     virtual uint16_t sceneEventCount(uint8_t seq) const { (void)seq; return 0; }
 
     // --- Click / Metronome ---

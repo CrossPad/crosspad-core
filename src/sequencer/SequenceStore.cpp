@@ -30,8 +30,10 @@ bool SequenceStore::save(const PatternSequencer& seq, const std::string& path)
     doc["bpm"]     = seq.getClickBpm();
     doc["active"]  = seq.activeScene();
 
+    /* As many scenes as the kit has, not as many as the engine could hold: the
+     * file is what says how many a kit came with. */
     JsonArray scenes = doc["scenes"].to<JsonArray>();
-    for (uint8_t s = 0; s < PatternSequencer::kNumSequences; ++s) {
+    for (uint8_t s = 0; s < seq.sceneCount(); ++s) {
         JsonObject o = scenes.add<JsonObject>();
         o["bars"] = seq.sceneBars(s);
         JsonArray evs = o["events"].to<JsonArray>();
@@ -81,9 +83,17 @@ bool SequenceStore::load(PatternSequencer& seq, const std::string& path)
     seq.clearAll(0, 127);
 
     JsonArrayConst scenes = doc["scenes"].as<JsonArrayConst>();
+    /* The count first: setSceneBars() and addEventTicks() both refuse a scene
+     * the kit does not have. A file from before scenes were countable holds
+     * four, which is exactly what it will say here. */
+    size_t sceneN = scenes.size();
+    if (sceneN == 0) sceneN = 1;
+    if (sceneN > PatternSequencer::kNumSequences) sceneN = PatternSequencer::kNumSequences;
+    seq.setSceneCount((uint8_t)sceneN);
+
     uint8_t s = 0;
     for (JsonObjectConst o : scenes) {
-        if (s >= PatternSequencer::kNumSequences) break;
+        if (s >= seq.sceneCount()) break;
         /* Bars before events: an event is refused if it falls past the scene's
          * end, and the end is not known until the length is. */
         const uint8_t bars = o["bars"] | 4;

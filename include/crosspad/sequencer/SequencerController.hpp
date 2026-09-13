@@ -174,6 +174,9 @@ public:
     uint8_t getPendingScene() const  { return engine_ ? engine_->pendingScene() : 0; }
     void    setSceneBars(uint8_t s, uint8_t bars) { if (engine_) engine_->setSceneBars(s, bars); }
     uint8_t getSceneBars(uint8_t s) const { return engine_ ? engine_->sceneBars(s) : 0; }
+    uint8_t getSceneCount() const { return engine_ ? engine_->sceneCount() : 1; }
+    bool    addScene()    { return engine_ ? engine_->addScene() : false; }
+    bool    removeScene(uint8_t s) { return engine_ ? engine_->removeScene(s) : false; }
     uint16_t getSceneEventCount(uint8_t s) const { return engine_ ? engine_->sceneEventCount(s) : 0; }
 
     /// Beat within the bar, 0-based. What a metronome display counts.

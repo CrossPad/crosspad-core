@@ -145,7 +145,7 @@ void PatternSequencer::applyScene(uint8_t seq)
 
 void PatternSequencer::select(uint8_t seq)
 {
-    if (seq >= kNumSequences) return;
+    if (seq >= sceneCount_) return;
     if (state_ == SequencerState::Running && clock_ && clock_->running()) {
         pendingSeq_ = seq;          // takes effect at the loop end
         return;
@@ -208,6 +208,56 @@ void PatternSequencer::setClickBpm(float bpm)
      * firing everything between the old playhead and the rescaled one would
      * empty the pattern into a single poll. */
     lastPos_ = clock_->positionSamples();
+}
+
+/// Append an empty scene and go to it.
+bool PatternSequencer::addScene()
+{
+    if (sceneCount_ >= kNumSequences) return false;
+    const uint8_t idx = sceneCount_++;
+    counts_[idx] = 0;
+    bars_[idx]   = kDefaultBars;
+    sceneEnabled_[idx] = true;
+    markDirty();
+    select(idx);
+    return true;
+}
+
+/// Drop a scene and close the gap behind it.
+///
+/// The last one never goes: a kit has to have somewhere to record, and an empty
+/// scene is what "no scenes" looks like anyway. Removing the scene that is
+/// sounding takes effect at once rather than at the loop end -- there is no
+/// loop left to wait for.
+bool PatternSequencer::removeScene(uint8_t seq)
+{
+    if (seq >= sceneCount_ || sceneCount_ <= 1) return false;
+
+    for (uint8_t s = seq; s + 1 < sceneCount_; ++s) {
+        counts_[s] = counts_[s + 1];
+        bars_[s]   = bars_[s + 1];
+        sceneEnabled_[s] = sceneEnabled_[s + 1];
+        for (uint16_t i = 0; i < counts_[s]; ++i) events_[s][i] = events_[s + 1][i];
+    }
+    const uint8_t last = --sceneCount_;
+    counts_[last] = 0;
+    bars_[last]   = kDefaultBars;
+    sceneEnabled_[last] = true;
+    markDirty();
+
+    uint8_t sel = activeSeq_;
+    if (sel >= sceneCount_) sel = (uint8_t)(sceneCount_ - 1);
+    applyScene(sel);
+    if (clock_) clock_->resetPosition();
+    return true;
+}
+
+void PatternSequencer::setSceneCount(uint8_t n)
+{
+    if (n < 1) n = 1;
+    if (n > kNumSequences) n = kNumSequences;
+    sceneCount_ = n;
+    if (activeSeq_ >= sceneCount_) applyScene(0);
 }
 
 // ── Transport ──────────────────────────────────────────────────────────────
@@ -278,6 +328,9 @@ void PatternSequencer::resetScenes()
         bars_[s]         = kDefaultBars;
         sceneEnabled_[s] = true;
     }
+    /* One scene, the way a kit nobody has recorded into starts. The rest are
+     * made when somebody asks for them. */
+    sceneCount_ = 1;
     applyScene(0);
     if (clock_) clock_->resetPosition();
     lastPos_ = 0;
