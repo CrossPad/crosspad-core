@@ -73,13 +73,28 @@ void PatternSequencer::fireWindow(uint32_t from, uint32_t to)
     for (uint16_t i = 0; i < counts_[activeSeq_]; ++i) {
         const Event& e = events_[activeSeq_][i];
         if (e.fresh) continue;
-        if (e.pos >= from && e.pos < to) sink_(sinkCtx_, e.pad, e.vel);
+        if (e.pos >= from && e.pos < to) {
+            sink_(sinkCtx_, e.pad, e.vel, true);
+            if (e.pad < 16) pendingRelease_ |= (uint16_t)(1u << e.pad);
+        }
     }
 }
 
 void PatternSequencer::poll()
 {
     if (!clock_) return;
+
+    /* Release what the last pass fired, before anything else. A pad left
+     * pressed is not a silent bug: the LED stays lit and every "is this pad
+     * pressed" reader answers yes for good -- which is what stopped the
+     * sampler's waveform settling on one pad. */
+    if (pendingRelease_ && sink_) {
+        for (uint8_t pad = 0; pad < 16; ++pad) {
+            if (pendingRelease_ & (1u << pad)) sink_(sinkCtx_, pad, 0, false);
+        }
+        pendingRelease_ = 0;
+    }
+
     const uint32_t loop = clock_->loopSamples();
     const uint32_t now  = clock_->positionSamples();
 
@@ -162,6 +177,39 @@ void PatternSequencer::setSceneBars(uint8_t seq, uint8_t bars)
     }
 }
 
+// ── Tempo ──────────────────────────────────────────────────────────────────
+
+void PatternSequencer::setClickBpm(float bpm)
+{
+    if (!clock_) return;
+    const float    was    = clock_->bpm();
+    const uint32_t before = clock_->samplesPerBeat();
+    clock_->setBpm(bpm);
+    const uint32_t after = clock_->samplesPerBeat();
+    /* The file records the tempo its ticks were written at, so a tempo the
+     * player changed has to reach the card even when the rescale below finds
+     * nothing to move. */
+    if (clock_->bpm() != was) markDirty();
+    if (!before || !after || before == after) return;
+
+    /* Events are held in samples and a beat is now a different number of them,
+     * so a take recorded at 120 and played at 90 would keep its old offsets
+     * inside a longer bar: the pattern drifts off the click it was played to,
+     * and everything past the old loop end falls outside the new one and never
+     * fires again. Scaling them is what makes a kit's tempo a property of the
+     * kit rather than something only an empty scene can be given. The file
+     * holds ticks for the same reason. */
+    for (uint8_t s = 0; s < kNumSequences; ++s) {
+        for (uint16_t i = 0; i < counts_[s]; ++i) {
+            events_[s][i].pos = (uint32_t)(((uint64_t)events_[s][i].pos * after) / before);
+        }
+    }
+    /* The clock cannot be moved from here, so take its position as read --
+     * firing everything between the old playhead and the rescaled one would
+     * empty the pattern into a single poll. */
+    lastPos_ = clock_->positionSamples();
+}
+
 // ── Transport ──────────────────────────────────────────────────────────────
 
 void PatternSequencer::setTransport(SequencerMode m, SequencerState st)
@@ -203,6 +251,14 @@ void PatternSequencer::overdub()
 
 void PatternSequencer::stop()
 {
+    /* Whatever is still held goes down with the transport, or it stays held
+     * until the next pass that never comes. */
+    if (pendingRelease_ && sink_) {
+        for (uint8_t pad = 0; pad < 16; ++pad) {
+            if (pendingRelease_ & (1u << pad)) sink_(sinkCtx_, pad, 0, false);
+        }
+        pendingRelease_ = 0;
+    }
     if (clock_) clock_->stop();
     setTransport(SequencerMode::None, SequencerState::Idle);
 }

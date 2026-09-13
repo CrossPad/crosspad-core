@@ -36,8 +36,11 @@ namespace crosspad {
 /// no lock is taken on either side, and neither can block the other.
 class PatternSequencer : public ISequencerEngine {
 public:
-    /// Fired for every note due, from the thread that calls poll().
-    using NoteSink = void (*)(void* ctx, uint8_t pad, uint8_t velocity);
+    /// Fired for every note due, from the thread that calls poll(). `on` false
+    /// is the release: a pad that is pressed and never released stays latched
+    /// as held, which lights its LED for good and leaves every reader of
+    /// "is this pad pressed" answering yes forever.
+    using NoteSink = void (*)(void* ctx, uint8_t pad, uint8_t velocity, bool on);
 
     static constexpr uint8_t  kNumSequences = SequencerLimits::MAX_SEQ_INDEX + 1;
     static constexpr uint16_t kMaxEvents    = 192;   ///< per scene
@@ -100,7 +103,10 @@ public:
     void clearSeq(uint8_t seqIdx, uint8_t endPad) override;
 
     void setClickAudible(bool audible) override { if (clock_) clock_->setAudible(audible); }
-    void setClickBpm(float bpm) override { if (clock_) clock_->setBpm(bpm); }
+    /// The tempo everything is counted at, and the one a kit carries in
+    /// kit.json. Not a plain forward to the clock: a beat becomes a different
+    /// number of samples, so whatever is already recorded is rescaled with it.
+    void setClickBpm(float bpm) override;
     void resetClick() override { if (clock_) clock_->resetPosition(); }
     float getClickBpm() const override { return clock_ ? clock_->bpm() : 120.0f; }
     int getClickPos() const override { return clock_ ? (int)clock_->currentBeat() : 0; }
@@ -206,6 +212,10 @@ private:
 
     SequencerController* controller_ = nullptr;
     uint32_t lastPos_ = 0;
+    /// Pads fired on the previous poll, released at the start of the next one.
+    /// One poll of gate -- shorter than any human tap, long enough that the
+    /// press and the release are not the same instant.
+    uint16_t pendingRelease_ = 0;
 };
 
 } // namespace crosspad

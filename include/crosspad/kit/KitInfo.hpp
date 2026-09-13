@@ -70,11 +70,13 @@ struct KitInfo {
     std::string description;
     std::string version;
     std::string created_at;
-    /// Tempo of the beat this kit ships as preview.mid, in BPM. 0 means the kit
-    /// does not say -- and a lot of DAWs export a MIDI file with no tempo map at
-    /// all, because they keep tempo in the project, so the file frequently
-    /// cannot answer either. Without this the preview falls back to the SMF
-    /// default of 120, which is silently wrong for anything else.
+    /// The kit's tempo in BPM: what the click counts and the loop recorder is
+    /// quantised to once the kit is loaded, and what preview.mid is played at.
+    /// 0 means the kit does not say -- and a lot of DAWs export a MIDI file
+    /// with no tempo map at all, because they keep tempo in the project, so the
+    /// file frequently cannot answer either. Without this the preview falls
+    /// back to the SMF default of 120, which is silently wrong for anything
+    /// else, and the sequencer keeps whatever the previous kit was counting.
     uint16_t bpm = 0;
     Type        type          = Normal;
     int         total_samples = 0;

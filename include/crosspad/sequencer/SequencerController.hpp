@@ -52,7 +52,9 @@ public:
     uint8_t        getLoopLength()  const { return loopLength_; }
     uint8_t        getPlaybackSequence() const { return plySequence_; }
     uint8_t        getRecordSequence()   const { return recSequence_; }
-    float          getBpm()         const { return bpm_; }
+    /// From the engine: the clock is its, and the tempo is set behind this
+    /// controller's back every time a kit lands with a bpm of its own.
+    float          getBpm()         const { return engine_ ? engine_->getClickBpm() : bpm_; }
     Quantization   getQuantization() const { return quantization_; }
     bool           getSoloMode()    const { return soloMode_; }
     bool           isEnabled()      const { return enabled_; }
@@ -173,6 +175,9 @@ public:
     void    setSceneBars(uint8_t s, uint8_t bars) { if (engine_) engine_->setSceneBars(s, bars); }
     uint8_t getSceneBars(uint8_t s) const { return engine_ ? engine_->sceneBars(s) : 0; }
     uint16_t getSceneEventCount(uint8_t s) const { return engine_ ? engine_->sceneEventCount(s) : 0; }
+
+    /// Beat within the bar, 0-based. What a metronome display counts.
+    int getClickPos() const { return engine_ ? engine_->getClickPos() : 0; }
 
     // ---------- transport ----------
 
