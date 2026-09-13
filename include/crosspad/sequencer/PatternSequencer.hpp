@@ -82,6 +82,8 @@ public:
 
     void setLength(uint8_t beats) override;
     void setQuantization(Quantization q) override { quant_ = q; }
+    /// What a take is being snapped to, or Off. For the UI and HIL.
+    Quantization quantization() const { return quant_; }
     void setLoop(bool loop) override { loop_ = loop; }
     void setPreLen(uint8_t len) override { preLen_ = len; }
 
