@@ -186,6 +186,11 @@ bool FreeRtosEventBus::postSamplePlayback(uint8_t note, uint8_t wavIdx, bool isO
     return enqueue(EventType::SamplePlayback, &data, sizeof(data));
 }
 
+bool FreeRtosEventBus::postMotionGesture(MotionGesture gesture, uint8_t orientation, EventSource source) {
+    MotionGestureData data{gesture, orientation, source};
+    return enqueue(EventType::MotionGesture, &data, sizeof(data));
+}
+
 // ── Sync send methods (direct dispatch, same thread) ────────────────────────
 
 bool FreeRtosEventBus::sendNoteOn(uint8_t channel, uint8_t note, uint8_t velocity, EventSource source) {

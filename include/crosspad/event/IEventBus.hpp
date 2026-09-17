@@ -88,6 +88,10 @@ public:
     ///        unaffected. Ignored when isOn = false.
     virtual bool postSamplePlayback(uint8_t note, uint8_t wavIdx, bool isOn, EventSource source = EventSource::SamplePlayback, uint8_t velocity = 127) = 0;
 
+    /// Board motion the sensor itself recognised. Apps subscribe to
+    /// EventType::MotionGesture instead of talking to any IMU driver.
+    virtual bool postMotionGesture(MotionGesture gesture, uint8_t orientation = 0, EventSource source = EventSource::Imu) = 0;
+
     // ── Sync posting (immediate dispatch, use from ISR or time-critical) ─
 
     virtual bool sendNoteOn(uint8_t channel, uint8_t note, uint8_t velocity, EventSource source = EventSource::System) = 0;

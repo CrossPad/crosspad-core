@@ -67,4 +67,22 @@ struct LiveModeChangedData {
     EventSource source;
 };
 
+/// What the motion sensor recognised. The names are the gestures, not a
+/// particular part's register bits — a platform whose IMU knows fewer of them
+/// simply never posts the rest.
+enum class MotionGesture : uint8_t {
+    SingleTap,
+    DoubleTap,
+    FreeFall,
+    WakeUp,         ///< motion after a still period
+    Orientation,    ///< the board was turned to another face
+    Still,          ///< no motion long enough for the sensor to say so
+};
+
+struct MotionGestureData {
+    MotionGesture gesture;
+    uint8_t orientation;   ///< face the board rests on, meaningful for Orientation
+    EventSource source;
+};
+
 } // namespace crosspad

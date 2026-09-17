@@ -33,6 +33,9 @@ enum class EventType : int32_t {
     // Sample playback state events
     SamplePlayback,
 
+    // Board motion recognised by the IMU (tap, double tap, free fall, ...)
+    MotionGesture,
+
     Max
 };
 
@@ -54,6 +57,7 @@ enum class EventSource : uint8_t {
     SequencerCallback,  ///< Sequencer playback triggering samples
     SequencerInput,     ///< Live pad input during sequencer recording
     SamplePlayback,     ///< Sample playback state info (wavIdx, note)
+    Imu,                ///< Motion recognised in the IMU itself
 
     Max
 };
@@ -73,6 +77,7 @@ inline const char* getSourceName(EventSource source) {
     case EventSource::SequencerCallback: return "SEQUENCER_CB";
     case EventSource::SequencerInput:    return "SEQUENCER_INPUT";
     case EventSource::SamplePlayback:    return "SAMPLE_PLAYBACK";
+    case EventSource::Imu:               return "IMU";
     default:                             return "UNKNOWN";
     }
 }
@@ -91,6 +96,7 @@ inline const char* getEventName(EventType type) {
     case EventType::LiveModeChanged:   return "LIVE_MODE_CHANGED";
     case EventType::GuiUpdateRequired: return "GUI_UPDATE";
     case EventType::SamplePlayback:    return "SAMPLE_PLAYBACK";
+    case EventType::MotionGesture:     return "MOTION_GESTURE";
     default:                           return "UNKNOWN";
     }
 }

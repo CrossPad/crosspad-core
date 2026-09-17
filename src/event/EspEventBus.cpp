@@ -180,6 +180,13 @@ bool EspEventBus::postSamplePlayback(uint8_t note, uint8_t wavIdx, bool isOn, Ev
     return postEvent(EventType::SamplePlayback, &data, sizeof(data));
 }
 
+bool EspEventBus::postMotionGesture(MotionGesture gesture, uint8_t orientation, EventSource source) {
+    MotionGestureData data = { .gesture = gesture, .orientation = orientation, .source = source };
+    ESP_LOGD(TAG, "Post MotionGesture: g=%d orient=%d src=%s",
+             static_cast<int>(gesture), orientation, getSourceName(source));
+    return postEvent(EventType::MotionGesture, &data, sizeof(data));
+}
+
 // -- Sync send methods --------------------------------------------------------
 
 bool EspEventBus::sendNoteOn(uint8_t channel, uint8_t note, uint8_t velocity, EventSource source) {

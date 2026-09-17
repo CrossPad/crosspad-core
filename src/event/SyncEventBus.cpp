@@ -104,6 +104,12 @@ bool SyncEventBus::postSamplePlayback(uint8_t note, uint8_t wavIdx, bool isOn, E
     return true;
 }
 
+bool SyncEventBus::postMotionGesture(MotionGesture gesture, uint8_t orientation, EventSource source) {
+    MotionGestureData data{gesture, orientation, source};
+    dispatch(EventType::MotionGesture, &data, sizeof(data));
+    return true;
+}
+
 // ── Sync send methods ───────────────────────────────────────────────────────
 
 bool SyncEventBus::sendNoteOn(uint8_t channel, uint8_t note, uint8_t velocity, EventSource source) {
