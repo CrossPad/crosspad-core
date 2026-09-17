@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: MIT
 #include <crosspad/kit/PortableKitLoader.hpp>
+#include <new>
 #include <crosspad/kit/KitPathUtils.hpp>
 #include "KitJsonParser.hpp"
 
@@ -51,14 +52,25 @@ std::string PortableKitLoader::toLogicalPath(const std::string& fsPath) const {
 }
 
 void PortableKitLoader::scanKits(const std::string& rootDir) {
+    // Growing by doubling means copying everything found so far, and on a card
+    // of 79 kits of ~1 kB that copy is one of the largest allocations of the
+    // boot: it threw bad_alloc on one boot in four, nobody caught it, and the
+    // board rebooted with "Discovered 0 kits". The card rarely changes between
+    // scans, so the last count is the best guess there is, and anything the
+    // memory still cannot take costs its own entry rather than the boot.
+    const size_t previous = kits_.size();
     kits_.clear();
     currentKitId_ = -1;
-    // rootDir is logical ("/crosspad/kits"); add the mount prefix for POSIX.
-    discoverKitsRecursive(toFsPath(rootDir), kits_);
-    // The vector grew by doubling; at 79 kits of ~1 kB that is a 128-slot
-    // block, and the launcher keeps it for the rest of the boot. Trim it —
-    // PSRAM outside the engine arena is the UI's whole budget.
-    kits_.shrink_to_fit();
+    try {
+        kits_.reserve(previous ? previous + 4 : 32);
+        // rootDir is logical ("/crosspad/kits"); add the mount prefix for POSIX.
+        discoverKitsRecursive(toFsPath(rootDir), kits_);
+        // Trim the slack the guess left — PSRAM outside the engine arena is the
+        // UI's whole budget.
+        kits_.shrink_to_fit();
+    } catch (const std::bad_alloc&) {
+        // Keep what was found. A short kit list is a bad boot; no boot is worse.
+    }
 }
 
 std::vector<KitInfo> PortableKitLoader::listKits(const std::string& rootDir) {
