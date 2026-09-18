@@ -54,6 +54,13 @@ bool Stm32ConfigSync::pushAll(const Stm32Settings& s) {
     w8(REG_CTL_ANALOG_MIN_MS, s.analogMinMs);
     w8(REG_CTL_ANALOG_DELTA, s.analogDelta);
 
+    // pad mapping: only the swap field — the cell binding itself stays the
+    // STM's; which cell is "left" is a board fact kept here.
+    for (int i = 0; i < Stm32Settings::kPads; ++i) {
+        w8((uint16_t)(REG_MAPPING_BASE + i * REG_MAPPING_STRIDE + REG_MAPPING_FIELD_SWAP),
+           (s.padPanSwap >> i) & 1u);
+    }
+
     // per-pad config (REG_PAD_CFG_BASE = 0x0800): 6-byte stride, one write per pad
     for (int i = 0; i < Stm32Settings::kPads; ++i) {
         uint8_t buf[REG_PAD_CFG_STRIDE];

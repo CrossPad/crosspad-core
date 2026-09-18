@@ -49,6 +49,10 @@ struct Stm32Settings {
     uint8_t ccPressBase = BOARD_CC_PRESS_BASE_DEF;
     uint8_t panCcEn     = 1;   // pan reaches pad logic (onPadPan); the link-internal CC costs nothing
     uint8_t ccPanBase   = BOARD_CC_PAN_BASE_DEF;
+    // Bit n: pad n's two cells are wired the other way round, so its pan
+    // (left/right) is reported inverted. The STM's default binding has no
+    // say in which cell is "left"; this is where the board's truth lives.
+    uint16_t padPanSwap = 1u << 6;
     uint8_t analogMinMs = BOARD_ANALOG_MIN_MS_DEF;
     uint8_t analogDelta = BOARD_ANALOG_DELTA_DEF;
 
@@ -127,6 +131,7 @@ struct Stm32Settings {
         // Not read back: every board saved a 0 here before pan had a
         // consumer (core 1.17), and no UI ever offered the choice.
         (void)s.readU8("cfg_stm", "pan_en", panCcEn);
+        padPanSwap  = (uint16_t)s.readI32("cfg_stm", "pan_swap", padPanSwap);
         ccPanBase   = s.readU8("cfg_stm", "cc_pan", ccPanBase);
         analogMinMs = s.readU8("cfg_stm", "an_min_ms", analogMinMs);
         analogDelta = s.readU8("cfg_stm", "an_delta", analogDelta);
@@ -168,6 +173,7 @@ struct Stm32Settings {
         s.saveU8("cfg_stm", "vfloor", velFloorDef);
         s.saveU8("cfg_stm", "cc_press", ccPressBase);
         s.saveU8("cfg_stm", "pan_en", panCcEn);
+        s.saveI32("cfg_stm", "pan_swap", padPanSwap);
         s.saveU8("cfg_stm", "cc_pan", ccPanBase);
         s.saveU8("cfg_stm", "an_min_ms", analogMinMs);
         s.saveU8("cfg_stm", "an_delta", analogDelta);
@@ -203,6 +209,7 @@ struct Stm32Settings {
         json["ccPressBase"] = ccPressBase;
         json["panCcEn"]     = panCcEn;
         json["ccPanBase"]   = ccPanBase;
+        json["padPanSwap"]  = padPanSwap;
         json["analogMinMs"] = analogMinMs;
         json["analogDelta"] = analogDelta;
         JsonArray sens = json["padSensitivity"].to<JsonArray>();
@@ -225,6 +232,7 @@ struct Stm32Settings {
         ccPressBase = (uint8_t)jsonInt(json["ccPressBase"], ccPressBase, 0, 127);
         panCcEn     = (uint8_t)jsonInt(json["panCcEn"], panCcEn, 0, 1);
         ccPanBase   = (uint8_t)jsonInt(json["ccPanBase"], ccPanBase, 0, 127);
+        padPanSwap  = (uint16_t)jsonInt(json["padPanSwap"], padPanSwap, 0, 0xFFFF);
         analogMinMs = (uint8_t)jsonInt(json["analogMinMs"], analogMinMs, 0, 255);
         analogDelta = (uint8_t)jsonInt(json["analogDelta"], analogDelta, 0, 255);
 
