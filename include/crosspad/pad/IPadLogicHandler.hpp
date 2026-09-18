@@ -30,6 +30,14 @@ public:
 
     /// Called when pad pressure changes — aftertouch (padIdx 0-15, pressure 0-127)
     virtual void onPadPressure(PadManager& padManager, uint8_t padIdx, uint8_t pressure) = 0;
+
+    /// Called when the press moves across the pad — left/right balance of the
+    /// two cells under it, -127 (left) .. +127 (right), 0 centred. Streams
+    /// while the pad is held, on change only. Optional: a handler that plays
+    /// notes has no use for it.
+    virtual void onPadPan(PadManager& padManager, uint8_t padIdx, int8_t pan) {
+        (void)padManager; (void)padIdx; (void)pan;
+    }
 };
 
 } // namespace crosspad

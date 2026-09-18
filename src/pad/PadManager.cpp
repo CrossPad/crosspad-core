@@ -192,6 +192,29 @@ void PadManager::notifyPadPressure(uint8_t padIdx, uint8_t pressure) {
     }
 }
 
+void PadManager::notifyPadPan(uint8_t padIdx, int8_t pan) {
+    if (padIdx >= 16) return;
+
+    std::shared_ptr<IPadLogicHandler> handler;
+    {
+        std::lock_guard<std::mutex> lock(logicMutex_);
+        handler = activePadLogic_;
+    }
+    {
+        std::lock_guard<std::mutex> lock(stateMutex_);
+        padPan_[padIdx] = pan;
+    }
+    if (handler) {
+        handler->onPadPan(*this, padIdx, pan);
+    }
+}
+
+int8_t PadManager::getPadPan(uint8_t padIdx) {
+    if (padIdx >= 16) return 0;
+    std::lock_guard<std::mutex> lock(stateMutex_);
+    return padPan_[padIdx];
+}
+
 // ── MIDI event handling ─────────────────────────────────────────────────
 
 void PadManager::handleMidiNoteOn(uint8_t channel, uint8_t note, uint8_t velocity) {

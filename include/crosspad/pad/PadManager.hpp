@@ -51,6 +51,10 @@ public:
     // sampler kit configs; PadLedController.midiNote is unpopulated). Used by
     // the STM32 MIDI aftertouch route to make live pressure reach the RGB.
     void notifyPadPressure(uint8_t padIdx, uint8_t pressure);
+    // Left/right balance of the press (-127..+127), from the STM32's two
+    // cells per pad; reaches the active pad logic only — no LED, no MIDI.
+    void notifyPadPan(uint8_t padIdx, int8_t pan);
+    int8_t getPadPan(uint8_t padIdx);
 
     // Notification methods for updating LEDs directly
     void notifyNoteOn(uint8_t padIdx, uint8_t velocity, bool fromSampler = false);
@@ -171,6 +175,7 @@ private:
     bool padPlayStates_[16] = {false};
     uint8_t padVelocity_[16] = {0};
     uint8_t padPressure_[16] = {0};
+    int8_t padPan_[16] = {0};
     uint8_t padNotes_[16] = {0};
     uint8_t padChannels_[16] = {0};
     int8_t padChordNotes_[16][8] = {};

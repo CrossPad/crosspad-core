@@ -47,7 +47,7 @@ struct Stm32Settings {
     uint8_t velCurveDef = BOARD_VEL_CURVE_DEF;
     uint8_t velFloorDef = BOARD_VEL_FLOOR_DEF;
     uint8_t ccPressBase = BOARD_CC_PRESS_BASE_DEF;
-    uint8_t panCcEn     = 0;
+    uint8_t panCcEn     = 1;   // pan reaches pad logic (onPadPan); the link-internal CC costs nothing
     uint8_t ccPanBase   = BOARD_CC_PAN_BASE_DEF;
     uint8_t analogMinMs = BOARD_ANALOG_MIN_MS_DEF;
     uint8_t analogDelta = BOARD_ANALOG_DELTA_DEF;
@@ -124,7 +124,9 @@ struct Stm32Settings {
         velCurveDef = s.readU8("cfg_stm", "vcurve", velCurveDef);
         velFloorDef = s.readU8("cfg_stm", "vfloor", velFloorDef);
         ccPressBase = s.readU8("cfg_stm", "cc_press", ccPressBase);
-        panCcEn     = s.readU8("cfg_stm", "pan_en", panCcEn);
+        // Not read back: every board saved a 0 here before pan had a
+        // consumer (core 1.17), and no UI ever offered the choice.
+        (void)s.readU8("cfg_stm", "pan_en", panCcEn);
         ccPanBase   = s.readU8("cfg_stm", "cc_pan", ccPanBase);
         analogMinMs = s.readU8("cfg_stm", "an_min_ms", analogMinMs);
         analogDelta = s.readU8("cfg_stm", "an_delta", analogDelta);
