@@ -54,6 +54,7 @@ set(CORE_SOURCES
     ${CORE_DIR}/src/settings/CrosspadSettings.cpp
     ${CORE_DIR}/src/settings/ISettingsUI.cpp
     ${CORE_DIR}/src/settings/SettingsIo.cpp
+    ${CORE_DIR}/src/settings/SettingsScope.cpp
 
     # Protocol
     ${CORE_DIR}/src/protocol/Stm32CommandSender.cpp
