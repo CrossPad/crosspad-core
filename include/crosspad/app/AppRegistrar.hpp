@@ -29,21 +29,22 @@
  *   refreshFunc  — GUI refresh function, or nullptr
  *   cleanupFunc  — Cleanup function, or nullptr
  *   priority     — int, higher = more preferred for auto-selection
+ *   ...          — optional bool recolorIcon (see AppEntry::recolorIcon), default false
  */
 #ifndef REGISTER_APP
 #ifdef USE_LVGL
-#define REGISTER_APP(appName, logicFunc, iconPath, createLVGL, destroyLVGL, initSimple, refreshFunc, cleanupFunc, priority) \
+#define REGISTER_APP(appName, logicFunc, iconPath, createLVGL, destroyLVGL, initSimple, refreshFunc, cleanupFunc, priority, ...) \
     void _register_##appName##_app() { \
         static const crosspad::AppEntry entry = { \
-            #appName, iconPath, createLVGL, destroyLVGL, priority \
+            #appName, iconPath, createLVGL, destroyLVGL, priority, nullptr, ##__VA_ARGS__ \
         }; \
         crosspad::AppRegistry::getInstance().registerApp(entry); \
     }
 #else
-#define REGISTER_APP(appName, logicFunc, iconPath, createLVGL, destroyLVGL, initSimple, refreshFunc, cleanupFunc, priority) \
+#define REGISTER_APP(appName, logicFunc, iconPath, createLVGL, destroyLVGL, initSimple, refreshFunc, cleanupFunc, priority, ...) \
     void _register_##appName##_app() { \
         static const crosspad::AppEntry entry = { \
-            #appName, "", priority \
+            #appName, "", priority, nullptr, ##__VA_ARGS__ \
         }; \
         crosspad::AppRegistry::getInstance().registerApp(entry); \
     }
@@ -59,21 +60,22 @@
  * Parameters: same as REGISTER_APP, plus:
  *   padLogicName — const char*, name passed to PadManager::registerPadLogic(),
  *                  or nullptr if the app manages pad logic manually.
+ *   ...          — optional bool recolorIcon, as for REGISTER_APP
  */
 #ifndef REGISTER_APP_PL
 #ifdef USE_LVGL
-#define REGISTER_APP_PL(appName, logicFunc, iconPath, createLVGL, destroyLVGL, initSimple, refreshFunc, cleanupFunc, priority, padLogicName) \
+#define REGISTER_APP_PL(appName, logicFunc, iconPath, createLVGL, destroyLVGL, initSimple, refreshFunc, cleanupFunc, priority, padLogicName, ...) \
     void _register_##appName##_app() { \
         static const crosspad::AppEntry entry = { \
-            #appName, iconPath, createLVGL, destroyLVGL, priority, padLogicName \
+            #appName, iconPath, createLVGL, destroyLVGL, priority, padLogicName, ##__VA_ARGS__ \
         }; \
         crosspad::AppRegistry::getInstance().registerApp(entry); \
     }
 #else
-#define REGISTER_APP_PL(appName, logicFunc, iconPath, createLVGL, destroyLVGL, initSimple, refreshFunc, cleanupFunc, priority, padLogicName) \
+#define REGISTER_APP_PL(appName, logicFunc, iconPath, createLVGL, destroyLVGL, initSimple, refreshFunc, cleanupFunc, priority, padLogicName, ...) \
     void _register_##appName##_app() { \
         static const crosspad::AppEntry entry = { \
-            #appName, "", priority, padLogicName \
+            #appName, "", priority, padLogicName, ##__VA_ARGS__ \
         }; \
         crosspad::AppRegistry::getInstance().registerApp(entry); \
     }

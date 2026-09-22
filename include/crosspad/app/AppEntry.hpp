@@ -50,6 +50,10 @@ struct AppEntry {
     /// and restored on destroy (see AppBase hooks).
     /// nullptr = app manages pad logic manually.
     const char* padLogic = nullptr;
+
+    /// Launcher tints the icon one flat colour. For monochrome glyphs
+    /// (black on transparent); coloured icons stay raw.
+    bool recolorIcon = false;
 };
 
 } // namespace crosspad
