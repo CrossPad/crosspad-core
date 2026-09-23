@@ -58,6 +58,8 @@ public:
 
     // ── Transport ─────────────────────────────────────────────────────────
     void start() { resetPosition(); running_.store(true, std::memory_order_release); }
+    /// MIDI Continue: run on from where the click stopped.
+    void resume() { running_.store(true, std::memory_order_release); }
     void stop()  { running_.store(false, std::memory_order_release); }
     bool running() const { return running_.load(std::memory_order_acquire); }
 
@@ -147,3 +149,7 @@ private:
 };
 
 } // namespace crosspad
+
+/// The platform's one metronome (CrosspadPlatform.cpp on ESP-IDF), declared at
+/// global scope where it is defined.
+crosspad::MetronomeNode& getMetronome();
