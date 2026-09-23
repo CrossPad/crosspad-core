@@ -38,39 +38,44 @@ void MidiClock::markSourceHost(int64_t nowUs)
     }
 }
 
+void MidiClock::resetWindow()
+{
+    count_ = 0;
+    head_  = 0;
+    sumT_  = 0;
+    sumIT_ = 0;
+}
+
 void MidiClock::hostTick(int64_t nowUs)
 {
     ++ticksIn_;
     if (count_ > 0) {
-        const int64_t gap = nowUs - lastHostUs_;
+        const int64_t gap = nowUs - lastTickUs_;
         lastGapUs_ = (int32_t)gap;
-        if (gap <= 0 || gap > kRestartGapUs) {
-            count_ = 0;
-            head_  = 0;
-        }
+        if (gap <= 0 || gap > kRestartGapUs) resetWindow();
+    }
+    if (count_ < kWindow) {
+        sumT_  += nowUs;
+        sumIT_ += int64_t(count_) * nowUs;
+        ++count_;
+    } else {
+        /* Slide: the oldest leaves, every other tick moves down one place. */
+        const int64_t oldest = ticks_[head_];
+        const int64_t rest   = sumT_ - oldest;
+        sumIT_ = sumIT_ - rest + int64_t(kWindow - 1) * nowUs;
+        sumT_  = rest + nowUs;
     }
     ticks_[head_] = nowUs;
     head_ = (head_ + 1) % kWindow;
-    if (count_ < kWindow) ++count_;
+    lastTickUs_ = nowUs;
+    tickSinceStart_ = true;
     markSourceHost(nowUs);
 
     if (count_ < kMinEstimate) return;
-    /* Least-squares slope of tick time against tick index: the interval that
-     * best explains the whole window, not just its two ends. Times are taken
-     * relative to the oldest tick so the doubles keep their precision. */
-    const uint32_t oldest = (head_ + kWindow - count_) % kWindow;
-    const double n = double(count_);
-    const double meanIdx = (n - 1.0) / 2.0;
-    double meanT = 0.0;
-    for (uint32_t i = 0; i < count_; ++i) meanT += double(ticks_[(oldest + i) % kWindow] - ticks_[oldest]);
-    meanT /= n;
-    double sxy = 0.0, sxx = 0.0;
-    for (uint32_t i = 0; i < count_; ++i) {
-        const double dx = double(i) - meanIdx;
-        sxy += dx * (double(ticks_[(oldest + i) % kWindow] - ticks_[oldest]) - meanT);
-        sxx += dx * dx;
-    }
-    const double interval = sxy / sxx;
+    const int64_t n    = count_;
+    const int64_t si   = n * (n - 1) / 2;
+    const int64_t sii  = (n - 1) * n * (2 * n - 1) / 6;
+    const double  interval = double(n * sumIT_ - si * sumT_) / double(n * sii - si * si);
     if (count_ == kWindow) {
         const int32_t dev = (int32_t)std::llabs((long long)lastGapUs_ - std::llround(interval));
         if (dev > maxJitterUs_) maxJitterUs_ = dev;
@@ -82,12 +87,15 @@ void MidiClock::hostTick(int64_t nowUs)
 void MidiClock::hostStart(int64_t nowUs)
 {
     running_ = true;
+    tickSinceStart_ = false;
+    resetWindow();              // a new take: its tempo owes nothing to the last
     markSourceHost(nowUs);
 }
 
 void MidiClock::hostContinue(int64_t nowUs)
 {
     running_ = true;
+    tickSinceStart_ = false;
     markSourceHost(nowUs);
 }
 
@@ -99,10 +107,10 @@ void MidiClock::hostStop(int64_t nowUs)
 
 bool MidiClock::poll(int64_t nowUs)
 {
-    if (source_ != Source::Host || nowUs - lastHostUs_ <= kHostTimeoutUs) return false;
+    const int64_t timeout = (running_ && !tickSinceStart_) ? kCountInTimeoutUs : kHostTimeoutUs;
+    if (source_ != Source::Host || nowUs - lastHostUs_ <= timeout) return false;
     source_  = Source::Internal;
-    count_   = 0;
-    head_    = 0;
+    resetWindow();
     pending_ = true;
     restartGenerator(nowUs);
     return true;
@@ -129,13 +137,28 @@ void MidiClock::internalTickSent(int64_t nowUs)
 {
     const int64_t late = nowUs - nextTickDue();
     ++ticksOut_;
+    if (late > maxLateUs_) maxLateUs_ = (int32_t)late;
     if (late > (int64_t)periodUs()) {   // stalled: restart, never burst
+        ++restarts_;
         restartGenerator(nowUs);
         genN_ = 1;
         return;
     }
-    if (late > maxLateUs_) maxLateUs_ = (int32_t)late;
     ++genN_;
+}
+
+void MidiClock::internalStart(int64_t nowUs)
+{
+    if (source_ == Source::Host) return;
+    running_ = true;
+    restartGenerator(nowUs);
+}
+
+void MidiClock::internalStop(int64_t nowUs)
+{
+    (void)nowUs;
+    if (source_ == Source::Host) return;
+    running_ = false;
 }
 
 bool MidiClock::takeTempoChange(float& bpm, Source& source)

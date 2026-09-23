@@ -15,6 +15,9 @@ public:
 
     static constexpr uint32_t kPpqn            = 24;
     static constexpr int64_t  kHostTimeoutUs   = 1000000;
+    /// After a Start, how long the host may stay silent before its first tick
+    /// (a count-in) without losing the clock.
+    static constexpr int64_t  kCountInTimeoutUs = 8000000;
     /// A longer gap between two host ticks means the host stopped and played
     /// again: the tempo window starts over instead of averaging across it.
     static constexpr int64_t  kRestartGapUs    = 250000;
@@ -38,6 +41,10 @@ public:
     int64_t nextTickDue() const;
     void    internalTickSent(int64_t nowUs);
     void    tickForwarded() { ++ticksOut_; }
+    /// The device's own click started / stopped (internal source only):
+    /// tick 0 is due at `nowUs`, so the first F8 lands on the click's beat.
+    void    internalStart(int64_t nowUs);
+    void    internalStop(int64_t nowUs);
 
     Source source() const  { return source_; }
     float  bpm() const     { return bpm_; }
@@ -51,6 +58,8 @@ public:
     int32_t  lastGapUs() const   { return lastGapUs_; }
     int32_t  maxJitterUs() const { return maxJitterUs_; }
     int32_t  maxLateUs() const   { return maxLateUs_; }
+    /// Times the generator stalled for more than a period and restarted.
+    uint32_t restarts() const    { return restarts_; }
     void     resetStats();
 
 private:
@@ -66,10 +75,18 @@ private:
     /// Ticks needed before the first estimate: half a beat, refined as it fills.
     static constexpr uint32_t kMinEstimate = kPpqn / 2 + 1;
 
+    void resetWindow();
+
     int64_t  ticks_[kWindow] = {};
     uint32_t count_ = 0;
     uint32_t head_  = 0;
-    int64_t  lastHostUs_ = 0;
+    /* Running sums for the least-squares fit, O(1) per tick and exact in
+     * integers: sum of t, and of i*t with i the tick's place in the window. */
+    int64_t  sumT_  = 0;
+    int64_t  sumIT_ = 0;
+    int64_t  lastHostUs_ = 0;    // any host byte: keeps the host the source
+    int64_t  lastTickUs_ = 0;    // host ticks only: the restart gap and jitter
+    bool     tickSinceStart_ = false;
 
     Source source_  = Source::Internal;
     float  bpm_;
@@ -87,6 +104,7 @@ private:
     int32_t  lastGapUs_ = 0;
     int32_t  maxJitterUs_ = 0;
     int32_t  maxLateUs_ = 0;
+    uint32_t restarts_ = 0;
 };
 
 } // namespace crosspad

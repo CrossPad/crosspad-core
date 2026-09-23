@@ -135,3 +135,58 @@ TEST_CASE("BPM is clamped to 20..300", "[midiclock]") {
     c.setBpm(std::nanf(""), 0);
     REQUIRE(c.bpm() == MidiClock::kMinBpm);
 }
+
+TEST_CASE("stop, pause, start at a new tempo drops the old window", "[midiclock]") {
+    MidiClock c(100.0f, 0);
+    const int64_t last = feed(c, 120.0, 1000, 97, false);
+    c.hostStop(last + 10000);
+    c.hostStart(last + 500000);                        // FA refreshes the host, not the tick gap
+    feed(c, 90.0, last + 510000, 25, false);
+    REQUIRE_THAT(c.bpm(), WithinRel(90.0f, 0.001f));
+}
+
+TEST_CASE("a count-in longer than 1 s keeps the host source", "[midiclock]") {
+    MidiClock c(100.0f, 0);
+    const int64_t last = feed(c, 120.0, 1000, 97, false);
+    c.hostStop(last + 10000);
+    c.hostStart(last + 20000);
+    REQUIRE_FALSE(c.poll(last + 20000 + 3000000));     // 3 s after FA, no tick yet
+    REQUIRE(c.source() == MidiClock::Source::Host);
+    REQUIRE(c.poll(last + 20000 + MidiClock::kCountInTimeoutUs + 1));
+}
+
+TEST_CASE("a stall shows in maxLateUs and the restart counter", "[midiclock]") {
+    MidiClock c(120.0f, 0);
+    const int64_t due = c.nextTickDue();
+    const int64_t late = 3 * (int64_t)periodUs(120.0);
+    c.internalTickSent(due + late);
+    REQUIRE(c.maxLateUs() == late);
+    REQUIRE(c.restarts() == 1);
+}
+
+TEST_CASE("the device's own start puts tick 0 on the click", "[midiclock]") {
+    MidiClock c(120.0f, 0);
+    c.internalTickSent(c.nextTickDue());
+    c.internalStart(123456);
+    REQUIRE(c.running());
+    REQUIRE(c.nextTickDue() == 123456);
+    c.internalStop(200000);
+    REQUIRE_FALSE(c.running());
+}
+
+TEST_CASE("the device's own start is ignored while the host drives", "[midiclock]") {
+    MidiClock c(120.0f, 0);
+    feed(c, 120.0, 1000, 97, false);
+    const int64_t due = c.nextTickDue();
+    c.internalStart(5000000);
+    REQUIRE(c.nextTickDue() == due);
+}
+
+TEST_CASE("the integer fit keeps its precision after days of uptime", "[midiclock]") {
+    const int64_t days = 3ll * 86400ll * 1000000ll;    // esp_timer time is absolute
+    for (double bpm : {90.0, 174.0}) {
+        MidiClock c(100.0f, days);
+        feed(c, bpm, days, 97, true, 4242u);
+        REQUIRE_THAT(c.bpm(), WithinRel((float)bpm, 0.001f));
+    }
+}

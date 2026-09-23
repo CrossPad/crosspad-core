@@ -57,10 +57,24 @@ public:
     void setLevel(float v) { level_.store(v < 0.0f ? 0.0f : (v > 1.0f ? 1.0f : v), std::memory_order_relaxed); }
 
     // ── Transport ─────────────────────────────────────────────────────────
-    void start() { resetPosition(); running_.store(true, std::memory_order_release); }
+    void start() {
+        resetPosition();
+        running_.store(true, std::memory_order_release);
+        if (auto h = hook_.load(std::memory_order_acquire)) h(true, hookCtx_);
+    }
+    /// Told on start() and stop() (not resume()), from the caller's task: the
+    /// MIDI clock sends Start/Stop at the moment the click itself moves.
+    using TransportHook = void (*)(bool running, void * ctx);
+    void setTransportHook(TransportHook fn, void * ctx) {
+        hookCtx_ = ctx;
+        hook_.store(fn, std::memory_order_release);
+    }
     /// MIDI Continue: run on from where the click stopped.
     void resume() { running_.store(true, std::memory_order_release); }
-    void stop()  { running_.store(false, std::memory_order_release); }
+    void stop() {
+        running_.store(false, std::memory_order_release);
+        if (auto h = hook_.load(std::memory_order_acquire)) h(false, hookCtx_);
+    }
     bool running() const { return running_.load(std::memory_order_acquire); }
 
     void resetPosition() {
@@ -146,6 +160,8 @@ private:
     std::atomic<bool>     audible_{true};
     std::atomic<bool>     running_{false};
     std::atomic<uint32_t> posSamples_{0};
+    std::atomic<TransportHook> hook_{nullptr};
+    void * hookCtx_ = nullptr;
 };
 
 } // namespace crosspad
