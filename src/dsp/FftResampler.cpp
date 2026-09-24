@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: MIT
 #include "crosspad/dsp/FftResampler.hpp"
+#include "crosspad/dsp/DspMath.hpp"
 
 #include <cmath>
 #include <cstring>
@@ -90,7 +91,7 @@ bool FftResamplerStream::begin(IFft& fft, uint32_t inRate, uint32_t outRate,
     inBuf_ = acc_ + accLen_;
 
     for (uint32_t i = 0; i < block_; ++i) {
-        win_[i] = 0.5f - 0.5f * std::cos(2.0f * static_cast<float>(M_PI)
+        win_[i] = 0.5f - 0.5f * std::cos(2.0f * static_cast<float>(kPi)
                                        * static_cast<float>(i) / static_cast<float>(block_));
     }
     std::memset(acc_, 0, accLen_ * sizeof(float));

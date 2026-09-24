@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: MIT
 #include "crosspad/instrument/PitchedInstrument.hpp"
+#include "crosspad/dsp/DspMath.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -287,7 +288,7 @@ void PitchedInstrument::noteOn(uint8_t midiNote, uint8_t velocity, uint8_t pad) 
     // left, +100 hard right and centre is -3 dB on both.
     const float theta = static_cast<float>(pan + kPadPanMax)
                       / static_cast<float>(2 * kPadPanMax)
-                      * (static_cast<float>(M_PI) * 0.5f);
+                      * (static_cast<float>(kPi) * 0.5f);
     v.gainL = std::cos(theta);
     v.gainR = std::sin(theta);
 
