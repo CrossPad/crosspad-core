@@ -12,13 +12,18 @@
 
 namespace crosspad {
 
+#if defined(__GNUC__)
+#define CP_PRINTF_FORMAT(fmt, args) __attribute__((format(printf, fmt, args)))
+#else
+#define CP_PRINTF_FORMAT(fmt, args)
+#endif
+
 namespace {
 
 /// One log line, formatted. 96 bytes is the budget: long enough for a zone
 /// index, a truncated sample name and three numbers, short enough to sit on
 /// the stack of a loader task that also holds the resampler's scratch.
-void logLine(const PitchedLoadEnv& env, const char* fmt, ...)
-    __attribute__((format(printf, 2, 3)));
+void logLine(const PitchedLoadEnv& env, const char* fmt, ...) CP_PRINTF_FORMAT(2, 3);
 void logLine(const PitchedLoadEnv& env, const char* fmt, ...) {
     if (!env.log) return;
     char line[96];
@@ -29,7 +34,7 @@ void logLine(const PitchedLoadEnv& env, const char* fmt, ...) {
     env.log(line);
 }
 
-void fail(char* err, size_t errLen, const char* fmt, ...) __attribute__((format(printf, 3, 4)));
+void fail(char* err, size_t errLen, const char* fmt, ...) CP_PRINTF_FORMAT(3, 4);
 void fail(char* err, size_t errLen, const char* fmt, ...) {
     if (!err || errLen == 0) return;
     va_list ap;

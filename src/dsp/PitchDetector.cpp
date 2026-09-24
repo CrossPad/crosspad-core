@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: MIT
 #include "crosspad/dsp/PitchDetector.hpp"
+#include "crosspad/dsp/DspMath.hpp"
 
 #include <cmath>
 #include <vector>
@@ -40,7 +41,7 @@ constexpr uint32_t kPeakSnapBins = 2;
 /// carries a ~0.02 bin bias for a Hann window, which is 3 cents at 100 Hz —
 /// too close to the 5 cent budget to rely on.
 double dtftMag(const std::vector<float>& frame, double bin) {
-    const double w = -2.0 * M_PI * bin / static_cast<double>(kN);
+    const double w = -2.0 * kPi * bin / static_cast<double>(kN);
     const double cs = std::cos(w), sn = std::sin(w);
     double pr = 1.0, pi = 0.0;   // rotating phasor, exp(w*i*n)
     double sr = 0.0, si = 0.0;
@@ -97,7 +98,7 @@ bool detectPitch(IFft& fft, const int16_t* pcm, uint32_t count, uint32_t sampleR
     const uint32_t take = (avail < kN) ? avail : kN;
     double energy = 0.0;
     for (uint32_t i = 0; i < take; ++i) {
-        const float w = 0.5f - 0.5f * std::cos(2.0f * static_cast<float>(M_PI)
+        const float w = 0.5f - 0.5f * std::cos(2.0f * static_cast<float>(kPi)
                                              * static_cast<float>(i) / static_cast<float>(kN));
         frame[i] = pcm[best + i] * w;
         energy += static_cast<double>(pcm[best + i]) * pcm[best + i];

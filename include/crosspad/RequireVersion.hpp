@@ -30,9 +30,17 @@
 #if CROSSPAD_REQ_HAVE_MAJOR != CROSSPAD_REQ_WANT_MAJOR
 #error "crosspad dependency MAJOR version mismatch: the submodule you have is incompatible with what this code was written for (see the file that included crosspad/RequireVersion.hpp, then update the submodule or the CROSSPAD_REQ_WANT_* it declares)"
 #elif CROSSPAD_REQ_HAVE_MINOR != CROSSPAD_REQ_WANT_MINOR
-#warning "crosspad dependency MINOR version differs from what this code was written for (see the file that included crosspad/RequireVersion.hpp) — probably fine, but you are not on a tested pairing"
+#  if defined(_MSC_VER) && !defined(__clang__)   /* MSVC has no #warning */
+#    pragma message("crosspad dependency MINOR version differs from what this code was written for (see the file that included crosspad/RequireVersion.hpp) — probably fine, but you are not on a tested pairing")
+#  else
+#    warning "crosspad dependency MINOR version differs from what this code was written for (see the file that included crosspad/RequireVersion.hpp) — probably fine, but you are not on a tested pairing"
+#  endif
 #elif CROSSPAD_REQ_HAVE_PATCH != CROSSPAD_REQ_WANT_PATCH
-#warning "crosspad dependency PATCH version differs from what this code was written for (see the file that included crosspad/RequireVersion.hpp)"
+#  if defined(_MSC_VER) && !defined(__clang__)   /* MSVC has no #warning */
+#    pragma message("crosspad dependency PATCH version differs from what this code was written for (see the file that included crosspad/RequireVersion.hpp)")
+#  else
+#    warning "crosspad dependency PATCH version differs from what this code was written for (see the file that included crosspad/RequireVersion.hpp)"
+#  endif
 #endif
 
 #undef CROSSPAD_REQ_HAVE_MAJOR

@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: MIT
 #include "crosspad/dsp/PortableFft.hpp"
+#include "crosspad/dsp/DspMath.hpp"
 
 #include <cmath>
 
@@ -52,7 +53,7 @@ const float* PortableFft::twiddles(uint32_t n) {
     std::vector<float>& t = tables_[slot];
     if (t.empty()) {
         t.resize(n);  // n/2 complex entries
-        const double step = -2.0 * M_PI / static_cast<double>(n);
+        const double step = -2.0 * kPi / static_cast<double>(n);
         for (uint32_t k = 0; k < n / 2; ++k) {
             t[2 * k]     = static_cast<float>(std::cos(step * k));
             t[2 * k + 1] = static_cast<float>(std::sin(step * k));
