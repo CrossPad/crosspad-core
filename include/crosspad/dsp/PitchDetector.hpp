@@ -24,6 +24,10 @@ struct PitchResult {
 /// Analysis window, in samples. Inputs shorter than this are zero-padded.
 inline constexpr uint32_t kPitchWindow = 4096;
 
+/// Floats of working memory detectPitch() uses: the windowed frame, the
+/// interleaved complex spectrum and its magnitudes.
+inline constexpr uint32_t kPitchScratchFloats = kPitchWindow + 2 * kPitchWindow + kPitchWindow / 2 + 1;
+
 /**
  * @brief Estimate the fundamental of a monophonic 16-bit PCM buffer.
  *
@@ -33,9 +37,11 @@ inline constexpr uint32_t kPitchWindow = 4096;
  * fundamentals with a weighted harmonic product spectrum (kHarmonics terms) and
  * interpolates the peak.
  *
+ * @param scratch kPitchScratchFloats floats of working memory, or nullptr to
+ *        take them from the heap (~56 kB) for the duration of the call.
  * @return false for a null/empty buffer, a zero sample rate, or silence.
  */
 bool detectPitch(IFft& fft, const int16_t* pcm, uint32_t count, uint32_t sampleRate,
-                 PitchResult& out);
+                 PitchResult& out, float* scratch = nullptr);
 
 } // namespace crosspad

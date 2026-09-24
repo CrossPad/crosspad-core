@@ -236,8 +236,21 @@ bool pitchedBuildBank(const KitInfo& kit, const PitchedLoadEnv& env, IFft& fft,
             logLine(env, "zone %u '%s': root %.2f (from kit.json)", (unsigned)i,
                     spec.sample.c_str(), (double)z.rootMidi);
         } else {
+            // The working memory comes from the caller's allocator, like the
+            // zones: on a device the general heap is what the UI lives on.
+            float* scratch = nullptr;
+            if (env.alloc) {
+                scratch = static_cast<float*>(env.alloc(sizeof(float) * kPitchScratchFloats));
+                if (!scratch) {
+                    fail(err, errLen, "zone %u: no memory for pitch detection", (unsigned)i);
+                    delete bank;
+                    return false;
+                }
+            }
             PitchResult pr;
-            if (!detectPitch(fft, pcm, frames, env.engineRate, pr)) {
+            const bool detected = detectPitch(fft, pcm, frames, env.engineRate, pr, scratch);
+            if (scratch && env.free) env.free(scratch);
+            if (!detected) {
                 fail(err, errLen, "zone %u: pitch detection failed", (unsigned)i);
                 delete bank;
                 return false;

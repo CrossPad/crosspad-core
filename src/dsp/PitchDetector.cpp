@@ -2,6 +2,7 @@
 #include "crosspad/dsp/PitchDetector.hpp"
 #include "crosspad/dsp/DspMath.hpp"
 
+#include <algorithm>
 #include <cmath>
 #include <vector>
 
@@ -40,7 +41,7 @@ constexpr uint32_t kPeakSnapBins = 2;
 /// Used to refine the FFT-grid peak: the parabolic fit on the coarse grid
 /// carries a ~0.02 bin bias for a Hann window, which is 3 cents at 100 Hz —
 /// too close to the 5 cent budget to rely on.
-double dtftMag(const std::vector<float>& frame, double bin) {
+double dtftMag(const float* frame, double bin) {
     const double w = -2.0 * kPi * bin / static_cast<double>(kN);
     const double cs = std::cos(w), sn = std::sin(w);
     double pr = 1.0, pi = 0.0;   // rotating phasor, exp(w*i*n)
@@ -69,9 +70,20 @@ double parabolicOffset(double lm, double l0, double lp, double h) {
 } // namespace
 
 bool detectPitch(IFft& fft, const int16_t* pcm, uint32_t count, uint32_t sampleRate,
-                 PitchResult& out) {
+                 PitchResult& out, float* scratch) {
     out = PitchResult{};
     if (!pcm || count == 0 || sampleRate == 0) return false;
+
+    std::vector<float> owned;
+    if (!scratch) {
+        owned.resize(kPitchScratchFloats);
+        scratch = owned.data();
+    }
+    const uint32_t half = kN / 2;
+    float* frame = scratch;
+    float* buf = frame + kN;
+    float* mag = buf + 2 * kN;
+    std::fill(scratch, scratch + kPitchScratchFloats, 0.0f);
 
     // ── pick the loudest window, skipping the attack ──
     const uint32_t skip = sampleRate * kAttackSkipMs / 1000u;
@@ -93,7 +105,6 @@ bool detectPitch(IFft& fft, const int16_t* pcm, uint32_t count, uint32_t sampleR
     }
 
     // ── Hann-windowed frame, zero-padded when the input is short ──
-    std::vector<float> frame(kN, 0.0f);
     const uint32_t avail = (count > best) ? (count - best) : 0;
     const uint32_t take = (avail < kN) ? avail : kN;
     double energy = 0.0;
@@ -105,12 +116,9 @@ bool detectPitch(IFft& fft, const int16_t* pcm, uint32_t count, uint32_t sampleR
     }
     if (energy <= 0.0) return false;
 
-    std::vector<float> buf(2 * kN, 0.0f);
     for (uint32_t i = 0; i < kN; ++i) buf[2 * i] = frame[i];
-    if (!fft.forward(buf.data(), kN)) return false;
+    if (!fft.forward(buf, kN)) return false;
 
-    const uint32_t half = kN / 2;
-    std::vector<float> mag(half + 1, 0.0f);
     float maxMag = 0.0f;
     double magSum = 0.0;
     for (uint32_t k = 0; k <= half; ++k) {
