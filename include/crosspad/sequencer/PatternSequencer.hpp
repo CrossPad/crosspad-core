@@ -114,6 +114,10 @@ public:
     void selectScene(uint8_t seq) override { select(seq); }
 
     void playback() override;
+    /// Play from @p pos samples into the loop, stopping first if running:
+    /// the scene follows another timeline (the audio song) instead of
+    /// starting at its own bar one.
+    void playbackAt(uint32_t pos);
     void record() override;
     void overdub() override;
     void stop() override;
@@ -167,6 +171,25 @@ public:
     /// Held erase: set from the UI, read where hits are drained.
     void setErasing(bool on) override { erasing_.store(on, std::memory_order_relaxed); }
     bool erasing() const override { return erasing_.load(std::memory_order_relaxed); }
+
+    // ── Song ──────────────────────────────────────────────────────────────
+    // Edited under editMutex_ like the scenes; each block is one atomic word
+    // and the length another, so the UI reads them without the lock.
+    static constexpr uint8_t kSongMax        = 32;
+    static constexpr uint8_t kSongMaxRepeats = 16;
+
+    uint8_t songLength() const override { return songLen_.load(std::memory_order_acquire); }
+    bool    songBlock(uint8_t i, uint8_t& scene, uint8_t& repeats) const override;
+    bool    songInsert(uint8_t i, uint8_t scene, uint8_t repeats) override;
+    bool    songRemove(uint8_t i) override;
+    bool    songSet(uint8_t i, uint8_t scene, uint8_t repeats) override;
+    void    setSongMode(bool on) override;
+    bool    songMode() const override { return songMode_.load(std::memory_order_relaxed); }
+    void    setSongLoop(bool on) override { songLoop_.store(on); markDirty(); }
+    bool    songLoop() const override { return songLoop_.load(); }
+    uint8_t songPosition() const override { return songPos_.load(std::memory_order_relaxed); }
+    uint8_t songPass() const override { return songPass_.load(std::memory_order_relaxed); }
+    void    songLocate(uint8_t i) override;
 
     /// One recorded event, for storage, tests and any UI that draws the pattern.
     bool eventAt(uint8_t seq, uint16_t i, uint32_t& pos, uint8_t& pad, uint8_t& vel) const {
@@ -229,9 +252,18 @@ private:
     void     erasePad(uint8_t seq, uint8_t pad);
     /// setSceneBars() without taking the lock, for callers that hold it.
     void     applySceneBars(uint8_t seq, uint8_t bars);
+    /// At a loop end in song mode: count the pass, move to the next block
+    /// when this one is done, and hand its scene the loop. False when the
+    /// song ran out and stopped the transport.
+    bool     songAdvance();
+    static uint16_t packBlock(uint8_t scene, uint8_t repeats) {
+        return (uint16_t)((scene << 8) | repeats);
+    }
     /// Make a queued scene the one that sounds, and hand its length to the
-    /// click. Only ever called at a loop end, or while stopped.
-    void     applyScene(uint8_t seq);
+    /// click. Only ever called at a loop end, or while stopped. @p remember
+    /// false for a change the song made: the file records the scene a player
+    /// left, not every block a song passed through.
+    void     applyScene(uint8_t seq, bool remember = true);
     /// One place that moves the transport, so the controller can never
     /// disagree with the engine about what is running.
     void     setTransport(SequencerMode m, SequencerState st);
@@ -264,6 +296,15 @@ private:
     std::atomic<bool> dirty_{false};
     std::atomic<bool> erasing_{false};
     mutable std::recursive_mutex editMutex_;
+
+    std::atomic<uint16_t> song_[kSongMax] = {};
+    std::atomic<uint8_t>  songLen_{0};
+    std::atomic<bool>     songMode_{false};
+    std::atomic<bool>     songLoop_{true};
+    std::atomic<uint8_t>  songPos_{0};
+    std::atomic<uint8_t>  songPass_{0};
+    /// A block asked for while running, taken at the next loop end; -1 none.
+    std::atomic<int16_t>  songJump_{-1};
 
     SequencerController* controller_ = nullptr;
     uint32_t lastPos_ = 0;

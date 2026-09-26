@@ -14,6 +14,10 @@ namespace crosspad {
 /// time a take is closed. Keeping them apart means a failed sequence write can
 /// never cost somebody their kit.
 ///
+/// The song arrangement travels in the same file, under "song": its loop
+/// switch and its blocks as [scene, repeats] pairs. A file without it is an
+/// empty arrangement; an older firmware reading a newer file ignores it.
+///
 /// Positions are stored in ticks (`PatternSequencer::kPpq` per quarter), never
 /// in samples -- a pattern has to survive being loaded at another tempo or on a
 /// board running a different sample rate, and a sample offset does not. The

@@ -80,6 +80,34 @@ public:
     /// 0..1 through the loop that is sounding, for a playhead.
     virtual float    progress() const { return 0.0f; }
 
+    // --- Song (optional; an engine without one reports an empty song) ---
+    // An arrangement: blocks of {scene, repeats} played in order, each scene
+    // looped as many times as its block says before the next one takes over
+    // at the loop end. Only while song mode is on; stop() turns it off, so a
+    // plain Play plays the scene as it always did.
+    virtual uint8_t  songLength() const { return 0; }
+    virtual bool     songBlock(uint8_t i, uint8_t& scene, uint8_t& repeats) const {
+        (void)i; (void)scene; (void)repeats; return false;
+    }
+    /// Insert before @p i (i == songLength() appends).
+    virtual bool     songInsert(uint8_t i, uint8_t scene, uint8_t repeats) {
+        (void)i; (void)scene; (void)repeats; return false;
+    }
+    virtual bool     songRemove(uint8_t i) { (void)i; return false; }
+    virtual bool     songSet(uint8_t i, uint8_t scene, uint8_t repeats) {
+        (void)i; (void)scene; (void)repeats; return false;
+    }
+    /// Turning it on while stopped goes to the first block.
+    virtual void     setSongMode(bool on) { (void)on; }
+    virtual bool     songMode() const { return false; }
+    virtual void     setSongLoop(bool on) { (void)on; }
+    virtual bool     songLoop() const { return true; }
+    /// Where the song is: the block and the pass through it (0-based).
+    virtual uint8_t  songPosition() const { return 0; }
+    virtual uint8_t  songPass() const { return 0; }
+    /// Start from block @p i: at once when stopped, at the loop end when not.
+    virtual void     songLocate(uint8_t i) { (void)i; }
+
     // --- Click / Metronome ---
     virtual void setClickAudible(bool audible) = 0;
     virtual void setClickBpm(float bpm) = 0;

@@ -190,6 +190,26 @@ public:
     bool    getCountIn() const     { return engine_ && engine_->countIn(); }
     uint8_t getCountInLeft() const { return engine_ ? engine_->countInLeft() : 0; }
 
+    // ---------- song ----------
+    uint8_t getSongLength() const  { return engine_ ? engine_->songLength() : 0; }
+    bool    getSongBlock(uint8_t i, uint8_t& scene, uint8_t& repeats) const {
+        return engine_ ? engine_->songBlock(i, scene, repeats) : false;
+    }
+    bool    songInsert(uint8_t i, uint8_t scene, uint8_t repeats) {
+        return engine_ ? engine_->songInsert(i, scene, repeats) : false;
+    }
+    bool    songRemove(uint8_t i)  { return engine_ ? engine_->songRemove(i) : false; }
+    bool    songSet(uint8_t i, uint8_t scene, uint8_t repeats) {
+        return engine_ ? engine_->songSet(i, scene, repeats) : false;
+    }
+    void    setSongMode(bool on)   { if (engine_) engine_->setSongMode(on); }
+    bool    getSongMode() const    { return engine_ ? engine_->songMode() : false; }
+    void    setSongLoop(bool on)   { if (engine_) engine_->setSongLoop(on); }
+    bool    getSongLoop() const    { return engine_ ? engine_->songLoop() : true; }
+    uint8_t getSongPosition() const { return engine_ ? engine_->songPosition() : 0; }
+    uint8_t getSongPass() const    { return engine_ ? engine_->songPass() : 0; }
+    void    songLocate(uint8_t i)  { if (engine_) engine_->songLocate(i); }
+
     /// Beat within the bar, 0-based. What a metronome display counts.
     int getClickPos() const { return engine_ ? engine_->getClickPos() : 0; }
 

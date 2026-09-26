@@ -251,3 +251,129 @@ TEST_CASE("sequencer: playback never counts in", "[seq][countin]") {
     r.seq.playback();
     REQUIRE(r.seq.state() == SequencerState::Running);
 }
+
+// ── Song ───────────────────────────────────────────────────────────────────
+
+#include "crosspad/sequencer/SequenceStore.hpp"
+#include <cstdio>
+
+namespace {
+/// Two one-bar scenes; the song [0 x2, 1 x1].
+void twoSceneSong(Rig& r)
+{
+    r.seq.setSceneBars(0, 1);
+    REQUIRE(r.seq.addScene());
+    r.seq.setSceneBars(1, 1);
+    r.seq.select(0);
+    REQUIRE(r.seq.songInsert(0, 0, 2));
+    REQUIRE(r.seq.songInsert(1, 1, 1));
+}
+}
+
+TEST_CASE("sequencer: song blocks are edited in place", "[seq][song]") {
+    Rig r;
+    twoSceneSong(r);
+    uint8_t scene = 9, reps = 9;
+    REQUIRE(r.seq.songLength() == 2);
+    REQUIRE(r.seq.songBlock(1, scene, reps));
+    REQUIRE(scene == 1);
+    REQUIRE(reps == 1);
+    REQUIRE(r.seq.songSet(1, 0, 200));
+    REQUIRE(r.seq.songBlock(1, scene, reps));
+    REQUIRE(reps == PatternSequencer::kSongMaxRepeats);
+    REQUIRE_FALSE(r.seq.songInsert(5, 0, 1));     // past the end
+    REQUIRE_FALSE(r.seq.songInsert(0, 7, 1));     // no such scene
+    REQUIRE(r.seq.songRemove(0));
+    REQUIRE(r.seq.songLength() == 1);
+}
+
+TEST_CASE("sequencer: a song plays its blocks in order and loops", "[seq][song]") {
+    Rig r;
+    twoSceneSong(r);
+    r.seq.setSongMode(true);
+    r.seq.playback();
+    const uint32_t bar = r.loop(1);
+    std::vector<uint8_t> scenes;
+    for (int i = 0; i < 4; ++i) {
+        scenes.push_back(r.seq.activeScene());
+        r.run(bar);
+    }
+    REQUIRE(scenes == std::vector<uint8_t>{0, 0, 1, 0});
+}
+
+TEST_CASE("sequencer: a song without loop stops after its last block", "[seq][song]") {
+    Rig r;
+    twoSceneSong(r);
+    r.seq.setSongLoop(false);
+    r.seq.setSongMode(true);
+    r.seq.playback();
+    r.run(r.loop(1) * 3 + kBlock);
+    REQUIRE(r.seq.state() == SequencerState::Idle);
+}
+
+TEST_CASE("sequencer: song mode after a stop starts at the first block", "[seq][song]") {
+    Rig r;
+    twoSceneSong(r);
+    r.seq.setSongMode(true);
+    r.seq.playback();
+    r.run(r.loop(1) * 2 + kBlock);                // into block 1
+    REQUIRE(r.seq.activeScene() == 1);
+    r.seq.stop();
+    REQUIRE_FALSE(r.seq.songMode());
+    r.seq.setSongMode(true);
+    r.seq.playback();
+    REQUIRE(r.seq.songPosition() == 0);
+    REQUIRE(r.seq.activeScene() == 0);
+}
+
+TEST_CASE("sequencer: locating a running song waits for the bar line", "[seq][song]") {
+    Rig r;
+    twoSceneSong(r);
+    r.seq.setSongMode(true);
+    r.seq.playback();
+    r.run(kBlock);
+    r.seq.songLocate(1);
+    REQUIRE(r.seq.activeScene() == 0);
+    r.run(r.loop(1));
+    REQUIRE(r.seq.activeScene() == 1);
+    REQUIRE(r.seq.songPosition() == 1);
+}
+
+TEST_CASE("sequencer: removing a scene takes its blocks with it", "[seq][song]") {
+    Rig r;
+    twoSceneSong(r);
+    REQUIRE(r.seq.songInsert(2, 1, 3));
+    REQUIRE(r.seq.removeScene(0));
+    REQUIRE(r.seq.songLength() == 2);
+    uint8_t scene = 9, reps = 0;
+    REQUIRE(r.seq.songBlock(0, scene, reps));
+    REQUIRE(scene == 0);                          // was scene 1
+    REQUIRE(reps == 1);
+}
+
+TEST_CASE("sequencer: the arrangement travels in the sequence file", "[seq][song]") {
+    const char* path = "cp_seq_song.json";
+    Rig a;
+    twoSceneSong(a);
+    a.seq.setSongLoop(false);
+    REQUIRE(SequenceStore::save(a.seq, path));
+
+    Rig b;
+    REQUIRE(SequenceStore::load(b.seq, path));
+    std::remove(path);
+    REQUIRE(b.seq.songLength() == 2);
+    REQUIRE_FALSE(b.seq.songLoop());
+    uint8_t scene = 9, reps = 0;
+    REQUIRE(b.seq.songBlock(0, scene, reps));
+    REQUIRE(scene == 0);
+    REQUIRE(reps == 2);
+}
+
+TEST_CASE("sequencer: playbackAt starts part-way into the loop", "[seq][song]") {
+    Rig r;
+    r.seq.setSceneBars(0, 1);
+    r.seq.addEventTicks(0, 3 * kTicksPerBeat, 9, 100);   // beat four
+    r.seq.playbackAt(2 * kBeat);
+    r.run(kBeat + kBlock);
+    REQUIRE(r.fired == std::vector<uint8_t>{9});
+}
