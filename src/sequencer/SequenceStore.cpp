@@ -3,8 +3,10 @@
 
 #include <ArduinoJson.h>
 
+#include <cerrno>
 #include <cstdio>
 #include <fstream>
+#include <sys/stat.h>
 
 namespace crosspad {
 
@@ -90,8 +92,17 @@ SequenceLoad SequenceStore::open(PatternSequencer& seq, const std::string& path)
     bool any = false;
     bool found = false;
     for (const char* suffix : {"", ".tmp", ".bak"}) {
-        std::ifstream file(path + suffix);
-        if (!file.is_open()) continue;
+        const std::string p = path + suffix;
+        std::ifstream file(p);
+        if (!file.is_open()) {
+            /* Only "no such file" is absent. A file that will not open -- on
+             * the board, every FAT handle taken at boot -- is still somebody's
+             * grooves, and must not read as "no scenes". */
+            struct stat st;
+            if (::stat(p.c_str(), &st) != 0 && errno == ENOENT) continue;
+            any = true;
+            continue;
+        }
         any = true;
         doc.clear();
         const DeserializationError err = deserializeJson(doc, file);

@@ -6,6 +6,8 @@
 #include <atomic>
 #include <chrono>
 #include <thread>
+#include <sys/stat.h>
+#include <unistd.h>
 #include <vector>
 
 using namespace crosspad;
@@ -529,4 +531,20 @@ TEST_CASE("sequencer: stop and play racing the poll thread release every pad", "
     poller.join();
     r.seq.stop();
     for (uint8_t p = 0; p < 16; ++p) REQUIRE(held[p].load() == 0);
+}
+
+TEST_CASE("sequence file: a file that is there but will not open is Unreadable", "[seq][store]") {
+    // On the board that is every FAT handle taken at boot: the file is there,
+    // and reading it as "no scenes" lets the next save write over it.
+    if (geteuid() == 0) SKIP("root opens anything");
+    const std::string path = "cp_seq_locked.json";
+    removeAll(path);
+    Rig a;
+    REQUIRE(SequenceStore::save(a.seq, path));
+    REQUIRE(chmod(path.c_str(), 0) == 0);
+    Rig b;
+    const SequenceLoad got = SequenceStore::open(b.seq, path);
+    chmod(path.c_str(), 0644);
+    removeAll(path);
+    REQUIRE(got == SequenceLoad::Unreadable);
 }
