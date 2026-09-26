@@ -86,3 +86,22 @@ TEST_CASE("CrosspadSettings: out-of-range NVS values are clamped on load", "[set
     settings->masterFX.outVolume = 50;
     settings->masterFX.inVolume = 50;
 }
+
+TEST_CASE("CrosspadSettings: launcher style round-trips and defaults to the grid", "[settings]") {
+    auto* settings = CrosspadSettings::getInstance();
+
+    test::MemoryKVStore empty;
+    empty.init();
+    settings->launcherStyle = LauncherStyle::List;
+    settings->loadFrom(empty);
+    REQUIRE(settings->launcherStyle == LauncherStyle::Grid);
+
+    test::MemoryKVStore store;
+    store.init();
+    settings->launcherStyle = LauncherStyle::List;
+    settings->saveTo(store);
+    settings->launcherStyle = LauncherStyle::Grid;
+    settings->loadFrom(store);
+    REQUIRE(settings->launcherStyle == LauncherStyle::List);
+    settings->launcherStyle = LauncherStyle::Grid;
+}

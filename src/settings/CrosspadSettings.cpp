@@ -26,6 +26,9 @@ void CrosspadSettings::loadFrom(IKeyValueStore& store) {
     themeColorIndex   = store.readU8("cfg_display", "theme_clr", 0);
     perfStatsFlags    = store.readU8("cfg_display", "perf_stats", 0);
     quickSettingsEnabled = store.readBool("cfg_display", "drawer_en", true);
+    launcherStyle = (LauncherStyle)readU8In(store, "cfg_display", "launcher",
+                                            (uint8_t)LauncherStyle::Grid,
+                                            (uint8_t)LauncherStyle::Grid, (uint8_t)LauncherStyle::List);
 
     // Audio (master)
     AudioEngineEnabled       = store.readBool("cfg_audio", "engine_en", true);
@@ -176,6 +179,7 @@ void CrosspadSettings::saveTo(IKeyValueStore& store) {
     store.saveU8("cfg_display", "theme_clr", themeColorIndex);
     store.saveU8("cfg_display", "perf_stats", perfStatsFlags);
     store.saveBool("cfg_display", "drawer_en", quickSettingsEnabled);
+    store.saveU8("cfg_display", "launcher", (uint8_t)launcherStyle);
 
     // Audio (master)
     store.saveBool("cfg_audio", "engine_en", AudioEngineEnabled);

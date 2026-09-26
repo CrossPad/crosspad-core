@@ -24,6 +24,10 @@ namespace crosspad {
 
 static constexpr int CROSSPAD_MAX_PADS = 16;
 
+/// How the launcher shows the apps: the icon grid, or a list with a line
+/// about each. A setting, not a build choice -- both ship.
+enum class LauncherStyle : uint8_t { Grid, List };
+
 class CrosspadSettings {
 public:
     static CrosspadSettings* getInstance() {
@@ -55,6 +59,7 @@ public:
     uint8_t perfStatsFlags;   // bitfield: bit0=FPS, bit1=CPU, bit2=MEM
     uint8_t RGBbrightness;
     bool quickSettingsEnabled; // status-bar drawer (header dropdown + arrow) enabled
+    LauncherStyle launcherStyle;
     bool AudioEngineEnabled;
     /// Preferred USB device profile applied at boot: true = USB Audio (UAC2),
     /// false = CDC+MIDI. Switching re-enumerates the device. Audio is the
@@ -96,6 +101,7 @@ private:
         perfStatsFlags = 0;
         RGBbrightness = 100;
         quickSettingsEnabled = true;
+        launcherStyle = LauncherStyle::Grid;
         AudioEngineEnabled = true;
         usbAudioEnabled = true;    // UAC2 by default; console/OTA need the CDC profile
         usbSerialGuard = true;     // a host must be allowed on the device before it gets CDC

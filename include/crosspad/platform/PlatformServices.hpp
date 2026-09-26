@@ -42,6 +42,8 @@ class CrosspadSettings;
 class CrosspadStatus;
 class SequencerController;
 class ISequencerEngine;
+class ISongEngine;
+class IPadMix;
 class PitchedInstrument;
 class Stm32MessageHandler;
 
@@ -79,6 +81,12 @@ struct PlatformServices {
     IKitManager*      kitManager      = nullptr;
     SequencerController* sequencer   = nullptr;
     ISequencerEngine* sequencerEngine = nullptr;
+    /// The audio song: projects on the card, bouncing a scene, playing the
+    /// four tracks back. Null where the platform has none (the simulator).
+    ISongEngine*      songEngine      = nullptr;
+    /// Per-pad level and pan of whichever engine plays the pads now; the
+    /// engine that takes over the pads registers itself here.
+    IPadMix*          padMix          = nullptr;
     IBleMidi*         bleMidi         = nullptr;  // defaults to NullBleMidi
 
     /// The varispeed sample engine, when the platform runs one. Portable apps
