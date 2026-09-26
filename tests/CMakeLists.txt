@@ -89,6 +89,9 @@ set(CORE_SOURCES
 
     # Audio file writing
     ${CORE_DIR}/src/audio/WavWriter.cpp
+
+    # Audio song model
+    ${CORE_DIR}/src/song/AudioSong.cpp
 )
 
 # ── Test sources ──
