@@ -7,12 +7,13 @@
 
 namespace crosspad {
 
-/// A kit's scenes on the card, as `<kit dir>/sequences.json`.
+/// The sequencer's scenes on the card, as `sequences.json` (where it lives is
+/// the platform's call; the board keeps one for every kit).
 ///
-/// Beside `kit.json` rather than inside it on purpose: kit.json is written by
-/// tools and describes the samples, this is user data the device rewrites every
-/// time a take is closed. Keeping them apart means a failed sequence write can
-/// never cost somebody their kit.
+/// Never inside a `kit.json`: kit.json is written by tools and describes the
+/// samples, this is user data the device rewrites every time a take is closed.
+/// Keeping them apart means a failed sequence write can never cost somebody
+/// their kit.
 ///
 /// The song arrangement travels in the same file, under "song": its loop
 /// switch and its blocks as [scene, repeats] pairs. A file without it is an
@@ -21,8 +22,8 @@ namespace crosspad {
 /// Positions are stored in ticks (`PatternSequencer::kPpq` per quarter), never
 /// in samples -- a pattern has to survive being loaded at another tempo or on a
 /// board running a different sample rate, and a sample offset does not. The
-/// file also carries the bpm it was played at, so a kit without `bpm` in
-/// kit.json still comes back at the tempo it was recorded.
+/// file also carries the bpm it was played at, so the scenes come back at the
+/// tempo they were recorded.
 ///
 /// Portable: std::fstream and ArduinoJson, the same pair PortableKitLoader
 /// uses, so the PC simulator reads and writes the same files.
@@ -32,7 +33,7 @@ public:
     /// would otherwise misread an older file.
     static constexpr int kVersion = 1;
 
-    /// The conventional name, next to kit.json.
+    /// The conventional name.
     static const char* fileName() { return "sequences.json"; }
 
     /// Writes every scene that has events. Returns false if the file could not
