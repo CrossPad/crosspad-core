@@ -55,6 +55,24 @@ public:
     /// Drop a scene and close the gap. The last one never goes.
     virtual bool     removeScene(uint8_t seq) { (void)seq; return false; }
     virtual uint16_t sceneEventCount(uint8_t seq) const { (void)seq; return 0; }
+    // Editing and drawing a scene. An engine that cannot answers false / 0
+    // (the Arduino ML_MidiSeq one), and a UI hides what it gets false for.
+    /// Event @p i of a scene for drawing: where it sits as 0..1 of the scene's
+    /// loop, which pad, how hard.
+    virtual bool     sceneEvent(uint8_t seq, uint16_t i, float& at, uint8_t& pad, uint8_t& vel) const {
+        (void)seq; (void)i; (void)at; (void)pad; (void)vel; return false;
+    }
+    /// Twice the bars, the second half a copy of the first; false when it
+    /// would not fit.
+    virtual bool     doubleScene(uint8_t seq) { (void)seq; return false; }
+    /// Half the bars, keeping the first half; false at one bar.
+    virtual bool     halveScene(uint8_t seq) { (void)seq; return false; }
+    /// While on, a pad hit erases that pad from the sounding scene instead of
+    /// playing into it.
+    virtual void     setErasing(bool on) { (void)on; }
+    virtual bool     erasing() const { return false; }
+    /// 0..1 through the loop that is sounding, for a playhead.
+    virtual float    progress() const { return 0.0f; }
 
     // --- Click / Metronome ---
     virtual void setClickAudible(bool audible) = 0;

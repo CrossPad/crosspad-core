@@ -178,6 +178,14 @@ public:
     bool    addScene()    { return engine_ ? engine_->addScene() : false; }
     bool    removeScene(uint8_t s) { return engine_ ? engine_->removeScene(s) : false; }
     uint16_t getSceneEventCount(uint8_t s) const { return engine_ ? engine_->sceneEventCount(s) : 0; }
+    bool    getSceneEvent(uint8_t s, uint16_t i, float& at, uint8_t& pad, uint8_t& vel) const {
+        return engine_ ? engine_->sceneEvent(s, i, at, pad, vel) : false;
+    }
+    bool    doubleScene(uint8_t s) { return engine_ ? engine_->doubleScene(s) : false; }
+    bool    halveScene(uint8_t s)  { return engine_ ? engine_->halveScene(s) : false; }
+    void    setErasing(bool on)    { if (engine_) engine_->setErasing(on); }
+    bool    isErasing() const      { return engine_ ? engine_->erasing() : false; }
+    float   getProgress() const    { return engine_ ? engine_->progress() : 0.0f; }
 
     /// Beat within the bar, 0-based. What a metronome display counts.
     int getClickPos() const { return engine_ ? engine_->getClickPos() : 0; }

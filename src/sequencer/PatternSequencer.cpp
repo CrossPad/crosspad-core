@@ -49,17 +49,32 @@ void PatternSequencer::addEvent(uint8_t seq, uint32_t pos, uint8_t pad, uint8_t 
     markDirty();
 }
 
+void PatternSequencer::erasePad(uint8_t seq, uint8_t pad)
+{
+    if (seq >= kNumSequences) return;
+    uint16_t kept = 0;
+    for (uint16_t i = 0; i < counts_[seq]; ++i) {
+        if (events_[seq][i].pad != pad) events_[seq][kept++] = events_[seq][i];
+    }
+    if (kept == counts_[seq]) return;
+    counts_[seq] = kept;
+    markDirty();
+}
+
 void PatternSequencer::drainInput(uint32_t loop)
 {
     uint32_t tail = ringTail_.load(std::memory_order_relaxed);
     const uint32_t head = ringHead_.load(std::memory_order_acquire);
     const bool recording = (mode_ == SequencerMode::Record || mode_ == SequencerMode::Overdub)
                            && state_ == SequencerState::Running;
+    const bool erasing = erasing_.load(std::memory_order_relaxed);
 
     while (tail != head) {
         const Hit& h = ring_[tail];
+        /* Erase held: the hit names a pad to take out, it is not a note. */
+        if (erasing)        erasePad(activeSeq_, h.pad);
         /* Into the scene that is sounding: you record into what you hear. */
-        if (recording) addEvent(activeSeq_, quantise(h.pos, loop), h.pad, h.vel);
+        else if (recording) addEvent(activeSeq_, quantise(h.pos, loop), h.pad, h.vel);
         tail = (tail + 1) % kInputRing;
     }
     ringTail_.store(tail, std::memory_order_release);
@@ -83,6 +98,7 @@ void PatternSequencer::fireWindow(uint32_t from, uint32_t to)
 void PatternSequencer::poll()
 {
     if (!clock_) return;
+    std::lock_guard<std::recursive_mutex> lock(editMutex_);
 
     /* Release what the last pass fired, before anything else. A pad left
      * pressed is not a silent bug: the LED stays lit and every "is this pad
@@ -145,6 +161,7 @@ void PatternSequencer::applyScene(uint8_t seq)
 
 void PatternSequencer::select(uint8_t seq)
 {
+    std::lock_guard<std::recursive_mutex> lock(editMutex_);
     if (seq >= sceneCount_) return;
     if (state_ == SequencerState::Running && clock_ && clock_->running()) {
         pendingSeq_ = seq;          // takes effect at the loop end
@@ -155,6 +172,12 @@ void PatternSequencer::select(uint8_t seq)
 }
 
 void PatternSequencer::setSceneBars(uint8_t seq, uint8_t bars)
+{
+    std::lock_guard<std::recursive_mutex> lock(editMutex_);
+    applySceneBars(seq, bars);
+}
+
+void PatternSequencer::applySceneBars(uint8_t seq, uint8_t bars)
 {
     if (seq >= kNumSequences || !bars) return;
     if (bars > kMaxBars) bars = kMaxBars;
@@ -177,11 +200,42 @@ void PatternSequencer::setSceneBars(uint8_t seq, uint8_t bars)
     }
 }
 
+bool PatternSequencer::doubleScene(uint8_t seq)
+{
+    std::lock_guard<std::recursive_mutex> lock(editMutex_);
+    if (seq >= sceneCount_ || !clock_) return false;
+    if (isRecording() && seq == activeSeq_) return false;
+    const uint8_t bars = bars_[seq];
+    if (!bars || bars * 2 > kMaxBars) return false;
+    const uint16_t n = counts_[seq];
+    if (n * 2 > kMaxEvents) return false;
+
+    const uint32_t loop = (uint32_t)clock_->samplesPerBeat() * clock_->beatsPerBar() * bars;
+    for (uint16_t i = 0; i < n; ++i) {
+        const Event& e = events_[seq][i];
+        events_[seq][n + i] = { e.pos + loop, e.pad, e.vel, 0 };
+    }
+    counts_[seq] = (uint16_t)(n * 2);
+    applySceneBars(seq, (uint8_t)(bars * 2));
+    return true;
+}
+
+bool PatternSequencer::halveScene(uint8_t seq)
+{
+    std::lock_guard<std::recursive_mutex> lock(editMutex_);
+    if (seq >= sceneCount_) return false;
+    if (isRecording() && seq == activeSeq_) return false;
+    if (bars_[seq] < 2) return false;
+    applySceneBars(seq, (uint8_t)(bars_[seq] / 2));
+    return true;
+}
+
 // ── Tempo ──────────────────────────────────────────────────────────────────
 
 void PatternSequencer::setClickBpm(float bpm)
 {
     if (!clock_) return;
+    std::lock_guard<std::recursive_mutex> lock(editMutex_);
     const float    was    = clock_->bpm();
     const uint32_t before = clock_->samplesPerBeat();
     clock_->setBpm(bpm);
@@ -213,6 +267,7 @@ void PatternSequencer::setClickBpm(float bpm)
 /// Append an empty scene and go to it.
 bool PatternSequencer::addScene()
 {
+    std::lock_guard<std::recursive_mutex> lock(editMutex_);
     if (sceneCount_ >= kNumSequences) return false;
     const uint8_t idx = sceneCount_++;
     counts_[idx] = 0;
@@ -231,6 +286,7 @@ bool PatternSequencer::addScene()
 /// loop left to wait for.
 bool PatternSequencer::removeScene(uint8_t seq)
 {
+    std::lock_guard<std::recursive_mutex> lock(editMutex_);
     if (seq >= sceneCount_ || sceneCount_ <= 1) return false;
 
     for (uint8_t s = seq; s + 1 < sceneCount_; ++s) {
@@ -254,6 +310,7 @@ bool PatternSequencer::removeScene(uint8_t seq)
 
 void PatternSequencer::setSceneCount(uint8_t n)
 {
+    std::lock_guard<std::recursive_mutex> lock(editMutex_);
     if (n < 1) n = 1;
     if (n > kNumSequences) n = kNumSequences;
     sceneCount_ = n;
@@ -282,6 +339,7 @@ void PatternSequencer::playback()
 void PatternSequencer::record()
 {
     if (!clock_) return;
+    std::lock_guard<std::recursive_mutex> lock(editMutex_);
     /* Record replaces; overdub adds. Clearing here rather than at the wrap is
      * what makes the button honest -- you hear the old take stop immediately. */
     counts_[activeSeq_] = 0;
@@ -323,6 +381,7 @@ void PatternSequencer::reset()
 
 void PatternSequencer::resetScenes()
 {
+    std::lock_guard<std::recursive_mutex> lock(editMutex_);
     for (uint8_t s = 0; s < kNumSequences; ++s) {
         counts_[s]       = 0;
         bars_[s]         = kDefaultBars;
@@ -347,6 +406,7 @@ void PatternSequencer::clearAll(uint8_t startPad, uint8_t endPad)
 
 void PatternSequencer::clearSeq(uint8_t seqIdx, uint8_t endPad)
 {
+    std::lock_guard<std::recursive_mutex> lock(editMutex_);
     if (seqIdx >= kNumSequences) return;
     markDirty();
     if (endPad >= 127) { counts_[seqIdx] = 0; return; }
@@ -367,6 +427,19 @@ void PatternSequencer::setLength(uint8_t beats)
     setSceneBars(activeSeq_, beats / bpb);
 }
 
+bool PatternSequencer::sceneEvent(uint8_t seq, uint16_t i, float& at, uint8_t& pad, uint8_t& vel) const
+{
+    std::lock_guard<std::recursive_mutex> lock(editMutex_);
+    if (seq >= kNumSequences || i >= counts_[seq] || !clock_) return false;
+    const uint32_t loop = (uint32_t)clock_->samplesPerBeat() * clock_->beatsPerBar() * bars_[seq];
+    if (!loop) return false;
+    const Event& e = events_[seq][i];
+    at  = (float)e.pos / (float)loop;
+    pad = e.pad;
+    vel = e.vel;
+    return true;
+}
+
 uint16_t PatternSequencer::eventCount() const
 {
     uint16_t n = 0;
@@ -385,6 +458,7 @@ float PatternSequencer::progress() const
 
 bool PatternSequencer::addEventTicks(uint8_t seq, uint32_t ticks, uint8_t pad, uint8_t vel)
 {
+    std::lock_guard<std::recursive_mutex> lock(editMutex_);
     if (seq >= kNumSequences || !clock_ || counts_[seq] >= kMaxEvents) return false;
     const uint32_t spb = clock_->samplesPerBeat();
     const uint32_t pos = (uint32_t)(((uint64_t)ticks * spb) / kPpq);
@@ -400,6 +474,7 @@ bool PatternSequencer::addEventTicks(uint8_t seq, uint32_t ticks, uint8_t pad, u
 bool PatternSequencer::eventAtTicks(uint8_t seq, uint16_t i,
                                     uint32_t& ticks, uint8_t& pad, uint8_t& vel) const
 {
+    std::lock_guard<std::recursive_mutex> lock(editMutex_);
     if (seq >= kNumSequences || i >= counts_[seq] || !clock_) return false;
     const uint32_t spb = clock_->samplesPerBeat();
     if (!spb) return false;

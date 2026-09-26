@@ -8,6 +8,7 @@
 
 #include <atomic>
 #include <cstdint>
+#include <mutex>
 
 namespace crosspad {
 
@@ -34,6 +35,11 @@ namespace crosspad {
 /// measure. Playback runs on whatever thread calls poll(). So noteIn() only
 /// pushes into a single-producer/single-consumer ring and poll() drains it --
 /// no lock is taken on either side, and neither can block the other.
+///
+/// Editing a scene (bars, double, halve, removing one, loading) and poll() are
+/// another matter: both rewrite the event arrays, so they take editMutex_.
+/// poll() runs on a task, never the audio thread, and an edit holds the lock
+/// for one pass over at most kMaxEvents events -- microseconds a poll can wait.
 class PatternSequencer : public ISequencerEngine {
 public:
     /// Fired for every note due, from the thread that calls poll(). `on` false
@@ -133,20 +139,31 @@ public:
     bool     sceneEnabled(uint8_t s) const { return s < kNumSequences && sceneEnabled_[s]; }
     uint16_t eventCount(uint8_t s) const { return s < kNumSequences ? counts_[s] : 0; }
     uint16_t sceneEventCount(uint8_t s) const override { return eventCount(s); }
+    bool     sceneEvent(uint8_t seq, uint16_t i, float& at, uint8_t& pad, uint8_t& vel) const override;
     uint16_t eventCount() const;
     /// Bars of the scene that is sounding.
     uint8_t  bars() const { return sceneBars(activeSeq_); }
     uint8_t  sceneBars(uint8_t seq) const override { return seq < kNumSequences ? bars_[seq] : 0; }
     /// 0..1 through the loop, for a playhead.
-    float    progress() const;
+    float    progress() const override;
 
     /// Bars of the scene that is sounding. Applied at once: the loop this sets
     /// is the loop the click counts.
     void setBars(uint8_t bars) { setSceneBars(activeSeq_, bars); }
     void setSceneBars(uint8_t seq, uint8_t bars) override;
+    /// Twice as long by playing it twice: every event copied one old loop
+    /// later. Refused while that scene is taking a recording, and when the
+    /// bars or the events would not fit, rather than doubling half a pattern.
+    bool doubleScene(uint8_t seq) override;
+    /// Half as long, keeping the first half; false below two bars.
+    bool halveScene(uint8_t seq) override;
+    /// Held erase: set from the UI, read where hits are drained.
+    void setErasing(bool on) override { erasing_.store(on, std::memory_order_relaxed); }
+    bool erasing() const override { return erasing_.load(std::memory_order_relaxed); }
 
     /// One recorded event, for storage, tests and any UI that draws the pattern.
     bool eventAt(uint8_t seq, uint16_t i, uint32_t& pos, uint8_t& pad, uint8_t& vel) const {
+        std::lock_guard<std::recursive_mutex> lock(editMutex_);
         if (seq >= kNumSequences || i >= counts_[seq]) return false;
         pos = events_[seq][i].pos;
         pad = events_[seq][i].pad;
@@ -193,6 +210,10 @@ private:
     void     drainInput(uint32_t loop);
     void     fireWindow(uint32_t from, uint32_t to);
     void     addEvent(uint8_t seq, uint32_t pos, uint8_t pad, uint8_t vel);
+    /// Drop every event of @p pad from @p seq.
+    void     erasePad(uint8_t seq, uint8_t pad);
+    /// setSceneBars() without taking the lock, for callers that hold it.
+    void     applySceneBars(uint8_t seq, uint8_t bars);
     /// Make a queued scene the one that sounds, and hand its length to the
     /// click. Only ever called at a loop end, or while stopped.
     void     applyScene(uint8_t seq);
@@ -223,6 +244,8 @@ private:
     uint8_t  preLen_     = 4;
     bool     loop_       = true;
     std::atomic<bool> dirty_{false};
+    std::atomic<bool> erasing_{false};
+    mutable std::recursive_mutex editMutex_;
 
     SequencerController* controller_ = nullptr;
     uint32_t lastPos_ = 0;
