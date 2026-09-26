@@ -176,3 +176,59 @@ TEST_CASE("PadManager: pushPadLogic/popPadLogic stack", "[pad]") {
     REQUIRE(a->activateCount == 2);
     REQUIRE(b->deactivateCount == 1);
 }
+
+namespace {
+
+// Records which source each press and release reached the handler with.
+class SourceSpy : public IPadLogicHandler {
+public:
+    void onActivate(PadManager&) override {}
+    void onDeactivate(PadManager&) override {}
+    void onPadPress(PadManager& pm, uint8_t pad, uint8_t) override { pressSeen = pm.pressSource(pad); }
+    void onPadRelease(PadManager& pm, uint8_t pad) override { releaseSeen = pm.pressSource(pad); }
+    void onPadPressure(PadManager&, uint8_t, uint8_t) override {}
+
+    EventSource pressSeen   = EventSource::System;
+    EventSource releaseSeen = EventSource::System;
+};
+
+} // namespace
+
+TEST_CASE("PadManager: a handler can tell a played-back hit from a finger", "[pad]") {
+    test::CoreTestPlatform platform;
+    REQUIRE(platform.init());
+    auto& pm = platform.padManager;
+    auto spy = std::make_shared<SourceSpy>();
+    pm.registerPadLogic("Spy", spy);
+    pm.setActivePadLogic("Spy");
+
+    pm.handlePadPress(2, 100, EventSource::SequencerCallback);
+    REQUIRE(spy->pressSeen == EventSource::SequencerCallback);
+    pm.handlePadRelease(2, EventSource::SequencerCallback);
+    REQUIRE(spy->releaseSeen == EventSource::SequencerCallback);
+
+    pm.handlePadPress(2, 100);
+    REQUIRE(spy->pressSeen == EventSource::PadManager);
+    pm.handlePadRelease(2);
+    REQUIRE(spy->releaseSeen == EventSource::PadManager);
+}
+
+TEST_CASE("PadManager: the press source is per pad", "[pad]") {
+    test::CoreTestPlatform platform;
+    REQUIRE(platform.init());
+    auto& pm = platform.padManager;
+    pm.handlePadPress(1, 100, EventSource::SequencerCallback);
+    pm.handlePadPress(5, 100);
+    REQUIRE(pm.pressSource(1) == EventSource::SequencerCallback);
+    REQUIRE(pm.pressSource(5) == EventSource::PadManager);
+}
+
+TEST_CASE("PadManager: getPadLogic finds a registered handler by name", "[pad]") {
+    test::CoreTestPlatform platform;
+    REQUIRE(platform.init());
+    auto& pm = platform.padManager;
+    auto spy = std::make_shared<SourceSpy>();
+    pm.registerPadLogic("Spy", spy);
+    REQUIRE(pm.getPadLogic("Spy") == spy);
+    REQUIRE(pm.getPadLogic("Nobody") == nullptr);
+}

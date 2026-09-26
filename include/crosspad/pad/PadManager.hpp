@@ -5,6 +5,7 @@
 #include <memory>
 #include <vector>
 #include <mutex>
+#include <atomic>
 #include "crosspad/led/RgbColor.hpp"
 #include "crosspad/led/LedTypes.hpp"
 #include "crosspad/pad/Pad.hpp"
@@ -43,8 +44,19 @@ public:
     void allNotesOff();
 
     // Physical pad interaction
-    void handlePadPress(uint8_t padIdx, uint8_t velocity = 127);
-    void handlePadRelease(uint8_t padIdx);
+    /// @p source says who pressed: a finger (PadManager, the default) or the
+    /// loop recorder playing a take back (SequencerCallback). It travels with
+    /// the bus events, and pad logic reads it with pressSource().
+    void handlePadPress(uint8_t padIdx, uint8_t velocity = 127,
+                        EventSource source = EventSource::PadManager);
+    void handlePadRelease(uint8_t padIdx, EventSource source = EventSource::PadManager);
+    /// Who made the last press or release of @p padIdx. Per pad, not per
+    /// call: a take playing pad 3 while a finger holds pad 5 answers each
+    /// right, which one shared flag set around the dispatch could not.
+    EventSource pressSource(uint8_t padIdx) const {
+        return padIdx < 16 ? pressSource_[padIdx].load(std::memory_order_acquire)
+                           : EventSource::PadManager;
+    }
     void handlePadPressure(uint8_t padIdx, uint8_t pressure);
     // Like handlePadPressure but always drives the LED brightness by padIdx,
     // bypassing the note↔pad lookups (getPadForMidiNote can return 255 under
@@ -134,6 +146,10 @@ public:
     std::string getActivePadLogic() const;
     void unregisterPadLogic(const std::string& appName);
     std::vector<std::string> getRegisteredPadLogics() const;
+    /// The handler registered under appName, or null. For a logic that plays
+    /// through another -- an app that owns the pads but keeps the base
+    /// instrument sounding under them.
+    std::shared_ptr<IPadLogicHandler> getPadLogic(const std::string& appName) const;
     /// Save the currently active pad logic on an internal stack, then activate
     /// appName. Pair with popPadLogic() — used by screens/apps that overlay a
     /// temporary logic and must hand control back on teardown.
@@ -174,6 +190,7 @@ private:
     bool padStates_[16] = {false};
     bool padPlayStates_[16] = {false};
     uint8_t padVelocity_[16] = {0};
+    std::atomic<EventSource> pressSource_[16] = {};
     uint8_t padPressure_[16] = {0};
     int8_t padPan_[16] = {0};
     uint8_t padNotes_[16] = {0};

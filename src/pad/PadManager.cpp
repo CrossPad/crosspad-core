@@ -55,7 +55,7 @@ void PadManager::allNotesOff() {
 
 // ── Physical pad interaction ────────────────────────────────────────────
 
-void PadManager::handlePadPress(uint8_t padIdx, uint8_t velocity) {
+void PadManager::handlePadPress(uint8_t padIdx, uint8_t velocity, EventSource source) {
     if (padIdx >= 16) return;
     if (inputSuppressed_) return;
 
@@ -72,6 +72,7 @@ void PadManager::handlePadPress(uint8_t padIdx, uint8_t velocity) {
         padStates_[padIdx] = true;
         padVelocity_[padIdx] = velocity;
     }
+    pressSource_[padIdx].store(source, std::memory_order_release);
 
     // Check if there's an active pad logic handler
     if (handler) {
@@ -97,12 +98,12 @@ void PadManager::handlePadPress(uint8_t padIdx, uint8_t velocity) {
     if (eventBus_) {
         uint8_t note = getMidiNoteForPad(padIdx);
         uint8_t channel = getPadChannel(padIdx);
-        eventBus_->postNoteOn(channel, note, velocity, EventSource::PadManager);
-        eventBus_->postPadPressed(padIdx, true, velocity, EventSource::PadManager);
+        eventBus_->postNoteOn(channel, note, velocity, source);
+        eventBus_->postPadPressed(padIdx, true, velocity, source);
     }
 }
 
-void PadManager::handlePadRelease(uint8_t padIdx) {
+void PadManager::handlePadRelease(uint8_t padIdx, EventSource source) {
     if (padIdx >= 16) return;
 
     std::shared_ptr<IPadLogicHandler> handler;
@@ -115,6 +116,7 @@ void PadManager::handlePadRelease(uint8_t padIdx) {
         std::lock_guard<std::mutex> lock(stateMutex_);
         padStates_[padIdx] = false;
     }
+    pressSource_[padIdx].store(source, std::memory_order_release);
 
     if (handler) {
         handler->onPadRelease(*this, padIdx);
@@ -138,8 +140,8 @@ void PadManager::handlePadRelease(uint8_t padIdx) {
     if (eventBus_) {
         uint8_t note = getMidiNoteForPad(padIdx);
         uint8_t channel = getPadChannel(padIdx);
-        eventBus_->postNoteOff(channel, note, 0, EventSource::PadManager);
-        eventBus_->postPadReleased(padIdx, EventSource::PadManager);
+        eventBus_->postNoteOff(channel, note, 0, source);
+        eventBus_->postPadReleased(padIdx, source);
     }
 }
 
@@ -650,6 +652,12 @@ std::vector<std::string> PadManager::getRegisteredPadLogics() const {
         apps.push_back(pair.first);
     }
     return apps;
+}
+
+std::shared_ptr<IPadLogicHandler> PadManager::getPadLogic(const std::string& appName) const {
+    std::lock_guard<std::mutex> lock(logicMutex_);
+    auto it = padLogicHandlers_.find(appName);
+    return it != padLogicHandlers_.end() ? it->second : nullptr;
 }
 
 void PadManager::pushPadLogic(const std::string& appName) {
