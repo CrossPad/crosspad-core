@@ -26,6 +26,11 @@ enum class SongOpState : uint8_t {
     Failed,     ///< the song on the card could not be read; it is never saved over
 };
 
+/// What the sequencer does when a song playing in sync starts it: play its
+/// scene, or open a take -- so REC pressed with the song stopped starts both,
+/// and the take lands on the song's bars.
+enum class SyncTake : uint8_t { None, Record, Overdub };
+
 /// A clip file in the open project, with its length on the song's grid.
 struct ClipInfo {
     std::string file;
@@ -80,6 +85,14 @@ public:
     virtual std::vector<ClipInfo> clips() = 0;
     /// Moves on every finished projects or clips refresh.
     virtual uint32_t listGeneration() const = 0;
+    /// Rename the open project's folder; editState() says how it went
+    /// (Failed: the name is taken or not one a folder can have).
+    virtual bool requestRename(const std::string& name) { (void)name; return false; }
+    /// Set the open song's tempo. Blocks stay on their bars and each is
+    /// resized to what its file lasts at the new tempo (no time-stretch: a
+    /// clip keeps its speed). editState() says when it is done.
+    virtual bool requestTempo(float bpm) { (void)bpm; return false; }
+    virtual SongOpState editState() const { return SongOpState::Idle; }
 
     // ── Bounce ────────────────────────────────────────────────────────────
     /// Play @p scene of the sequencer once, from its first bar, and write the
@@ -92,6 +105,9 @@ public:
     // ── Playback ──────────────────────────────────────────────────────────
     /// Requests too: playing() turns true once the platform has the clips open.
     virtual bool   play(uint32_t fromBar) = 0;
+    /// play(), and with the song's syncSeq on the sequencer starts with it
+    /// doing @p take. A platform without it plays the song alone.
+    virtual bool   playWithTake(uint32_t fromBar, SyncTake take) { (void)take; return play(fromBar); }
     virtual void   stop() = 0;
     virtual bool   playing() const = 0;
     /// Where playback is, in bars (fractional) from the song's start.
