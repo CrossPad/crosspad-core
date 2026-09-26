@@ -12,9 +12,10 @@ namespace crosspad {
 class IPadMix {
 public:
     virtual ~IPadMix() = default;
-    /// @p volume 0..1, @p pan -1 (left) .. +1 (right). Applies to the next
-    /// hit and to voices already sounding.
-    virtual void setPadMix(uint8_t pad, float volume, float pan) = 0;
+    /// In the kit's own units -- Pad::volume and Pad::pan, as kit.json holds
+    /// them -- so a caller hands over what it edited without converting.
+    /// Applies to the next hit and to voices already sounding.
+    virtual void setPadMix(uint8_t pad, int volume, int pan) = 0;
 };
 
 } // namespace crosspad

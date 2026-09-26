@@ -40,8 +40,8 @@ private:
 
 class FakePadMix : public IPadMix {
 public:
-    void setPadMix(uint8_t pad, float volume, float pan) override { last = {pad, volume, pan}; }
-    struct { uint8_t pad; float volume; float pan; } last{};
+    void setPadMix(uint8_t pad, int volume, int pan) override { last = {pad, volume, pan}; }
+    struct { uint8_t pad; int volume; int pan; } last{};
 };
 } // namespace
 
@@ -66,7 +66,8 @@ TEST_CASE("IPadMix: an app sets a pad's level through the interface", "[platform
     FakePadMix m;
     PlatformServices s;
     s.padMix = &m;
-    s.padMix->setPadMix(4, 0.5f, -0.25f);
+    s.padMix->setPadMix(4, 80, -20);
     REQUIRE(m.last.pad == 4);
-    REQUIRE(m.last.volume == 0.5f);
+    REQUIRE(m.last.volume == 80);
+    REQUIRE(m.last.pan == -20);
 }
