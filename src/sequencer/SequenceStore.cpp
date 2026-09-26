@@ -120,7 +120,9 @@ SequenceLoad SequenceStore::open(PatternSequencer& seq, const std::string& path)
 
     const int ppq = doc["ppq"] | (int)PatternSequencer::kPpq;
 
-    seq.clearAll(0, 127);
+    /* Only now, with a file that parsed: whatever the sequencer held stays
+     * if the file cannot be read. */
+    seq.resetScenes();
 
     JsonArrayConst scenes = doc["scenes"].as<JsonArrayConst>();
     /* The count first: setSceneBars() and addEventTicks() both refuse a scene

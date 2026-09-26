@@ -548,3 +548,32 @@ TEST_CASE("sequence file: a file that is there but will not open is Unreadable",
     removeAll(path);
     REQUIRE(got == SequenceLoad::Unreadable);
 }
+
+TEST_CASE("sequence file: open replaces every scene, and leaves them if it cannot read", "[seq][store]") {
+    const std::string path = "cp_seq_replace.json";
+    removeAll(path);
+    Rig one;
+    one.seq.setSceneBars(0, 1);
+    one.seq.addEventTicks(0, 0, 1, 90);
+    REQUIRE(SequenceStore::save(one.seq, path));
+
+    Rig r;
+    REQUIRE(r.seq.addScene());
+    REQUIRE(r.seq.addScene());
+    r.seq.setSceneBars(2, 1);
+    r.seq.addEventTicks(2, 0, 5, 90);
+    r.seq.select(2);
+    REQUIRE(r.seq.songInsert(0, 2, 1));
+    r.seq.setSongMode(true);
+    REQUIRE(SequenceStore::open(r.seq, path) == SequenceLoad::Loaded);
+    REQUIRE_FALSE(r.seq.songMode());              // nothing of the old scenes survives
+    REQUIRE(r.seq.sceneCount() == 1);
+    REQUIRE(r.seq.eventCount(0) == 1);
+    REQUIRE(r.seq.eventCount(2) == 0);
+
+    writeText(path, "{\"version\":1,\"sce");
+    r.seq.addEventTicks(0, kTicksPerBeat, 2, 90);
+    REQUIRE(SequenceStore::open(r.seq, path) == SequenceLoad::Unreadable);
+    REQUIRE(r.seq.eventCount(0) == 2);
+    removeAll(path);
+}
