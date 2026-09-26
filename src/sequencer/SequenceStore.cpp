@@ -13,7 +13,7 @@ bool SequenceStore::save(const PatternSequencer& seq, const std::string& path)
     /* Write beside the real file and rename over it. A card pulled or a board
      * reset halfway through then costs the *new* take, never the one already
      * on the card -- an SD write is not atomic and this file is the only copy
-     * of somebody's pattern.
+     * of every groove on the board.
      *
      * The caller is expected not to save while recording; a hit landing during
      * the build below can still reach the file as a stale velocity, which the
@@ -65,25 +65,42 @@ bool SequenceStore::save(const PatternSequencer& seq, const std::string& path)
     file.close();
     if (!file) { std::remove(tmp.c_str()); return false; }
 
-    std::remove(path.c_str());          // rename() will not replace on FatFs
+    /* rename() will not replace a file on FatFs, so the old one steps aside
+     * first -- as .bak, not removed, so there is never a moment with neither. */
+    const std::string bak = path + ".bak";
+    std::remove(bak.c_str());
+    const bool hadOld = std::rename(path.c_str(), bak.c_str()) == 0;
     if (std::rename(tmp.c_str(), path.c_str()) != 0) {
+        if (hadOld) std::rename(bak.c_str(), path.c_str());
         std::remove(tmp.c_str());
         return false;
     }
+    std::remove(bak.c_str());
     return true;
 }
 
 bool SequenceStore::load(PatternSequencer& seq, const std::string& path)
 {
-    std::ifstream file(path);
-    if (!file.is_open()) return false;
+    return open(seq, path) == SequenceLoad::Loaded;
+}
 
+SequenceLoad SequenceStore::open(PatternSequencer& seq, const std::string& path)
+{
     JsonDocument doc;
-    DeserializationError err = deserializeJson(doc, file);
-    file.close();
-    if (err) return false;
-
-    if (doc["version"].as<int>() > kVersion) return false;
+    bool any = false;
+    bool found = false;
+    for (const char* suffix : {"", ".tmp", ".bak"}) {
+        std::ifstream file(path + suffix);
+        if (!file.is_open()) continue;
+        any = true;
+        doc.clear();
+        const DeserializationError err = deserializeJson(doc, file);
+        if (err) continue;
+        if (doc["version"].as<int>() > kVersion) return SequenceLoad::Unreadable;
+        found = true;
+        break;
+    }
+    if (!found) return any ? SequenceLoad::Unreadable : SequenceLoad::Absent;
 
     /* Tempo first: every tick-to-sample conversion below reads it, and so does
      * the trim inside setSceneBars. */
@@ -138,7 +155,7 @@ bool SequenceStore::load(PatternSequencer& seq, const std::string& path)
     seq.selectScene(doc["active"] | 0);
     /* Freshly loaded is exactly what the card holds. */
     seq.clearDirty();
-    return true;
+    return SequenceLoad::Loaded;
 }
 
 } // namespace crosspad

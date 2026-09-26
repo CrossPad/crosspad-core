@@ -515,6 +515,7 @@ void PatternSequencer::setTransport(SequencerMode m, SequencerState st)
 void PatternSequencer::playback()
 {
     if (!clock_) return;
+    std::lock_guard<std::recursive_mutex> lock(editMutex_);
     if (!clock_->running()) clock_->start();
     lastPos_ = clock_->positionSamples();
     setTransport(SequencerMode::Playback, SequencerState::Running);
@@ -565,22 +566,37 @@ void PatternSequencer::overdub()
 
 void PatternSequencer::stop()
 {
-    /* A stopped song is over; the next plain Play plays the scene, and song
-     * mode switched back on starts from the top. */
-    songMode_.store(false, std::memory_order_relaxed);
-    songPos_.store(0);
-    songPass_.store(0);
-    songJump_.store(-1);
+    /* Called from the UI, the CDC loop and the song worker while the poll
+     * thread fires the pattern: the held pads are read and cleared under the
+     * scene lock, and released after it, like poll() does -- a release lost
+     * to a pass in flight leaves the pad held for good. Inside poll() (a song
+     * that ends) the releases join the pass's own. */
+    uint16_t held = 0;
+    {
+        std::lock_guard<std::recursive_mutex> lock(editMutex_);
+        /* A stopped song is over; the next plain Play plays the scene, and
+         * song mode switched back on starts from the top. */
+        songMode_.store(false, std::memory_order_relaxed);
+        songPos_.store(0);
+        songPass_.store(0);
+        songJump_.store(-1);
+        held = pendingRelease_;
+        pendingRelease_ = 0;
+        if (presses_) {
+            for (uint8_t pad = 0; pad < 16; ++pad) {
+                if (held & (1u << pad)) emit(pad, 0, false);
+            }
+            held = 0;
+        }
+        if (clock_) clock_->stop();
+        setTransport(SequencerMode::None, SequencerState::Idle);
+    }
     /* Whatever is still held goes down with the transport, or it stays held
      * until the next pass that never comes. */
-    if (pendingRelease_ && sink_) {
-        for (uint8_t pad = 0; pad < 16; ++pad) {
-            if (pendingRelease_ & (1u << pad)) emit(pad, 0, false);
-        }
-        pendingRelease_ = 0;
+    if (!sink_) return;
+    for (uint8_t pad = 0; pad < 16; ++pad) {
+        if (held & (1u << pad)) sink_(sinkCtx_, pad, 0, false);
     }
-    if (clock_) clock_->stop();
-    setTransport(SequencerMode::None, SequencerState::Idle);
 }
 
 void PatternSequencer::reset()

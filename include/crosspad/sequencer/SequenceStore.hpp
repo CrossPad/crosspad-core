@@ -7,6 +7,11 @@
 
 namespace crosspad {
 
+/// What SequenceStore::open() found. Unreadable is never "no scenes": a file
+/// that is there but cannot be read holds somebody's grooves, and treating it
+/// as empty lets the next save write over them.
+enum class SequenceLoad : uint8_t { Absent, Loaded, Unreadable };
+
 /// The sequencer's scenes on the card, as `sequences.json` (where it lives is
 /// the platform's call; the board keeps one for every kit).
 ///
@@ -36,15 +41,18 @@ public:
     /// The conventional name.
     static const char* fileName() { return "sequences.json"; }
 
-    /// Writes every scene that has events. Returns false if the file could not
-    /// be opened; the sequencer's dirty flag is left alone either way, so the
+    /// Writes every scene that has events, through `.tmp` and `.bak` so that
+    /// there is never a moment with no complete file. Returns false if the
+    /// file could not be written; the sequencer's dirty flag is left alone either way, so the
     /// caller decides whether a failed write is worth retrying.
     static bool save(const PatternSequencer& seq, const std::string& path);
 
-    /// Replaces every scene with what the file holds. Returns false when the
-    /// file is absent or unreadable, which is the normal case for a kit nobody
-    /// has recorded into -- the caller should treat it as "no scenes yet",
-    /// not as an error.
+    /// Replaces every scene with what the file holds: the file, else what a
+    /// save cut short leaves (the new one complete as `.tmp`, or the old one
+    /// moved aside as `.bak`). The sequencer is untouched unless Loaded.
+    static SequenceLoad open(PatternSequencer& seq, const std::string& path);
+
+    /// open() == Loaded.
     static bool load(PatternSequencer& seq, const std::string& path);
 };
 

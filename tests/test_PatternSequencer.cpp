@@ -2,6 +2,7 @@
 #include <catch2/catch_test_macros.hpp>
 #include "crosspad/sequencer/PatternSequencer.hpp"
 
+#include <array>
 #include <atomic>
 #include <chrono>
 #include <thread>
@@ -425,4 +426,107 @@ TEST_CASE("sequencer: a slow pad callback does not hold the UI out of the scene"
     REQUIRE(sinkReached);
     REQUIRE(readWhileSinkRuns);
     REQUIRE(pad == 2);
+}
+
+// ── The scenes file ────────────────────────────────────────────────────────
+
+namespace {
+void writeText(const std::string& path, const char* text)
+{
+    std::FILE* f = std::fopen(path.c_str(), "w");
+    REQUIRE(f != nullptr);
+    std::fputs(text, f);
+    std::fclose(f);
+}
+
+void removeAll(const std::string& path)
+{
+    for (const char* s : {"", ".tmp", ".bak"}) std::remove((path + s).c_str());
+}
+}
+
+TEST_CASE("sequence file: no file at all is Absent", "[seq][store]") {
+    const std::string path = "cp_seq_absent.json";
+    removeAll(path);
+    Rig r;
+    REQUIRE(SequenceStore::open(r.seq, path) == SequenceLoad::Absent);
+}
+
+TEST_CASE("sequence file: a file that cannot be parsed is Unreadable, never Absent", "[seq][store]") {
+    const std::string path = "cp_seq_bad.json";
+    removeAll(path);
+    writeText(path, "{\"version\":1,\"scenes\":[");
+    Rig r;
+    REQUIRE(SequenceStore::open(r.seq, path) == SequenceLoad::Unreadable);
+    removeAll(path);
+}
+
+TEST_CASE("sequence file: a save cut short after the old file stepped aside still loads", "[seq][store]") {
+    const std::string path = "cp_seq_cut.json";
+    removeAll(path);
+    Rig a;
+    a.seq.setSceneBars(0, 1);
+    a.seq.addEventTicks(0, 0, 3, 90);
+    REQUIRE(SequenceStore::save(a.seq, path));
+    /* What save() leaves if the board resets between its two renames. */
+    REQUIRE(std::rename(path.c_str(), (path + ".tmp").c_str()) == 0);
+
+    Rig b;
+    REQUIRE(SequenceStore::open(b.seq, path) == SequenceLoad::Loaded);
+    REQUIRE(b.seq.eventCount(0) == 1);
+    removeAll(path);
+}
+
+TEST_CASE("sequence file: the previous save is the fallback for a torn one", "[seq][store]") {
+    const std::string path = "cp_seq_torn.json";
+    removeAll(path);
+    Rig a;
+    a.seq.setSceneBars(0, 1);
+    a.seq.addEventTicks(0, 0, 3, 90);
+    REQUIRE(SequenceStore::save(a.seq, path));
+    REQUIRE(std::rename(path.c_str(), (path + ".bak").c_str()) == 0);
+    writeText(path, "{\"version\":1,\"sce");
+
+    Rig b;
+    REQUIRE(SequenceStore::open(b.seq, path) == SequenceLoad::Loaded);
+    REQUIRE(b.seq.eventCount(0) == 1);
+    removeAll(path);
+}
+
+TEST_CASE("sequence file: a save leaves no .tmp or .bak behind", "[seq][store]") {
+    const std::string path = "cp_seq_clean.json";
+    removeAll(path);
+    Rig a;
+    REQUIRE(SequenceStore::save(a.seq, path));
+    REQUIRE(SequenceStore::save(a.seq, path));
+    REQUIRE(std::fopen((path + ".tmp").c_str(), "r") == nullptr);
+    REQUIRE(std::fopen((path + ".bak").c_str(), "r") == nullptr);
+    removeAll(path);
+}
+
+TEST_CASE("sequencer: stop and play racing the poll thread release every pad", "[seq][rt]") {
+    // The transport is driven from the UI, the CDC loop and the song worker
+    // while the poll thread fires the pattern. Every press the sink saw must
+    // be matched by a release once the transport is down.
+    Rig r;
+    std::array<std::atomic<int>, 16> held{};
+    r.seq.setSink([](void* ctx, uint8_t pad, uint8_t, bool on) {
+        auto& h = *static_cast<std::array<std::atomic<int>, 16>*>(ctx);
+        if (pad < 16) h[pad].fetch_add(on ? 1 : -1, std::memory_order_relaxed);
+    }, &held);
+    r.seq.setSceneBars(0, 1);
+    for (uint8_t p = 0; p < 16; ++p) r.seq.addEventTicks(0, p * (kTicksPerBeat / 4), p, 100);
+    r.seq.playback();
+    std::atomic<bool> done{false};
+    std::thread poller([&] {
+        while (!done.load(std::memory_order_relaxed)) r.run(kBlock);
+    });
+    for (int i = 0; i < 2000; ++i) {
+        r.seq.stop();
+        r.seq.playback();
+    }
+    done.store(true);
+    poller.join();
+    r.seq.stop();
+    for (uint8_t p = 0; p < 16; ++p) REQUIRE(held[p].load() == 0);
 }
