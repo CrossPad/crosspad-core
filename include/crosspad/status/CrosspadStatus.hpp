@@ -132,6 +132,11 @@ public:
     uint8_t hostCpuPct = 0;
     uint32_t hostRamUsedMb = 0;
     uint32_t hostRamTotalMb = 0;
+    /// DAWs the host can start and DAWs it sees running, as bitmasks indexed
+    /// by the DAW protocol's daw_id (HOST_INFO `daws=`). 0 from a host that
+    /// cannot launch anything.
+    uint8_t hostDawsInstalled = 0;
+    uint8_t hostDawsRunning = 0;
     /// Newest firmware a host reported (FW_LATEST, persisted by the platform so
     /// it survives a reset with no host attached) and whether it is newer than
     /// the running one.
