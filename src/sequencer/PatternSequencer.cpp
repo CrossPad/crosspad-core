@@ -15,25 +15,42 @@ void PatternSequencer::noteIn(uint8_t pad, uint8_t velocity)
      * a pad that waits on a mutex is a missed beat, which is not. */
     if (next == ringTail_.load(std::memory_order_acquire)) return;
 
-    ring_[head] = { clock_->positionSamples(), pad, velocity };
+    const uint32_t early = clock_->countInSamplesLeft();
+    ring_[head] = { early ? 0u : clock_->positionSamples(), early, pad, velocity };
     ringHead_.store(next, std::memory_order_release);
 }
 
 // ── Grid ───────────────────────────────────────────────────────────────────
 
-uint32_t PatternSequencer::quantise(uint32_t pos, uint32_t loop) const
-{
-    if (quant_ == Quantization::Off || !clock_) return pos;
+namespace {
+/// Quantisation off still forgives a count-in hit this much early: a 32nd.
+constexpr uint32_t kUnquantisedGraceDiv = 8;
+}
 
-    uint32_t div = 4;
+uint32_t PatternSequencer::gridSamples() const
+{
+    if (!clock_) return 0;
+    uint32_t div = 0;
     switch (quant_) {
         case Quantization::Quarter:      div = 1; break;
         case Quantization::Eighth:       div = 2; break;
         case Quantization::Sixteenth:    div = 4; break;
         case Quantization::ThirtySecond: div = 8; break;
-        default: return pos;
+        default: return 0;
     }
-    const uint32_t grid = clock_->samplesPerBeat() / div;
+    return clock_->samplesPerBeat() / div;
+}
+
+uint32_t PatternSequencer::downbeatGrace() const
+{
+    const uint32_t grid = gridSamples();
+    if (grid) return grid / 2;
+    return clock_ ? clock_->samplesPerBeat() / kUnquantisedGraceDiv : 0;
+}
+
+uint32_t PatternSequencer::quantise(uint32_t pos, uint32_t loop) const
+{
+    const uint32_t grid = gridSamples();
     if (grid < 2) return pos;
 
     const uint32_t snapped = ((pos + grid / 2) / grid) * grid;
@@ -65,16 +82,25 @@ void PatternSequencer::drainInput(uint32_t loop)
 {
     uint32_t tail = ringTail_.load(std::memory_order_relaxed);
     const uint32_t head = ringHead_.load(std::memory_order_acquire);
-    const bool recording = (mode_ == SequencerMode::Record || mode_ == SequencerMode::Overdub)
-                           && state_ == SequencerState::Running;
+    const bool taking = (mode_ == SequencerMode::Record || mode_ == SequencerMode::Overdub)
+                        && (state_ == SequencerState::Running || state_ == SequencerState::PreBeat);
     const bool erasing = erasing_.load(std::memory_order_relaxed);
+    const uint32_t grace = downbeatGrace();
 
     while (tail != head) {
         const Hit& h = ring_[tail];
         /* Erase held: the hit names a pad to take out, it is not a note. */
-        if (erasing)        erasePad(activeSeq_, h.pad);
-        /* Into the scene that is sounding: you record into what you hear. */
-        else if (recording) addEvent(activeSeq_, quantise(h.pos, loop), h.pad, h.vel);
+        if (erasing) {
+            erasePad(activeSeq_, h.pad);
+        } else if (taking && h.early) {
+            /* Made during the count-in: a hair early for beat one is beat
+             * one -- the player aimed at it -- anything earlier was not
+             * part of the take. */
+            if (h.early <= grace) addEvent(activeSeq_, 0, h.pad, h.vel);
+        } else if (taking && state_ == SequencerState::Running) {
+            /* Into the scene that is sounding: you record into what you hear. */
+            addEvent(activeSeq_, quantise(h.pos, loop), h.pad, h.vel);
+        }
         tail = (tail + 1) % kInputRing;
     }
     ringTail_.store(tail, std::memory_order_release);
@@ -113,6 +139,19 @@ void PatternSequencer::poll()
 
     const uint32_t loop = clock_->loopSamples();
     const uint32_t now  = clock_->positionSamples();
+
+    /* The clock hands over from count-in to the loop on its own sample; this
+     * only notices, before the hits are drained so the ones made just after
+     * beat one are already part of a running take. */
+    if (state_ == SequencerState::PreBeat) {
+        if (!clock_->running()) {
+            setTransport(SequencerMode::None, SequencerState::Idle);
+        } else if (!clock_->countingIn()) {
+            setTransport(mode_, SequencerState::Running);
+            lastPos_ = 0;
+        }
+    }
+    clock_->takeCountInEnded();
 
     drainInput(loop);
 
@@ -336,6 +375,21 @@ void PatternSequencer::playback()
     setTransport(SequencerMode::Playback, SequencerState::Running);
 }
 
+void PatternSequencer::startTake(SequencerMode m)
+{
+    /* Already counting in: the take is still waiting for its beat one. */
+    if (state_ == SequencerState::PreBeat) { setTransport(m, SequencerState::PreBeat); return; }
+    if (!clock_->running() && countIn()) {
+        clock_->startCountIn(clock_->beatsPerBar());
+        lastPos_ = 0;
+        setTransport(m, SequencerState::PreBeat);
+        return;
+    }
+    if (!clock_->running()) clock_->start();
+    lastPos_ = clock_->positionSamples();
+    setTransport(m, SequencerState::Running);
+}
+
 void PatternSequencer::record()
 {
     if (!clock_) return;
@@ -344,17 +398,14 @@ void PatternSequencer::record()
      * what makes the button honest -- you hear the old take stop immediately. */
     counts_[activeSeq_] = 0;
     markDirty();
-    if (!clock_->running()) clock_->start();
-    lastPos_ = clock_->positionSamples();
-    setTransport(SequencerMode::Record, SequencerState::Running);
+    startTake(SequencerMode::Record);
 }
 
 void PatternSequencer::overdub()
 {
     if (!clock_) return;
-    if (!clock_->running()) clock_->start();
-    lastPos_ = clock_->positionSamples();
-    setTransport(SequencerMode::Overdub, SequencerState::Running);
+    std::lock_guard<std::recursive_mutex> lock(editMutex_);
+    startTake(SequencerMode::Overdub);
 }
 
 void PatternSequencer::stop()

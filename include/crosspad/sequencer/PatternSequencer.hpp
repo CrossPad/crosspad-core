@@ -91,7 +91,14 @@ public:
     /// What a take is being snapped to, or Off. For the UI and HIL.
     Quantization quantization() const { return quant_; }
     void setLoop(bool loop) override { loop_ = loop; }
-    void setPreLen(uint8_t len) override { preLen_ = len; }
+    /// Any pre-length turns the count-in on: it is always one bar of the
+    /// metre the click is in, whatever length the caller had in mind.
+    void setPreLen(uint8_t len) override { setCountIn(len > 0); }
+    void setCountIn(bool on) override { countIn_.store(on, std::memory_order_relaxed); }
+    bool countIn() const override { return countIn_.load(std::memory_order_relaxed); }
+    uint8_t countInLeft() const override {
+        return (state_ == SequencerState::PreBeat && clock_) ? clock_->countInBeatsLeft() : 0;
+    }
 
     /// Recording always targets the scene that is sounding -- you record into
     /// what you hear -- so this only moves the selection.
@@ -201,12 +208,20 @@ private:
     /// fire and sounds twice -- once from the pad, once from its own recording.
     /// Cleared at the wrap, where the loop legitimately comes round to it.
     struct Event { uint32_t pos; uint8_t pad; uint8_t vel; uint8_t fresh; };
-    struct Hit   { uint32_t pos; uint8_t pad; uint8_t vel; };
+    /// `early`: count-in samples still to play when the hit was made, 0 once
+    /// the loop runs. The clock holds position 0 through a count-in, so this
+    /// is the only record of how far before beat one a hit was.
+    struct Hit   { uint32_t pos; uint32_t early; uint8_t pad; uint8_t vel; };
 
     /// Rounds to the nearest grid line, wrapping a hit that rounds up past the
     /// loop end back to zero -- a hit a hair early on beat one belongs at the
     /// start of the loop, not the end of it.
     uint32_t quantise(uint32_t pos, uint32_t loop) const;
+    /// The grid a take snaps to in samples, 0 with quantisation off.
+    uint32_t gridSamples() const;
+    /// How far before beat one a count-in hit may be and still land on it:
+    /// half a grid step, which is where it would have rounded anyway.
+    uint32_t downbeatGrace() const;
     void     drainInput(uint32_t loop);
     void     fireWindow(uint32_t from, uint32_t to);
     void     addEvent(uint8_t seq, uint32_t pos, uint8_t pad, uint8_t vel);
@@ -220,6 +235,9 @@ private:
     /// One place that moves the transport, so the controller can never
     /// disagree with the engine about what is running.
     void     setTransport(SequencerMode m, SequencerState st);
+    /// Start the clock for a take: through a count-in when one is set and the
+    /// clock was stopped, straight in otherwise.
+    void     startTake(SequencerMode m);
 
     MetronomeNode* clock_   = nullptr;
     NoteSink       sink_    = nullptr;
@@ -241,7 +259,7 @@ private:
     uint8_t  sceneCount_ = 1;
     uint8_t  activeSeq_  = 0;
     uint8_t  pendingSeq_ = 0;
-    uint8_t  preLen_     = 4;
+    std::atomic<bool> countIn_{false};
     bool     loop_       = true;
     std::atomic<bool> dirty_{false};
     std::atomic<bool> erasing_{false};

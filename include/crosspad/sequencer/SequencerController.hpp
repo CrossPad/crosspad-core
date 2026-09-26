@@ -186,6 +186,9 @@ public:
     void    setErasing(bool on)    { if (engine_) engine_->setErasing(on); }
     bool    isErasing() const      { return engine_ ? engine_->erasing() : false; }
     float   getProgress() const    { return engine_ ? engine_->progress() : 0.0f; }
+    void    setCountIn(bool on)    { if (engine_) engine_->setCountIn(on); }
+    bool    getCountIn() const     { return engine_ && engine_->countIn(); }
+    uint8_t getCountInLeft() const { return engine_ ? engine_->countInLeft() : 0; }
 
     /// Beat within the bar, 0-based. What a metronome display counts.
     int getClickPos() const { return engine_ ? engine_->getClickPos() : 0; }

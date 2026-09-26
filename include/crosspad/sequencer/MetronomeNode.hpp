@@ -114,6 +114,9 @@ public:
     void resetPosition() { post(0, 0); }
 
     bool countingIn() const { return running() && countInSamples() > 0; }
+    /// Samples of count-in still to play, 0 when not counting in: how far
+    /// before beat one a hit made now is.
+    uint32_t countInSamplesLeft() const { return running() ? countInSamples() : 0; }
     /// Beats still to count, 0 once the loop is running: 4, 3, 2, 1.
     uint8_t countInBeatsLeft() const {
         if (!running()) return 0;

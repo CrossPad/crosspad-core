@@ -149,3 +149,105 @@ TEST_CASE("sequencer: scene edits racing the poll thread keep the pattern whole"
         REQUIRE(pad < 16);
     }
 }
+
+// ── Count-in ───────────────────────────────────────────────────────────────
+
+namespace {
+constexpr uint32_t kSixteenth = kBeat / 4;      // the default grid
+constexpr uint32_t kMs = kRate / 1000;
+}
+
+TEST_CASE("sequencer: record from a stop counts a bar in first", "[seq][countin]") {
+    Rig r;
+    r.seq.setCountIn(true);
+    r.seq.record();
+    REQUIRE(r.seq.state() == SequencerState::PreBeat);
+    REQUIRE(r.seq.countInLeft() == r.clock.beatsPerBar());
+    r.run(kBeat * r.clock.beatsPerBar() + kBlock);
+    REQUIRE(r.seq.state() == SequencerState::Running);
+    REQUIRE(r.seq.countInLeft() == 0);
+}
+
+TEST_CASE("sequencer: count-in follows the metre", "[seq][countin]") {
+    Rig r;
+    r.clock.setBeatsPerBar(3);
+    r.seq.setCountIn(true);
+    r.seq.record();
+    REQUIRE(r.seq.countInLeft() == 3);
+}
+
+TEST_CASE("sequencer: without count-in a take starts at once", "[seq][countin]") {
+    Rig r;
+    r.seq.setCountIn(false);
+    r.seq.record();
+    REQUIRE(r.seq.state() == SequencerState::Running);
+}
+
+TEST_CASE("sequencer: a hit a hair before beat one lands on it", "[seq][countin]") {
+    Rig r;
+    r.seq.setCountIn(true);
+    r.seq.record();
+    r.run(kBeat * r.clock.beatsPerBar() - kMs);  // 1 ms before the downbeat
+    r.seq.noteIn(3, 100);
+    r.run(20 * kMs);                             // one slow poll later
+    REQUIRE(r.seq.eventCount(0) == 1);
+    uint32_t pos = 1; uint8_t pad = 0, vel = 0;
+    REQUIRE(r.seq.eventAt(0, 0, pos, pad, vel));
+    REQUIRE(pos == 0);
+    REQUIRE(pad == 3);
+}
+
+TEST_CASE("sequencer: a hit early in the count-in is not recorded", "[seq][countin]") {
+    Rig r;
+    r.seq.setCountIn(true);
+    r.seq.record();
+    r.run(kBeat);                                // three beats still to count
+    r.seq.noteIn(3, 100);
+    r.run(kBeat * r.clock.beatsPerBar());
+    REQUIRE(r.seq.eventCount(0) == 0);
+}
+
+TEST_CASE("sequencer: a hit just after beat one is kept where it fell", "[seq][countin]") {
+    Rig r;
+    r.seq.setCountIn(true);
+    r.seq.record();
+    r.run(kBeat * r.clock.beatsPerBar() + kSixteenth + kBlock);
+    r.seq.noteIn(5, 100);
+    r.run(kBlock);
+    REQUIRE(r.seq.eventCount(0) == 1);
+    uint32_t pos = 0; uint8_t pad = 0, vel = 0;
+    REQUIRE(r.seq.eventAt(0, 0, pos, pad, vel));
+    REQUIRE(pos == kSixteenth);
+}
+
+TEST_CASE("sequencer: the MIDI transport hears the start at beat one", "[seq][countin]") {
+    Rig r;
+    std::vector<int> seen;
+    r.clock.setTransportHook([](bool running, void* ctx) {
+        static_cast<std::vector<int>*>(ctx)->push_back(running ? 1 : 0);
+    }, &seen);
+    r.seq.setCountIn(true);
+    r.seq.record();
+    r.run(kBeat);
+    REQUIRE(seen.empty());
+    r.run(kBeat * r.clock.beatsPerBar());
+    REQUIRE(seen == std::vector<int>{1});
+}
+
+TEST_CASE("sequencer: stop during the count-in goes idle", "[seq][countin]") {
+    Rig r;
+    r.seq.setCountIn(true);
+    r.seq.record();
+    r.run(kBeat);
+    r.seq.stop();
+    r.run(kBlock);
+    REQUIRE(r.seq.state() == SequencerState::Idle);
+    REQUIRE(r.seq.countInLeft() == 0);
+}
+
+TEST_CASE("sequencer: playback never counts in", "[seq][countin]") {
+    Rig r;
+    r.seq.setCountIn(true);
+    r.seq.playback();
+    REQUIRE(r.seq.state() == SequencerState::Running);
+}

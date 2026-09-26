@@ -19,6 +19,12 @@ public:
     virtual void setQuantization(Quantization q) = 0;
     virtual void setLoop(bool loop) = 0;
     virtual void setPreLen(uint8_t len) = 0;
+    /// A bar of click before a take started from a stop. An engine without
+    /// one ignores it and reports it off.
+    virtual void    setCountIn(bool on) { (void)on; }
+    virtual bool    countIn() const { return false; }
+    /// Beats of count-in still to go, 0 when not counting in.
+    virtual uint8_t countInLeft() const { return 0; }
 
     // --- Sequence selection ---
     virtual void selectSeqRecord(uint8_t seq) = 0;
