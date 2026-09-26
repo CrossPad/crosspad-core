@@ -86,6 +86,9 @@ set(CORE_SOURCES
     ${CORE_DIR}/src/instrument/SampleBank.cpp
     ${CORE_DIR}/src/instrument/PitchedInstrument.cpp
     ${CORE_DIR}/src/instrument/PitchedKitLoader.cpp
+
+    # Audio file writing
+    ${CORE_DIR}/src/audio/WavWriter.cpp
 )
 
 # ── Test sources ──
