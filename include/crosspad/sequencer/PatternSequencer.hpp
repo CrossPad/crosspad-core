@@ -247,6 +247,13 @@ private:
     uint32_t downbeatGrace() const;
     void     drainInput(uint32_t loop);
     void     fireWindow(uint32_t from, uint32_t to);
+    /// poll() under editMutex_; its presses are collected, not played.
+    void     pollLocked();
+    /// A press or release for the sink: played at once, or -- inside poll()
+    /// -- collected and played once the lock is let go. The sink runs pad
+    /// logic that can wait on the sample player; holding the lock through it
+    /// held every UI read of the pattern for as long.
+    void     emit(uint8_t pad, uint8_t vel, bool on);
     void     addEvent(uint8_t seq, uint32_t pos, uint8_t pad, uint8_t vel);
     /// Drop every event of @p pad from @p seq.
     void     erasePad(uint8_t seq, uint8_t pad);
@@ -296,6 +303,11 @@ private:
     std::atomic<bool> dirty_{false};
     std::atomic<bool> erasing_{false};
     mutable std::recursive_mutex editMutex_;
+    struct Press { uint8_t pad; uint8_t vel; bool on; };
+    /// A poll fires at most a whole scene and releases every pad.
+    static constexpr uint16_t kMaxPresses = kMaxEvents + 16;
+    Press*   presses_    = nullptr;   // set only while poll() collects
+    uint16_t pressCount_ = 0;
 
     std::atomic<uint16_t> song_[kSongMax] = {};
     std::atomic<uint8_t>  songLen_{0};

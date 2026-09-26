@@ -115,16 +115,40 @@ void PatternSequencer::fireWindow(uint32_t from, uint32_t to)
         const Event& e = events_[activeSeq_][i];
         if (e.fresh) continue;
         if (e.pos >= from && e.pos < to) {
-            sink_(sinkCtx_, e.pad, e.vel, true);
+            emit(e.pad, e.vel, true);
             if (e.pad < 16) pendingRelease_ |= (uint16_t)(1u << e.pad);
         }
+    }
+}
+
+void PatternSequencer::emit(uint8_t pad, uint8_t vel, bool on)
+{
+    if (presses_) {
+        if (pressCount_ < kMaxPresses) presses_[pressCount_++] = { pad, vel, on };
+    } else if (sink_) {
+        sink_(sinkCtx_, pad, vel, on);
     }
 }
 
 void PatternSequencer::poll()
 {
     if (!clock_) return;
-    std::lock_guard<std::recursive_mutex> lock(editMutex_);
+    Press presses[kMaxPresses];
+    uint16_t n = 0;
+    {
+        std::lock_guard<std::recursive_mutex> lock(editMutex_);
+        presses_ = presses;
+        pressCount_ = 0;
+        pollLocked();
+        n = pressCount_;
+        presses_ = nullptr;
+    }
+    if (!sink_) return;
+    for (uint16_t i = 0; i < n; ++i) sink_(sinkCtx_, presses[i].pad, presses[i].vel, presses[i].on);
+}
+
+void PatternSequencer::pollLocked()
+{
 
     /* Release what the last pass fired, before anything else. A pad left
      * pressed is not a silent bug: the LED stays lit and every "is this pad
@@ -132,7 +156,7 @@ void PatternSequencer::poll()
      * sampler's waveform settling on one pad. */
     if (pendingRelease_ && sink_) {
         for (uint8_t pad = 0; pad < 16; ++pad) {
-            if (pendingRelease_ & (1u << pad)) sink_(sinkCtx_, pad, 0, false);
+            if (pendingRelease_ & (1u << pad)) emit(pad, 0, false);
         }
         pendingRelease_ = 0;
     }
@@ -551,7 +575,7 @@ void PatternSequencer::stop()
      * until the next pass that never comes. */
     if (pendingRelease_ && sink_) {
         for (uint8_t pad = 0; pad < 16; ++pad) {
-            if (pendingRelease_ & (1u << pad)) sink_(sinkCtx_, pad, 0, false);
+            if (pendingRelease_ & (1u << pad)) emit(pad, 0, false);
         }
         pendingRelease_ = 0;
     }

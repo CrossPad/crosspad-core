@@ -3,6 +3,7 @@
 #include "crosspad/sequencer/PatternSequencer.hpp"
 
 #include <atomic>
+#include <chrono>
 #include <thread>
 #include <vector>
 
@@ -376,4 +377,52 @@ TEST_CASE("sequencer: playbackAt starts part-way into the loop", "[seq][song]") 
     r.seq.playbackAt(2 * kBeat);
     r.run(kBeat + kBlock);
     REQUIRE(r.fired == std::vector<uint8_t>{9});
+}
+
+TEST_CASE("sequencer: a slow pad callback does not hold the UI out of the scene", "[seq][rt]") {
+    // The sink plays a pad; behind it the sample player may wait on the card.
+    // A UI read of the pattern must not wait for that press to finish.
+    using namespace std::chrono_literals;
+    MetronomeNode clock;
+    clock.onPrepare(kBlock, kRate);
+    clock.setBpm(120.0f);
+    PatternSequencer seq;
+    seq.attach(&clock);
+    seq.resetScenes();
+    std::atomic<bool> inSink{false}, release{false};
+    struct Ctx { std::atomic<bool>* in; std::atomic<bool>* go; } ctx{&inSink, &release};
+    seq.setSink([](void* c, uint8_t, uint8_t, bool on) {
+        auto* x = static_cast<Ctx*>(c);
+        if (!on) return;
+        x->in->store(true);
+        while (!x->go->load()) std::this_thread::yield();
+    }, &ctx);
+    seq.setSceneBars(0, 1);
+    seq.addEventTicks(0, 10, 2, 100);
+    seq.playback();
+
+    constexpr int kBlocksToEvent = 400;   // the event sits ~10 blocks in
+    std::thread poller([&] {
+        std::vector<float> out(kBlock * 2);
+        for (int i = 0; i < kBlocksToEvent && !inSink.load(); ++i) {
+            clock.mix(out.data(), kBlock);
+            seq.poll();
+        }
+    });
+    const auto t0 = std::chrono::steady_clock::now();
+    while (!inSink.load() && std::chrono::steady_clock::now() - t0 < 5s) std::this_thread::yield();
+    const bool sinkReached = inSink.load();
+
+    std::atomic<bool> readDone{false};
+    float at = 0.0f; uint8_t pad = 0, vel = 0;
+    std::thread reader([&] { seq.sceneEvent(0, 0, at, pad, vel); readDone.store(true); });
+    const auto t1 = std::chrono::steady_clock::now();
+    while (!readDone.load() && std::chrono::steady_clock::now() - t1 < 200ms) std::this_thread::sleep_for(1ms);
+    const bool readWhileSinkRuns = readDone.load();
+    release.store(true);
+    reader.join();
+    poller.join();
+    REQUIRE(sinkReached);
+    REQUIRE(readWhileSinkRuns);
+    REQUIRE(pad == 2);
 }
