@@ -42,6 +42,7 @@ class CrosspadSettings;
 class CrosspadStatus;
 class SequencerController;
 class ISequencerEngine;
+class ISongEngine;
 class PitchedInstrument;
 class Stm32MessageHandler;
 
@@ -79,6 +80,7 @@ struct PlatformServices {
     IKitManager*      kitManager      = nullptr;
     SequencerController* sequencer   = nullptr;
     ISequencerEngine* sequencerEngine = nullptr;
+    ISongEngine*      songEngine      = nullptr;  // audio song: projects, bounce, playback
     IBleMidi*         bleMidi         = nullptr;  // defaults to NullBleMidi
 
     /// The varispeed sample engine, when the platform runs one. Portable apps

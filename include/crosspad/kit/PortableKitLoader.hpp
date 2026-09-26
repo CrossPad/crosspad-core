@@ -74,7 +74,7 @@ protected:
 
     /// Recursively scan dirPath for kit.json files, appending to out.
     bool discoverKitsRecursive(const std::string& dirPath,
-                               std::vector<KitInfo>& out);
+                               std::vector<std::string>& out);
 
     /// Read and parse a kit JSON file.
     bool readKitJson(const std::string& path, KitInfo& kit, bool parsePads);

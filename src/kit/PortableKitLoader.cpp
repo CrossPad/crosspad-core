@@ -6,6 +6,9 @@
 #include <ArduinoJson.h>
 
 #include <sys/stat.h>
+
+#include <cstdio>
+#include <new>
 #include <dirent.h>
 #include <fstream>
 #include <algorithm>
@@ -53,12 +56,37 @@ std::string PortableKitLoader::toLogicalPath(const std::string& fsPath) const {
 void PortableKitLoader::scanKits(const std::string& rootDir) {
     kits_.clear();
     currentKitId_ = -1;
+    /* Two passes: the paths first, then every kit parsed straight into a
+     * list reserved at its final size. Growing the list by doubling needed a
+     * block for the whole new list while the old one was still alive -- at 79
+     * kits of ~1 kB, 128 kB next to 64 kB, contiguous, at boot, when PSRAM
+     * outside the engine arena is the UI's whole budget and fragmented; the
+     * scan aborted on exactly that. This needs one block of the size the list
+     * is, and a few dozen short strings besides. */
+    std::vector<std::string> paths;
     // rootDir is logical ("/crosspad/kits"); add the mount prefix for POSIX.
-    discoverKitsRecursive(toFsPath(rootDir), kits_);
-    // The vector grew by doubling; at 79 kits of ~1 kB that is a 128-slot
-    // block, and the launcher keeps it for the rest of the boot. Trim it —
-    // PSRAM outside the engine arena is the UI's whole budget.
-    kits_.shrink_to_fit();
+    discoverKitsRecursive(toFsPath(rootDir), paths);
+    kits_ = std::vector<KitInfo>();
+    /* Should even that block not be there, keep what fits rather than abort:
+     * a board that boots with part of its kits listed can be looked at, one
+     * that restarts on every scan cannot. */
+    try {
+        kits_.reserve(paths.size());
+    } catch (const std::bad_alloc&) {
+        printf("[KitLoader] no room for %u kits; listing what fits\n", (unsigned)paths.size());
+    }
+    size_t dropped = 0;
+    for (const auto& jsonPath : paths) {
+        KitInfo kit;
+        kit.path = toLogicalPath(jsonPath);
+        if (!readKitJson(jsonPath, kit, false)) continue;
+        try {
+            kits_.push_back(std::move(kit));
+        } catch (const std::bad_alloc&) {
+            ++dropped;
+        }
+    }
+    if (dropped) printf("[KitLoader] %u kits not listed: out of memory\n", (unsigned)dropped);
 }
 
 std::vector<KitInfo> PortableKitLoader::listKits(const std::string& rootDir) {
@@ -188,7 +216,7 @@ const std::vector<KitInfo>& PortableKitLoader::kits() const {
 // ── Kit discovery ───────────────────────────────────────────────────────────
 
 bool PortableKitLoader::discoverKitsRecursive(const std::string& dirPath,
-                                               std::vector<KitInfo>& out) {
+                                               std::vector<std::string>& out) {
     DIR* dir = opendir(dirPath.c_str());
     if (!dir) return false;
 
@@ -213,15 +241,8 @@ bool PortableKitLoader::discoverKitsRecursive(const std::string& dirPath,
         }
 
         if (!jsonPath.empty()) {
-            std::string logicalPath = toLogicalPath(jsonPath);
-            if (!isKitKnown(logicalPath)) {
-                KitInfo kit;
-                kit.path = logicalPath;
-                if (readKitJson(jsonPath, kit, false)) {
-                    out.push_back(std::move(kit));
-                    found = true;
-                }
-            }
+            out.push_back(jsonPath);
+            found = true;
         } else {
             // No kit.json here; recurse.
             found |= discoverKitsRecursive(entryPath, out);

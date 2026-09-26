@@ -102,6 +102,21 @@ void PadManager::handlePadPress(uint8_t padIdx, uint8_t velocity) {
     }
 }
 
+namespace {
+// Set for the duration of one sequenced press, on the thread making it.
+thread_local bool t_sequencedPress = false;
+} // namespace
+
+void PadManager::handleSequencedPadPress(uint8_t padIdx, uint8_t velocity) {
+    t_sequencedPress = true;
+    handlePadPress(padIdx, velocity);
+    t_sequencedPress = false;
+}
+
+bool PadManager::isSequencedPress() {
+    return t_sequencedPress;
+}
+
 void PadManager::handlePadRelease(uint8_t padIdx) {
     if (padIdx >= 16) return;
 
@@ -627,6 +642,12 @@ std::vector<std::string> PadManager::getRegisteredPadLogics() const {
         apps.push_back(pair.first);
     }
     return apps;
+}
+
+std::shared_ptr<IPadLogicHandler> PadManager::getPadLogic(const std::string& appName) const {
+    std::lock_guard<std::mutex> lock(logicMutex_);
+    auto it = padLogicHandlers_.find(appName);
+    return it != padLogicHandlers_.end() ? it->second : nullptr;
 }
 
 void PadManager::pushPadLogic(const std::string& appName) {

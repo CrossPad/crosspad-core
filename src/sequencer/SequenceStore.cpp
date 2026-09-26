@@ -49,6 +49,18 @@ bool SequenceStore::save(const PatternSequencer& seq, const std::string& path)
         }
     }
 
+    /* The arrangement: blocks as [scene, repeats] pairs, in playing order. */
+    JsonObject song = doc["song"].to<JsonObject>();
+    song["loop"] = seq.songLoop();
+    JsonArray blocks = song["blocks"].to<JsonArray>();
+    for (uint8_t b = 0; b < seq.songLength(); ++b) {
+        uint8_t scene = 0, reps = 0;
+        if (!seq.songBlock(b, scene, reps)) continue;
+        JsonArray pair = blocks.add<JsonArray>();
+        pair.add(scene);
+        pair.add(reps);
+    }
+
     serializeJson(doc, file);
     file.close();
     if (!file) { std::remove(tmp.c_str()); return false; }
@@ -110,6 +122,17 @@ bool SequenceStore::load(PatternSequencer& seq, const std::string& path)
             seq.addEventTicks(s, ticks, e[1].as<uint8_t>(), e[2].as<uint8_t>());
         }
         ++s;
+    }
+
+    /* After the scenes: a block naming a scene the file does not have is
+     * refused, and the count is only known now. A file from before songs
+     * has none, which is an empty arrangement. */
+    JsonObjectConst song = doc["song"].as<JsonObjectConst>();
+    while (seq.songLength()) seq.songRemove(0);
+    seq.setSongLoop(song["loop"] | true);
+    for (JsonArrayConst pair : song["blocks"].as<JsonArrayConst>()) {
+        if (pair.size() < 2) continue;
+        seq.songInsert(seq.songLength(), pair[0].as<uint8_t>(), pair[1].as<uint8_t>());
     }
 
     seq.selectScene(doc["active"] | 0);

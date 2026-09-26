@@ -85,7 +85,13 @@ public:
     /// What a take is being snapped to, or Off. For the UI and HIL.
     Quantization quantization() const { return quant_; }
     void setLoop(bool loop) override { loop_ = loop; }
+    /// Count-in, in beats: the click plays them before a REC or DUB started
+    /// from a stop, and the take begins on the beat after. 0 = none.
     void setPreLen(uint8_t len) override { preLen_ = len; }
+    uint8_t preLen() const override { return preLen_; }
+    uint8_t countInLeft() const override {
+        return (state_ == SequencerState::PreBeat && clock_) ? clock_->countInBeatsLeft() : 0;
+    }
 
     /// Recording always targets the scene that is sounding -- you record into
     /// what you hear -- so this only moves the selection.
@@ -101,6 +107,10 @@ public:
     void selectScene(uint8_t seq) override { select(seq); }
 
     void playback() override;
+    /// Play from @p pos samples into the loop, stopping first if running:
+    /// the scene follows another timeline (the audio song) instead of
+    /// starting at its own bar one.
+    void playbackAt(uint32_t pos);
     void record() override;
     void overdub() override;
     void stop() override;
@@ -133,17 +143,45 @@ public:
     bool     sceneEnabled(uint8_t s) const { return s < kNumSequences && sceneEnabled_[s]; }
     uint16_t eventCount(uint8_t s) const { return s < kNumSequences ? counts_[s] : 0; }
     uint16_t sceneEventCount(uint8_t s) const override { return eventCount(s); }
+    bool     sceneEvent(uint8_t seq, uint16_t i, float& at, uint8_t& pad, uint8_t& vel) const override;
     uint16_t eventCount() const;
     /// Bars of the scene that is sounding.
     uint8_t  bars() const { return sceneBars(activeSeq_); }
     uint8_t  sceneBars(uint8_t seq) const override { return seq < kNumSequences ? bars_[seq] : 0; }
     /// 0..1 through the loop, for a playhead.
-    float    progress() const;
+    float    progress() const override;
 
     /// Bars of the scene that is sounding. Applied at once: the loop this sets
     /// is the loop the click counts.
     void setBars(uint8_t bars) { setSceneBars(activeSeq_, bars); }
     void setSceneBars(uint8_t seq, uint8_t bars) override;
+    bool doubleScene(uint8_t seq) override;
+    bool halveScene(uint8_t seq) override;
+    /// Held erase. Atomic: set from the UI, read where hits are drained.
+    void setErasing(bool on) override { erasing_.store(on, std::memory_order_relaxed); }
+    bool erasing() const override { return erasing_.load(std::memory_order_relaxed); }
+
+    // ── Song ──────────────────────────────────────────────────────────────
+    // Blocks are edited from the UI thread and read at the wrap on the poll
+    // thread. Each block is one atomic word and the length another, so a read
+    // never sees half a block; an insert racing a wrap can at worst have that
+    // one wrap pick the neighbouring block. Taking a lock at the wrap would put
+    // the UI thread in the beat's way, which is the worse trade.
+    static constexpr uint8_t kSongMax        = 32;
+    static constexpr uint8_t kSongMaxRepeats = 16;
+
+    uint8_t songLength() const override { return songLen_.load(std::memory_order_acquire); }
+    bool    songBlock(uint8_t i, uint8_t& scene, uint8_t& repeats) const override;
+    bool    songInsert(uint8_t i, uint8_t scene, uint8_t repeats) override;
+    bool    songRemove(uint8_t i) override;
+    bool    songSet(uint8_t i, uint8_t scene, uint8_t repeats) override;
+    void    setSongMode(bool on) override { songMode_.store(on, std::memory_order_relaxed); }
+    bool    songMode() const override { return songMode_.load(std::memory_order_relaxed); }
+    void    setSongLoop(bool on) override { songLoop_.store(on); markDirty(); }
+    bool    songLoop() const override { return songLoop_.load(); }
+    uint8_t songPosition() const override { return songPos_.load(std::memory_order_relaxed); }
+    uint8_t songPass() const override { return songPass_.load(std::memory_order_relaxed); }
+    void    songLocate(uint8_t i) override;
 
     /// One recorded event, for storage, tests and any UI that draws the pattern.
     bool eventAt(uint8_t seq, uint16_t i, uint32_t& pos, uint8_t& pad, uint8_t& vel) const {
@@ -193,12 +231,26 @@ private:
     void     drainInput(uint32_t loop);
     void     fireWindow(uint32_t from, uint32_t to);
     void     addEvent(uint8_t seq, uint32_t pos, uint8_t pad, uint8_t vel);
+    /// Drop every event of @p pad from @p seq. Poll thread only.
+    void     erasePad(uint8_t seq, uint8_t pad);
+    /// At a loop end in song mode: count the pass, move to the next block
+    /// when this one is done, and hand its scene the loop. False when the
+    /// song ran out and stopped the transport.
+    bool     songAdvance();
+    static uint16_t packBlock(uint8_t scene, uint8_t repeats) {
+        return (uint16_t)((scene << 8) | repeats);
+    }
     /// Make a queued scene the one that sounds, and hand its length to the
     /// click. Only ever called at a loop end, or while stopped.
-    void     applyScene(uint8_t seq);
+    /// @p remember false for a change the song made: the file records the
+    /// scene a player left, not every block a song passed through.
+    void     applyScene(uint8_t seq, bool remember = true);
     /// One place that moves the transport, so the controller can never
     /// disagree with the engine about what is running.
     void     setTransport(SequencerMode m, SequencerState st);
+    /// Start the clock for a take: through a count-in when one is set and the
+    /// clock was stopped, straight in otherwise.
+    void     startTake(SequencerMode m);
 
     MetronomeNode* clock_   = nullptr;
     NoteSink       sink_    = nullptr;
@@ -220,9 +272,19 @@ private:
     uint8_t  sceneCount_ = 1;
     uint8_t  activeSeq_  = 0;
     uint8_t  pendingSeq_ = 0;
-    uint8_t  preLen_     = 4;
+    std::atomic<uint8_t> preLen_{4};
     bool     loop_       = true;
     std::atomic<bool> dirty_{false};
+    std::atomic<bool> erasing_{false};
+
+    std::atomic<uint16_t> song_[kSongMax] = {};
+    std::atomic<uint8_t>  songLen_{0};
+    std::atomic<bool>     songMode_{false};
+    std::atomic<bool>     songLoop_{true};
+    std::atomic<uint8_t>  songPos_{0};
+    std::atomic<uint8_t>  songPass_{0};
+    /// A block asked for while running, taken at the next loop end; -1 none.
+    std::atomic<int16_t>  songJump_{-1};
 
     SequencerController* controller_ = nullptr;
     uint32_t lastPos_ = 0;

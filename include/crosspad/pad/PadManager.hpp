@@ -46,6 +46,14 @@ public:
     void handlePadPress(uint8_t padIdx, uint8_t velocity = 127);
     void handlePadRelease(uint8_t padIdx);
     void handlePadPressure(uint8_t padIdx, uint8_t pressure);
+    /// A hit the loop recorder plays back rather than one a player made. Same
+    /// path as handlePadPress(), so it sounds the same; while the active
+    /// handler's onPadPress() runs, isSequencedPress() answers true on that
+    /// thread -- which is how an app tells a take playing from a finger.
+    void handleSequencedPadPress(uint8_t padIdx, uint8_t velocity);
+    /// Only meaningful inside IPadLogicHandler::onPadPress(). Per thread, so a
+    /// player's hit on the pad thread is never mistaken for the loop's.
+    static bool isSequencedPress();
     // Like handlePadPressure but always drives the LED brightness by padIdx,
     // bypassing the note↔pad lookups (getPadForMidiNote can return 255 under
     // sampler kit configs; PadLedController.midiNote is unpopulated). Used by
@@ -130,6 +138,10 @@ public:
     std::string getActivePadLogic() const;
     void unregisterPadLogic(const std::string& appName);
     std::vector<std::string> getRegisteredPadLogics() const;
+    /// The handler registered under appName, or null. For a logic that plays
+    /// through another -- e.g. an app that keeps the base instrument sounding
+    /// while it owns the pads.
+    std::shared_ptr<IPadLogicHandler> getPadLogic(const std::string& appName) const;
     /// Save the currently active pad logic on an internal stack, then activate
     /// appName. Pair with popPadLogic() — used by screens/apps that overlay a
     /// temporary logic and must hand control back on teardown.

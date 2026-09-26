@@ -46,7 +46,9 @@
             "+<instrument/WavPcm.cpp>",
             "+<instrument/SampleBank.cpp>",
             "+<instrument/PitchedInstrument.cpp>",
-            "+<instrument/PitchedKitLoader.cpp>"
+            "+<instrument/PitchedKitLoader.cpp>",
+            "+<audio/WavWriter.cpp>",
+            "+<song/AudioSong.cpp>"
         ]
     }
 }

@@ -58,7 +58,38 @@ public:
 
     // ── Transport ─────────────────────────────────────────────────────────
     void start() { resetPosition(); running_.store(true, std::memory_order_release); }
-    void stop()  { running_.store(false, std::memory_order_release); }
+    /// Start already @p pos samples into the loop: for a transport that is
+    /// not the loop's own, such as a song timeline the pattern is laid on.
+    /// Only while stopped -- the render owns the position once it runs.
+    void startAt(uint32_t pos) {
+        resetPosition();
+        const uint32_t loop = loopSamples();
+        posSamples_.store(loop ? pos % loop : 0, std::memory_order_relaxed);
+        running_.store(true, std::memory_order_release);
+    }
+    void stop()  {
+        countInLeft_.store(0, std::memory_order_relaxed);
+        running_.store(false, std::memory_order_release);
+    }
+    /// Start with @p beats of count-in: the click counts them -- audible even
+    /// when the click is off, that is what a count-in is for -- while the
+    /// position stays at zero, and the loop's beat one is the sample right
+    /// after the last of them. Done here rather than by whoever asked, so the
+    /// hand-over lands on the sample, not on the next poll.
+    void startCountIn(uint8_t beats) {
+        resetPosition();
+        const uint32_t total = samplesPerBeat_ * beats;
+        countInTotal_.store(total, std::memory_order_relaxed);
+        countInLeft_.store(total, std::memory_order_relaxed);
+        running_.store(true, std::memory_order_release);
+    }
+    bool countingIn() const { return countInLeft_.load(std::memory_order_relaxed) > 0; }
+    /// Beats still to count, 0 once the loop is running: 4, 3, 2, 1.
+    uint8_t countInBeatsLeft() const {
+        const uint32_t left = countInLeft_.load(std::memory_order_relaxed);
+        const uint32_t spb = samplesPerBeat_ ? samplesPerBeat_ : 1;
+        return (uint8_t)((left + spb - 1) / spb);
+    }
     bool running() const { return running_.load(std::memory_order_acquire); }
 
     void resetPosition() {
@@ -95,19 +126,25 @@ public:
         uint32_t pos = posSamples_.load(std::memory_order_relaxed);
         const bool aud = audible_.load(std::memory_order_relaxed);
         const float lvl = level_.load(std::memory_order_relaxed);
+        uint32_t cin = countInLeft_.load(std::memory_order_relaxed);
+        const uint32_t cinTotal = countInTotal_.load(std::memory_order_relaxed);
 
         for (uint32_t i = 0; i < frames; ++i) {
+            /* Counting in, the pre-roll has its own position and the loop's
+             * stays at zero until the last pre-roll sample is out. */
+            const bool counting = cin > 0;
+            const uint32_t at = counting ? cinTotal - cin : pos;
             /* A beat starts exactly where the sample index crosses it, so the
              * click is placed to the sample and never rounded to a block. */
-            if (pos % spb == 0) {
+            if (at % spb == 0) {
                 clickLeft_ = clickSamples_;
                 /* Bar one is a fifth up, which is what makes a count-in
                  * countable without watching the screen. */
-                const bool downbeat = ((pos / spb) % beatsPerBar()) == 0;
+                const bool downbeat = ((at / spb) % beatsPerBar()) == 0;
                 step_ = (downbeat ? 1500.0f : 1000.0f) * 6.2831853f / (float)sampleRate_;
                 phase_ = 0.0f;
             }
-            if (clickLeft_ && aud) {
+            if (clickLeft_ && (aud || counting)) {
                 /* Decaying sine: short enough to read as a tick, shaped so it
                  * does not click at the edges of its own envelope. */
                 const float env = (float)clickLeft_ / (float)clickSamples_;
@@ -117,8 +154,10 @@ public:
                 phase_ += step_;
             }
             if (clickLeft_) --clickLeft_;
-            if (++pos >= loop) pos = 0;
+            if (counting) --cin;
+            else if (++pos >= loop) pos = 0;
         }
+        countInLeft_.store(cin, std::memory_order_relaxed);
         posSamples_.store(pos, std::memory_order_relaxed);
     }
 
@@ -144,6 +183,8 @@ private:
     std::atomic<bool>     audible_{true};
     std::atomic<bool>     running_{false};
     std::atomic<uint32_t> posSamples_{0};
+    std::atomic<uint32_t> countInLeft_{0};    // pre-roll samples still to play
+    std::atomic<uint32_t> countInTotal_{0};
 };
 
 } // namespace crosspad

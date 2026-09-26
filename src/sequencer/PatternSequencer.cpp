@@ -49,17 +49,34 @@ void PatternSequencer::addEvent(uint8_t seq, uint32_t pos, uint8_t pad, uint8_t 
     markDirty();
 }
 
+void PatternSequencer::erasePad(uint8_t seq, uint8_t pad)
+{
+    if (seq >= kNumSequences) return;
+    uint16_t kept = 0;
+    for (uint16_t i = 0; i < counts_[seq]; ++i) {
+        if (events_[seq][i].pad != pad) events_[seq][kept++] = events_[seq][i];
+    }
+    if (kept == counts_[seq]) return;
+    counts_[seq] = kept;
+    markDirty();
+}
+
 void PatternSequencer::drainInput(uint32_t loop)
 {
     uint32_t tail = ringTail_.load(std::memory_order_relaxed);
     const uint32_t head = ringHead_.load(std::memory_order_acquire);
     const bool recording = (mode_ == SequencerMode::Record || mode_ == SequencerMode::Overdub)
                            && state_ == SequencerState::Running;
+    const bool erasing = erasing_.load(std::memory_order_relaxed);
 
     while (tail != head) {
         const Hit& h = ring_[tail];
+        /* Erase held: the hit names a pad to take out, it is not a note. Done
+         * here, on the thread that plays and records, so the pattern is never
+         * compacted under a pass that is reading it. */
+        if (erasing)        erasePad(activeSeq_, h.pad);
         /* Into the scene that is sounding: you record into what you hear. */
-        if (recording) addEvent(activeSeq_, quantise(h.pos, loop), h.pad, h.vel);
+        else if (recording) addEvent(activeSeq_, quantise(h.pos, loop), h.pad, h.vel);
         tail = (tail + 1) % kInputRing;
     }
     ringTail_.store(tail, std::memory_order_release);
@@ -100,6 +117,15 @@ void PatternSequencer::poll()
 
     drainInput(loop);
 
+    /* The clock hands over from count-in to the loop on its own sample; this
+     * only notices and opens the take. */
+    if (state_ == SequencerState::PreBeat) {
+        if (!clock_->running()) { setTransport(SequencerMode::None, SequencerState::Idle); return; }
+        if (clock_->countingIn()) { lastPos_ = 0; return; }
+        setTransport(mode_, SequencerState::Running);
+        lastPos_ = 0;
+    }
+
     if (state_ != SequencerState::Running || !clock_->running()) {
         lastPos_ = now;
         return;
@@ -119,7 +145,11 @@ void PatternSequencer::poll()
         /* The only moment a queued scene may take over. Doing it here rather
          * than when the button was pressed is what keeps a swap on the bar
          * line instead of cutting the pattern in half. */
-        if (pendingSeq_ != activeSeq_) applyScene(pendingSeq_);
+        if (songMode_.load(std::memory_order_relaxed)) {
+            if (!songAdvance()) { lastPos_ = now; return; }
+        } else if (pendingSeq_ != activeSeq_) {
+            applyScene(pendingSeq_);
+        }
 
         fireWindow(0, now);
 
@@ -130,7 +160,7 @@ void PatternSequencer::poll()
 
 // ── Scenes ─────────────────────────────────────────────────────────────────
 
-void PatternSequencer::applyScene(uint8_t seq)
+void PatternSequencer::applyScene(uint8_t seq, bool remember)
 {
     if (seq >= kNumSequences) return;
     activeSeq_  = seq;
@@ -140,7 +170,7 @@ void PatternSequencer::applyScene(uint8_t seq)
      * same instant. */
     if (clock_) clock_->setBarCount(bars_[seq]);
     lastPos_ = 0;
-    markDirty();   // the file records which scene was left playing
+    if (remember) markDirty();   // the file records which scene was left playing
 }
 
 void PatternSequencer::select(uint8_t seq)
@@ -175,6 +205,139 @@ void PatternSequencer::setSceneBars(uint8_t seq, uint8_t bars)
         clock_->setBarCount(bars);
         if (lastPos_ >= loop) lastPos_ = 0;
     }
+}
+
+/// Twice as long by playing it twice: every event is copied one old loop
+/// later, so one bar becomes two identical bars, two become four, and so on.
+/// Refused while that scene is taking a recording -- the poll thread is
+/// appending to the same array -- and when the bars or the events would not
+/// fit, rather than doubling half a pattern.
+bool PatternSequencer::doubleScene(uint8_t seq)
+{
+    if (seq >= sceneCount_ || !clock_) return false;
+    if (isRecording() && seq == activeSeq_) return false;
+    const uint8_t bars = bars_[seq];
+    if (!bars || bars * 2 > kMaxBars) return false;
+    const uint16_t n = counts_[seq];
+    if (n * 2 > kMaxEvents) return false;
+
+    const uint32_t loop = (uint32_t)clock_->samplesPerBeat() * clock_->beatsPerBar() * bars;
+    /* Copies first, count second: they sit past the current loop end, so a
+     * poll that sees them before the length changes still cannot fire them. */
+    for (uint16_t i = 0; i < n; ++i) {
+        const Event& e = events_[seq][i];
+        events_[seq][n + i] = { e.pos + loop, e.pad, e.vel, 0 };
+    }
+    counts_[seq] = (uint16_t)(n * 2);
+    setSceneBars(seq, (uint8_t)(bars * 2));
+    return true;
+}
+
+/// Half as long, keeping the first half; what was in the second half goes.
+bool PatternSequencer::halveScene(uint8_t seq)
+{
+    if (seq >= sceneCount_) return false;
+    if (isRecording() && seq == activeSeq_) return false;
+    if (bars_[seq] < 2) return false;
+    setSceneBars(seq, (uint8_t)(bars_[seq] / 2));
+    return true;
+}
+
+// ── Song ───────────────────────────────────────────────────────────────────
+
+bool PatternSequencer::songBlock(uint8_t i, uint8_t& scene, uint8_t& repeats) const
+{
+    if (i >= songLength()) return false;
+    const uint16_t w = song_[i].load(std::memory_order_relaxed);
+    scene   = (uint8_t)(w >> 8);
+    repeats = (uint8_t)(w & 0xFF);
+    return true;
+}
+
+bool PatternSequencer::songInsert(uint8_t i, uint8_t scene, uint8_t repeats)
+{
+    const uint8_t n = songLength();
+    if (n >= kSongMax || i > n || scene >= sceneCount_) return false;
+    if (repeats < 1) repeats = 1;
+    if (repeats > kSongMaxRepeats) repeats = kSongMaxRepeats;
+    for (uint8_t b = n; b > i; --b) song_[b].store(song_[b - 1].load());
+    song_[i].store(packBlock(scene, repeats));
+    songLen_.store((uint8_t)(n + 1), std::memory_order_release);
+    /* The block playing keeps playing: everything from it on moved one right. */
+    if (songMode() && i <= songPos_.load()) songPos_.fetch_add(1);
+    markDirty();
+    return true;
+}
+
+bool PatternSequencer::songRemove(uint8_t i)
+{
+    const uint8_t n = songLength();
+    if (i >= n) return false;
+    for (uint8_t b = i; b + 1 < n; ++b) song_[b].store(song_[b + 1].load());
+    songLen_.store((uint8_t)(n - 1), std::memory_order_release);
+    const uint8_t pos = songPos_.load();
+    if (pos > i) songPos_.store((uint8_t)(pos - 1));
+    markDirty();
+    return true;
+}
+
+bool PatternSequencer::songSet(uint8_t i, uint8_t scene, uint8_t repeats)
+{
+    if (i >= songLength() || scene >= sceneCount_) return false;
+    if (repeats < 1) repeats = 1;
+    if (repeats > kSongMaxRepeats) repeats = kSongMaxRepeats;
+    song_[i].store(packBlock(scene, repeats));
+    markDirty();
+    return true;
+}
+
+void PatternSequencer::songLocate(uint8_t i)
+{
+    if (i >= songLength()) return;
+    if (state_ == SequencerState::Running && clock_ && clock_->running()) {
+        songJump_.store(i);          // on the bar line, like a scene change
+        return;
+    }
+    songPos_.store(i);
+    songPass_.store(0);
+    songJump_.store(-1);
+    uint8_t scene = 0, reps = 0;
+    songBlock(i, scene, reps);
+    applyScene(scene);
+    if (clock_) clock_->resetPosition();
+}
+
+bool PatternSequencer::songAdvance()
+{
+    const uint8_t n = songLength();
+    if (!n) return true;             // nothing arranged: keep looping the scene
+
+    uint8_t pos  = songPos_.load();
+    uint8_t pass = (uint8_t)(songPass_.load() + 1);
+    const int16_t jump = songJump_.exchange(-1);
+    uint8_t scene = 0, reps = 1;
+
+    if (jump >= 0 && jump < n) {
+        pos = (uint8_t)jump;
+        pass = 0;
+    } else if (!songBlock(pos, scene, reps) || pass >= reps) {
+        pass = 0;
+        if (++pos >= n) {
+            pos = 0;
+            if (!songLoop_.load()) {
+                songPos_.store(0);
+                songPass_.store(0);
+                stop();
+                return false;
+            }
+        }
+    }
+    songPos_.store(pos);
+    songPass_.store(pass);
+    if (songBlock(pos, scene, reps) && scene < sceneCount_ && scene != activeSeq_) {
+        applyScene(scene, /*remember=*/false);
+    }
+    return true;
 }
 
 // ── Tempo ──────────────────────────────────────────────────────────────────
@@ -239,6 +402,15 @@ bool PatternSequencer::removeScene(uint8_t seq)
         sceneEnabled_[s] = sceneEnabled_[s + 1];
         for (uint16_t i = 0; i < counts_[s]; ++i) events_[s][i] = events_[s + 1][i];
     }
+    /* The song follows: blocks of the scene that went are dropped, and the
+     * ones after it point one lower, like the scenes themselves. */
+    for (int b = (int)songLength() - 1; b >= 0; --b) {
+        const uint16_t w = song_[b].load();
+        const uint8_t sc = (uint8_t)(w >> 8);
+        if (sc == seq)     songRemove((uint8_t)b);
+        else if (sc > seq) song_[b].store(packBlock((uint8_t)(sc - 1), (uint8_t)(w & 0xFF)));
+    }
+
     const uint8_t last = --sceneCount_;
     counts_[last] = 0;
     bars_[last]   = kDefaultBars;
@@ -279,6 +451,30 @@ void PatternSequencer::playback()
     setTransport(SequencerMode::Playback, SequencerState::Running);
 }
 
+void PatternSequencer::playbackAt(uint32_t pos)
+{
+    if (!clock_) return;
+    if (clock_->running()) stop();
+    clock_->startAt(pos);
+    lastPos_ = clock_->positionSamples();
+    setTransport(SequencerMode::Playback, SequencerState::Running);
+}
+
+void PatternSequencer::startTake(SequencerMode m)
+{
+    /* Already counting in: the take is still waiting for its beat one. */
+    if (state_ == SequencerState::PreBeat) { setTransport(m, SequencerState::PreBeat); return; }
+    if (!clock_->running() && preLen_ > 0) {
+        clock_->startCountIn(preLen_);
+        lastPos_ = 0;
+        setTransport(m, SequencerState::PreBeat);
+        return;
+    }
+    if (!clock_->running()) clock_->start();
+    lastPos_ = clock_->positionSamples();
+    setTransport(m, SequencerState::Running);
+}
+
 void PatternSequencer::record()
 {
     if (!clock_) return;
@@ -286,21 +482,19 @@ void PatternSequencer::record()
      * what makes the button honest -- you hear the old take stop immediately. */
     counts_[activeSeq_] = 0;
     markDirty();
-    if (!clock_->running()) clock_->start();
-    lastPos_ = clock_->positionSamples();
-    setTransport(SequencerMode::Record, SequencerState::Running);
+    startTake(SequencerMode::Record);
 }
 
 void PatternSequencer::overdub()
 {
     if (!clock_) return;
-    if (!clock_->running()) clock_->start();
-    lastPos_ = clock_->positionSamples();
-    setTransport(SequencerMode::Overdub, SequencerState::Running);
+    startTake(SequencerMode::Overdub);
 }
 
 void PatternSequencer::stop()
 {
+    /* A stopped song is over; the next plain Play plays the scene. */
+    songMode_.store(false, std::memory_order_relaxed);
     /* Whatever is still held goes down with the transport, or it stays held
      * until the next pass that never comes. */
     if (pendingRelease_ && sink_) {
@@ -328,6 +522,12 @@ void PatternSequencer::resetScenes()
         bars_[s]         = kDefaultBars;
         sceneEnabled_[s] = true;
     }
+    songLen_.store(0, std::memory_order_release);
+    songMode_.store(false);
+    songLoop_.store(true);
+    songPos_.store(0);
+    songPass_.store(0);
+    songJump_.store(-1);
     /* One scene, the way a kit nobody has recorded into starts. The rest are
      * made when somebody asks for them. */
     sceneCount_ = 1;
@@ -365,6 +565,18 @@ void PatternSequencer::setLength(uint8_t beats)
     if (!clock_) return;
     const uint8_t bpb = clock_->beatsPerBar() ? clock_->beatsPerBar() : 4;
     setSceneBars(activeSeq_, beats / bpb);
+}
+
+bool PatternSequencer::sceneEvent(uint8_t seq, uint16_t i, float& at, uint8_t& pad, uint8_t& vel) const
+{
+    if (seq >= kNumSequences || i >= counts_[seq] || !clock_) return false;
+    const uint32_t loop = (uint32_t)clock_->samplesPerBeat() * clock_->beatsPerBar() * bars_[seq];
+    if (!loop) return false;
+    const Event& e = events_[seq][i];
+    at  = (float)e.pos / (float)loop;
+    pad = e.pad;
+    vel = e.vel;
+    return true;
 }
 
 uint16_t PatternSequencer::eventCount() const

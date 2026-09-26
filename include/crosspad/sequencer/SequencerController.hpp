@@ -178,6 +178,38 @@ public:
     bool    addScene()    { return engine_ ? engine_->addScene() : false; }
     bool    removeScene(uint8_t s) { return engine_ ? engine_->removeScene(s) : false; }
     uint16_t getSceneEventCount(uint8_t s) const { return engine_ ? engine_->sceneEventCount(s) : 0; }
+    bool    getSceneEvent(uint8_t s, uint16_t i, float& at, uint8_t& pad, uint8_t& vel) const {
+        return engine_ ? engine_->sceneEvent(s, i, at, pad, vel) : false;
+    }
+    bool    doubleScene(uint8_t s) { return engine_ ? engine_->doubleScene(s) : false; }
+    bool    halveScene(uint8_t s)  { return engine_ ? engine_->halveScene(s) : false; }
+    void    setErasing(bool on)    { if (engine_) engine_->setErasing(on); }
+    bool    isErasing() const      { return engine_ ? engine_->erasing() : false; }
+    float   getProgress() const    { return engine_ ? engine_->progress() : 0.0f; }
+    /// A bar of click before a take started from a stop.
+    void    setCountIn(bool on)    { if (engine_) engine_->setPreLen(on ? 4 : 0); }
+    bool    getCountIn() const     { return engine_ && engine_->preLen() > 0; }
+    uint8_t getCountInLeft() const { return engine_ ? engine_->countInLeft() : 0; }
+
+    // ---------- song ----------
+    uint8_t getSongLength() const  { return engine_ ? engine_->songLength() : 0; }
+    bool    getSongBlock(uint8_t i, uint8_t& scene, uint8_t& repeats) const {
+        return engine_ ? engine_->songBlock(i, scene, repeats) : false;
+    }
+    bool    songInsert(uint8_t i, uint8_t scene, uint8_t repeats) {
+        return engine_ ? engine_->songInsert(i, scene, repeats) : false;
+    }
+    bool    songRemove(uint8_t i)  { return engine_ ? engine_->songRemove(i) : false; }
+    bool    songSet(uint8_t i, uint8_t scene, uint8_t repeats) {
+        return engine_ ? engine_->songSet(i, scene, repeats) : false;
+    }
+    void    setSongMode(bool on)   { if (engine_) engine_->setSongMode(on); }
+    bool    getSongMode() const    { return engine_ ? engine_->songMode() : false; }
+    void    setSongLoop(bool on)   { if (engine_) engine_->setSongLoop(on); }
+    bool    getSongLoop() const    { return engine_ ? engine_->songLoop() : true; }
+    uint8_t getSongPosition() const { return engine_ ? engine_->songPosition() : 0; }
+    uint8_t getSongPass() const    { return engine_ ? engine_->songPass() : 0; }
+    void    songLocate(uint8_t i)  { if (engine_) engine_->songLocate(i); }
 
     /// Beat within the bar, 0-based. What a metronome display counts.
     int getClickPos() const { return engine_ ? engine_->getClickPos() : 0; }
