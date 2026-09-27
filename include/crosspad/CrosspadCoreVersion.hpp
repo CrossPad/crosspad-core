@@ -12,7 +12,7 @@
 #include <cstdint>
 
 #define CROSSPAD_CORE_VERSION_MAJOR 1
-#define CROSSPAD_CORE_VERSION_MINOR 26
+#define CROSSPAD_CORE_VERSION_MINOR 25
 #define CROSSPAD_CORE_VERSION_PATCH 0
 
 /* Built from the triple rather than written out, so a bump cannot leave the

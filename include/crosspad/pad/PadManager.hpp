@@ -50,6 +50,12 @@ public:
     void handlePadPress(uint8_t padIdx, uint8_t velocity = 127,
                         EventSource source = EventSource::PadManager);
     void handlePadRelease(uint8_t padIdx, EventSource source = EventSource::PadManager);
+    /// Called with every press a player makes -- whatever app's pad logic is
+    /// active, never for the loop recorder's playback (SequencerCallback) --
+    /// before it is handled. A platform whose pads come in by more ways than
+    /// it can stamp one by one gives it the loop recorder's input here.
+    using InputTap = void (*)(void* ctx, uint8_t padIdx, uint8_t velocity);
+    void setInputTap(InputTap tap, void* ctx) { inputTap_ = tap; inputTapCtx_ = ctx; }
     /// Who made the last press or release of @p padIdx. Per pad, not per
     /// call: a take playing pad 3 while a finger holds pad 5 answers each
     /// right, which one shared flag set around the dispatch could not.
@@ -213,6 +219,8 @@ private:
 
     // Input suppression flag
     bool inputSuppressed_ = false;
+    InputTap inputTap_ = nullptr;
+    void* inputTapCtx_ = nullptr;
 
     // Thread safety
     mutable std::mutex stateMutex_;
