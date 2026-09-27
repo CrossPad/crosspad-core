@@ -70,6 +70,13 @@ struct KitInfo {
     std::string description;
     std::string version;
     std::string created_at;
+    /// Where the kit comes from, as the kit browser files it: "" for the kits
+    /// a board ships with (their artwork beside them), "user" for one made on
+    /// it -- the Slicer writes that into every kit it saves.
+    std::string category;
+    /// A kit of the user's own: said so, or written by the Slicer before it
+    /// said so.
+    bool isUser() const { return category == "user" || author == "CrossPad Slicer"; }
     /// The kit's tempo in BPM: what the click counts and the loop recorder is
     /// quantised to once the kit is loaded, and what preview.mid is played at.
     /// 0 means the kit does not say -- and a lot of DAWs export a MIDI file

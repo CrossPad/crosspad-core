@@ -228,3 +228,33 @@ TEST_CASE("kit json: getDetails names the engine", "[kit][instrument]") {
     REQUIRE(pitched.getDetails().find("pitched") != std::string::npos);
     REQUIRE(pitched.getDetails().find("HIL SINE PITCHED") == 0);
 }
+
+TEST_CASE("kit json: category files a kit as the user's, the Slicer's without it too", "[kit]") {
+    using namespace crosspad;
+    JsonDocument doc;
+    deserializeJson(doc, R"({"name":"Mine","author":"Someone","category":"user"})");
+    KitInfo a;
+    kit_parse_metadata(a, doc);
+    CHECK(a.category == "user");
+    CHECK(a.isUser());
+
+    JsonDocument old;
+    deserializeJson(old, R"({"name":"REC_012","author":"CrossPad Slicer"})");
+    KitInfo b;
+    kit_parse_metadata(b, old);
+    CHECK(b.category.empty());
+    CHECK(b.isUser());                          // made before the Slicer wrote a category
+
+    JsonDocument stock;
+    deserializeJson(stock, R"({"name":"Black Tesla","author":"CrossPad"})");
+    KitInfo c;
+    kit_parse_metadata(c, stock);
+    CHECK_FALSE(c.isUser());
+
+    JsonDocument out;
+    kit_serialize(a, out);
+    CHECK(std::string(out["category"] | "") == "user");
+    JsonDocument out2;
+    kit_serialize(c, out2);
+    CHECK_FALSE(out2["category"].is<const char*>());   // absent, not "", for a stock kit
+}
