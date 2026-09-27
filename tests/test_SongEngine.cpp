@@ -354,3 +354,140 @@ TEST_CASE("song engine: stop and play hammered while the render runs", "[song]")
     run.store(false);
     render.join();
 }
+
+namespace {
+
+/// A clip of @p bars bars at 120 BPM (2 s a bar) on @p track at @p bar.
+void placeClip(Rig& r, const std::string& file, int16_t value, uint8_t track, uint32_t bar, uint16_t bars) {
+    writeClip((r.clipsDir("Demo") / file).string(), kRate * 2 * bars, value);
+    std::lock_guard<std::recursive_mutex> l(r.engine->songMutex());
+    AudioSong& s = r.engine->song();
+    s.bpm = 120.0f;
+    SongClip c;
+    c.file = file;
+    c.bar = bar;
+    c.bars = bars;
+    s.addClip(track, c);
+}
+
+bool editDone(Rig& r) {
+    return waitFor([&] { return r.engine->editState() != SongOpState::Busy; }, 10000) &&
+           r.engine->editState() == SongOpState::Ready;
+}
+
+} // namespace
+
+TEST_CASE("song engine: merge mixes the tracks into one clip on the lowest", "[song]") {
+    Rig r;
+    REQUIRE(r.open("Demo"));
+    placeClip(r, "a.wav", 1000, 1, 0, 2);
+    placeClip(r, "b.wav", 300, 2, 1, 1);
+    {
+        std::lock_guard<std::recursive_mutex> l(r.engine->songMutex());
+        r.engine->song().tracks[2].volume = 0.5f;
+    }
+    r.engine->commit();
+    REQUIRE(r.engine->requestMerge(0b0110, 0, 2));
+    REQUIRE(editDone(r));
+    CHECK(r.engine->editProgress() == 100);
+
+    /* Bar 0 is track 1 alone, bar 1 both at their volumes: sample-exact. */
+    const std::vector<int16_t> pcm = readWavData((r.clipsDir("Demo") / "merge_01.wav").string());
+    REQUIRE(pcm.size() == size_t(kRate) * 2 * 2 * 2);
+    CHECK(pcm.front() == 1000);
+    CHECK(pcm[size_t(kRate) * 2 * 2 - 2] == 1000);
+    CHECK(pcm[size_t(kRate) * 2 * 2] == 1150);
+    CHECK(pcm.back() == 1150);
+
+    std::lock_guard<std::recursive_mutex> l(r.engine->songMutex());
+    const AudioSong& s = r.engine->song();
+    REQUIRE(s.tracks[1].clips.size() == 1);
+    CHECK(s.tracks[1].clips[0].file == "merge_01.wav");
+    CHECK(s.tracks[1].clips[0].bars == 2);
+    CHECK(s.tracks[1].volume == 1.0f);
+    CHECK(s.tracks[2].clips.empty());
+}
+
+TEST_CASE("song engine: merge leaves muted tracks out and cuts a block reaching in", "[song]") {
+    Rig r;
+    REQUIRE(r.open("Demo"));
+    placeClip(r, "long.wav", 500, 0, 0, 3);
+    placeClip(r, "m.wav", 700, 1, 1, 1);
+    {
+        std::lock_guard<std::recursive_mutex> l(r.engine->songMutex());
+        r.engine->song().tracks[1].muted = true;
+    }
+    r.engine->commit();
+    REQUIRE(r.engine->requestMerge(0b0011, 1, 2));
+    REQUIRE(editDone(r));
+    std::lock_guard<std::recursive_mutex> l(r.engine->songMutex());
+    const AudioSong& s = r.engine->song();
+    /* long.wav keeps bar 0; the merge starts at bar 1 on track 0. */
+    REQUIRE(s.tracks[0].clips.size() == 2);
+    CHECK(s.tracks[0].clips[0].file == "long.wav");
+    CHECK(s.tracks[0].clips[0].bars == 1);
+    CHECK(s.tracks[0].clips[1].bar == 1);
+    REQUIRE(s.tracks[1].clips.size() == 1);   // muted: untouched
+    CHECK(s.tracks[1].clips[0].file == "m.wav");
+}
+
+TEST_CASE("song engine: a new tempo resizes every block to its file", "[song]") {
+    Rig r;
+    REQUIRE(r.open("Demo"));
+    placeClip(r, "c.wav", 100, 0, 0, 2);            // 4 s
+    r.engine->commit();
+    REQUIRE(r.engine->requestTempo(240.0f));        // 1 s a bar
+    REQUIRE(editDone(r));
+    std::lock_guard<std::recursive_mutex> l(r.engine->songMutex());
+    CHECK(r.engine->song().bpm == 240.0f);
+    CHECK(r.engine->song().tracks[0].clips[0].bars == 4);
+    CHECK_FALSE(r.engine->requestTempo(5.0f));
+}
+
+TEST_CASE("song engine: rename moves the folder and is remembered", "[song]") {
+    Rig r;
+    REQUIRE(r.open("Demo"));
+    REQUIRE(r.open("Other"));
+    REQUIRE(r.engine->requestRename("Demo"));       // taken
+    REQUIRE(waitFor([&] { return r.engine->editState() != SongOpState::Busy; }));
+    CHECK(r.engine->editState() == SongOpState::Failed);
+    REQUIRE(r.engine->requestRename("Fresh"));
+    REQUIRE(editDone(r));
+    CHECK(fs::is_directory(fs::path(r.platform.root) / "Fresh"));
+    CHECK_FALSE(fs::exists(fs::path(r.platform.root) / "Other"));
+    CHECK(r.platform.current == "Fresh");
+    std::lock_guard<std::recursive_mutex> l(r.engine->songMutex());
+    CHECK(r.engine->song().name == "Fresh");
+    CHECK_FALSE(r.engine->requestRename("a/b"));
+}
+
+TEST_CASE("song engine: with a loop region playback goes round it", "[song]") {
+    Rig r;
+    REQUIRE(r.open("Demo"));
+    placeClip(r, "c.wav", 100, 0, 0, 4);
+    {
+        std::lock_guard<std::recursive_mutex> l(r.engine->songMutex());
+        r.engine->song().loopStart = 1;
+        r.engine->song().loopEnd = 2;
+    }
+    r.engine->commit();
+    REQUIRE(r.engine->play(0));
+    REQUIRE(waitFor([&] { return r.engine->playing() && r.engine->positionBars() >= 0.0; }));
+    std::vector<float> out(kBlock * 2), bus(kBlock * 2, 0.0f);
+    /* Three bars of blocks: past the region's end twice over. */
+    double maxPos = 0.0;
+    bool wrapped = false;
+    double last = 0.0;
+    for (uint32_t i = 0; i < kRate * 2 * 3 / kBlock; ++i) {
+        r.block(out, bus);
+        const double pos = r.engine->positionBars();
+        maxPos = std::max(maxPos, pos);
+        if (pos + 0.5 < last) wrapped = true;
+        last = pos;
+        if (i % 16 == 0) std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    CHECK(wrapped);
+    CHECK(maxPos < 2.0);
+    CHECK(last >= 1.0);
+    r.engine->stop();
+}

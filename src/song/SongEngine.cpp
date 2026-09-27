@@ -96,6 +96,12 @@ long readSome(int fd, void* dst, size_t n) { return ::_read(fd, dst, (unsigned)n
 bool seek(int fd, uint32_t at) { return ::_lseeki64(fd, at, SEEK_SET) >= 0; }
 void close(int fd) { ::_close(fd); }
 bool exists(const std::string& p) { std::error_code ec; return std::filesystem::exists(native(p), ec); }
+bool rename(const std::string& from, const std::string& to)
+{
+    std::error_code ec;
+    std::filesystem::rename(native(from), native(to), ec);
+    return !ec;
+}
 bool makeDir(const std::string& p)
 {
     std::error_code ec;
@@ -118,6 +124,7 @@ long readSome(int fd, void* dst, size_t n) { return (long)::read(fd, dst, n); }
 bool seek(int fd, uint32_t at) { return ::lseek(fd, (off_t)at, SEEK_SET) >= 0; }
 void close(int fd) { ::close(fd); }
 bool exists(const std::string& p) { struct stat st; return stat(p.c_str(), &st) == 0; }
+bool rename(const std::string& from, const std::string& to) { return std::rename(from.c_str(), to.c_str()) == 0; }
 bool makeDir(const std::string& p)
 {
     struct stat st;
@@ -300,7 +307,18 @@ struct Arrangement {
     uint32_t end = 0;             // samples; 0 = empty song
     uint32_t samplesPerBar = 0;
     bool     loop = true;
+    uint32_t loopA = 0, loopB = 0;   // the loop region, samples; loopB <= loopA = none
 };
+
+/// Where a play position goes once it reaches the wrap: into the loop
+/// region when there is one, else back to the song's start. One rule, used
+/// by RT for what is heard and by the worker for what it reads next, so the
+/// two never disagree about where the song is.
+inline uint32_t wrap_position(uint32_t pos, uint32_t end, uint32_t loopA, uint32_t loopB)
+{
+    if (loopB > loopA) return pos >= loopB ? loopA + (pos - loopB) % (loopB - loopA) : pos;
+    return end ? pos % end : 0;
+}
 
 /// Marks the render inside this node: the counter is odd from entry to exit,
 /// so the worker can wait for a block in flight before freeing what RT reads.
@@ -382,9 +400,12 @@ struct SongEngine::Impl {
         for (uint32_t i = 0; i < got * 2; ++i) out[i] += (float)s[i] * (1.0f / 32768.0f);
         uint32_t pos = pos_.load(std::memory_order_relaxed) + frames;
         const uint32_t end = end_.load(std::memory_order_relaxed);
-        if (end && pos >= end) {
+        const bool loop = loop_.load(std::memory_order_relaxed);
+        const uint32_t la = loopA_.load(std::memory_order_relaxed), lb = loopB_.load(std::memory_order_relaxed);
+        const uint32_t lim = loop && lb > la ? lb : end;
+        if (lim && pos >= lim) {
             /* Modulo, not minus: the song can be shortened while it plays. */
-            if (loop_.load(std::memory_order_relaxed)) pos %= end;
+            if (loop) pos = wrap_position(pos, end, la, lb);
             else {
                 Play expected = Play::Running;
                 play_.compare_exchange_strong(expected, Play::Ended, std::memory_order_seq_cst);
@@ -457,6 +478,34 @@ struct SongEngine::Impl {
     }
     SongOpState openState() const { return openState_.load(); }
 
+    bool requestRename(const std::string& name) {
+        if (!valid_name(name) || !ensureWorker()) return false;
+        {
+            std::lock_guard<std::recursive_mutex> l(songMutex_);
+            editName_ = name;
+        }
+        return requestEdit(kEditRename);
+    }
+
+    bool requestTempo(float bpm) {
+        if (!(bpm >= 20.0f && bpm <= 400.0f) || !ensureWorker()) return false;
+        editBpm_.store(bpm);
+        return requestEdit(kEditTempo);
+    }
+
+    SongOpState editState() const { return editState_.load(); }
+
+    bool requestMerge(uint8_t trackMask, uint32_t fromBar, uint32_t toBar) {
+        const uint8_t all = (uint8_t)((1u << kTracks) - 1);
+        if (!(trackMask & all) || toBar <= fromBar || !ensureWorker()) return false;
+        editMask_.store(trackMask & all);
+        editFrom_.store(fromBar);
+        editTo_.store(toBar);
+        editProgress_.store(0);
+        return requestEdit(kEditMerge);
+    }
+    uint8_t editProgress() const { return editProgress_.load(); }
+
     /// The first look at the song is what opens the last project.
     AudioSong& song() {
         if (!opened_ && ensureWorker()) p.wake();
@@ -505,13 +554,14 @@ struct SongEngine::Impl {
     void cancelBounce() { bCancel_.store(true); }
 
     // ── Playback ──────────────────────────────────────────────────────────
-    bool play(uint32_t fromBar) {
+    bool playWithTake(uint32_t fromBar, SyncTake take) {
         if (!ensureWorker() || busy_.load()) return false;           // a bounce owns the transport
         {
             std::lock_guard<std::mutex> l(snapMutex_);
-            if (!snap_.end) return false;
+            if (!snap_.end && !snap_.loopB) return false;
         }
         playFrom_.store(fromBar);
+        playTake_.store(take);
         stopReq_.store(false);
         playReq_.store(true);
         p.wake();
@@ -573,6 +623,13 @@ private:
     bool request(uint8_t list) {
         if (!ensureWorker()) return false;
         listReq_.fetch_or(list);
+        p.wake();
+        return true;
+    }
+
+    bool requestEdit(uint8_t edit) {
+        editState_.store(SongOpState::Busy);
+        editReq_.store(edit);
         p.wake();
         return true;
     }
@@ -679,6 +736,171 @@ private:
         openState_.store(doOpen(name));
     }
 
+    /// Worker: the open project's folder under the name asked for, and that
+    /// name remembered as the one to open next time.
+    SongOpState doRename() {
+        std::string name, from;
+        {
+            std::lock_guard<std::recursive_mutex> l(songMutex_);
+            name = editName_;
+            from = song_.dir;
+        }
+        if (!opened_ || !p.storageReady()) return SongOpState::Failed;
+        const std::string to = std::string(p.songsRoot()) + "/" + name;
+        if (fsx::exists(to)) return SongOpState::Failed;              // taken
+        endPlayback();
+        if (!fsx::rename(from, to)) return SongOpState::Failed;
+        {
+            std::lock_guard<std::recursive_mutex> l(songMutex_);
+            song_.dir = to;
+            song_.name = name;
+            rebuild();
+        }
+        p.saveCurrent(name);
+        return SongOpState::Ready;
+    }
+
+    /// Worker: a new tempo, and every block as long as its file lasts at it.
+    /// The headers are read into a copy outside songMutex_, so the UI's
+    /// timers are not held out by the card.
+    SongOpState doTempo(float bpm) {
+        if (!opened_) return SongOpState::Failed;
+        AudioSong copy;
+        {
+            std::lock_guard<std::recursive_mutex> l(songMutex_);
+            copy = song_;
+        }
+        copy.bpm = bpm;
+        const uint32_t spBar = copy.samplesPerBar(sampleRate_);
+        for (auto& tr : copy.tracks) {
+            for (auto& c : tr.clips) {
+                ClipReader r;
+                if (!p.storageReady() || !r.open(copy.clipPath(c.file))) continue;   // missing: keep what it had
+                c.bars = (uint16_t)std::max<uint32_t>(1, std::min<uint32_t>((r.frames + spBar - 1) / spBar, 999));
+                r.close();
+                p.yieldIo();
+            }
+        }
+        endPlayback();
+        {
+            std::lock_guard<std::recursive_mutex> l(songMutex_);
+            song_.bpm = bpm;
+            /* Sizes matched to the blocks by place: an edit made while the
+             * headers were read would have moved them, and wins. */
+            for (int t = 0; t < kTracks; ++t) {
+                auto& cs = song_.tracks[t].clips;
+                const auto& nc = copy.tracks[t].clips;
+                for (size_t i = 0; i < cs.size() && i < nc.size(); ++i) {
+                    if (cs[i].file == nc[i].file && cs[i].bar == nc[i].bar) cs[i].bars = nc[i].bars;
+                }
+            }
+            rebuild();
+        }
+        doSave();
+        return SongOpState::Ready;
+    }
+
+    /// Worker: the tracks in @p mask mixed down, [fromBar, toBar) and on to the
+    /// end of any block that starts inside, into one clip on the lowest of
+    /// them -- see ISongEngine::requestMerge. Read from a copy of the song,
+    /// so the UI is not held out while the card works; the song is changed
+    /// only once the clip is written.
+    SongOpState doMerge(uint8_t mask, uint32_t fromBar, uint32_t toBar) {
+        if (!opened_ || !p.storageReady() || !io_ || !acc_) return SongOpState::Failed;
+        AudioSong copy;
+        {
+            std::lock_guard<std::recursive_mutex> l(songMutex_);
+            copy = song_;
+        }
+        /* Muted tracks are not what is heard: left out, left alone. */
+        for (int t = 0; t < kTracks; ++t) if (copy.tracks[t].muted) mask &= (uint8_t)~(1u << t);
+        if (!mask) return SongOpState::Failed;
+        for (int t = 0; t < kTracks; ++t) {
+            if (!(mask & (1u << t))) continue;
+            for (const auto& c : copy.tracks[t].clips) {
+                if (c.bar >= fromBar && c.bar < toBar) toBar = std::max<uint32_t>(toBar, c.bar + c.bars);
+            }
+        }
+        const Arrangement arr = flatten(copy);
+        const uint32_t spBar = arr.samplesPerBar;
+        const uint32_t a = fromBar * spBar, b = toBar * spBar;
+        std::string file;
+        for (int n = 1; n < 1000 && file.empty(); ++n) {
+            char buf[24];
+            std::snprintf(buf, sizeof(buf), "merge_%02d.wav", n);
+            if (!fsx::exists(copy.clipPath(buf))) file = buf;
+        }
+        if (file.empty()) return SongOpState::Failed;
+        const std::string path = copy.clipPath(file);
+
+        endPlayback();
+        WavWriter w;
+        if (!w.open(path.c_str(), sampleRate_, 2)) return SongOpState::Failed;
+        w.reserve(b - a);                           // the card's clusters found now, not per chunk
+        ClipReader rd[kTracks];
+        bool ok = true;
+        for (uint32_t f = a; f < b && ok;) {
+            const uint32_t n = std::min(kChunkFrames, b - f);
+            std::memset(acc_, 0, n * 8);
+            for (int t = 0; t < kTracks; ++t) {
+                if (!(mask & (1u << t))) continue;
+                const float g = copy.tracks[t].volume;
+                for (const auto& sg : arr.tracks[t]) {
+                    if (sg.end <= f) continue;
+                    if (sg.start >= f + n) break;
+                    const uint32_t x = std::max(sg.start, f), y = std::min(sg.end, f + n);
+                    if (rd[t].path != sg.path && !(p.storageReady() && rd[t].open(sg.path))) continue;
+                    rd[t].read(x - sg.start, io_, y - x);
+                    int32_t* d = acc_ + (x - f) * 2;
+                    for (uint32_t k = 0; k < (y - x) * 2; ++k) d[k] += (int32_t)((float)io_[k] * g);
+                }
+            }
+            for (uint32_t k = 0; k < n * 2; ++k) {
+                const int32_t v = acc_[k];
+                io_[k] = (int16_t)(v > 32767 ? 32767 : (v < -32768 ? -32768 : v));
+            }
+            ok = w.write(io_, n);
+            f += n;
+            editProgress_.store((uint8_t)((uint64_t)(f - a) * 99 / (b - a)));
+            p.yieldIo();
+        }
+        for (auto& r : rd) r.close();
+        if (!w.close() || !ok) {
+            std::remove(path.c_str());
+            return SongOpState::Failed;
+        }
+
+        {
+            std::lock_guard<std::recursive_mutex> l(songMutex_);
+            int target = -1;
+            for (int t = 0; t < kTracks; ++t) {
+                if (!(mask & (1u << t))) continue;
+                if (target < 0) target = t;
+                auto& cs = song_.tracks[t].clips;
+                cs.erase(std::remove_if(cs.begin(), cs.end(), [&](const SongClip& c) {
+                    return c.bar >= fromBar && c.bar < toBar;
+                }), cs.end());
+                /* A block reaching into the range from before it keeps what
+                 * is before it; the rest is in the new clip. */
+                for (auto& c : cs) {
+                    if (c.bar < fromBar && c.bar + c.bars > fromBar) c.bars = (uint16_t)(fromBar - c.bar);
+                }
+            }
+            SongClip c;
+            c.file = file;
+            c.bar = fromBar;
+            c.bars = (uint16_t)std::max<uint32_t>(1, toBar - fromBar);
+            song_.addClip(target, c);
+            song_.tracks[target].volume = 1.0f;      // the tracks' volumes are in the clip now
+            rebuild();
+        }
+        doSave();
+        editProgress_.store(100);
+        logf(false, "merged tracks 0x%x, bars %u..%u, into %s", (unsigned)mask, (unsigned)fromBar,
+             (unsigned)toBar, file.c_str());
+        return SongOpState::Ready;
+    }
+
     /// Worker: write the song. A copy is taken under the lock so the card
     /// write does not hold the UI out.
     void doSave() {
@@ -691,27 +913,40 @@ private:
         if (p.storageReady() && !copy.save()) logf(true, "song.json not written");
     }
 
-    /// The song as sample ranges, for the worker, and the per-track gains
-    /// and loop for RT -- so a mute or a fader acts at once while playing.
-    /// Caller holds songMutex_.
-    void rebuild() {
+    /// @p song as sample ranges. A later block cuts the one it lands on, as
+    /// on any timeline, and the song's length -- or the loop region, where it
+    /// reaches further -- cuts everything past it.
+    Arrangement flatten(const AudioSong& song) const {
         Arrangement a;
-        a.samplesPerBar = song_.samplesPerBar(sampleRate_);
-        a.loop = song_.loop;
-        a.end = song_.playEnd() * a.samplesPerBar;
+        a.samplesPerBar = song.samplesPerBar(sampleRate_);
+        a.loop = song.loop;
+        a.end = song.playEnd() * a.samplesPerBar;
+        if (song.hasRegion()) {
+            a.loopA = song.loopStart * a.samplesPerBar;
+            a.loopB = song.loopEnd * a.samplesPerBar;
+        }
+        const uint32_t cut = std::max(a.end, a.loopB);
         for (int t = 0; t < kTracks; ++t) {
-            const auto& cs = song_.tracks[t].clips;
+            const auto& cs = song.tracks[t].clips;
             for (size_t i = 0; i < cs.size(); ++i) {
                 Segment s;
-                s.path  = song_.clipPath(cs[i].file);
+                s.path  = song.clipPath(cs[i].file);
                 s.start = cs[i].bar * a.samplesPerBar;
                 s.end   = (cs[i].bar + cs[i].bars) * a.samplesPerBar;
-                /* A later block cuts the one it lands on, as on any timeline,
-                 * and the song's length cuts everything past it. */
                 if (i + 1 < cs.size()) s.end = std::min(s.end, cs[i + 1].bar * a.samplesPerBar);
-                s.end = std::min(s.end, a.end);
+                s.end = std::min(s.end, cut);
                 if (s.end > s.start) a.tracks[t].push_back(s);
             }
+        }
+        return a;
+    }
+
+    /// The song for the worker, and the per-track gains and loop for RT --
+    /// so a mute or a fader acts at once while playing. Caller holds
+    /// songMutex_.
+    void rebuild() {
+        Arrangement a = flatten(song_);
+        for (int t = 0; t < kTracks; ++t) {
             const auto& tr = song_.tracks[t];
             gain_[t].store(tr.muted ? 0.0f : tr.volume);
         }
@@ -720,6 +955,8 @@ private:
         {
             std::lock_guard<std::mutex> l(snapMutex_);
             end_.store(a.end);
+            loopA_.store(a.loopA);
+            loopB_.store(a.loopB);
             snap_ = std::move(a);
         }
     }
@@ -769,6 +1006,12 @@ private:
                 openState_.store(doOpen(name));
                 continue;
             }
+            if (const uint8_t edit = editReq_.exchange(0)) {
+                editState_.store(edit == kEditRename ? doRename()
+                               : edit == kEditTempo ? doTempo(editBpm_.load())
+                               : doMerge(editMask_.load(), editFrom_.load(), editTo_.load()));
+                continue;
+            }
             if (const uint8_t lists = listReq_.exchange(0)) {
                 if (lists & kListProjects) doListProjects();
                 if (lists & kListClips)    doListClips();
@@ -800,8 +1043,9 @@ private:
         }
         {
             std::lock_guard<std::mutex> l(snapMutex_);
-            if (!snap_.end) return;
-            const uint32_t from = std::min(fromBar * snap_.samplesPerBar, snap_.end - 1);
+            if (!snap_.end && !snap_.loopB) return;
+            const uint32_t from = std::min(fromBar * snap_.samplesPerBar,
+                                           std::max(snap_.end, snap_.loopB) - 1);
             if (!ring_.alloc(kSongRingFrames, kPrimeFrames)) {
                 logf(true, "play: not enough memory for the song ring (%u kB free)",
                      (unsigned)(p.freeMemoryBytes() / 1024));
@@ -813,6 +1057,7 @@ private:
             startPos_ = from;
         }
         syncing_ = sync;
+        take_ = sync ? playTake_.load() : SyncTake::None;
         if (sync) {
             PatternSequencer& seq = seq_;
             seq.stop();
@@ -857,14 +1102,15 @@ private:
             {
                 std::lock_guard<std::mutex> l(snapMutex_);
                 const uint32_t end = snap_.end;
-                if (!end) return;
+                const uint32_t lim = snap_.loop && snap_.loopB > snap_.loopA ? snap_.loopB : end;
+                if (!lim) return;
                 /* Skip what RT already played as silence. */
                 wp += debt_.exchange(0);
-                if (wp >= end) {
-                    if (!snap_.loop) { writePos_ = end; break; }
-                    wp %= end;
+                if (wp >= lim) {
+                    if (!snap_.loop) { writePos_ = lim; break; }
+                    wp = wrap_position(wp, end, snap_.loopA, snap_.loopB);
                 }
-                n = std::min(n, end - wp);
+                n = std::min(n, lim - wp);
                 for (int t = 0; t < kTracks; ++t) {
                     if (gain_[t].load(std::memory_order_relaxed) <= 0.0f) continue;
                     for (const auto& sg : snap_.tracks[t]) {
@@ -919,6 +1165,10 @@ private:
                 armPos_.store(loop ? at % loop : 0, std::memory_order_relaxed);
                 play_.store(Play::Armed, std::memory_order_release);
                 seq.playbackAt(at);
+                /* A take asked for with the song: opened on the running
+                 * clock, so it starts with the song and not after a count-in. */
+                if (take_ == SyncTake::Record)       seq.record();
+                else if (take_ == SyncTake::Overdub) seq.overdub();
             } else {
                 play_.store(Play::Running, std::memory_order_release);
             }
@@ -1109,6 +1359,15 @@ private:
     std::atomic<bool> openReq_{false}, saveReq_{false}, playReq_{false};
     std::atomic<SongOpState> openState_{SongOpState::Idle};
     std::atomic<uint32_t> playFrom_{0};
+    std::atomic<SyncTake> playTake_{SyncTake::None};
+    SyncTake    take_ = SyncTake::None;          // worker: what the sequencer starts doing
+    static constexpr uint8_t kEditRename = 1, kEditTempo = 2, kEditMerge = 3;
+    std::atomic<uint8_t>  editMask_{0}, editProgress_{0};
+    std::atomic<uint32_t> editFrom_{0}, editTo_{0};
+    std::atomic<uint8_t>  editReq_{0};
+    std::atomic<SongOpState> editState_{SongOpState::Idle};
+    std::atomic<float>    editBpm_{120.0f};
+    std::string editName_;                        // under songMutex_
     std::atomic<uint8_t>  listReq_{0};
     std::atomic<uint32_t> listGen_{0};
     std::vector<std::string> projects_;
@@ -1130,6 +1389,7 @@ private:
     std::atomic<uint32_t> pos_{0}, end_{0}, spBar_{0}, underruns_{0}, openFailures_{0};
     std::atomic<uint32_t> rtGen_{0};               // odd while the render is inside
     std::atomic<bool>     loop_{true};
+    std::atomic<uint32_t> loopA_{0}, loopB_{0};    // the loop region, samples
     std::atomic<bool>     stopReq_{false};
     std::vector<int16_t>  scratch_;
     int16_t*              io_ = nullptr;           // worker's card buffer, PSRAM
@@ -1184,7 +1444,13 @@ uint32_t SongEngine::listGeneration() const { return impl_->listGeneration(); }
 bool SongEngine::bounceScene(uint8_t scene, uint8_t track) { return impl_->bounceScene(scene, track); }
 BounceStatus SongEngine::bounceStatus() { return impl_->bounceStatus(); }
 void SongEngine::cancelBounce() { impl_->cancelBounce(); }
-bool SongEngine::play(uint32_t fromBar) { return impl_->play(fromBar); }
+bool SongEngine::requestRename(const std::string& name) { return impl_->requestRename(name); }
+bool SongEngine::requestTempo(float bpm) { return impl_->requestTempo(bpm); }
+SongOpState SongEngine::editState() const { return impl_->editState(); }
+bool SongEngine::requestMerge(uint8_t mask, uint32_t fromBar, uint32_t toBar) { return impl_->requestMerge(mask, fromBar, toBar); }
+uint8_t SongEngine::editProgress() const { return impl_->editProgress(); }
+bool SongEngine::play(uint32_t fromBar) { return impl_->playWithTake(fromBar, SyncTake::None); }
+bool SongEngine::playWithTake(uint32_t fromBar, SyncTake take) { return impl_->playWithTake(fromBar, take); }
 void SongEngine::stop() { impl_->stop(); }
 bool SongEngine::playing() const { return impl_->playing(); }
 double SongEngine::positionBars() const { return impl_->positionBars(); }

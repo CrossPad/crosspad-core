@@ -44,10 +44,16 @@ public:
     bool requestClips() override;
     std::vector<ClipInfo> clips() override;
     uint32_t listGeneration() const override;
+    bool requestRename(const std::string& name) override;
+    bool requestTempo(float bpm) override;
+    SongOpState editState() const override;
+    bool requestMerge(uint8_t trackMask, uint32_t fromBar, uint32_t toBar) override;
+    uint8_t editProgress() const override;
     bool bounceScene(uint8_t scene, uint8_t track) override;
     BounceStatus bounceStatus() override;
     void cancelBounce() override;
     bool play(uint32_t fromBar) override;
+    bool playWithTake(uint32_t fromBar, SyncTake take) override;
     void stop() override;
     bool playing() const override;
     double positionBars() const override;
