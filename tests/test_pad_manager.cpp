@@ -232,3 +232,37 @@ TEST_CASE("PadManager: getPadLogic finds a registered handler by name", "[pad]")
     REQUIRE(pm.getPadLogic("Spy") == spy);
     REQUIRE(pm.getPadLogic("Nobody") == nullptr);
 }
+
+TEST_CASE("PadManager: the input tap sees played pads, not the sequencer's", "[pad]") {
+    test::CoreTestPlatform platform;
+    REQUIRE(platform.init());
+    auto& pm = platform.padManager;
+
+    struct Seen { int count = 0; uint8_t pad = 0, vel = 0; } seen;
+    pm.setInputTap([](void* ctx, uint8_t pad, uint8_t vel) {
+        auto* s = static_cast<Seen*>(ctx);
+        ++s->count;
+        s->pad = pad;
+        s->vel = vel;
+    }, &seen);
+
+    SECTION("a played press, also with app pad logic active") {
+        pm.registerPadLogic("Dummy", std::make_shared<DummyPadLogic>());
+        pm.setActivePadLogic("Dummy");
+        pm.handlePadPress(5, 90);
+        REQUIRE(seen.count == 1);
+        CHECK(seen.pad == 5);
+        CHECK(seen.vel == 90);
+    }
+
+    SECTION("the sequencer's playback is not tapped") {
+        pm.handlePadPress(2, 100, EventSource::SequencerCallback);
+        CHECK(seen.count == 0);
+    }
+
+    SECTION("a suppressed press is not tapped") {
+        pm.setInputSuppressed(true);
+        pm.handlePadPress(1, 100);
+        CHECK(seen.count == 0);
+    }
+}

@@ -58,6 +58,7 @@ void PadManager::allNotesOff() {
 void PadManager::handlePadPress(uint8_t padIdx, uint8_t velocity, EventSource source) {
     if (padIdx >= 16) return;
     if (inputSuppressed_) return;
+    if (inputTap_ && source != EventSource::SequencerCallback) inputTap_(inputTapCtx_, padIdx, velocity);
 
     // Get active pad logic handler (thread-safe read)
     std::shared_ptr<IPadLogicHandler> handler;
