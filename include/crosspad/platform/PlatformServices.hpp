@@ -44,6 +44,7 @@ class SequencerController;
 class ISequencerEngine;
 class ISongEngine;
 class ISampleTools;
+class IInputGain;
 class IPadMix;
 class PitchedInstrument;
 class Stm32MessageHandler;
@@ -86,6 +87,7 @@ struct PlatformServices {
     /// four tracks back. Null where the platform has none (the simulator).
     ISongEngine*      songEngine      = nullptr;
     ISampleTools*     sampleTools     = nullptr;   ///< recording, previewing and slicing samples
+    IInputGain*       inputGain       = nullptr;   ///< the inputs' preamp gain (mics, line-in)
     /// Per-pad level and pan of whichever engine plays the pads now; the
     /// engine that takes over the pads registers itself here.
     IPadMix*          padMix          = nullptr;
