@@ -1,6 +1,6 @@
 {
     "name": "crosspad-core",
-    "version": "1.29.0",
+    "version": "1.30.0",
     "description": "CrossPad portable core library",
     "keywords": ["crosspad", "midi", "sampler", "embedded"],
     "frameworks": ["arduino", "espidf"],

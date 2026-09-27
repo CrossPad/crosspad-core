@@ -50,6 +50,7 @@
 #include <iterator>
 #include <mutex>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace crosspad {
@@ -102,6 +103,13 @@ bool rename(const std::string& from, const std::string& to)
     std::filesystem::rename(native(from), native(to), ec);
     return !ec;
 }
+/// @p dir and everything in it.
+template <typename Y> bool removeTree(const std::string& dir, Y)
+{
+    std::error_code ec;
+    std::filesystem::remove_all(native(dir), ec);
+    return !ec;
+}
 bool makeDir(const std::string& p)
 {
     std::error_code ec;
@@ -142,6 +150,24 @@ template <typename F> void listDir(const std::string& dir, F each)
         each(std::string(e->d_name), stat(path.c_str(), &st) == 0 && S_ISDIR(st.st_mode));
     }
     closedir(d);
+}
+/// @p dir and everything in it, @p yield() after each file. The names are
+/// read before anything goes: removing while a directory is open for
+/// reading is not something every filesystem survives.
+template <typename Y> bool removeTree(const std::string& dir, Y yield)
+{
+    std::vector<std::pair<std::string, bool>> entries;
+    listDir(dir, [&](const std::string& name, bool isDir) {
+        if (name != "." && name != "..") entries.emplace_back(name, isDir);
+    });
+    bool ok = true;
+    for (const auto& e : entries) {
+        const std::string path = dir + "/" + e.first;
+        if (e.second) ok = removeTree(path, yield) && ok;
+        else          ok = ::unlink(path.c_str()) == 0 && ok;
+        yield();
+    }
+    return ::rmdir(dir.c_str()) == 0 && ok;
 }
 #endif
 } // namespace fsx
@@ -532,6 +558,11 @@ struct SongEngine::Impl {
         return requestEdit(kEditRename);
     }
 
+    bool requestDelete() {
+        if (!ensureWorker()) return false;
+        return requestEdit(kEditDelete);
+    }
+
     bool requestTempo(float bpm) {
         if (!(bpm >= 20.0f && bpm <= 400.0f) || !ensureWorker()) return false;
         editBpm_.store(bpm);
@@ -837,6 +868,43 @@ private:
         }
         p.saveCurrent(name);
         return SongOpState::Ready;
+    }
+
+    /// Worker: the open project's folder gone, and another open in its place.
+    /// Only ever a folder straight under the songs root, by a valid name: a
+    /// song whose dir says anything else is refused rather than removed.
+    SongOpState doDelete() {
+        std::string name, dir;
+        {
+            std::lock_guard<std::recursive_mutex> l(songMutex_);
+            name = song_.name;
+            dir = song_.dir;
+        }
+        if (!opened_ || !p.storageReady() || !valid_name(name) ||
+            dir != std::string(p.songsRoot()) + "/" + name) {
+            return SongOpState::Failed;
+        }
+        endPlayback();
+        /* Nothing may save the song being removed back onto the card: until
+         * another is open there is none. */
+        opened_ = false;
+        saveReq_.store(false);
+        {
+            std::lock_guard<std::recursive_mutex> l(songMutex_);
+            song_ = AudioSong();
+            rebuild();
+        }
+        const bool removed = fsx::removeTree(dir, [this] { p.yieldIo(); });
+        if (!removed) logf(true, "%s: not all of it could be removed", dir.c_str());
+        doListProjects();
+        listGen_.fetch_add(1);
+        std::string next = "Song 1";
+        {
+            std::lock_guard<std::mutex> l(listMutex_);
+            if (!projects_.empty()) next = projects_.front();
+        }
+        openState_.store(doOpen(next));
+        return removed ? SongOpState::Ready : SongOpState::Failed;
     }
 
     /// Worker: a new tempo, and every block as long as its file lasts at it.
@@ -1168,6 +1236,7 @@ private:
             }
             if (const uint8_t edit = editReq_.exchange(0)) {
                 editState_.store(edit == kEditRename ? doRename()
+                               : edit == kEditDelete ? doDelete()
                                : edit == kEditTempo  ? doTempo(editBpm_.load())
                                : edit == kEditImport ? doImport()
                                : doMerge(editMask_.load(), editFrom_.load(), editTo_.load()));
@@ -1542,7 +1611,8 @@ private:
     std::atomic<uint32_t> playFrom_{0};
     std::atomic<SyncTake> playTake_{SyncTake::None};
     SyncTake    take_ = SyncTake::None;          // worker: what the sequencer starts doing
-    static constexpr uint8_t kEditRename = 1, kEditTempo = 2, kEditMerge = 3, kEditImport = 4;
+    static constexpr uint8_t kEditRename = 1, kEditTempo = 2, kEditMerge = 3, kEditImport = 4,
+                             kEditDelete = 5;
     uint32_t    importA_ = 0, importB_ = 0, importBar_ = 0, importLead_ = 0;   // set before editReq_
     uint8_t     importTrack_ = 0;
     std::atomic<uint8_t>  editMask_{0}, editProgress_{0};
@@ -1637,6 +1707,7 @@ bool SongEngine::bounceScene(uint8_t scene, uint8_t track) { return impl_->bounc
 BounceStatus SongEngine::bounceStatus() { return impl_->bounceStatus(); }
 void SongEngine::cancelBounce() { impl_->cancelBounce(); }
 bool SongEngine::requestRename(const std::string& name) { return impl_->requestRename(name); }
+bool SongEngine::requestDelete() { return impl_->requestDelete(); }
 bool SongEngine::requestTempo(float bpm) { return impl_->requestTempo(bpm); }
 SongOpState SongEngine::editState() const { return impl_->editState(); }
 bool SongEngine::requestMerge(uint8_t mask, uint32_t fromBar, uint32_t toBar) { return impl_->requestMerge(mask, fromBar, toBar); }

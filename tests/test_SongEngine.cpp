@@ -461,6 +461,32 @@ TEST_CASE("song engine: rename moves the folder and is remembered", "[song]") {
     CHECK_FALSE(r.engine->requestRename("a/b"));
 }
 
+TEST_CASE("song engine: delete removes the open project and opens another", "[song]") {
+    Rig r;
+    REQUIRE(r.open("Alpha"));
+    REQUIRE(r.open("Demo"));
+    placeClip(r, "c.wav", 100, 0, 0, 4);
+    REQUIRE(fs::exists(r.clipsDir("Demo") / "c.wav"));
+    REQUIRE(r.engine->requestDelete());
+    REQUIRE(editDone(r));
+    CHECK_FALSE(fs::exists(fs::path(r.platform.root) / "Demo"));
+    CHECK(r.engine->openState() == SongOpState::Ready);
+    CHECK(r.platform.current == "Alpha");
+    {
+        std::lock_guard<std::recursive_mutex> l(r.engine->songMutex());
+        CHECK(r.engine->song().name == "Alpha");
+    }
+    /* The last one goes too: a new "Song 1" takes its place. */
+    REQUIRE(r.engine->requestDelete());
+    REQUIRE(editDone(r));
+    CHECK_FALSE(fs::exists(fs::path(r.platform.root) / "Alpha"));
+    CHECK(fs::is_directory(fs::path(r.platform.root) / "Song 1"));
+    CHECK(r.platform.current == "Song 1");
+    r.engine->requestProjects();
+    REQUIRE(waitFor([&] { return r.engine->projects().size() == 1; }));
+    CHECK(r.engine->projects().front() == "Song 1");
+}
+
 TEST_CASE("song engine: with a loop region playback goes round it", "[song]") {
     Rig r;
     REQUIRE(r.open("Demo"));

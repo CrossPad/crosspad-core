@@ -45,6 +45,7 @@ public:
     std::vector<ClipInfo> clips() override;
     uint32_t listGeneration() const override;
     bool requestRename(const std::string& name) override;
+    bool requestDelete() override;
     bool requestTempo(float bpm) override;
     SongOpState editState() const override;
     bool requestMerge(uint8_t trackMask, uint32_t fromBar, uint32_t toBar) override;

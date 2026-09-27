@@ -88,6 +88,12 @@ public:
     /// Rename the open project's folder; editState() says how it went
     /// (Failed: the name is taken or not one a folder can have).
     virtual bool requestRename(const std::string& name) { (void)name; return false; }
+    /// Delete the open project from the card -- its song and every clip in
+    /// it -- and open another: the first left on the card, or a new "Song 1"
+    /// when none is. Playback stops first. editState() says when it is done
+    /// (Failed: no project open, no card, or a file the card would not let
+    /// go of; whatever went stays gone).
+    virtual bool requestDelete() { return false; }
     /// Set the open song's tempo. Blocks stay on their bars and each is
     /// resized to what its file lasts at the new tempo (no time-stretch: a
     /// clip keeps its speed). editState() says when it is done.
