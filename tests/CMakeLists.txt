@@ -92,6 +92,7 @@ set(CORE_SOURCES
 
     # Audio song model
     ${CORE_DIR}/src/song/AudioSong.cpp
+    ${CORE_DIR}/src/song/SongEngine.cpp
 
     # Loop recorder
     ${CORE_DIR}/src/sequencer/PatternSequencer.cpp

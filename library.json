@@ -1,6 +1,6 @@
 {
     "name": "crosspad-core",
-    "version": "1.23.0",
+    "version": "1.24.0",
     "description": "CrossPad portable core library",
     "keywords": ["crosspad", "midi", "sampler", "embedded"],
     "frameworks": ["arduino", "espidf"],
@@ -49,7 +49,8 @@
             "+<instrument/PitchedInstrument.cpp>",
             "+<instrument/PitchedKitLoader.cpp>",
             "+<audio/WavWriter.cpp>",
-            "+<song/AudioSong.cpp>"
+            "+<song/AudioSong.cpp>",
+            "+<song/SongEngine.cpp>"
         ]
     }
 }
