@@ -12,6 +12,7 @@ enum class RecInput : uint8_t {
     Mic,    ///< the built-in microphones
     Line,   ///< the line-in jack
     Pads,   ///< what the pads play: a resample, digital, no codec in the way
+    Usb,    ///< what the computer plays into the board over USB audio, before the mixer's fader
 };
 
 /// Where a file job (listing, overview, saving, export) is.
@@ -82,6 +83,9 @@ public:
     /// codec input it needs is switched now, and given back by releaseInput().
     virtual bool     selectInput(RecInput in) = 0;
     virtual RecInput input() const = 0;
+    /// Whether @p in has anything to record right now -- USB only while the
+    /// board is in its USB audio profile.
+    virtual bool     inputAvailable(RecInput in) const { return in != RecInput::Usb; }
     /// Peaks of the selected input since the last call, 0..1.
     virtual void     peaks(float& left, float& right) = 0;
     /// A new take in the recordings folder, stereo, at the engine's rate.
