@@ -56,6 +56,8 @@ public:
     void cancelBounce() override;
     bool play(uint32_t fromBar) override;
     bool playWithTake(uint32_t fromBar, SyncTake take) override;
+    bool playCountedIn(uint32_t fromBar, SyncTake take, uint8_t beats) override;
+    uint8_t countInBeatsLeft() const override;
     void stop() override;
     bool playing() const override;
     double positionBars() const override;

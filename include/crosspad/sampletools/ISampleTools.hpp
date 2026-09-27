@@ -40,6 +40,22 @@ struct WaveOverview {
     std::vector<uint8_t> envelope;         ///< level per hop, SliceMath::kEnvDbPerStep dB a step
 };
 
+/// A folder on the card as the tools list it: its folders, then its WAVs,
+/// each by name. The names are one block of text, not a string each: small
+/// allocations come from internal RAM on the board, and a folder of a few
+/// hundred samples was enough to empty it.
+struct CardFolder {
+    static constexpr size_t kMaxEntries = 2000;
+    std::string           path;            ///< the folder listed, full path
+    std::string           names;           ///< every name, each ended by '\0'
+    std::vector<uint32_t> offsets;         ///< where each name starts in @c names
+    uint32_t              folders = 0;     ///< the first @c folders names are folders
+    bool                  truncated = false;   ///< more than kMaxEntries: the rest is not listed
+    size_t      size() const { return offsets.size(); }
+    const char* name(size_t i) const { return names.c_str() + offsets[i]; }
+    bool        isFolder(size_t i) const { return i < folders; }
+};
+
 /// A sliced loop to write as a kit: slice i is [starts[i], starts[i+1]),
 /// the last one ends at @c end. At most 16, one per pad.
 struct SliceKit {
@@ -76,6 +92,13 @@ public:
     /// on the song's bars from @p fromBar on; nothing before it is kept.
     /// stopRecording() stops the song with the take.
     virtual bool     startRecordingWithSong(uint32_t fromBar) { (void)fromBar; return false; }
+    /// The same after @p countInBeats of count-in (ISongEngine::playCountedIn):
+    /// frame 0 is still the song's first, on the beat after the last click.
+    virtual bool     startRecordingWithSong(uint32_t fromBar, uint8_t countInBeats)
+    {
+        (void)countInBeats;
+        return startRecordingWithSong(fromBar);
+    }
     virtual void     stopRecording() = 0;
     virtual RecStatus recStatus() = 0;
     /// The app is closing: stop metering and put the codec input back.
@@ -89,7 +112,14 @@ public:
     virtual bool requestOverview(const std::string& file, uint32_t start, uint32_t end,
                                  uint16_t columns) = 0;
     virtual WaveOverview overview() = 0;
-    /// [start, end) of @p file as a new file beside it; jobResult() is its path.
+    /// List @p dir -- any folder on the card; "" for the recordings folder.
+    virtual bool requestFolder(const std::string& dir) { (void)dir; return false; }
+    /// The last finished listing.
+    virtual CardFolder folder() { return {}; }
+    /// The card's top: a listing never goes above it.
+    virtual std::string cardRoot() const { return {}; }
+    /// [start, end) of @p file as a new file in the recordings folder, wherever
+    /// @p file is; jobResult() is its path.
     virtual bool requestSaveRegion(const std::string& file, uint32_t start, uint32_t end) = 0;
     /// The slices as a kit on the card, in the kit list at once when there is
     /// room; jobResult() is the kit's name, or why it failed.

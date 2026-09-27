@@ -571,3 +571,64 @@ TEST_CASE("song engine: framesPlayed counts from the first block heard", "[song]
     REQUIRE(waitFor([&] { return !r.engine->playing(); }));
     CHECK(r.engine->framesPlayed() == 0);
 }
+
+TEST_CASE("song engine: alone, a count-in clicks and the song starts on the sample after", "[song]") {
+    Rig r;
+    REQUIRE(r.open("Demo"));
+    placeClip(r, "c.wav", 8000, 0, 0, 2);
+    r.engine->commit();
+    REQUIRE(r.engine->playCountedIn(0, SyncTake::None, 4));
+    std::vector<float> out(kBlock * 2), bus(kBlock * 2, 0.0f);
+    uint64_t rendered = 0;
+    float clickPeak = 0.0f;
+    uint8_t firstLeft = 0;
+    REQUIRE(waitFor([&] {
+        r.block(out, bus);
+        if (r.engine->countInBeatsLeft() && !firstLeft) firstLeft = r.engine->countInBeatsLeft();
+        rendered += kBlock;
+        if (!r.engine->framesPlayed()) for (float v : out) clickPeak = std::max(clickPeak, v);
+        return r.engine->framesPlayed() > 0;
+    }, 20000));
+    /* 120 BPM at 44.1 kHz: a beat is 22050 frames, the count-in four of them;
+     * counted from the first block that clicked. */
+    const uint32_t beat = kRate / 2;
+    CHECK(firstLeft == 4);
+    CHECK(clickPeak > 0.1f);
+    const uint32_t played = r.engine->framesPlayed();
+    CHECK(played < kBlock);                       // started inside a block, not on its edge
+    /* Blocks before the count-in began are priming: whatever they were, the
+     * count-in plus what played is a whole number of blocks after them. */
+    CHECK((4 * beat + played) % kBlock == 0);
+    CHECK(r.engine->countInBeatsLeft() == 0);
+    r.engine->stop();
+}
+
+TEST_CASE("song engine: in sync the metronome counts in and song and clock start together", "[song]") {
+    Rig r;
+    REQUIRE(r.open("Demo"));
+    placeClip(r, "c.wav", 8000, 0, 0, 2);
+    {
+        std::lock_guard<std::recursive_mutex> l(r.engine->songMutex());
+        r.engine->song().syncSeq = true;
+    }
+    r.engine->commit();
+    REQUIRE(r.engine->playCountedIn(1, SyncTake::None, 2));
+    std::vector<float> out(kBlock * 2), bus(kBlock * 2, 0.0f);
+    bool sawCountIn = false;
+    REQUIRE(waitFor([&] {
+        r.block(out, bus);
+        sawCountIn = sawCountIn || r.clock.countingIn();
+        return r.engine->framesPlayed() > 0;
+    }, 20000));
+    CHECK(sawCountIn);
+    /* The song started where the clock's loop did, on the same sample: from
+     * bar 1 of the song, the clock's position is that bar plus what played. */
+    const uint32_t played = r.engine->framesPlayed();
+    const uint32_t loop = r.clock.loopSamples();
+    const uint32_t bar = r.clock.samplesPerBeat() * r.clock.beatsPerBar();
+    CHECK(played < kBlock);
+    CHECK(r.clock.positionSamples() == (bar + played) % loop);
+    r.block(out, bus);
+    CHECK(r.seq.state() == SequencerState::Running);
+    r.engine->stop();
+}

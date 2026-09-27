@@ -329,8 +329,9 @@ struct RtSection {
 };
 
 /* Armed: primed and waiting for the sequencer's clock, which the song starts
- * with when it plays in sync (see startPlayback()). */
-enum class Play : uint8_t { Idle, Priming, Armed, Running, Ended };
+ * with when it plays in sync (see startPlayback()). Counting: primed, and
+ * playing its own count-in before it starts (a song that is not in sync). */
+enum class Play : uint8_t { Idle, Priming, Armed, Counting, Running, Ended };
 
 } // namespace
 
@@ -375,31 +376,45 @@ struct SongEngine::Impl {
     void mix(float* out, uint32_t frames) {
         RtSection rt(rtGen_);
         Play st = play_.load(std::memory_order_seq_cst);
-        if (st == Play::Armed) {
+        uint32_t skip = 0;             // frames of this block before the song's first
+        if (st == Play::Counting) {
+            skip = countIn(out, frames);
+            if (skip == frames) return;
+        } else if (st == Play::Armed) {
             /* The clock is mixed before this node, so the block in which its
              * position first moves off where it was started is the block it
-             * started in: the song starts in the same one, to the sample. */
+             * started in, and how far it moved says where in the block: a
+             * count-in hands over mid-block, and the song starts on its sample. */
             MetronomeNode& clk = clk_;
-            if (!clk.running() || clk.positionSamples() == armPos_.load(std::memory_order_relaxed)) return;
-            /* Only from Armed: a stop the worker published since this block
-             * began must not be turned back into Running. */
-            Play expected = Play::Armed;
+            const uint32_t ap = armPos_.load(std::memory_order_relaxed);
+            const uint32_t cp = clk.positionSamples();
+            if (!clk.running() || clk.countingIn() || cp == ap) return;
+            const uint32_t loop = clk.loopSamples();
+            const uint32_t moved = loop ? (cp + loop - ap) % loop : cp - ap;
+            skip = moved < frames ? frames - moved : 0;
+        }
+        if (st == Play::Counting || st == Play::Armed) {
+            /* Only from where it was: a stop the worker published since this
+             * block began must not be turned back into Running. */
+            Play expected = st;
             if (!play_.compare_exchange_strong(expected, Play::Running, std::memory_order_seq_cst)) return;
             st = Play::Running;
         }
         if (st != Play::Running) return;
         if (frames * 2 > scratch_.size()) return;
-        played_.fetch_add(frames, std::memory_order_release);
-        const uint32_t got = ring_.pop(scratch_.data(), frames);
-        if (got < frames) {
+        const uint32_t n = frames - skip;
+        played_.fetch_add(n, std::memory_order_release);
+        const uint32_t got = ring_.pop(scratch_.data(), n);
+        if (got < n) {
             /* The card fell behind. Play silence and tell the worker how far
              * to skip, so the song comes back in time, not late. */
-            debt_.fetch_add(frames - got, std::memory_order_relaxed);
+            debt_.fetch_add(n - got, std::memory_order_relaxed);
             underruns_.fetch_add(1, std::memory_order_relaxed);
         }
         const int16_t* s = scratch_.data();
-        for (uint32_t i = 0; i < got * 2; ++i) out[i] += (float)s[i] * (1.0f / 32768.0f);
-        uint32_t pos = pos_.load(std::memory_order_relaxed) + frames;
+        float* o = out + skip * 2;
+        for (uint32_t i = 0; i < got * 2; ++i) o[i] += (float)s[i] * (1.0f / 32768.0f);
+        uint32_t pos = pos_.load(std::memory_order_relaxed) + n;
         const uint32_t end = end_.load(std::memory_order_relaxed);
         const bool loop = loop_.load(std::memory_order_relaxed);
         const uint32_t la = loopA_.load(std::memory_order_relaxed), lb = loopB_.load(std::memory_order_relaxed);
@@ -413,6 +428,35 @@ struct SongEngine::Impl {
             }
         }
         pos_.store(pos, std::memory_order_relaxed);
+    }
+
+    /// RT: the song's own count-in, the metronome's click (see MetronomeNode)
+    /// on every beat, a fifth up on the downbeat. @return the frames of the
+    /// block it took -- all of them until the last beat is out.
+    uint32_t countIn(float* out, uint32_t frames) {
+        const uint32_t spb = cinBeat_ ? cinBeat_ : 1;
+        uint32_t left = cinLeft_;
+        uint32_t i = 0;
+        for (; i < frames && left; ++i, --left) {
+            const uint32_t at = cinTotal_ - left;
+            if (at % spb == 0) {
+                clickLeft_ = clickLen_;
+                const bool downbeat = (at / spb) % cinBpb_ == 0;
+                step_ = (downbeat ? 1500.0f : 1000.0f) * 6.2831853f / (float)sampleRate_;
+                phase_ = 0.0f;
+            }
+            if (clickLeft_) {
+                const float env = (float)clickLeft_ / (float)clickLen_;
+                const float v = std::sin(phase_) * env * env * kClickLevel;
+                out[i * 2] += v;
+                out[i * 2 + 1] += v;
+                phase_ += step_;
+                --clickLeft_;
+            }
+        }
+        cinLeft_ = left;
+        cinBeatsLeft_.store((uint8_t)((left + spb - 1) / spb), std::memory_order_relaxed);
+        return i;
     }
 
     /// The pads bus, one block. Only while a bounce is armed.
@@ -571,6 +615,22 @@ struct SongEngine::Impl {
     void cancelBounce() { bCancel_.store(true); }
 
     // ── Playback ──────────────────────────────────────────────────────────
+    bool playCountedIn(uint32_t fromBar, SyncTake take, uint8_t beats) {
+        countInReq_.store(beats);
+        if (playWithTake(fromBar, take)) return true;
+        countInReq_.store(0);
+        return false;
+    }
+
+    uint8_t countInBeatsLeft() const {
+        switch (play_.load()) {
+            case Play::Priming:  return cinPlanned_.load();
+            case Play::Counting: return cinBeatsLeft_.load(std::memory_order_relaxed);
+            case Play::Armed:    return syncing_.load() ? clk_.countInBeatsLeft() : 0;
+            default:             return 0;
+        }
+    }
+
     bool playWithTake(uint32_t fromBar, SyncTake take) {
         if (!ensureWorker() || busy_.load()) return false;           // a bounce owns the transport
         {
@@ -594,7 +654,7 @@ struct SongEngine::Impl {
 
     bool playing() const {
         const Play p = play_.load();
-        return p == Play::Priming || p == Play::Armed || p == Play::Running;
+        return p == Play::Priming || p == Play::Armed || p == Play::Counting || p == Play::Running;
     }
 
     double positionBars() const {
@@ -1159,6 +1219,14 @@ private:
         }
         syncing_ = sync;
         take_ = sync ? playTake_.load() : SyncTake::None;
+        /* Asked for with this play only; a plain play after it counts none. */
+        const uint8_t beats = countInReq_.exchange(0);
+        cinPlanned_.store(beats);
+        {
+            std::lock_guard<std::recursive_mutex> l(songMutex_);
+            cinBpb_ = song_.beatsPerBar ? song_.beatsPerBar : AudioSong::kDefaultBeatsPerBar;
+            cinBeat_ = song_.samplesPerBar(sampleRate_) / cinBpb_;
+        }
         if (sync) {
             PatternSequencer& seq = seq_;
             seq.stop();
@@ -1267,11 +1335,21 @@ private:
                 const uint32_t loop = clk.loopSamples();
                 armPos_.store(loop ? at % loop : 0, std::memory_order_relaxed);
                 play_.store(Play::Armed, std::memory_order_release);
-                seq.playbackAt(at);
-                /* A take asked for with the song: opened on the running
-                 * clock, so it starts with the song and not after a count-in. */
+                /* A count-in is the metronome's: the scene waits in PreBeat
+                 * and the song for the clock to move, both on its last click. */
+                seq.playbackAt(at, cinPlanned_.load());
+                /* A take asked for with the song: opened with it, on the same
+                 * sample, and never with a count-in of its own. */
                 if (take_ == SyncTake::Record)       seq.record();
                 else if (take_ == SyncTake::Overdub) seq.overdub();
+            } else if (const uint8_t beats = cinPlanned_.load()) {
+                /* Alone the song counts itself in: the same click, on the
+                 * song's beat, and the song on the sample after the last. */
+                cinTotal_ = cinLeft_ = beats * cinBeat_;
+                clickLen_ = sampleRate_ / 50;
+                clickLeft_ = 0;
+                cinBeatsLeft_.store(beats, std::memory_order_relaxed);
+                play_.store(Play::Counting, std::memory_order_release);
             } else {
                 play_.store(Play::Running, std::memory_order_release);
             }
@@ -1494,6 +1572,14 @@ private:
     std::atomic<uint32_t> pos_{0}, end_{0}, spBar_{0}, underruns_{0}, openFailures_{0};
     std::atomic<uint32_t> rtGen_{0};               // odd while the render is inside
     std::atomic<uint32_t> played_{0};              // frames sounded since this playback started
+    // Count-in: asked for with a play, planned by the worker, played by RT
+    // (a song alone) or by the metronome (in sync).
+    static constexpr float kClickLevel = 0.35f;    // MetronomeNode's default level
+    std::atomic<uint8_t>  countInReq_{0}, cinPlanned_{0}, cinBeatsLeft_{0};
+    uint32_t              cinTotal_ = 0, cinLeft_ = 0, cinBeat_ = 1;   // samples; set before Counting
+    uint8_t               cinBpb_ = 4;
+    uint32_t              clickLen_ = 960, clickLeft_ = 0;
+    float                 phase_ = 0.0f, step_ = 0.0f;
     std::atomic<bool>     loop_{true};
     std::atomic<uint32_t> loopA_{0}, loopB_{0};    // the loop region, samples
     std::atomic<bool>     stopReq_{false};
@@ -1562,6 +1648,11 @@ bool SongEngine::requestImport(const std::string& file, uint32_t start, uint32_t
 }
 bool SongEngine::play(uint32_t fromBar) { return impl_->playWithTake(fromBar, SyncTake::None); }
 bool SongEngine::playWithTake(uint32_t fromBar, SyncTake take) { return impl_->playWithTake(fromBar, take); }
+bool SongEngine::playCountedIn(uint32_t fromBar, SyncTake take, uint8_t beats)
+{
+    return impl_->playCountedIn(fromBar, take, beats);
+}
+uint8_t SongEngine::countInBeatsLeft() const { return impl_->countInBeatsLeft(); }
 void SongEngine::stop() { impl_->stop(); }
 bool SongEngine::playing() const { return impl_->playing(); }
 double SongEngine::positionBars() const { return impl_->positionBars(); }

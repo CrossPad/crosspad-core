@@ -172,7 +172,7 @@ void PatternSequencer::pollLocked()
             setTransport(SequencerMode::None, SequencerState::Idle);
         } else if (!clock_->countingIn()) {
             setTransport(mode_, SequencerState::Running);
-            lastPos_ = 0;
+            lastPos_ = preBeatPos_;
         }
     }
     clock_->takeCountInEnded();
@@ -521,11 +521,17 @@ void PatternSequencer::playback()
     setTransport(SequencerMode::Playback, SequencerState::Running);
 }
 
-void PatternSequencer::playbackAt(uint32_t pos)
+void PatternSequencer::playbackAt(uint32_t pos, uint8_t countInBeats)
 {
     if (!clock_) return;
     std::lock_guard<std::recursive_mutex> lock(editMutex_);
     if (clock_->running()) stop();
+    if (countInBeats) {
+        clock_->startCountIn(countInBeats, pos);
+        preBeatPos_ = lastPos_ = clock_->positionSamples();
+        setTransport(SequencerMode::Playback, SequencerState::PreBeat);
+        return;
+    }
     clock_->startAt(pos);
     lastPos_ = clock_->positionSamples();
     setTransport(SequencerMode::Playback, SequencerState::Running);
@@ -537,7 +543,7 @@ void PatternSequencer::startTake(SequencerMode m)
     if (state_ == SequencerState::PreBeat) { setTransport(m, SequencerState::PreBeat); return; }
     if (!clock_->running() && countIn()) {
         clock_->startCountIn(clock_->beatsPerBar());
-        lastPos_ = 0;
+        preBeatPos_ = lastPos_ = 0;
         setTransport(m, SequencerState::PreBeat);
         return;
     }

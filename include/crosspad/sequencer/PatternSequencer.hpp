@@ -116,8 +116,9 @@ public:
     void playback() override;
     /// Play from @p pos samples into the loop, stopping first if running:
     /// the scene follows another timeline (the audio song) instead of
-    /// starting at its own bar one.
-    void playbackAt(uint32_t pos);
+    /// starting at its own bar one. With @p countInBeats the clock counts
+    /// them first and the scene waits in PreBeat, as a take does.
+    void playbackAt(uint32_t pos, uint8_t countInBeats = 0);
     void record() override;
     void overdub() override;
     void stop() override;
@@ -320,6 +321,7 @@ private:
 
     SequencerController* controller_ = nullptr;
     uint32_t lastPos_ = 0;
+    uint32_t preBeatPos_ = 0;   // where the loop starts once a count-in hands over
     /// Pads fired on the previous poll, released at the start of the next one.
     /// One poll of gate -- shorter than any human tap, long enough that the
     /// press and the release are not the same instant.

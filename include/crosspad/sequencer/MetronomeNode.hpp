@@ -79,9 +79,11 @@ public:
     /// after the last of them. Done in the render rather than by whoever asked,
     /// so the hand-over lands on the sample, not on the next poll. The
     /// transport hook hears this start from takeCountInEnded(), at beat one.
-    void startCountIn(uint8_t beats) {
+    /// @p pos is where the loop starts after it, as for startAt().
+    void startCountIn(uint8_t beats, uint32_t pos = 0) {
         countInEnded_.store(false, std::memory_order_relaxed);
-        post(0, samplesPerBeat_ * beats);
+        const uint32_t loop = loopSamples();
+        post(loop ? pos % loop : 0, samplesPerBeat_ * beats);
         running_.store(true, std::memory_order_release);
     }
     /// True once, from the task that polls the sequencer, after a count-in

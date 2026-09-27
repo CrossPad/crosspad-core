@@ -133,6 +133,18 @@ public:
     /// play(), and with the song's syncSeq on the sequencer starts with it
     /// doing @p take. A platform without it plays the song alone.
     virtual bool   playWithTake(uint32_t fromBar, SyncTake take) { (void)take; return play(fromBar); }
+    /// playWithTake() after @p beats of count-in at the song's tempo: the
+    /// song -- and the sequencer with it, in sync -- starts on the sample
+    /// after the last click. In sync the metronome counts; alone, the song
+    /// plays the same clicks itself. A platform without it plays at once.
+    virtual bool   playCountedIn(uint32_t fromBar, SyncTake take, uint8_t beats)
+    {
+        (void)beats;
+        return playWithTake(fromBar, take);
+    }
+    /// Beats of count-in still to come, 0 once the song plays or when there
+    /// is none: 4, 3, 2, 1 on screen.
+    virtual uint8_t countInBeatsLeft() const { return 0; }
     virtual void   stop() = 0;
     virtual bool   playing() const = 0;
     /// Where playback is, in bars (fractional) from the song's start.
