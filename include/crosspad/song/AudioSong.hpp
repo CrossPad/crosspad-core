@@ -53,6 +53,11 @@ public:
     bool        loop = true;
     uint32_t    length = 0;       ///< bars the song plays (and loops) over; 0 = to its last block
     bool        syncSeq = false;  ///< playing the song also plays the sequencer, locked to it
+    /// The loop region, in bars, [loopStart, loopEnd): with loop on, playback
+    /// goes round it instead of the whole song. loopEnd <= loopStart = none.
+    uint32_t    loopStart = 0;
+    uint32_t    loopEnd = 0;
+    bool hasRegion() const { return loopEnd > loopStart; }
     SongTrack   tracks[kTracks];
 
     SongLoad load(const std::string& projectDir);

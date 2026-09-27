@@ -34,6 +34,7 @@ SongLoad AudioSong::load(const std::string& projectDir)
     loop = true;
     length = 0;
     syncSeq = false;
+    loopStart = loopEnd = 0;
     for (auto& t : tracks) t = SongTrack{};
 
     /* song.json, else what save() leaves when it is cut short: the new file
@@ -57,6 +58,8 @@ SongLoad AudioSong::load(const std::string& projectDir)
     loop = doc["loop"] | true;
     length = doc["length"] | 0u;
     syncSeq = doc["sync"] | false;
+    loopStart = doc["loop_start"] | 0u;
+    loopEnd = doc["loop_end"] | 0u;
     int t = 0;
     for (JsonObjectConst tr : doc["tracks"].as<JsonArrayConst>()) {
         if (t >= kTracks) break;
@@ -84,6 +87,8 @@ bool AudioSong::save() const
     doc["loop"] = loop;
     doc["length"] = length;
     doc["sync"] = syncSeq;
+    doc["loop_start"] = loopStart;
+    doc["loop_end"] = loopEnd;
     JsonArray trs = doc["tracks"].to<JsonArray>();
     for (const auto& t : tracks) {
         JsonObject o = trs.add<JsonObject>();
