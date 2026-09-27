@@ -106,6 +106,18 @@ public:
         return false;
     }
     virtual uint8_t editProgress() const { return 0; }
+    /// Copy [start, end) of @p file -- a 16-bit WAV at the engine's rate, end
+    /// 0 = to its end -- into the open project's clips/ and lay it on
+    /// @p track at @p bar, after @p lead frames of silence, as many bars long
+    /// as that lasts at the song's tempo. Blocks on the track that start
+    /// inside it go, and one reaching in from before is cut at @p bar, as a
+    /// merge does. editState() says when it is done, editProgress() how far.
+    virtual bool requestImport(const std::string& file, uint32_t start, uint32_t end,
+                               uint8_t track, uint32_t bar, uint32_t lead)
+    {
+        (void)file; (void)start; (void)end; (void)track; (void)bar; (void)lead;
+        return false;
+    }
 
     // ── Bounce ────────────────────────────────────────────────────────────
     /// Play @p scene of the sequencer once, from its first bar, and write the
@@ -125,6 +137,11 @@ public:
     virtual bool   playing() const = 0;
     /// Where playback is, in bars (fractional) from the song's start.
     virtual double positionBars() const = 0;
+    /// Frames the playback running now has sounded: 0 while stopped, priming
+    /// or waiting for the sequencer's clock. Lock-free, for a platform's
+    /// render to ask every block -- the first block it is not 0 in is the
+    /// block the song started in, which is what a take lines up with.
+    virtual uint32_t framesPlayed() const { return 0; }
     /// Blocks of silence played because the card fell behind, since play().
     virtual uint32_t underruns() const = 0;
     /// Clip opens the card refused since play(); each is a track gone quiet.

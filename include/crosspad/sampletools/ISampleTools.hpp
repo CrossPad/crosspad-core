@@ -23,6 +23,9 @@ struct RecStatus {
     uint32_t    sampleRate = 0;
     std::string file;                 ///< full path of the take being written or last written
     std::string error;                ///< why the last take failed; empty when it did not
+    bool        withSong = false;     ///< lined up with the song: frame 0 is bar @c fromBar
+    uint32_t    fromBar  = 0;
+    bool        waiting  = false;     ///< armed with the song, which has not sounded yet
 };
 
 /// A picture of part of a WAV: min/max per column for drawing, and a level
@@ -67,6 +70,12 @@ public:
     virtual void     peaks(float& left, float& right) = 0;
     /// A new take in the recordings folder, stereo, at the engine's rate.
     virtual bool     startRecording() = 0;
+    /// A take lined up with the song engine: armed, then the song played
+    /// from @p fromBar. Frame 0 of the take is what came in with the song's
+    /// first frame, the delay through the codecs taken off, so the take sits
+    /// on the song's bars from @p fromBar on; nothing before it is kept.
+    /// stopRecording() stops the song with the take.
+    virtual bool     startRecordingWithSong(uint32_t fromBar) { (void)fromBar; return false; }
     virtual void     stopRecording() = 0;
     virtual RecStatus recStatus() = 0;
     /// The app is closing: stop metering and put the codec input back.

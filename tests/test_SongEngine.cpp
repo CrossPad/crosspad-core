@@ -491,3 +491,83 @@ TEST_CASE("song engine: with a loop region playback goes round it", "[song]") {
     CHECK(last >= 1.0);
     r.engine->stop();
 }
+
+namespace {
+
+/// A stereo WAV whose left and right samples are both the frame's index.
+void writeRamp(const std::string& path, uint32_t frames) {
+    WavWriter w;
+    REQUIRE(w.open(path.c_str(), kRate, 2));
+    std::vector<int16_t> buf(frames * 2);
+    for (uint32_t f = 0; f < frames; ++f) buf[f * 2] = buf[f * 2 + 1] = int16_t(f % 30000);
+    REQUIRE(w.write(buf.data(), frames));
+    REQUIRE(w.close());
+}
+
+} // namespace
+
+TEST_CASE("song engine: import lays a region on a track after its lead", "[song]") {
+    Rig r;
+    REQUIRE(r.open("Demo"));
+    placeClip(r, "old.wav", 50, 1, 0, 4);           // reaches into the import: cut at its bar
+    placeClip(r, "gone.wav", 60, 1, 3, 1);          // starts inside: replaced
+    r.engine->commit();
+    const std::string src = (r.dir / "take.wav").string();
+    writeRamp(src, kRate * 3);
+    const uint32_t lead = 1000, a = 500, b = kRate * 2 + 500;    // 2 s of ramp after the lead
+    REQUIRE(r.engine->requestImport(src, a, b, 1, 2, lead));
+    REQUIRE(editDone(r));
+
+    const std::vector<int16_t> pcm = readWavData((r.clipsDir("Demo") / "take.wav").string());
+    REQUIRE(pcm.size() == size_t(lead + (b - a)) * 2);
+    CHECK(std::all_of(pcm.begin(), pcm.begin() + lead * 2, [](int16_t v) { return v == 0; }));
+    bool exact = true;
+    for (uint32_t f = 0; f < b - a && exact; ++f) exact = pcm[(lead + f) * 2] == int16_t((a + f) % 30000);
+    CHECK(exact);
+
+    std::lock_guard<std::recursive_mutex> l(r.engine->songMutex());
+    const auto& cs = r.engine->song().tracks[1].clips;
+    REQUIRE(cs.size() == 2);
+    CHECK(cs[0].file == "old.wav");
+    CHECK(cs[0].bars == 2);
+    CHECK(cs[1].file == "take.wav");
+    CHECK(cs[1].bar == 2);
+    CHECK(cs[1].bars == 2);                         // 2 s + lead at 2 s a bar: into the second bar
+}
+
+TEST_CASE("song engine: an import never writes over a clip of the same name", "[song]") {
+    Rig r;
+    REQUIRE(r.open("Demo"));
+    placeClip(r, "take.wav", 70, 0, 0, 1);
+    r.engine->commit();
+    const std::string src = (r.dir / "take.wav").string();
+    writeRamp(src, kRate);
+    REQUIRE(r.engine->requestImport(src, 0, 0, 3, 5, 0));
+    REQUIRE(editDone(r));
+    CHECK(readWavData((r.clipsDir("Demo") / "take.wav").string()).front() == 70);
+    std::lock_guard<std::recursive_mutex> l(r.engine->songMutex());
+    REQUIRE(r.engine->song().tracks[3].clips.size() == 1);
+    CHECK(r.engine->song().tracks[3].clips[0].file == "take_2.wav");
+    CHECK_FALSE(r.engine->requestImport(src, 0, 0, 4, 0, 0));      // no track 5
+}
+
+TEST_CASE("song engine: framesPlayed counts from the first block heard", "[song]") {
+    Rig r;
+    REQUIRE(r.open("Demo"));
+    placeClip(r, "c.wav", 100, 0, 0, 2);
+    r.engine->commit();
+    CHECK(r.engine->framesPlayed() == 0);
+    REQUIRE(r.engine->play(0));
+    std::vector<float> out(kBlock * 2), bus(kBlock * 2, 0.0f);
+    /* Nothing counts while it primes. */
+    REQUIRE(waitFor([&] {
+        r.block(out, bus);
+        return r.engine->framesPlayed() > 0;
+    }));
+    CHECK(r.engine->framesPlayed() == kBlock);
+    for (int i = 0; i < 9; ++i) r.block(out, bus);
+    CHECK(r.engine->framesPlayed() == 10 * kBlock);
+    r.engine->stop();
+    REQUIRE(waitFor([&] { return !r.engine->playing(); }));
+    CHECK(r.engine->framesPlayed() == 0);
+}

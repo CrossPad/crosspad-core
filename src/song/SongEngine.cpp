@@ -389,6 +389,7 @@ struct SongEngine::Impl {
         }
         if (st != Play::Running) return;
         if (frames * 2 > scratch_.size()) return;
+        played_.fetch_add(frames, std::memory_order_release);
         const uint32_t got = ring_.pop(scratch_.data(), frames);
         if (got < frames) {
             /* The card fell behind. Play silence and tell the worker how far
@@ -506,6 +507,22 @@ struct SongEngine::Impl {
     }
     uint8_t editProgress() const { return editProgress_.load(); }
 
+    bool requestImport(const std::string& file, uint32_t start, uint32_t end,
+                       uint8_t track, uint32_t bar, uint32_t lead) {
+        if (file.empty() || track >= kTracks || (end && end <= start) || !ensureWorker()) return false;
+        {
+            std::lock_guard<std::recursive_mutex> l(songMutex_);
+            editName_ = file;
+        }
+        importA_ = start;
+        importB_ = end;
+        importTrack_ = track;
+        importBar_ = bar;
+        importLead_ = lead;
+        editProgress_.store(0);
+        return requestEdit(kEditImport);
+    }
+
     /// The first look at the song is what opens the last project.
     AudioSong& song() {
         if (!opened_ && ensureWorker()) p.wake();
@@ -584,6 +601,8 @@ struct SongEngine::Impl {
         const uint32_t spb = spBar_.load();
         return spb ? (double)pos_.load() / spb : 0.0;
     }
+
+    uint32_t framesPlayed() const { return played_.load(std::memory_order_acquire); }
 
     uint32_t underruns() const { return underruns_.load(); }
     uint32_t openFailures() const { return openFailures_.load(); }
@@ -901,6 +920,87 @@ private:
         return SongOpState::Ready;
     }
 
+    /// Worker: a region of a WAV into the project's clips/, laid on a track
+    /// -- see ISongEngine::requestImport. The clip is named after its source,
+    /// numbered when the project has one of that name already.
+    SongOpState doImport() {
+        std::string src;
+        {
+            std::lock_guard<std::recursive_mutex> l(songMutex_);
+            src = editName_;
+        }
+        if (!opened_ || !io_ || !p.storageReady()) return SongOpState::Failed;
+        ClipReader r;
+        if (!r.open(src)) return SongOpState::Failed;
+        uint32_t a = importA_, b = importB_;
+        if (!b || b > r.frames) b = r.frames;
+        if (a >= b) { r.close(); return SongOpState::Failed; }
+        std::string stem = src.substr(src.find_last_of("/\\") + 1);
+        if (stem.size() > 4 && stem.compare(stem.size() - 4, 4, ".wav") == 0) stem.resize(stem.size() - 4);
+        if (stem.size() > kMaxClipPrefix) stem.resize(kMaxClipPrefix);
+        std::string file, path;
+        for (int n = 1; n < 100 && file.empty(); ++n) {
+            const std::string cand = n == 1 ? stem + ".wav" : stem + "_" + std::to_string(n) + ".wav";
+            std::lock_guard<std::recursive_mutex> l(songMutex_);
+            if (!fsx::exists(song_.clipPath(cand))) { file = cand; path = song_.clipPath(cand); }
+        }
+        if (file.empty()) { r.close(); return SongOpState::Failed; }
+
+        endPlayback();                              // the worker cannot keep the ring filled meanwhile
+        const uint32_t lead = importLead_, total = lead + (b - a);
+        WavWriter w;
+        if (!w.open(path.c_str(), sampleRate_, 2)) { r.close(); return SongOpState::Failed; }
+        w.reserve(total);
+        bool ok = true;
+        uint32_t done = 0;
+        std::memset(io_, 0, kChunkFrames * 4);
+        while (ok && done < lead) {
+            const uint32_t n = std::min(kChunkFrames, lead - done);
+            ok = w.write(io_, n);
+            done += n;
+        }
+        for (uint32_t f = a; ok && f < b;) {
+            const uint32_t n = std::min(kChunkFrames, b - f);
+            r.read(f, io_, n);
+            ok = w.write(io_, n);
+            f += n;
+            done += n;
+            editProgress_.store((uint8_t)((uint64_t)done * 99 / total));
+            p.yieldIo();
+        }
+        r.close();
+        if (!w.close() || !ok) {
+            std::remove(path.c_str());
+            return SongOpState::Failed;
+        }
+
+        const uint8_t t = importTrack_;
+        const uint32_t bar = importBar_;
+        {
+            std::lock_guard<std::recursive_mutex> l(songMutex_);
+            const uint32_t spBar = song_.samplesPerBar(sampleRate_);
+            const uint32_t bars = std::max<uint32_t>(1, std::min<uint32_t>((total + spBar - 1) / spBar, 999));
+            auto& cs = song_.tracks[t].clips;
+            cs.erase(std::remove_if(cs.begin(), cs.end(), [&](const SongClip& c) {
+                return c.bar >= bar && c.bar < bar + bars;
+            }), cs.end());
+            for (auto& c : cs) {
+                if (c.bar < bar && c.bar + c.bars > bar) c.bars = (uint16_t)(bar - c.bar);
+            }
+            SongClip c;
+            c.file = file;
+            c.bar = bar;
+            c.bars = (uint16_t)bars;
+            song_.addClip(t, c);
+            rebuild();
+        }
+        doSave();
+        editProgress_.store(100);
+        logf(false, "imported %s [%u, %u) +%u to track %u bar %u as %s", src.c_str(), (unsigned)a,
+             (unsigned)b, (unsigned)lead, (unsigned)(t + 1), (unsigned)bar, file.c_str());
+        return SongOpState::Ready;
+    }
+
     /// Worker: write the song. A copy is taken under the lock so the card
     /// write does not hold the UI out.
     void doSave() {
@@ -1008,7 +1108,8 @@ private:
             }
             if (const uint8_t edit = editReq_.exchange(0)) {
                 editState_.store(edit == kEditRename ? doRename()
-                               : edit == kEditTempo ? doTempo(editBpm_.load())
+                               : edit == kEditTempo  ? doTempo(editBpm_.load())
+                               : edit == kEditImport ? doImport()
                                : doMerge(editMask_.load(), editFrom_.load(), editTo_.load()));
                 continue;
             }
@@ -1065,6 +1166,7 @@ private:
         }
         underruns_.store(0);
         openFailures_.store(0);
+        played_.store(0);
         job_.store(Job::Play);
         play_.store(Play::Priming, std::memory_order_seq_cst);
     }
@@ -1076,6 +1178,7 @@ private:
         if (syncing_) seq_.stop();
         syncing_ = false;
         waitRtOut();
+        played_.store(0);
         for (auto& r : readers_) r.close();
         ring_.release();
         job_.store(Job::None);
@@ -1361,7 +1464,9 @@ private:
     std::atomic<uint32_t> playFrom_{0};
     std::atomic<SyncTake> playTake_{SyncTake::None};
     SyncTake    take_ = SyncTake::None;          // worker: what the sequencer starts doing
-    static constexpr uint8_t kEditRename = 1, kEditTempo = 2, kEditMerge = 3;
+    static constexpr uint8_t kEditRename = 1, kEditTempo = 2, kEditMerge = 3, kEditImport = 4;
+    uint32_t    importA_ = 0, importB_ = 0, importBar_ = 0, importLead_ = 0;   // set before editReq_
+    uint8_t     importTrack_ = 0;
     std::atomic<uint8_t>  editMask_{0}, editProgress_{0};
     std::atomic<uint32_t> editFrom_{0}, editTo_{0};
     std::atomic<uint8_t>  editReq_{0};
@@ -1388,6 +1493,7 @@ private:
     std::atomic<uint32_t> armPos_{0};              // clock position it was started at
     std::atomic<uint32_t> pos_{0}, end_{0}, spBar_{0}, underruns_{0}, openFailures_{0};
     std::atomic<uint32_t> rtGen_{0};               // odd while the render is inside
+    std::atomic<uint32_t> played_{0};              // frames sounded since this playback started
     std::atomic<bool>     loop_{true};
     std::atomic<uint32_t> loopA_{0}, loopB_{0};    // the loop region, samples
     std::atomic<bool>     stopReq_{false};
@@ -1449,11 +1555,17 @@ bool SongEngine::requestTempo(float bpm) { return impl_->requestTempo(bpm); }
 SongOpState SongEngine::editState() const { return impl_->editState(); }
 bool SongEngine::requestMerge(uint8_t mask, uint32_t fromBar, uint32_t toBar) { return impl_->requestMerge(mask, fromBar, toBar); }
 uint8_t SongEngine::editProgress() const { return impl_->editProgress(); }
+bool SongEngine::requestImport(const std::string& file, uint32_t start, uint32_t end,
+                               uint8_t track, uint32_t bar, uint32_t lead)
+{
+    return impl_->requestImport(file, start, end, track, bar, lead);
+}
 bool SongEngine::play(uint32_t fromBar) { return impl_->playWithTake(fromBar, SyncTake::None); }
 bool SongEngine::playWithTake(uint32_t fromBar, SyncTake take) { return impl_->playWithTake(fromBar, take); }
 void SongEngine::stop() { impl_->stop(); }
 bool SongEngine::playing() const { return impl_->playing(); }
 double SongEngine::positionBars() const { return impl_->positionBars(); }
+uint32_t SongEngine::framesPlayed() const { return impl_->framesPlayed(); }
 uint32_t SongEngine::underruns() const { return impl_->underruns(); }
 uint32_t SongEngine::openFailures() const { return impl_->openFailures(); }
 

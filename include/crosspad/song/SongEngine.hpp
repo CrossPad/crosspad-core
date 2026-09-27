@@ -49,6 +49,8 @@ public:
     SongOpState editState() const override;
     bool requestMerge(uint8_t trackMask, uint32_t fromBar, uint32_t toBar) override;
     uint8_t editProgress() const override;
+    bool requestImport(const std::string& file, uint32_t start, uint32_t end,
+                       uint8_t track, uint32_t bar, uint32_t lead) override;
     bool bounceScene(uint8_t scene, uint8_t track) override;
     BounceStatus bounceStatus() override;
     void cancelBounce() override;
@@ -57,6 +59,7 @@ public:
     void stop() override;
     bool playing() const override;
     double positionBars() const override;
+    uint32_t framesPlayed() const override;
     uint32_t underruns() const override;
     uint32_t openFailures() const override;
 
