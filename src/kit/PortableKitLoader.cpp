@@ -117,11 +117,28 @@ void PortableKitLoader::scanKits(const std::string& rootDir) {
         // rootDir is logical ("/crosspad/kits"); add the mount prefix for POSIX.
         discoverKitsRecursive(toFsPath(rootDir), kits_);
         // Trim the slack the guess left — PSRAM outside the engine arena is the
-        // UI's whole budget.
-        kits_.shrink_to_fit();
+        // UI's whole budget -- down to kSpareKits, the room addKit() fills
+        // without moving the list.
+        if (kits_.capacity() != kits_.size() + kSpareKits) {
+            std::vector<KitInfo> sized;
+            sized.reserve(kits_.size() + kSpareKits);
+            for (auto& k : kits_) sized.push_back(std::move(k));
+            kits_.swap(sized);
+        }
     } catch (const std::bad_alloc&) {
         // Keep what was found. A short kit list is a bad boot; no boot is worse.
     }
+}
+
+int PortableKitLoader::addKit(const std::string& kitJsonPath) {
+    const int known = findKitIdByPath(kitJsonPath);
+    if (known >= 0) return known;
+    if (kits_.size() >= kits_.capacity()) return -1;
+    KitInfo kit;
+    kit.path = kitJsonPath;
+    if (!readKitJson(toFsPath(kitJsonPath), kit, false)) return -1;
+    kits_.push_back(std::move(kit));
+    return static_cast<int>(kits_.size()) - 1;
 }
 
 std::vector<KitInfo> PortableKitLoader::listKits(const std::string& rootDir) {

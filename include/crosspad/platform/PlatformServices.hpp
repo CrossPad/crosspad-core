@@ -43,6 +43,7 @@ class CrosspadStatus;
 class SequencerController;
 class ISequencerEngine;
 class ISongEngine;
+class ISampleTools;
 class IPadMix;
 class PitchedInstrument;
 class Stm32MessageHandler;
@@ -84,6 +85,7 @@ struct PlatformServices {
     /// The audio song: projects on the card, bouncing a scene, playing the
     /// four tracks back. Null where the platform has none (the simulator).
     ISongEngine*      songEngine      = nullptr;
+    ISampleTools*     sampleTools     = nullptr;   ///< recording, previewing and slicing samples
     /// Per-pad level and pan of whichever engine plays the pads now; the
     /// engine that takes over the pads registers itself here.
     IPadMix*          padMix          = nullptr;

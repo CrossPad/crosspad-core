@@ -39,6 +39,14 @@ public:
     void releaseRetiredKit() override;
 
     // ── Non-virtual helpers ─────────────────────────────────────────────────
+    /// One kit written while the board runs (the Slicer's), onto the end of
+    /// the list without a rescan. @p kitJsonPath is logical
+    /// ("/crosspad/kits/<name>/kit.json"). Only into the spare room a scan
+    /// leaves (kSpareKits): growing the vector would move every KitInfo, and
+    /// the GUI holds getCurrentKit() across card reads. Returns the new id,
+    /// or -1 when there is no room -- a rescan (reboot, card reinsert) finds it.
+    int  addKit(const std::string& kitJsonPath);
+    static constexpr size_t kSpareKits = 8;
     int  findKitIdByPath(const std::string& path) const;
     bool isKitKnown(const std::string& path) const;
     std::vector<KitInfo>& kits();
