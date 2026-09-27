@@ -29,10 +29,16 @@
 #include "crosspad/sequencer/MetronomeNode.hpp"
 #include "crosspad/sequencer/PatternSequencer.hpp"
 
+#ifdef _WIN32
+#include <fcntl.h>
+#include <filesystem>
+#include <io.h>
+#else
 #include <dirent.h>
 #include <fcntl.h>
 #include <sys/stat.h>
 #include <unistd.h>
+#endif
 
 #include <algorithm>
 #include <atomic>
@@ -45,10 +51,6 @@
 #include <mutex>
 #include <string>
 #include <vector>
-
-#ifndef O_BINARY
-#define O_BINARY 0
-#endif
 
 namespace crosspad {
 namespace {
@@ -83,12 +85,59 @@ bool valid_name(const std::string& n)
            n.find_first_of("/\\") == std::string::npos;
 }
 
-bool make_dir(const std::string& p)
+/// The few file operations the engine needs: POSIX where there is POSIX (the
+/// board, Linux, macOS), the CRT and std::filesystem on Windows. Paths are
+/// UTF-8.
+namespace fsx {
+#ifdef _WIN32
+std::filesystem::path native(const std::string& p) { return std::filesystem::u8path(p); }
+int  openRead(const std::string& p) { return ::_wopen(native(p).c_str(), _O_RDONLY | _O_BINARY); }
+long readSome(int fd, void* dst, size_t n) { return ::_read(fd, dst, (unsigned)n); }
+bool seek(int fd, uint32_t at) { return ::_lseeki64(fd, at, SEEK_SET) >= 0; }
+void close(int fd) { ::_close(fd); }
+bool exists(const std::string& p) { std::error_code ec; return std::filesystem::exists(native(p), ec); }
+bool makeDir(const std::string& p)
+{
+    std::error_code ec;
+    if (std::filesystem::is_directory(native(p), ec)) return true;
+    return std::filesystem::create_directory(native(p), ec);
+}
+/// @p each(name, isDir) for every entry of @p dir.
+template <typename F> void listDir(const std::string& dir, F each)
+{
+    std::error_code ec;
+    for (const auto& e : std::filesystem::directory_iterator(native(dir), ec)) {
+        const auto u8 = e.path().filename().u8string();
+        std::error_code dec;
+        each(std::string(u8.begin(), u8.end()), e.is_directory(dec));
+    }
+}
+#else
+int  openRead(const std::string& p) { return ::open(p.c_str(), O_RDONLY); }
+long readSome(int fd, void* dst, size_t n) { return (long)::read(fd, dst, n); }
+bool seek(int fd, uint32_t at) { return ::lseek(fd, (off_t)at, SEEK_SET) >= 0; }
+void close(int fd) { ::close(fd); }
+bool exists(const std::string& p) { struct stat st; return stat(p.c_str(), &st) == 0; }
+bool makeDir(const std::string& p)
 {
     struct stat st;
     if (stat(p.c_str(), &st) == 0) return S_ISDIR(st.st_mode);
     return mkdir(p.c_str(), 0775) == 0;
 }
+/// @p each(name, isDir) for every entry of @p dir.
+template <typename F> void listDir(const std::string& dir, F each)
+{
+    DIR* d = opendir(dir.c_str());
+    if (!d) return;
+    while (dirent* e = readdir(d)) {
+        const std::string path = dir + "/" + e->d_name;
+        struct stat st;
+        each(std::string(e->d_name), stat(path.c_str(), &st) == 0 && S_ISDIR(st.st_mode));
+    }
+    closedir(d);
+}
+#endif
+} // namespace fsx
 
 /// Stereo int16 frames, one writer and one reader, counters that only grow
 /// (so used() is right across the uint32 wrap). In 16 kB segments rather than
@@ -176,13 +225,13 @@ struct ClipReader {
     uint16_t    channels = 2;
     uint32_t    cursor = UINT32_MAX;   // frame the file position is at
 
-    void close() { if (fd >= 0) ::close(fd); fd = -1; path.clear(); cursor = UINT32_MAX; }
+    void close() { if (fd >= 0) fsx::close(fd); fd = -1; path.clear(); cursor = UINT32_MAX; }
 
-    bool readAll(void* dst, size_t n) { return ::read(fd, dst, n) == (ssize_t)n; }
+    bool readAll(void* dst, size_t n) { return fsx::readSome(fd, dst, n) == (long)n; }
 
     bool open(const std::string& p) {
         close();
-        fd = ::open(p.c_str(), O_RDONLY | O_BINARY);
+        fd = fsx::openRead(p);
         if (fd < 0) return false;
         uint8_t h[12];
         if (!readAll(h, 12) || std::memcmp(h, "RIFF", 4) || std::memcmp(h + 8, "WAVE", 4)) {
@@ -203,7 +252,7 @@ struct ClipReader {
                 const uint16_t bits = fm[14] | fm[15] << 8;
                 fmtOk = (fm[0] | fm[1] << 8) == 1 && bits == 16 && (channels == 1 || channels == 2);
                 at += size + (size & 1);
-                if (size > 16 && ::lseek(fd, (off_t)at, SEEK_SET) < 0) break;
+                if (size > 16 && !fsx::seek(fd, at)) break;
             } else if (!std::memcmp(ch, "data", 4)) {
                 if (!fmtOk) break;
                 dataOffset = at;
@@ -213,7 +262,7 @@ struct ClipReader {
                 return true;
             } else {
                 at += size + (size & 1);
-                if (::lseek(fd, (off_t)at, SEEK_SET) < 0) break;
+                if (!fsx::seek(fd, at)) break;
             }
         }
         close();
@@ -226,12 +275,12 @@ struct ClipReader {
         uint32_t got = 0;
         if (fd >= 0 && frame < frames) {
             if (cursor != frame) {
-                ::lseek(fd, (off_t)(dataOffset + frame * channels * 2u), SEEK_SET);
+                fsx::seek(fd, dataOffset + frame * channels * 2u);
                 cursor = frame;
             }
             const uint32_t want = std::min(n, frames - frame);
             const uint32_t fb = channels * 2u;
-            const ssize_t r = ::read(fd, dst, want * fb);
+            const long r = fsx::readSome(fd, dst, want * fb);
             got = r > 0 ? (uint32_t)r / fb : 0;
             if (channels == 1) {
                 for (int32_t i = (int32_t)got - 1; i >= 0; --i) dst[i * 2] = dst[i * 2 + 1] = dst[i];
@@ -542,16 +591,11 @@ private:
         std::vector<std::string> out;
         if (p.storageReady()) {
             const std::string root = p.songsRoot();
-            if (DIR* d = opendir(root.c_str())) {
-                while (dirent* e = readdir(d)) {
-                    if (e->d_name[0] == '.') continue;
-                    const std::string path = root + "/" + e->d_name;
-                    struct stat st;
-                    if (stat(path.c_str(), &st) == 0 && S_ISDIR(st.st_mode)) out.push_back(e->d_name);
-                    p.yieldIo();
-                }
-                closedir(d);
-            }
+            fsx::listDir(root, [&](const std::string& name, bool isDir) {
+                if (name.empty() || name[0] == '.') return;
+                if (isDir) out.push_back(name);
+                p.yieldIo();
+            });
         }
         std::sort(out.begin(), out.end());
         std::lock_guard<std::mutex> l(listMutex_);
@@ -573,14 +617,14 @@ private:
             }
         }
         if (!dir.empty() && p.storageReady()) {
-            if (DIR* d = opendir(dir.c_str())) {
-                while (dirent* e = readdir(d)) {
-                    const std::string name = e->d_name;
-                    if (name.size() < 5 || name.compare(name.size() - 4, 4, ".wav") != 0) continue;
+            fsx::listDir(dir, [&](const std::string& name, bool) {
+                    if (name.size() < 5 || name.compare(name.size() - 4, 4, ".wav") != 0) return;
                     /* Its length on the grid from the header alone: a bounce
-                     * is a whole number of bars, anything else rounds up. */
+                     * is a whole number of bars, anything else rounds up.
+                     * Asked before every open: on the board an open that
+                     * finds internal RAM short aborts rather than fails. */
                     ClipReader r;
-                    if (r.open(dir + "/" + name) && r.frames && spBar) {
+                    if (p.storageReady() && r.open(dir + "/" + name) && r.frames && spBar) {
                         ClipInfo ci;
                         ci.file = name;
                         const uint32_t bars = (r.frames + spBar - 1) / spBar;
@@ -589,9 +633,7 @@ private:
                     }
                     r.close();
                     p.yieldIo();
-                }
-                closedir(d);
-            }
+            });
         }
         std::sort(out.begin(), out.end(), [](const ClipInfo& a, const ClipInfo& b) { return a.file < b.file; });
         std::lock_guard<std::mutex> l(listMutex_);
@@ -606,7 +648,7 @@ private:
         if (!p.storageReady()) return SongOpState::Failed;
         const std::string root = p.songsRoot();
         const std::string dir = root + "/" + name;
-        if (!make_dir(root) || !make_dir(dir) || !make_dir(dir + "/" + AudioSong::clipsDir())) {
+        if (!fsx::makeDir(root) || !fsx::makeDir(dir) || !fsx::makeDir(dir + "/" + AudioSong::clipsDir())) {
             return SongOpState::Failed;
         }
         AudioSong fresh;
@@ -915,8 +957,7 @@ private:
                 std::lock_guard<std::recursive_mutex> l(songMutex_);
                 path = song_.clipPath(file);
             }
-            struct stat st;
-            if (stat(path.c_str(), &st) != 0) break;
+            if (!fsx::exists(path)) break;
         }
 
         WavWriter w;

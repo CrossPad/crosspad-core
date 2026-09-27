@@ -11,6 +11,7 @@
 #include <condition_variable>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include <filesystem>
 #include <mutex>
 #include <thread>
@@ -32,6 +33,7 @@ struct FakePlatform final : ISongEnginePlatform {
     std::condition_variable cv;
     bool woken = false;
     std::atomic<bool> storage{true};
+    std::atomic<int> storageAsked{0};
     std::atomic<int> captureBegun{0}, captureEnded{0};
 
     bool startWorker(void (*entry)(void*), void* arg) override {
@@ -58,7 +60,7 @@ struct FakePlatform final : ISongEnginePlatform {
     void freeRingSegment(void* p) override { std::free(p); }
     void* allocScratch(size_t b) override { return std::malloc(b); }
     size_t freeMemoryBytes() override { return size_t(1) << 30; }
-    bool storageReady() override { return storage.load(); }
+    bool storageReady() override { ++storageAsked; return storage.load(); }
     void yieldIo() override {}
     const char* songsRoot() override { return root.c_str(); }
     std::string loadCurrent() override { return current; }
@@ -122,6 +124,28 @@ void writeClip(const std::string& path, uint32_t frames, int16_t value) {
     std::vector<int16_t> buf(frames * 2, value);
     REQUIRE(w.write(buf.data(), frames));
     REQUIRE(w.close());
+}
+
+/// The samples of a 16-bit WAV's data chunk.
+std::vector<int16_t> readWavData(const std::string& path) {
+    std::FILE* f = std::fopen(path.c_str(), "rb");
+    REQUIRE(f);
+    std::vector<uint8_t> all;
+    uint8_t buf[4096];
+    size_t n;
+    while ((n = std::fread(buf, 1, sizeof buf, f)) > 0) all.insert(all.end(), buf, buf + n);
+    std::fclose(f);
+    size_t at = 12;
+    while (at + 8 <= all.size()) {
+        const uint32_t size = all[at + 4] | all[at + 5] << 8 | all[at + 6] << 16 | uint32_t(all[at + 7]) << 24;
+        if (std::memcmp(&all[at], "data", 4) == 0) {
+            std::vector<int16_t> pcm(size / 2);
+            std::memcpy(pcm.data(), &all[at + 8], pcm.size() * 2);
+            return pcm;
+        }
+        at += 8 + size + (size & 1);
+    }
+    return {};
 }
 
 } // namespace
@@ -229,9 +253,11 @@ TEST_CASE("song engine: bounce writes the pads bus to a clip on the track", "[so
     r.seq.setSceneBars(0, 1);
     std::vector<float> out(kBlock * 2), bus(kBlock * 2, 0.25f);
     REQUIRE(r.engine->bounceScene(0, 0));
-    for (int i = 0; i < 20000 && r.engine->bounceStatus().state == BounceState::Running; ++i) {
+    /* Near real time (a block is 5.8 ms): the bounce ring holds ~0.7 s, so a
+     * worker held off the CPU for a while on a loaded machine still keeps up. */
+    for (int i = 0; i < 4000 && r.engine->bounceStatus().state == BounceState::Running; ++i) {
         r.block(out, bus);
-        std::this_thread::sleep_for(std::chrono::microseconds(200));
+        std::this_thread::sleep_for(std::chrono::milliseconds(4));
     }
     const BounceStatus st = r.engine->bounceStatus();
     REQUIRE(st.state == BounceState::Done);
@@ -239,7 +265,12 @@ TEST_CASE("song engine: bounce writes the pads bus to a clip on the track", "[so
     CHECK(r.platform.captureEnded == 1);
     const fs::path wav = r.clipsDir("Demo") / st.file;
     REQUIRE(fs::exists(wav));
-    CHECK(fs::file_size(wav) > 44);
+    /* The take is the pads bus, sample for sample: 0.25 of full scale, one bar. */
+    const std::vector<int16_t> pcm = readWavData(wav.string());
+    REQUIRE(pcm.size() == size_t(st.framesTotal) * 2);
+    CHECK(st.framesDone == st.framesTotal);
+    const int16_t expect = int16_t(0.25f * 32767.0f);
+    CHECK(std::all_of(pcm.begin(), pcm.end(), [&](int16_t v) { return v == expect; }));
     std::lock_guard<std::recursive_mutex> l(r.engine->songMutex());
     REQUIRE(r.engine->song().tracks[0].clips.size() == 1);
     CHECK(r.engine->song().tracks[0].clips[0].file == st.file);
@@ -249,15 +280,20 @@ TEST_CASE("song engine: a cancelled bounce leaves no file and restores the bus",
     Rig r;
     REQUIRE(r.open("Demo"));
     r.seq.setSceneBars(0, 4);
+    r.seq.setCountIn(true);
+    const uint8_t sceneWas = r.seq.activeScene();
     std::vector<float> out(kBlock * 2), bus(kBlock * 2, 0.25f);
     REQUIRE(r.engine->bounceScene(0, 0));
     REQUIRE(waitFor([&] { return r.platform.captureBegun.load() == 1; }));
+    CHECK_FALSE(r.seq.countIn());   // a bounce plays the scene without count-in
     for (int i = 0; i < 20; ++i) r.block(out, bus);
     r.engine->cancelBounce();
     REQUIRE(waitFor([&] { return r.engine->bounceStatus().state == BounceState::Failed; }));
     CHECK(r.engine->bounceStatus().error == "cancelled");
     CHECK(r.platform.captureEnded == r.platform.captureBegun);
     CHECK(fs::is_empty(r.clipsDir("Demo")));
+    CHECK(r.seq.countIn());
+    CHECK(r.seq.activeScene() == sceneWas);
 }
 
 TEST_CASE("song engine: no storage, no project and no bounce", "[song]") {
@@ -267,4 +303,54 @@ TEST_CASE("song engine: no storage, no project and no bounce", "[song]") {
     REQUIRE(waitFor([&] { return r.engine->openState() == SongOpState::Failed; }));
     REQUIRE(r.engine->bounceScene(0, 0));
     REQUIRE(waitFor([&] { return r.engine->bounceStatus().state == BounceState::Failed; }));
+}
+
+TEST_CASE("song engine: every clip opened for the list asks the platform first", "[song]") {
+    Rig r;
+    REQUIRE(r.open("Demo"));
+    for (const char* n : {"a.wav", "b.wav", "c.wav"}) {
+        writeClip((r.clipsDir("Demo") / n).string(), kRate, 100);
+    }
+    const int before = r.platform.storageAsked.load();
+    REQUIRE(r.engine->requestClips());
+    REQUIRE(waitFor([&] { return r.engine->clips().size() == 3; }));
+    /* The board's open aborts when internal RAM is short; the platform must
+     * get the chance to say no before each one, not once per listing. */
+    CHECK(r.platform.storageAsked.load() - before >= 4);
+}
+
+TEST_CASE("song engine: stop and play hammered while the render runs", "[song]") {
+    Rig r;
+    REQUIRE(r.open("Demo"));
+    writeClip((r.clipsDir("Demo") / "c.wav").string(), kRate * 4, 8000);
+    {
+        std::lock_guard<std::recursive_mutex> l(r.engine->songMutex());
+        SongClip c;
+        c.file = "c.wav";
+        c.bar = 0;
+        c.bars = 2;
+        r.engine->song().bpm = 120.0f;
+        r.engine->song().addClip(0, c);
+    }
+    r.engine->commit();
+    /* The render keeps going as it would on the audio thread; every stop makes
+     * the worker free the ring it is reading from (rtGen_ is what makes that
+     * safe). Run under ASan/TSan this is the use-after-free check. */
+    std::atomic<bool> run{true};
+    std::thread render([&] {
+        std::vector<float> out(kBlock * 2), bus(kBlock * 2, 0.0f);
+        while (run.load()) {
+            r.block(out, bus);
+            std::this_thread::sleep_for(std::chrono::microseconds(500));
+        }
+    });
+    for (int i = 0; i < 40; ++i) {
+        r.engine->play(0);
+        std::this_thread::sleep_for(std::chrono::milliseconds(3 + i % 5));
+        r.engine->stop();
+        std::this_thread::sleep_for(std::chrono::milliseconds(i % 3));
+    }
+    REQUIRE(waitFor([&] { return !r.engine->playing(); }));
+    run.store(false);
+    render.join();
 }
