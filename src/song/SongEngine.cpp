@@ -74,6 +74,9 @@ constexpr size_t   kMaxClipPrefix    = 32;
 constexpr uint32_t kCardPollMs       = 1000;
 /// How often the worker tops the song ring up while it plays.
 constexpr uint32_t kStreamPollMs     = 3;
+/// A commit is saved once nothing has been committed for this long: a fader
+/// turned is dozens of commits, and each one a card write under playback.
+constexpr uint32_t kSaveDelayMs      = 400;
 /// releaseRings(): how often it logs that it is still waiting (a bounce
 /// notices a cancel within one card write).
 constexpr uint32_t kReleaseWaitMs    = 3000;
@@ -611,6 +614,7 @@ struct SongEngine::Impl {
             std::lock_guard<std::recursive_mutex> l(songMutex_);
             rebuild();
         }
+        saveAtUs_.store(p.nowUs() + (int64_t)kSaveDelayMs * 1000);
         saveReq_.store(true);
         p.wake();
     }
@@ -1198,8 +1202,10 @@ private:
     void worker() {
         while (!quit_.load()) {
             const bool streaming = job_.load() == Job::Play && play_.load() != Play::Idle;
-            /* Until a project is open, look for the card once a second. */
-            p.waitWake(streaming ? kStreamPollMs : (lastTried_ ? UINT32_MAX : kCardPollMs));
+            /* Until a project is open, look for the card once a second; with a
+             * save waiting, back in time to make it. */
+            p.waitWake(streaming ? kStreamPollMs
+                                 : saveReq_.load() ? kSaveDelayMs : (lastTried_ ? UINT32_MAX : kCardPollMs));
             if (quit_.load()) break;
 
             if (releaseReq_.load()) {
@@ -1249,7 +1255,7 @@ private:
                 continue;
             }
             if (!lastTried_) openLast();
-            if (saveReq_.exchange(false)) doSave();
+            if (saveReq_.load() && p.nowUs() >= saveAtUs_.load() && saveReq_.exchange(false)) doSave();
             if (bounceReq_.exchange(false)) {
                 runBounce();
                 busy_.store(false);
@@ -1607,6 +1613,7 @@ private:
     bool        lastTried_ = false;            // worker only
     std::string openName_;
     std::atomic<bool> openReq_{false}, saveReq_{false}, playReq_{false};
+    std::atomic<int64_t> saveAtUs_{0};            // a committed song is saved from then on
     std::atomic<SongOpState> openState_{SongOpState::Idle};
     std::atomic<uint32_t> playFrom_{0};
     std::atomic<SyncTake> playTake_{SyncTake::None};
