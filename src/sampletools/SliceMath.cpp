@@ -80,5 +80,58 @@ float bpmOf(uint32_t frames, uint32_t sampleRate, uint8_t bars)
     return 60.0f * 4.0f * (float)bars / seconds;
 }
 
+uint32_t attackFrames(uint16_t attackMs, uint32_t sampleRate)
+{
+    const uint32_t ms = std::min<uint32_t>(attackMs, kMaxAttackMs);
+    return std::max(kMinFadeInFrames, (uint32_t)((uint64_t)ms * sampleRate / 1000u));
+}
+
+float sliceGain(uint32_t rel, uint32_t len, uint32_t attack)
+{
+    if (rel >= len) return 0.0f;
+    float g = 1.0f;
+    if (rel < attack) g = (float)rel / (float)attack;
+    if (len - rel <= kFadeOutFrames) g = std::min(g, (float)(len - rel - 1) / (float)kFadeOutFrames);
+    return g;
+}
+
+double pitchRatio(int semitones)
+{
+    semitones = std::max(-kMaxSemitones, std::min(kMaxSemitones, semitones));
+    return std::pow(2.0, (double)semitones / 12.0);
+}
+
+uint32_t pitchedFrames(uint32_t srcFrames, double ratio)
+{
+    if (ratio <= 0.0) return srcFrames;
+    return (uint32_t)std::ceil((double)srcFrames / ratio - 1e-9);
+}
+
+void readPitched(const int16_t* src, uint32_t srcFrames, double pos, double ratio,
+                 int16_t* out, uint32_t n)
+{
+    if (!srcFrames) {
+        std::fill(out, out + n * 2, (int16_t)0);
+        return;
+    }
+    const int64_t last = (int64_t)srcFrames - 1;
+    auto tap = [&](int64_t i, int ch) -> float {
+        return (float)src[std::max<int64_t>(0, std::min(last, i)) * 2 + ch];
+    };
+    for (uint32_t k = 0; k < n; ++k) {
+        const double p = pos + (double)k * ratio;
+        const int64_t i = (int64_t)std::floor(p);
+        const float f = (float)(p - (double)i);
+        for (int ch = 0; ch < 2; ++ch) {
+            const float y0 = tap(i - 1, ch), y1 = tap(i, ch), y2 = tap(i + 1, ch), y3 = tap(i + 2, ch);
+            const float c1 = 0.5f * (y2 - y0);
+            const float c2 = y0 - 2.5f * y1 + 2.0f * y2 - 0.5f * y3;
+            const float c3 = 0.5f * (y3 - y0) + 1.5f * (y1 - y2);
+            const float y = ((c3 * f + c2) * f + c1) * f + y1;
+            out[k * 2 + ch] = (int16_t)std::max(-32768.0f, std::min(32767.0f, std::round(y)));
+        }
+    }
+}
+
 } // namespace SliceMath
 } // namespace crosspad

@@ -42,6 +42,24 @@ std::string resolveKitSamplePath(const std::string& kitJsonPath,
     return flat;
 }
 
+std::string kitFsPath(const std::string& logicalPath) {
+    return logicalPath.empty() ? std::string() : g_fsPrefix + logicalPath;
+}
+
+std::string renderedSamplePath(const std::string& logicalPath, const SampleFx& fx) {
+    if (!fx.any() || logicalPath.empty()) return logicalPath;
+    const auto slash = logicalPath.rfind('/');
+    const std::string dir  = slash != std::string::npos ? logicalPath.substr(0, slash) : "";
+    std::string name = slash != std::string::npos ? logicalPath.substr(slash + 1) : logicalPath;
+    const auto dot = name.rfind('.');
+    if (dot != std::string::npos) name.resize(dot);
+    if (fx.semitones) name += (fx.semitones > 0 ? "_p+" : "_p") + std::to_string(fx.semitones);
+    if (fx.hpHz) name += "_h" + std::to_string(fx.hpHz);
+    if (fx.lpHz) name += "_l" + std::to_string(fx.lpHz);
+    if (fx.reverse) name += "_r";
+    return dir + "/.fx/" + name + ".wav";
+}
+
 std::string kitAssetPath(const std::string& kitJsonPath,
                          const std::string& fileName) {
     return g_fsPrefix + parentDir(kitJsonPath) + "/" + fileName;

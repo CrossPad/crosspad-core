@@ -119,6 +119,9 @@ bool kit_parse_pads(KitInfo& kit, JsonDocument& doc)
         pad.playbackMode  = padObj["playbackMode"]  | (uint8_t)0;
         pad.cycle         = padObj["cycle"]         | false;
         pad.pitch         = padObj["pitch"]         | 0;
+        pad.hp            = padObj["hp"]            | 0;
+        pad.lp            = padObj["lp"]            | 0;
+        pad.reverse       = padObj["reverse"]       | false;
 
         pad.RemoveAllSamples();
 
@@ -208,6 +211,10 @@ bool kit_serialize(const KitInfo& kit, JsonDocument& doc)
         padObj["choke_group"]   = pad.choke_group;
         padObj["volume"]        = pad.volume;
         padObj["pan"]           = pad.pan;
+        if (pad.pitch) padObj["pitch"] = pad.pitch;   // semitones; absent is 0
+        if (pad.hp) padObj["hp"] = pad.hp;            // filter cutoffs in Hz; absent is off
+        if (pad.lp) padObj["lp"] = pad.lp;
+        if (pad.reverse) padObj["reverse"] = true;
         padObj["playbackMode"]  = pad.playbackMode;
         padObj["cycle"]         = pad.cycle;
 

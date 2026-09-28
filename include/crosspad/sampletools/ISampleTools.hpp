@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: MIT
 #pragma once
 
+#include "crosspad/sampletools/SampleFx.hpp"
+
 #include <cstdint>
 #include <string>
 #include <vector>
@@ -65,6 +67,18 @@ struct SliceKit {
     std::vector<uint32_t> starts;          ///< sorted
     uint32_t              end = 0;
     uint16_t              bpm = 0;         ///< 0 = not known
+    uint16_t              attackMs = 0;    ///< every slice's rise (SliceMath::attackFrames)
+    int8_t                semitones = 0;   ///< every slice transposed, varispeed (SliceMath::pitchRatio)
+};
+
+/// How a preview sounds: transposed, filtered, and/or as a kit's slice.
+struct PreviewSound {
+    int8_t   semitones = 0;    ///< varispeed, -12..+12 (SliceMath::pitchRatio)
+    bool     slice     = false;///< rising over attackMs, with the slice's fades (SliceMath::sliceGain)
+    uint16_t attackMs  = 0;
+    uint16_t hpHz      = 0;    ///< high pass, 0 = off (SampleFilters)
+    uint16_t lpHz      = 0;    ///< low pass, 0 = off
+    bool     reverse   = false;///< from end to start; previewFrame() then runs backwards
 };
 
 /// Recording, looking at and cutting samples: the platform's side of the
@@ -128,6 +142,16 @@ public:
     /// The slices as a kit on the card, in the kit list at once when there is
     /// room; jobResult() is the kit's name, or why it failed.
     virtual bool requestExportKit(const SliceKit& kit) = 0;
+    /// The whole of @p file played with @p fx -- transposed (varispeed,
+    /// SliceMath::readPitched), then filtered (SampleFilters) -- into @p out,
+    /// written beside it and swapped in so nothing ever reads half a file; an
+    /// @p out already there is kept. jobResult() is @p out. What a sampler pad
+    /// with pitch or filters plays (renderedSamplePath()).
+    virtual bool requestRendered(const std::string& file, const std::string& out, const SampleFx& fx)
+    {
+        (void)file; (void)out; (void)fx;
+        return false;
+    }
     virtual ToolJob     job() const = 0;
     virtual std::string jobResult() = 0;
     virtual uint8_t     jobProgress() const = 0;   ///< percent
@@ -135,6 +159,15 @@ public:
     // ── Preview ───────────────────────────────────────────────────────────
     /// Play [start, end) of @p file (end 0 = to its end), once or looped.
     virtual bool     preview(const std::string& file, uint32_t start, uint32_t end, bool loop) = 0;
+    /// preview() shaped as @p sound says -- what a kit made with the same
+    /// settings plays. previewFrame() stays in the file's frames whatever the
+    /// pitch. A platform without it plays it plain.
+    virtual bool     previewAs(const std::string& file, uint32_t start, uint32_t end, bool loop,
+                               const PreviewSound& sound)
+    {
+        (void)sound;
+        return preview(file, start, end, loop);
+    }
     virtual void     stopPreview() = 0;
     virtual bool     previewing() const = 0;
     /// The frame of the file being heard now.

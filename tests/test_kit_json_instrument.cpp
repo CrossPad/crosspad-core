@@ -258,3 +258,24 @@ TEST_CASE("kit json: category files a kit as the user's, the Slicer's without it
     kit_serialize(c, out2);
     CHECK_FALSE(out2["category"].is<const char*>());   // absent, not "", for a stock kit
 }
+
+TEST_CASE("kit json: a pad's pitch and filters survive a round trip, and 0 is not written", "[kit]") {
+    KitInfo kit;
+    kit.pads[3].pitch = -5;
+    kit.pads[3].hp = 200;
+    kit.pads[3].lp = 8000;
+    kit.pads[3].reverse = true;
+    const std::string json = serialize(kit);
+    CHECK(json.find("\"pitch\":-5") != std::string::npos);
+    CHECK(json.find("\"pitch\":0") == std::string::npos);
+    const KitInfo back = parse(json.c_str());
+    CHECK(back.pads[3].pitch == -5);
+    CHECK(back.pads[3].hp == 200);
+    CHECK(back.pads[3].lp == 8000);
+    CHECK(back.pads[3].reverse);
+    CHECK_FALSE(back.pads[4].reverse);
+    CHECK(json.find("\"reverse\":false") == std::string::npos);
+    CHECK(back.pads[4].pitch == 0);
+    CHECK(back.pads[4].hp == 0);
+    CHECK(json.find("\"hp\":0") == std::string::npos);
+}

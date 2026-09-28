@@ -94,6 +94,10 @@ set(CORE_SOURCES
     ${CORE_DIR}/src/song/AudioSong.cpp
     ${CORE_DIR}/src/song/SongEngine.cpp
 
+    # Sample tools
+    ${CORE_DIR}/src/sampletools/SliceMath.cpp
+    ${CORE_DIR}/src/sampletools/SampleFx.cpp
+
     # Loop recorder
     ${CORE_DIR}/src/sequencer/PatternSequencer.cpp
     ${CORE_DIR}/src/sequencer/SequenceStore.cpp
