@@ -51,6 +51,8 @@
 #include <cstdio>
 #include <cstring>
 #include <iterator>
+#include <map>
+#include <memory>
 #include <mutex>
 #include <string>
 #include <utility>
@@ -84,6 +86,13 @@ constexpr uint32_t kSaveDelayMs      = 400;
 /// notices a cancel within one card write).
 constexpr uint32_t kReleaseWaitMs    = 3000;
 constexpr uint32_t kReleasePollMs    = 10;
+/// A clip's waveform: one value per this many frames (23 ms at 44.1 kHz,
+/// under a pixel at the Arrange's closest zoom).
+constexpr uint32_t kPeakHop          = 1024;
+/// Frames read from the card at a time while a waveform is worked out.
+constexpr uint32_t kPeakChunkFrames  = 4096;
+/// Beside clips/: <file>.pk per clip, so a waveform is read from its WAV once.
+constexpr const char* kPeaksDir      = ".peaks";
 
 /// A name that stays one folder under the songs root.
 bool valid_name(const std::string& n)
@@ -616,6 +625,38 @@ struct SongEngine::Impl {
     std::vector<std::string> editReport() {
         std::lock_guard<std::mutex> l(reportMutex_);
         return report_;
+    }
+
+    bool clipPeaks(const std::string& file, ClipPeaks& out) {
+        std::string dir;
+        {
+            std::lock_guard<std::recursive_mutex> l(songMutex_);
+            dir = song_.dir;
+        }
+        if (dir.empty() || file.empty()) return false;
+        {
+            std::lock_guard<std::mutex> l(peaksMutex_);
+            if (dir != peaksDir_) {           // another project: none of these are its
+                peaks_.clear();
+                peaksWanted_.clear();
+                peaksDir_ = dir;
+            }
+            auto it = peaks_.find(file);
+            if (it != peaks_.end()) {
+                out.hop = kPeakHop;
+                out.values = it->second;
+                return true;
+            }
+            if (std::find(peaksWanted_.begin(), peaksWanted_.end(), file) != peaksWanted_.end()) return false;
+            peaksWanted_.push_back(file);
+        }
+        if (ensureWorker()) p.wake();
+        return false;
+    }
+    uint32_t peaksGeneration() const { return peaksGen_.load(); }
+    uint32_t framesPerBar() {
+        std::lock_guard<std::recursive_mutex> l(songMutex_);
+        return song_.samplesPerBar(sampleRate_);
     }
 
     bool requestImport(const std::string& file, uint32_t start, uint32_t end,
@@ -1341,9 +1382,13 @@ private:
     void worker() {
         while (!quit_.load()) {
             const bool streaming = job_.load() == Job::Play && play_.load() != Play::Idle;
+            /* Waveforms are worked out only while nothing plays, one after
+             * another without waiting. */
+            const bool peaking = !streaming && peaksPending() && p.storageReady();
             /* Until a project is open, look for the card once a second; with a
              * save waiting, back in time to make it. */
             p.waitWake(streaming ? kStreamPollMs
+                                 : peaking ? 0
                                  : saveReq_.load() ? kSaveDelayMs : (lastTried_ ? UINT32_MAX : kCardPollMs));
             if (quit_.load()) break;
 
@@ -1402,7 +1447,112 @@ private:
                 continue;
             }
             if (job_.load() == Job::Play && play_.load() != Play::Idle) fillRings();
+            else if (peaksPending() && p.storageReady()) doPeaks();
         }
+    }
+
+    /// Worker: anything asked for that goes before a waveform.
+    bool requestWaiting() const {
+        return quit_.load() || releaseReq_.load() || stopReq_.load() || playReq_.load() || openReq_.load() ||
+               editReq_.load() != 0 || listReq_.load() != 0 || bounceReq_.load() ||
+               (saveReq_.load() && p.nowUs() >= saveAtUs_.load());
+    }
+
+    bool peaksPending() {
+        std::lock_guard<std::mutex> l(peaksMutex_);
+        return !peaksWanted_.empty();
+    }
+
+    /// Worker: the first waveform asked for -- from .peaks/ when that was
+    /// made from the same file, else read from the WAV and kept there. A
+    /// request coming in stops the reading; it is started again after.
+    void doPeaks() {
+        std::string dir, file;
+        {
+            std::lock_guard<std::mutex> l(peaksMutex_);
+            if (peaksWanted_.empty()) return;
+            dir = peaksDir_;
+            file = peaksWanted_.front();
+        }
+        auto values = std::make_shared<std::vector<uint8_t>>();
+        const std::string wav = dir + "/" + AudioSong::clipsDir() + "/" + file;
+        const std::string cache = dir + "/" + kPeaksDir + "/" + file + ".pk";
+        uint64_t bytes = 0;
+        int64_t modified = 0;
+        if (fsx::fileInfo(wav, bytes, modified) && !loadPeaks(cache, bytes, *values)) {
+            if (!readPeaks(wav, *values)) return;
+            if (!values->empty()) savePeaks(dir, cache, bytes, *values);
+        }
+        {
+            std::lock_guard<std::mutex> l(peaksMutex_);
+            if (dir != peaksDir_) return;           // another project opened meanwhile
+            peaks_[file] = std::move(values);
+            peaksWanted_.erase(std::remove(peaksWanted_.begin(), peaksWanted_.end(), file), peaksWanted_.end());
+        }
+        peaksGen_.fetch_add(1);
+    }
+
+    /// The loudest sample of every kPeakHop frames of @p wav. False when a
+    /// request came in first; a file the engine cannot play gives none.
+    bool readPeaks(const std::string& wav, std::vector<uint8_t>& out) {
+        ClipReader r;
+        if (!r.open(wav)) return true;
+        std::vector<int16_t> buf(kPeakChunkFrames * 2);
+        out.reserve((r.frames + kPeakHop - 1) / kPeakHop);
+        int peak = 0;
+        uint32_t inHop = 0;
+        for (uint32_t f = 0; f < r.frames; f += kPeakChunkFrames) {
+            if (requestWaiting()) return false;
+            const uint32_t n = std::min(kPeakChunkFrames, r.frames - f);
+            r.read(f, buf.data(), n);
+            for (uint32_t i = 0; i < n * 2; i += 2) {
+                peak = std::max({peak, std::abs((int)buf[i]), std::abs((int)buf[i + 1])});
+                if (++inHop == kPeakHop) {
+                    out.push_back((uint8_t)std::min(255, peak >> 7));
+                    peak = 0;
+                    inHop = 0;
+                }
+            }
+            p.yieldIo();
+        }
+        if (inHop) out.push_back((uint8_t)std::min(255, peak >> 7));
+        return true;
+    }
+
+    /* A .pk file: "CPPK", version, the hop, the WAV's size in bytes when it
+     * was made, the count, the values. Little-endian. */
+    static constexpr uint8_t kPeaksVersion = 1;
+    static constexpr size_t  kPeaksHeader  = 16;
+
+    bool loadPeaks(const std::string& path, uint64_t wavBytes, std::vector<uint8_t>& out) {
+        std::FILE* f = std::fopen(path.c_str(), "rb");
+        if (!f) return false;
+        uint8_t h[kPeaksHeader];
+        bool ok = std::fread(h, 1, sizeof(h), f) == sizeof(h) && !std::memcmp(h, "CPPK", 4) &&
+                  h[4] == kPeaksVersion && (uint32_t)(h[6] | h[7] << 8) == kPeakHop &&
+                  (h[8] | h[9] << 8 | h[10] << 16 | (uint32_t)h[11] << 24) == (uint32_t)wavBytes;
+        if (ok) {
+            out.resize(h[12] | h[13] << 8 | h[14] << 16 | (size_t)h[15] << 24);
+            ok = std::fread(out.data(), 1, out.size(), f) == out.size();
+        }
+        std::fclose(f);
+        if (!ok) out.clear();
+        return ok;
+    }
+
+    void savePeaks(const std::string& dir, const std::string& path, uint64_t wavBytes,
+                   const std::vector<uint8_t>& v) {
+        if (!fsx::makeDir(dir + "/" + kPeaksDir)) return;
+        std::FILE* f = std::fopen(path.c_str(), "wb");
+        if (!f) return;
+        const uint32_t b = (uint32_t)wavBytes, n = (uint32_t)v.size();
+        const uint8_t h[kPeaksHeader] = {'C', 'P', 'P', 'K', kPeaksVersion, 0,
+                                         (uint8_t)kPeakHop, (uint8_t)(kPeakHop >> 8),
+                                         (uint8_t)b, (uint8_t)(b >> 8), (uint8_t)(b >> 16), (uint8_t)(b >> 24),
+                                         (uint8_t)n, (uint8_t)(n >> 8), (uint8_t)(n >> 16), (uint8_t)(n >> 24)};
+        const bool ok = std::fwrite(h, 1, sizeof(h), f) == sizeof(h) &&
+                        std::fwrite(v.data(), 1, v.size(), f) == v.size();
+        if (std::fclose(f) != 0 || !ok) std::remove(path.c_str());   // half a file would read as whole
     }
 
     /// Worker: from the snapshot, @p fromBar on. In sync the sequencer is the
@@ -1770,6 +1920,13 @@ private:
     std::string editName_;                        // under songMutex_
     std::vector<std::string> report_;             // the last export's, under reportMutex_
     std::mutex  reportMutex_;
+    /* Waveforms of the project in peaksDir_, by clip name, and the ones asked
+     * for and not had yet, oldest first; under peaksMutex_. */
+    std::map<std::string, std::shared_ptr<const std::vector<uint8_t>>> peaks_;
+    std::vector<std::string> peaksWanted_;
+    std::string peaksDir_;
+    std::mutex  peaksMutex_;
+    std::atomic<uint32_t> peaksGen_{0};
     std::atomic<uint8_t>  listReq_{0};
     std::atomic<uint32_t> listGen_{0};
     std::vector<std::string> projects_;
@@ -1863,6 +2020,9 @@ bool SongEngine::requestMerge(uint8_t mask, uint32_t fromBar, uint32_t toBar) { 
 uint8_t SongEngine::editProgress() const { return impl_->editProgress(); }
 bool SongEngine::requestExportLiveSet() { return impl_->requestExportLiveSet(); }
 std::vector<std::string> SongEngine::editReport() { return impl_->editReport(); }
+bool SongEngine::clipPeaks(const std::string& file, ClipPeaks& out) { return impl_->clipPeaks(file, out); }
+uint32_t SongEngine::peaksGeneration() const { return impl_->peaksGeneration(); }
+uint32_t SongEngine::framesPerBar() { return impl_->framesPerBar(); }
 bool SongEngine::requestImport(const std::string& file, uint32_t start, uint32_t end,
                                uint8_t track, uint32_t bar, uint32_t lead)
 {

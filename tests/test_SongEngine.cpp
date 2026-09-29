@@ -719,3 +719,69 @@ TEST_CASE("song engine: export writes a Live project into the song's folder", "[
     REQUIRE(waitFor([&] { return !r.engine->clips().empty(); }));
     CHECK(r.engine->clips().size() == 1);
 }
+
+TEST_CASE("song engine: a clip's waveform is read once and kept beside the song", "[song][peaks]") {
+    Rig r;
+    REQUIRE(r.open("Demo"));
+    writeClip((r.clipsDir("Demo") / "a.wav").string(), 5000, 16384);   // half scale
+    ClipPeaks cp;
+    CHECK_FALSE(r.engine->clipPeaks("a.wav", cp));
+    REQUIRE(waitFor([&] { return r.engine->clipPeaks("a.wav", cp); }));
+    CHECK(cp.hop == 1024);
+    REQUIRE(cp.values);
+    REQUIRE(cp.values->size() == 5);                       // 5000 frames, the last hop short
+    for (uint8_t v : *cp.values) CHECK(v == 128);
+    const fs::path pk = fs::path(r.platform.root) / "Demo" / ".peaks" / "a.wav.pk";
+    REQUIRE(fs::exists(pk));
+    CHECK(r.engine->framesPerBar() > 0);
+
+    /* Not a clip at all: an empty waveform, not a question asked forever. */
+    REQUIRE(waitFor([&] { return r.engine->clipPeaks("gone.wav", cp); }));
+    REQUIRE(cp.values);
+    CHECK(cp.values->empty());
+
+    /* Opened again, the waveform comes from .peaks/ -- marked here so it shows. */
+    {
+        std::FILE* f = std::fopen(pk.string().c_str(), "r+b");
+        REQUIRE(f);
+        std::fseek(f, 16, SEEK_SET);
+        std::fputc(7, f);
+        std::fclose(f);
+    }
+    REQUIRE(r.open("Other"));
+    (void)r.engine->clipPeaks("x.wav", cp);                // the cache follows the open project
+    REQUIRE(r.open("Demo"));
+    REQUIRE(waitFor([&] { return r.engine->clipPeaks("a.wav", cp); }));
+    CHECK((*cp.values)[0] == 7);
+
+    /* A WAV that changed is read again. */
+    writeClip((r.clipsDir("Demo") / "a.wav").string(), 3000, 32767);
+    REQUIRE(r.open("Other"));
+    (void)r.engine->clipPeaks("x.wav", cp);
+    REQUIRE(r.open("Demo"));
+    REQUIRE(waitFor([&] { return r.engine->clipPeaks("a.wav", cp); }));
+    REQUIRE(cp.values->size() == 3);
+    CHECK((*cp.values)[0] == 255);
+}
+
+TEST_CASE("song engine: a waveform waits while the song plays", "[song][peaks]") {
+    Rig r;
+    REQUIRE(r.open("Demo"));
+    writeClip((r.clipsDir("Demo") / "c.wav").string(), kRate * 4, 1000);
+    {
+        std::lock_guard<std::recursive_mutex> l(r.engine->songMutex());
+        r.engine->song().bpm = 120.0f;
+        r.engine->song().addClip(0, {"c.wav", 0, 2});
+    }
+    r.engine->commit();
+    REQUIRE(r.engine->play(0));
+    REQUIRE(waitFor([&] { return r.engine->playing(); }));
+    const uint32_t gen = r.engine->peaksGeneration();
+    ClipPeaks cp;
+    CHECK_FALSE(r.engine->clipPeaks("c.wav", cp));
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    CHECK(r.engine->peaksGeneration() == gen);
+    r.engine->stop();
+    REQUIRE(waitFor([&] { return r.engine->clipPeaks("c.wav", cp); }));
+    CHECK(r.engine->peaksGeneration() != gen);
+}

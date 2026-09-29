@@ -4,6 +4,7 @@
 #include "crosspad/song/AudioSong.hpp"
 
 #include <cstdint>
+#include <memory>
 #include <mutex>
 #include <string>
 #include <vector>
@@ -35,6 +36,14 @@ enum class SyncTake : uint8_t { None, Record, Overdub };
 struct ClipInfo {
     std::string file;
     uint16_t    bars = 1;
+};
+
+/// A clip's waveform, for drawing it: the loudest sample of each run of
+/// @c hop frames, either channel, 0..255 of full scale. Empty when the file
+/// is not a WAV the engine plays.
+struct ClipPeaks {
+    uint32_t hop = 0;
+    std::shared_ptr<const std::vector<uint8_t>> values;
 };
 
 struct BounceStatus {
@@ -122,6 +131,17 @@ public:
     /// The last export, one line each: where the Set is and how many clips
     /// went in, then what was left out; with Failed, why.
     virtual std::vector<std::string> editReport() { return {}; }
+
+    // ── Waveforms ─────────────────────────────────────────────────────────
+    /// @p file's waveform, a clip of the open project. False until the
+    /// platform has it: asking puts it in line, and it is read from the card
+    /// while nothing plays (once -- it is kept beside the song after that).
+    /// peaksGeneration() moves each time one arrives.
+    virtual bool clipPeaks(const std::string& file, ClipPeaks& out) { (void)file; (void)out; return false; }
+    virtual uint32_t peaksGeneration() const { return 0; }
+    /// Frames a bar lasts at the open song's tempo: where a clip's frames
+    /// fall on the bars it is drawn on.
+    virtual uint32_t framesPerBar() { return 0; }
     /// Copy [start, end) of @p file -- a 16-bit WAV at the engine's rate, end
     /// 0 = to its end -- into the open project's clips/ and lay it on
     /// @p track at @p bar, after @p lead frames of silence, as many bars long
