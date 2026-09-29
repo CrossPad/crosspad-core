@@ -27,6 +27,9 @@ public:
     // Progress bar (OTA)
     void startProgress(RgbColor color = RgbColor(208, 240, 9));
     void setProgress(float progress); // 0.0 - 1.0
+    /// The bar's colour from the next frame on: a fade, without starting the
+    /// bar over (startProgress() blanks the pads first).
+    void setProgressColor(RgbColor color);
 
     // End-state animations
     void playSuccess(uint32_t fadeMs = 800);

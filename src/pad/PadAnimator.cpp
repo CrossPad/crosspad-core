@@ -53,6 +53,10 @@ void PadAnimator::setProgress(float progress) {
     currentProgress_ = progress;
 }
 
+void PadAnimator::setProgressColor(RgbColor color) {
+    animColor_ = color;
+}
+
 void PadAnimator::playSuccess(uint32_t fadeMs) {
     type_ = AnimType::SUCCESS;
     duration_ = fadeMs;
