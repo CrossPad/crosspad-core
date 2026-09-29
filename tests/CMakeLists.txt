@@ -92,6 +92,7 @@ set(CORE_SOURCES
 
     # Audio song model
     ${CORE_DIR}/src/song/AudioSong.cpp
+    ${CORE_DIR}/src/song/LiveSet.cpp
     ${CORE_DIR}/src/song/SongEngine.cpp
 
     # Sample tools
@@ -110,6 +111,7 @@ add_executable(crosspad_core_tests ${TEST_SOURCES} ${CORE_SOURCES})
 
 target_compile_definitions(crosspad_core_tests PRIVATE
     PLATFORM_PC=1
+    CROSSPAD_CORE_DIR="${CORE_DIR}"
     CP_LCD_HOR_RES=320
     CP_LCD_VER_RES=240
 )
@@ -119,9 +121,13 @@ target_include_directories(crosspad_core_tests PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}  # test_helpers.hpp
 )
 
+# The Live Set tests read the skeleton the board inflates from ROM
+find_package(ZLIB REQUIRED)
+
 target_link_libraries(crosspad_core_tests PRIVATE
     Catch2::Catch2
     ArduinoJson
+    ZLIB::ZLIB
 )
 
 include(CTest)

@@ -50,6 +50,8 @@ public:
     SongOpState editState() const override;
     bool requestMerge(uint8_t trackMask, uint32_t fromBar, uint32_t toBar) override;
     uint8_t editProgress() const override;
+    bool requestExportLiveSet() override;
+    std::vector<std::string> editReport() override;
     bool requestImport(const std::string& file, uint32_t start, uint32_t end,
                        uint8_t track, uint32_t bar, uint32_t lead) override;
     bool bounceScene(uint8_t scene, uint8_t track) override;

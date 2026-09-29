@@ -23,13 +23,16 @@
 #include "crosspad/song/SongEngine.hpp"
 
 #include "crosspad/audio/WavWriter.hpp"
+#include "crosspad/instrument/WavPcm.hpp"
 #include "crosspad/kit/IKitManager.hpp"
 #include "crosspad/kit/KitInfo.hpp"
 #include "crosspad/platform/PlatformServices.hpp"
 #include "crosspad/sequencer/MetronomeNode.hpp"
 #include "crosspad/sequencer/PatternSequencer.hpp"
+#include "crosspad/song/LiveSet.hpp"
 
 #ifdef _WIN32
+#include <chrono>
 #include <fcntl.h>
 #include <filesystem>
 #include <io.h>
@@ -100,6 +103,18 @@ long readSome(int fd, void* dst, size_t n) { return ::_read(fd, dst, (unsigned)n
 bool seek(int fd, uint32_t at) { return ::_lseeki64(fd, at, SEEK_SET) >= 0; }
 void close(int fd) { ::_close(fd); }
 bool exists(const std::string& p) { std::error_code ec; return std::filesystem::exists(native(p), ec); }
+/// @p p's size, and when it was last written in unix seconds.
+bool fileInfo(const std::string& p, uint64_t& bytes, int64_t& modified)
+{
+    std::error_code ec;
+    bytes = std::filesystem::file_size(native(p), ec);
+    if (ec) return false;
+    const auto t = std::filesystem::last_write_time(native(p), ec);
+    if (ec) return false;
+    const auto sys = t - std::filesystem::file_time_type::clock::now() + std::chrono::system_clock::now();
+    modified = std::chrono::duration_cast<std::chrono::seconds>(sys.time_since_epoch()).count();
+    return true;
+}
 bool rename(const std::string& from, const std::string& to)
 {
     std::error_code ec;
@@ -135,6 +150,15 @@ long readSome(int fd, void* dst, size_t n) { return (long)::read(fd, dst, n); }
 bool seek(int fd, uint32_t at) { return ::lseek(fd, (off_t)at, SEEK_SET) >= 0; }
 void close(int fd) { ::close(fd); }
 bool exists(const std::string& p) { struct stat st; return stat(p.c_str(), &st) == 0; }
+/// @p p's size, and when it was last written in unix seconds.
+bool fileInfo(const std::string& p, uint64_t& bytes, int64_t& modified)
+{
+    struct stat st;
+    if (stat(p.c_str(), &st) != 0) return false;
+    bytes = (uint64_t)st.st_size;
+    modified = (int64_t)st.st_mtime;
+    return true;
+}
 bool rename(const std::string& from, const std::string& to) { return std::rename(from.c_str(), to.c_str()) == 0; }
 bool makeDir(const std::string& p)
 {
@@ -584,6 +608,15 @@ struct SongEngine::Impl {
         return requestEdit(kEditMerge);
     }
     uint8_t editProgress() const { return editProgress_.load(); }
+
+    bool requestExportLiveSet() {
+        if (!ensureWorker()) return false;
+        return requestEdit(kEditExport);
+    }
+    std::vector<std::string> editReport() {
+        std::lock_guard<std::mutex> l(reportMutex_);
+        return report_;
+    }
 
     bool requestImport(const std::string& file, uint32_t start, uint32_t end,
                        uint8_t track, uint32_t bar, uint32_t lead) {
@@ -1055,6 +1088,112 @@ private:
     /// Worker: a region of a WAV into the project's clips/, laid on a track
     /// -- see ISongEngine::requestImport. The clip is named after its source,
     /// numbered when the project has one of that name already.
+    /// Worker: the open song as a Live Set in its own folder -- see
+    /// ISongEngine::requestExportLiveSet. The song is copied, the clips'
+    /// headers read, and the Set written to a .tmp that only replaces the
+    /// .als once it is whole.
+    SongOpState doExport() {
+        AudioSong copy;
+        {
+            std::lock_guard<std::recursive_mutex> l(songMutex_);
+            copy = song_;
+        }
+        std::vector<std::string> lines;
+        auto finish = [&](SongOpState st) {
+            for (const auto& ln : lines) logf(st == SongOpState::Failed, "export: %s", ln.c_str());
+            std::lock_guard<std::mutex> l(reportMutex_);
+            report_ = std::move(lines);
+            return st;
+        };
+        if (!opened_ || copy.dir.empty() || !p.storageReady()) {
+            lines.push_back("No song open, or no card.");
+            return finish(SongOpState::Failed);
+        }
+        endPlayback();
+
+        /* Each file once; one not on the card stays off the list, which is
+         * how the report tells missing from unreadable. */
+        std::vector<LiveSetClipFile> files;
+        std::vector<std::string> seen;
+        for (const auto& t : copy.tracks) {
+            for (const auto& c : t.clips) {
+                if (std::find(seen.begin(), seen.end(), c.file) != seen.end()) continue;
+                seen.push_back(c.file);
+                LiveSetClipFile f;
+                f.file = c.file;
+                const std::string path = copy.clipPath(c.file);
+                if (!fsx::fileInfo(path, f.bytes, f.modified)) continue;
+                WavInfo info;
+                if (wavReadInfo(path.c_str(), info)) {
+                    f.frames = info.frames;
+                    f.sampleRate = info.sampleRate;
+                }
+                files.push_back(f);
+                p.yieldIo();
+            }
+        }
+
+        std::string skeleton = p.liveSetTemplate();
+        if (skeleton.empty()) {
+            lines.push_back("Not enough memory to build the Set (" +
+                            std::to_string(p.freeMemoryBytes() / 1024) + " kB free).");
+            return finish(SongOpState::Failed);
+        }
+        /* An empty Project12.cfg makes the folder a Live project, and that is
+         * what the clips' paths are relative to; Live fills it in on its
+         * first save. Without it the Set opens with every file missing. */
+        const std::string projectInfo = copy.dir + "/Ableton Project Info";
+        const std::string cfg = projectInfo + "/Project12.cfg";
+        if (!fsx::exists(cfg)) {
+            std::FILE* f = fsx::makeDir(projectInfo) ? std::fopen(cfg.c_str(), "wb") : nullptr;
+            if (!f) {
+                lines.push_back("The card would not take the project's folder.");
+                return finish(SongOpState::Failed);
+            }
+            std::fclose(f);
+        }
+
+        const std::string als = copy.dir + "/" + copy.name + ".als";
+        const std::string tmp = als + ".tmp";
+        GzipStoredWriter gz;
+        LiveSetReport rep;
+        bool ok = gz.open(tmp) &&
+                  writeLiveSetXml(std::move(skeleton), copy, files,
+                                  [&](const char* d, size_t n) { p.yieldIo(); return gz.write(d, n); }, rep);
+        ok = gz.close() && ok;
+        if (!ok) {
+            std::remove(tmp.c_str());
+            lines.push_back("The Set was not written: the card is full or would not take it.");
+            return finish(SongOpState::Failed);
+        }
+        /* One Live saved over is not lost: FatFs will not rename onto a file,
+         * and the one there goes to Backup/ rather than away. */
+        std::string kept;
+        if (fsx::exists(als)) {
+            const std::string backup = copy.dir + "/Backup";
+            for (int n = 1; n < 1000 && kept.empty(); ++n) {
+                const std::string name = copy.name + " [" + std::to_string(n) + "].als";
+                if (!fsx::exists(backup + "/" + name)) kept = name;
+            }
+            if (kept.empty() || !fsx::makeDir(backup) || !fsx::rename(als, backup + "/" + kept)) {
+                std::remove(tmp.c_str());
+                lines.push_back("The Set already there could not be moved to Backup/; nothing was changed.");
+                return finish(SongOpState::Failed);
+            }
+        }
+        if (!fsx::rename(tmp, als)) {
+            lines.push_back("The Set was written but could not be named " + copy.name + ".als.");
+            return finish(SongOpState::Failed);
+        }
+        std::string root = p.songsRoot();
+        root = root.substr(root.find_last_of('/') + 1);
+        lines.push_back(root + "/" + copy.name + "/" + copy.name + ".als, " + std::to_string(rep.clips) +
+                        (rep.clips == 1 ? " clip" : " clips"));
+        if (!kept.empty()) lines.push_back("The one there before is in Backup/ as " + kept);
+        lines.insert(lines.end(), rep.notes.begin(), rep.notes.end());
+        return finish(SongOpState::Ready);
+    }
+
     SongOpState doImport() {
         std::string src;
         {
@@ -1245,6 +1384,7 @@ private:
                                : edit == kEditDelete ? doDelete()
                                : edit == kEditTempo  ? doTempo(editBpm_.load())
                                : edit == kEditImport ? doImport()
+                               : edit == kEditExport ? doExport()
                                : doMerge(editMask_.load(), editFrom_.load(), editTo_.load()));
                 continue;
             }
@@ -1619,7 +1759,7 @@ private:
     std::atomic<SyncTake> playTake_{SyncTake::None};
     SyncTake    take_ = SyncTake::None;          // worker: what the sequencer starts doing
     static constexpr uint8_t kEditRename = 1, kEditTempo = 2, kEditMerge = 3, kEditImport = 4,
-                             kEditDelete = 5;
+                             kEditDelete = 5, kEditExport = 6;
     uint32_t    importA_ = 0, importB_ = 0, importBar_ = 0, importLead_ = 0;   // set before editReq_
     uint8_t     importTrack_ = 0;
     std::atomic<uint8_t>  editMask_{0}, editProgress_{0};
@@ -1628,6 +1768,8 @@ private:
     std::atomic<SongOpState> editState_{SongOpState::Idle};
     std::atomic<float>    editBpm_{120.0f};
     std::string editName_;                        // under songMutex_
+    std::vector<std::string> report_;             // the last export's, under reportMutex_
+    std::mutex  reportMutex_;
     std::atomic<uint8_t>  listReq_{0};
     std::atomic<uint32_t> listGen_{0};
     std::vector<std::string> projects_;
@@ -1719,6 +1861,8 @@ bool SongEngine::requestTempo(float bpm) { return impl_->requestTempo(bpm); }
 SongOpState SongEngine::editState() const { return impl_->editState(); }
 bool SongEngine::requestMerge(uint8_t mask, uint32_t fromBar, uint32_t toBar) { return impl_->requestMerge(mask, fromBar, toBar); }
 uint8_t SongEngine::editProgress() const { return impl_->editProgress(); }
+bool SongEngine::requestExportLiveSet() { return impl_->requestExportLiveSet(); }
+std::vector<std::string> SongEngine::editReport() { return impl_->editReport(); }
 bool SongEngine::requestImport(const std::string& file, uint32_t start, uint32_t end,
                                uint8_t track, uint32_t bar, uint32_t lead)
 {

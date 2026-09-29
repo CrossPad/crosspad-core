@@ -17,6 +17,8 @@
 #include <thread>
 #include <vector>
 
+#include <zlib.h>
+
 namespace fs = std::filesystem;
 using namespace crosspad;
 
@@ -24,6 +26,17 @@ namespace {
 
 constexpr uint32_t kRate = 44100;
 constexpr uint32_t kBlock = 256;
+
+std::string gunzip(const std::string& path) {
+    std::string out;
+    if (gzFile g = gzopen(path.c_str(), "rb")) {
+        char buf[65536];
+        int n = 0;
+        while ((n = gzread(g, buf, sizeof(buf))) > 0) out.append(buf, (size_t)n);
+        gzclose(g);
+    }
+    return out;
+}
 
 struct FakePlatform final : ISongEnginePlatform {
     std::string root;
@@ -65,6 +78,7 @@ struct FakePlatform final : ISongEnginePlatform {
     const char* songsRoot() override { return root.c_str(); }
     std::string loadCurrent() override { return current; }
     void saveCurrent(const std::string& n) override { current = n; }
+    std::string liveSetTemplate() override { return gunzip(std::string(CROSSPAD_CORE_DIR) + "/data/live12_set.xml.gz"); }
     void beginPadsCapture() override { ++captureBegun; }
     void endPadsCapture() override { ++captureEnded; }
     void log(bool, const char*) override {}
@@ -657,4 +671,51 @@ TEST_CASE("song engine: in sync the metronome counts in and song and clock start
     r.block(out, bus);
     CHECK(r.seq.state() == SequencerState::Running);
     r.engine->stop();
+}
+
+TEST_CASE("song engine: export writes a Live project into the song's folder", "[song][liveset]") {
+    Rig r;
+    REQUIRE(r.open("Soul vibe"));
+    writeClip((r.clipsDir("Soul vibe") / "a.wav").string(), kRate * 4, 1000);   // two bars at 120
+    {
+        std::lock_guard<std::recursive_mutex> l(r.engine->songMutex());
+        auto& s = r.engine->song();
+        s.bpm = 120.0f;
+        s.addClip(0, {"a.wav", 0, 2});
+        s.addClip(2, {"a.wav", 4, 2});
+        s.addClip(3, {"gone.wav", 0, 1});
+    }
+    r.engine->commit();
+    const fs::path project = fs::path(r.platform.root) / "Soul vibe";
+    const fs::path als = project / "Soul vibe.als";
+
+    REQUIRE(r.engine->requestExportLiveSet());
+    REQUIRE(waitFor([&] { return r.engine->editState() != SongOpState::Busy; }));
+    REQUIRE(r.engine->editState() == SongOpState::Ready);
+    CHECK(fs::exists(project / "Ableton Project Info" / "Project12.cfg"));
+    CHECK_FALSE(fs::exists(project / "Soul vibe.als.tmp"));
+    const std::string xml = gunzip(als.string());
+    CHECK(xml.find("<RelativePath Value=\"clips/a.wav\" />") != std::string::npos);
+    size_t clips = 0;
+    for (size_t at = xml.find("<AudioClip "); at != std::string::npos; at = xml.find("<AudioClip ", at + 1)) ++clips;
+    CHECK(clips == 2);
+    auto report = r.engine->editReport();
+    REQUIRE(report.size() == 2);
+    CHECK(report[0] == "SONGS/Soul vibe/Soul vibe.als, 2 clips");
+    CHECK(report[1] == "gone.wav: not in clips/, left out");
+
+    /* Exported again: the first one -- as good as one Live saved -- is kept. */
+    REQUIRE(r.engine->requestExportLiveSet());
+    REQUIRE(waitFor([&] { return r.engine->editState() != SongOpState::Busy; }));
+    REQUIRE(r.engine->editState() == SongOpState::Ready);
+    CHECK(gunzip((project / "Backup" / "Soul vibe [1].als").string()) == xml);
+    CHECK(gunzip(als.string()) == xml);
+    report = r.engine->editReport();
+    REQUIRE(report.size() >= 2);
+    CHECK(report[1] == "The one there before is in Backup/ as Soul vibe [1].als");
+
+    /* The project is still the song's: the extra files are not clips. */
+    REQUIRE(r.engine->requestClips());
+    REQUIRE(waitFor([&] { return !r.engine->clips().empty(); }));
+    CHECK(r.engine->clips().size() == 1);
 }

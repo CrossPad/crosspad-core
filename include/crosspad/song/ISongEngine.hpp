@@ -112,6 +112,16 @@ public:
         return false;
     }
     virtual uint8_t editProgress() const { return 0; }
+    /// Write the open song as an Ableton Live 12 Set into its own folder --
+    /// <name>.als beside song.json, and the "Ableton Project Info" folder
+    /// that makes it a Live project, so the Set finds its clips in clips/
+    /// where they are (crosspad/song/LiveSet.hpp). An .als already there,
+    /// one Live saved over say, moves to Backup/ first. Playback stops.
+    /// editState() says when it is done, editReport() what it wrote.
+    virtual bool requestExportLiveSet() { return false; }
+    /// The last export, one line each: where the Set is and how many clips
+    /// went in, then what was left out; with Failed, why.
+    virtual std::vector<std::string> editReport() { return {}; }
     /// Copy [start, end) of @p file -- a 16-bit WAV at the engine's rate, end
     /// 0 = to its end -- into the open project's clips/ and lay it on
     /// @p track at @p bar, after @p lead frames of silence, as many bars long

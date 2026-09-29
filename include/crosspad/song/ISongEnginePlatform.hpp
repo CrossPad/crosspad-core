@@ -43,6 +43,10 @@ public:
     /// The project last open; empty when none was.
     virtual std::string loadCurrent() = 0;
     virtual void saveCurrent(const std::string& name) = 0;
+    /// Live's empty Set a song export is built from: crosspad-core's
+    /// data/live12_set.xml.gz, uncompressed (~110 kB, held for the export).
+    /// Empty when there is no memory for it, or no way to inflate it.
+    virtual std::string liveSetTemplate() { return {}; }
 
     /// The pads-only bus at unity and unmuted for a bounce; the end puts back
     /// what the player had.
