@@ -20,6 +20,7 @@ void PadAnimator::update() {
         case AnimType::ERROR:    renderError();    break;
         case AnimType::BOOT:     renderBoot();     break;
         case AnimType::CHARGING: renderCharging(); break;
+        case AnimType::FRAME:    renderFrame();    break;
         default: break;
     }
     bool justFinished = !active_; // finish() may have been called during render
@@ -51,6 +52,20 @@ void PadAnimator::setProgress(float progress) {
     if (progress < 0.0f) progress = 0.0f;
     if (progress > 1.0f) progress = 1.0f;
     currentProgress_ = progress;
+}
+
+void PadAnimator::showFrame(const RgbColor (&colors)[kPadCount]) {
+    for (int i = 0; i < kPadCount; i++) frame_[i] = colors[i];
+    if (type_ != AnimType::FRAME || !active_) {
+        type_ = AnimType::FRAME;
+        active_ = true;
+        notifyAnimState(true);
+    }
+}
+
+void PadAnimator::renderFrame() {
+    for (int i = 0; i < kPadCount; i++) setPixel(i, frame_[i]);
+    refresh();
 }
 
 void PadAnimator::setProgressColor(RgbColor color) {

@@ -31,6 +31,11 @@ public:
     /// bar over (startProgress() blanks the pads first).
     void setProgressColor(RgbColor color);
 
+    // A still frame, one colour per pad (index = pad), held until the next
+    // frame, another animation or stop(): for a caller that draws its own
+    // animation -- the boot splash, pad for pad with the screen.
+    void showFrame(const RgbColor (&colors)[kPadCount]);
+
     // End-state animations
     void playSuccess(uint32_t fadeMs = 800);
     void playError(uint32_t holdMs = 2000);
@@ -58,7 +63,7 @@ public:
     void setAnimationStateCallback(AnimationStateCallback cb);
 
 private:
-    enum class AnimType { NONE, PROGRESS, SUCCESS, ERROR, BOOT, CHARGING };
+    enum class AnimType { NONE, PROGRESS, SUCCESS, ERROR, BOOT, CHARGING, FRAME };
 
     AnimType type_ = AnimType::NONE;
     ILedStrip* strip_ = nullptr;
@@ -70,6 +75,7 @@ private:
     float chargeSoc_ = 0.0f;          // 0..1 battery state-of-charge for CHARGING (caller pre-smooths)
     bool  chargingActive_ = true;     // false → static gauge (plugged but not charging)
     RgbColor animColor_;
+    RgbColor frame_[kPadCount];
     CompletionCallback completionCb_ = nullptr;
     AnimationStateCallback animStateCb_ = nullptr;
 
@@ -83,6 +89,7 @@ private:
     void renderError();
     void renderBoot();
     void renderCharging();
+    void renderFrame();
 };
 
 /// Platform-injected singleton accessor
