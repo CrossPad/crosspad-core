@@ -48,6 +48,10 @@ void Stm32MessageHandler::handleMessage(const uint8_t* data, unsigned size) {
             input.encoderPhase = mod4 | (a << 2) | (b << 3) | (mod4 == 1 ? 0x10 : 0);
         }
         input.encoderPressed = (data[3] >> 6) & 0x01;
+        if (const int steps = encoderDetents_.update(input.encoderPhase)) {
+            encoderSteps_.fetch_add(steps);
+            encoderDetent_.fetch_add(steps);
+        }
         break;
 
     case CROSSPAD_CMD_BUTTONS_DIGITAL:

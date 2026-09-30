@@ -6,57 +6,60 @@ namespace crosspad {
 
 /**
  * @brief The encoder's steps as a hand means them: one per detent the knob
- *        goes into.
+ *        goes into, read from its A/B lines.
  *
- * The STM reports a detent index (0..15) and the sub-detent phase
- * (REG_IN_ENC_PHASE: [1:0] the count mod 4, [4] settled -- at rest in a
- * detent). Its index is (count + 1) >> 2, so it flips between counts 2 and 3;
- * the encoder on the board rests at count 2 mod 4, half a count below that
- * edge. A hair of overshoot past a detent flipped the index, the detent's
- * spring pulled the knob back and flipped it again: two steps from one click,
- * and a half turn to land on the item meant.
+ * The STM reports, with every change, its LPTIM count and the live A/B pins
+ * (REG_IN_ENC_PHASE: [1:0] the count mod 4, [2] A, [3] B, [4] A && B). The
+ * count cannot be trusted: on this board the LPTIM gains counts -- one click
+ * measured 7 of them, four at a single edge -- and where the knob rests
+ * drifts from 1 mod 4 through 2, 3 and 0 within a minute of turning, so a
+ * step taken from the count was two steps for one click. The pins never
+ * lie: each click is the same Gray cycle, (1,1) at rest.
  *
- * So the index is not used as the step. The count is rebuilt from index and
- * phase, and a step is taken when the knob is three counts of four into the
- * next detent, or rests in it -- where the knob sits, not where the edge
- * happens to be. A wobble of one or two counts is no step either way.
+ * So the pins are decoded, one quadrature state at a time, and a step is
+ * taken three states into the next detent -- before the knob lands, as a
+ * hand expects -- with the rest state resetting the count: whatever was
+ * counted on the way, the knob is in a detent there. Going back two states
+ * is what undoes a step; a wobble of one is nothing.
+ *
+ * Feed it every report as it arrives, not the latest one now and then: a
+ * reader polling at the display's rate misses states of a fast turn.
  */
 class EncoderDetents {
 public:
-    static constexpr uint8_t kSettled = 0x10;   ///< REG_IN_ENC_PHASE bit 4
-
-    /// Feed the latest report; @return the steps since the last one, + for
-    /// a rising count. Nothing counts until the knob is first reported at rest:
-    /// before the STM's first report the input reads as count 0, and taking
-    /// that for a position made a step out of the boot.
-    int update(uint8_t top, uint8_t phase)
+    /// Feed a report's phase byte; @return the steps it completes, + where
+    /// the STM's count rises.
+    int update(uint8_t phase)
     {
-        const int cnt = (4 * (top & 0x0F) + (((phase & 0x03) + 1) & 0x03) - 1) & 63;
+        /* Position in the detent's cycle, the way the count rises: (A,B) =
+         * (1,1) rest, (0,1), (0,0), (1,0). Indexed by A << 1 | B. */
+        static constexpr int8_t kAt[4] = {2, 1, 3, 0};
+        const int at = kAt[(((phase >> 2) & 1) << 1) | ((phase >> 3) & 1)];
         if (!primed_) {
-            if (!(phase & kSettled)) return 0;
             primed_ = true;
-            pos_ = cnt;
+            at_ = at;
             return 0;
         }
-        int d = cnt - pos_;
-        if (d > 31)  d -= 64;
-        if (d < -32) d += 64;
+        const int d = (at - at_) & 3;
+        at_ = at;
+        if (d == 0) return 0;
+        /* Two states on at once: a report was missed, and the knob went on
+         * the way it was going. */
+        const int move = d == 1 ? 1 : d == 3 ? -1 : 2 * dir_;
+        if (d != 2) dir_ = move;
+        sub_ += move;
         int steps = 0;
-        if (phase & kSettled) {
-            /* In a detent: exactly the one it is in, three counts or more
-             * counting as a detent, as they do on the way. */
-            steps = d >= 0 ? (d + 1) / 4 : -((-d + 1) / 4);
-            pos_ = cnt;
-            return steps;
-        }
-        while (d >= 3)  { ++steps; d -= 4; pos_ = (pos_ + 4) & 63; }
-        while (d <= -3) { --steps; d += 4; pos_ = (pos_ + 60) & 63; }
+        if (sub_ >= 3)       { steps = 1;  sub_ -= 4; }
+        else if (sub_ <= -3) { steps = -1; sub_ += 4; }
+        if (at == 0) sub_ = 0;
         return steps;
     }
 
 private:
     bool primed_ = false;
-    int  pos_ = 0;       ///< the detent last stepped into, as a count mod 64
+    int  at_ = 0;    ///< the last state, 0 = rest
+    int  sub_ = 0;   ///< states moved since the last step or rest
+    int  dir_ = 0;   ///< the last direction seen, for a skipped state
 };
 
 } // namespace crosspad

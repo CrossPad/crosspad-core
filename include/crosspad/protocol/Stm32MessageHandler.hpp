@@ -1,9 +1,11 @@
 #pragma once
 
+#include <atomic>
 #include <cstdint>
 #include <cstring>
 #include <functional>
 #include "crosspad/protocol/SysExProtocol.h"
+#include "crosspad/stm32/EncoderDetents.hpp"
 
 namespace crosspad {
 
@@ -94,7 +96,7 @@ public:
     // ── Input state (read by LVGL encoder/keypad drivers) ──
 
     struct Stm32InputState {
-        int8_t  encoderTop = 0;     // centered detent index 0..15 (one step per mech detent)
+        int8_t  encoderTop = 0;     // the STM's detent index 0..15, from its count -- which slips; steps: takeEncoderSteps()
         uint8_t encoderPhase = 0;   // sub-detent: [1:0]=CNT mod4, [2]=A, [3]=B, [4]=settled gate
         int8_t  encoderLeft = 0;
         bool encoderPressed = false;
@@ -109,7 +111,18 @@ public:
 
     Stm32InputState input;
 
+    /// Detents turned since the last call, + where the STM's count rises:
+    /// decoded from the A/B lines of every report as it arrives
+    /// (EncoderDetents), never from the count.
+    int takeEncoderSteps() { return encoderSteps_.exchange(0); }
+
+    /// Detents turned since boot, the same way -- a MIDI CC takes it & 0x0F.
+    int encoderDetent() const { return encoderDetent_.load(); }
+
 private:
+    EncoderDetents encoderDetents_;
+    std::atomic<int> encoderSteps_{0};
+    std::atomic<int> encoderDetent_{0};
     PadManager* padManager_ = nullptr;
     CrosspadStatus* status_ = nullptr;
     DfuRequestCallback dfuCb_;
