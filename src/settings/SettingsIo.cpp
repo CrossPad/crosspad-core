@@ -138,6 +138,7 @@ SettingsIoResult settingsExportAll(const CrosspadSettings& s, const char* path) 
     out["usbSerialGuard"] = s.usbSerialGuard;
     out["usbAudioPreset"] = s.usbAudioPreset;
     out["usbAudioGainDb"] = s.usbAudioGainDb;
+    out["recorderAutoTrim"] = s.recorderAutoTrim;
     out["Kit"] = s.Kit;
 
     return writeDoc(doc, path);
@@ -185,6 +186,9 @@ SettingsIoResult settingsImportAll(CrosspadSettings& s, const char* path) {
     tmp->usbSerialGuard = in["usbSerialGuard"] | tmp->usbSerialGuard;
     tmp->usbAudioPreset = in["usbAudioPreset"] | tmp->usbAudioPreset;
     tmp->usbAudioGainDb = in["usbAudioGainDb"] | tmp->usbAudioGainDb;
+    /* A file written before this key keeps whatever the unit has, which for an
+     * unprovisioned one is the load()'s false -- no version bump needed. */
+    tmp->recorderAutoTrim = in["recorderAutoTrim"] | tmp->recorderAutoTrim;
     tmp->Kit = (uint8_t)jsonInt(in["Kit"], tmp->Kit, 0, 255);
 
     s = *tmp;

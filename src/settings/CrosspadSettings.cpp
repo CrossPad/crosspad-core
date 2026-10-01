@@ -30,6 +30,10 @@ void CrosspadSettings::loadFrom(IKeyValueStore& store) {
                                             (uint8_t)LauncherStyle::Grid,
                                             (uint8_t)LauncherStyle::Grid, (uint8_t)LauncherStyle::List);
 
+    // Recorder
+    /* The fallback, not the constructor's: this load() is what a boot sees. */
+    recorderAutoTrim         = store.readBool("cfg_rec", "auto_trim", false);
+
     // Audio (master)
     AudioEngineEnabled       = store.readBool("cfg_audio", "engine_en", true);
     /* The fallback here, not the constructor's, is what an unprovisioned board
@@ -180,6 +184,9 @@ void CrosspadSettings::saveTo(IKeyValueStore& store) {
     store.saveU8("cfg_display", "perf_stats", perfStatsFlags);
     store.saveBool("cfg_display", "drawer_en", quickSettingsEnabled);
     store.saveU8("cfg_display", "launcher", (uint8_t)launcherStyle);
+
+    // Recorder
+    store.saveBool("cfg_rec", "auto_trim", recorderAutoTrim);
 
     // Audio (master)
     store.saveBool("cfg_audio", "engine_en", AudioEngineEnabled);

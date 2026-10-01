@@ -85,6 +85,12 @@ public:
     /// own knob. Percent would not fit -- 343 % is past a uint8_t.
     uint8_t usbAudioGainDb;
     uint8_t Kit;
+    /// The Recorder puts its markers on the take rather than on its ends:
+    /// START at the first transient, END where the sound stops
+    /// (SliceMath::autoTrim). Kept here rather than in the app because a
+    /// player sets it once and expects every take after it to arrive trimmed,
+    /// reboots included.
+    bool recorderAutoTrim;
 
 private:
     static inline CrosspadSettings* instance = nullptr;
@@ -107,6 +113,7 @@ private:
         usbSerialGuard = true;     // a host must be allowed on the device before it gets CDC
         usbAudioPreset = 0;        // built-in microphones
         usbAudioGainDb = 0;        // unity; the bus is what the speakers get
+        recorderAutoTrim = false;  // the ends, as the Recorder has always opened
         Kit = 0;
         masterFX = AudioSettings();
         previewAudio = AudioSettings();
