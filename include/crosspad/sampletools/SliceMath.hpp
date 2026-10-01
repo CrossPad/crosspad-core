@@ -29,6 +29,41 @@ std::vector<uint32_t> onsets(const std::vector<uint8_t>& envelope, uint32_t hop,
                              uint32_t start, uint32_t end, int sensitivity, uint32_t minGapFrames,
                              uint8_t maxSlices = kMaxSlices);
 
+/// Where a take sounds: @c start at the foot of its first real transient,
+/// @c end where it has fallen back to the room.
+struct TrimPoints {
+    uint32_t start = 0;
+    uint32_t end   = 0;
+};
+
+/// The sounding part of a take, from its level envelope (see WaveOverview).
+///
+/// "Logical" is the whole point: the first frame that is not zero is a room,
+/// a preamp and a hand on the case, so the floor is measured first -- the
+/// quietest kTrimFloorPct of the take -- and the start is the first hop that
+/// rises kTrimGateDb clear of it, backed up to where that rise began. The end
+/// is the last hop still above the gate, carried on while the tail is still
+/// decaying. A guard either side keeps the attack whole (kTrimLeadMs) and the
+/// tail from being cut square (kTrimTailMs).
+///
+/// A take with nothing to find -- empty, silent, or one unbroken level, where
+/// a gate would cut music rather than silence -- comes back as [0, @p frames):
+/// the ends, which is what the markers do without this.
+TrimPoints autoTrim(const std::vector<uint8_t>& envelope, uint32_t hop, uint32_t envStart,
+                    uint32_t frames, uint32_t sampleRate);
+
+/// The quietest part of a take that is taken for its noise floor, percent.
+constexpr int   kTrimFloorPct = 10;
+/// How far above that floor a hop must rise to be the take starting.
+constexpr float kTrimGateDb   = 9.0f;
+/// A take whose loudest part is not this far above its floor has no silence
+/// to trim -- only music that happens to be quiet.
+constexpr float kTrimSpanDb   = 12.0f;
+/// Kept before the first transient and after the last, so an attack is not
+/// clipped and a tail not cut square.
+constexpr uint16_t kTrimLeadMs = 5;
+constexpr uint16_t kTrimTailMs = 40;
+
 /// @p count slices of equal length between @p start and @p end.
 std::vector<uint32_t> equal(uint32_t start, uint32_t end, uint8_t count);
 

@@ -63,6 +63,71 @@ std::vector<uint32_t> onsets(const std::vector<uint8_t>& envelope, uint32_t hop,
     return out;
 }
 
+TrimPoints autoTrim(const std::vector<uint8_t>& envelope, uint32_t hop, uint32_t envStart,
+                    uint32_t frames, uint32_t sampleRate)
+{
+    TrimPoints out{0, frames};
+    if (!hop || !frames || envelope.size() < 4) return out;
+
+    /* The floor, from a histogram rather than a sort: the envelope is one
+     * byte per hop and there are 256 of them, so counting is both exact and
+     * free of an allocation on a board whose internal RAM this runs in. */
+    uint32_t count[256] = {};
+    for (uint8_t v : envelope) ++count[v];
+    const size_t want = std::max<size_t>(1, envelope.size() * (size_t)kTrimFloorPct / 100);
+    size_t seen = 0;
+    int    floorStep = 0;
+    for (int v = 0; v < 256; ++v) {
+        seen += count[v];
+        if (seen >= want) { floorStep = v; break; }
+    }
+    const int peak = (int)*std::max_element(envelope.begin(), envelope.end());
+
+    /* Nothing to trim: a take recorded hot all the way through, or one that
+     * never rose out of the room. Cutting either would cut music. */
+    const int span = (int)std::lround(kTrimSpanDb / kEnvDbPerStep);
+    if (peak - floorStep < span) return out;
+
+    /* The gate sits above the floor, never so close to the peak that only the
+     * loudest hop of a gentle take clears it. */
+    int gate = floorStep + (int)std::lround(kTrimGateDb / kEnvDbPerStep);
+    const int ceiling = peak - (int)std::lround(3.0f / kEnvDbPerStep);
+    if (gate > ceiling) gate = ceiling;
+
+    size_t first = envelope.size();
+    for (size_t i = 0; i < envelope.size(); ++i) {
+        if ((int)envelope[i] >= gate) { first = i; break; }
+    }
+    if (first == envelope.size()) return out;       // nothing cleared it
+
+    /* The hop that shows a transient is not the one it began in: a stick is
+     * already moving while the hop before still averages mostly silence, so
+     * walk back while the level is above the floor rather than at it. */
+    const int foot = floorStep + 1;
+    while (first > 0 && (int)envelope[first - 1] > foot) --first;
+
+    size_t last = first;
+    for (size_t i = envelope.size(); i-- > first;) {
+        if ((int)envelope[i] >= gate) { last = i; break; }
+    }
+    /* A tail is under the gate and still sounding; it ends where it reaches
+     * the floor. */
+    while (last + 1 < envelope.size() && (int)envelope[last + 1] > foot) ++last;
+
+    const uint32_t lead = sampleRate ? (uint32_t)sampleRate * kTrimLeadMs / 1000 : 0;
+    const uint32_t tail = sampleRate ? (uint32_t)sampleRate * kTrimTailMs / 1000 : 0;
+
+    uint64_t a = (uint64_t)envStart + (uint64_t)first * hop;
+    a = a > lead ? a - lead : 0;
+    uint64_t b = (uint64_t)envStart + ((uint64_t)last + 1) * hop + tail;
+
+    out.start = (uint32_t)std::min<uint64_t>(a, frames);
+    out.end   = (uint32_t)std::min<uint64_t>(b, frames);
+    /* Never hand back an empty or inverted loop, whatever the envelope said. */
+    if (out.end <= out.start) { out.start = 0; out.end = frames; }
+    return out;
+}
+
 std::vector<uint32_t> equal(uint32_t start, uint32_t end, uint8_t count)
 {
     std::vector<uint32_t> out;
