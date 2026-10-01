@@ -88,15 +88,39 @@ TrimPoints autoTrim(const std::vector<uint8_t>& envelope, uint32_t hop, uint32_t
     const int span = (int)std::lround(kTrimSpanDb / kEnvDbPerStep);
     if (peak - floorStep < span) return out;
 
-    /* The gate looks for silence, so it has to sit below the music -- and the
-     * floor measured above is only the quietest part of the take, which in
-     * something dense and loud is still music. Anchored to the floor alone the
-     * gate rose into the sound and cut it in half: a percussive sample that
-     * ran at full level to its last frame came back trimmed to 50 %. So it is
-     * also held at least kTrimQuietDb under the peak, which is what makes it a
-     * silence detector rather than a loudness one. */
-    const int gate = std::min(floorStep + (int)std::lround(kTrimGateDb / kEnvDbPerStep),
-                              peak - (int)std::lround(kTrimQuietDb / kEnvDbPerStep));
+    /* The gate goes in the gap between the room and the sound, and it is found
+     * rather than guessed. Counting up from the floor does not work on a
+     * microphone take: a room is not steady, and in one measured here it
+     * spread 10 dB above its own quietest hop, so floor + 9 dB was still room
+     * and the start landed in it.
+     *
+     * So the threshold that best separates the two is taken straight from the
+     * histogram already built above -- Otsu's: for every candidate, weigh the
+     * two classes it makes by how far apart their means are, and keep the
+     * candidate where that is largest. It needs no second pass over anything
+     * and no allocation. On its own it would split a take that has no silence
+     * at all, since it always answers; the span test above is what refuses
+     * those, which is why that line had to be measured rather than assumed. */
+    uint64_t total = 0, sum = 0;
+    for (int v = 0; v < 256; ++v) { total += count[v]; sum += (uint64_t)v * count[v]; }
+    uint64_t wB = 0, sumB = 0;
+    double   bestVar = -1.0;
+    int      split = floorStep;
+    for (int v = 0; v < 256; ++v) {
+        wB   += count[v];
+        sumB += (uint64_t)v * count[v];
+        if (!wB) continue;
+        const uint64_t wF = total - wB;
+        if (!wF) break;
+        const double mB = (double)sumB / (double)wB;
+        const double mF = (double)(sum - sumB) / (double)wF;
+        const double var = (double)wB * (double)wF * (mB - mF) * (mB - mF);
+        if (var > bestVar) { bestVar = var; split = v; }
+    }
+    /* Never below the floor plus a little: a histogram with one huge silent
+     * bucket can put the split inside it. */
+    const int gate = std::max(split + 1,
+                              floorStep + (int)std::lround(kTrimGateDb / kEnvDbPerStep));
 
     size_t firstAbove = envelope.size();
     for (size_t i = 0; i < envelope.size(); ++i) {
@@ -108,9 +132,9 @@ TrimPoints autoTrim(const std::vector<uint8_t>& envelope, uint32_t hop, uint32_t
      * must land the instant the pad is struck is the transient, and a take
      * holds plenty that clears a gate without being one -- a breath, a chair,
      * a hand on the case. So a transient is looked for first, and it has to
-     * be both: a jump of kTrimRiseDb between one hop and the next, landing
-     * within kTrimPeakDb of the loudest the take gets. Noise getting louder
-     * fails the second test; a fade-up fails the first.
+     * be a jump of kTrimRiseDb between one hop and the next that also lands
+     * clear of the gate: a fade-up fails the first test, the room's own wobble
+     * the second.
      *
      * The search starts at the gate crossing and not before it, so the floor's
      * own wobble cannot pass for an attack. */
@@ -151,11 +175,13 @@ TrimPoints autoTrim(const std::vector<uint8_t>& envelope, uint32_t hop, uint32_t
     for (size_t i = envelope.size(); i-- > foot;) {
         if ((int)envelope[i] >= gate) { last = i; break; }
     }
-    /* A tail is under the gate and still sounding. It is followed while it is
-     * clearly above the floor -- not merely off it, or the room's wobble
-     * carries the end of the loop to the end of the take. */
-    const int tailFloor = floorStep + (int)std::lround(kTrimTailDb / kEnvDbPerStep);
-    while (last + 1 < envelope.size() && (int)envelope[last + 1] > tailFloor) ++last;
+    /* A tail drops under the gate while it is still sounding, so it is followed
+     * -- but only just under, since the gate sits in the gap and a few dB below
+     * it is still clear of the room. Measured from the floor instead, this
+     * walked into a live room and carried the end of the loop to the end of the
+     * take. */
+    const int tailGate = gate - (int)std::lround(kTrimTailDb / kEnvDbPerStep);
+    while (last + 1 < envelope.size() && (int)envelope[last + 1] > tailGate) ++last;
 
     const uint32_t release = sampleRate ? (uint32_t)sampleRate * kTrimTailMs / 1000 : 0;
     const uint64_t a = (uint64_t)envStart + (uint64_t)foot * hop;

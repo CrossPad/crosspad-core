@@ -42,13 +42,14 @@ struct TrimPoints {
 /// is struck is the transient, so @c start is the attack itself and carries no
 /// pad of silence in front of it.
 ///
-/// The floor is measured first -- the quietest kTrimFloorPct of the take -- and
-/// the sound is taken to begin where the envelope first clears it by
-/// kTrimGateDb. From there a *transient* is looked for: a jump of kTrimRiseDb
-/// from one hop to the next that lands within kTrimPeakDb of the take's peak.
-/// Both tests matter -- noise getting louder fails the second, a fade-up fails
-/// the first -- and when neither is met (a bowed note, a pad swelling in) the
-/// gate crossing stands. @c start is then one hop before that point and no
+/// The gate between the room and the sound is found on the histogram of the
+/// envelope (Otsu's threshold), not counted up from the floor: a room is not
+/// steady, and one measured here spread 10 dB above its own quietest hop, so a
+/// floor-anchored gate was still room and the start sat in it. From the gate
+/// crossing a *transient* is looked for: a jump of kTrimRiseDb from one hop to
+/// the next, landing kTrimRiseDb clear of the gate, and standing kTrimSkipDb
+/// above everything between it and the crossing. When none of that is met (a
+/// bowed note, a pad swelling in) the gate crossing stands. @c start is then one hop before that point and no
 /// further: the attack began in the hop the rise does not show yet, and any
 /// rule that reads the level to walk back instead walks through a living room
 /// hop by hop, which is how this once put the start a fifth of a second before
@@ -63,24 +64,23 @@ TrimPoints autoTrim(const std::vector<uint8_t>& envelope, uint32_t hop, uint32_t
 
 /// The quietest part of a take that is taken for its noise floor, percent.
 constexpr int   kTrimFloorPct = 10;
-/// How far above that floor a hop must rise to be the take starting.
+/// The least the gate may sit above the floor, whatever the histogram says.
 constexpr float kTrimGateDb   = 9.0f;
-/// A take whose loudest part is not this far above its floor has no silence
-/// to trim -- only music that happens to be quiet.
-constexpr float kTrimSpanDb   = 12.0f;
+/// A take whose loudest part is not this far above its floor has no silence to
+/// trim -- only music that happens to be quiet, and gating that cuts the music
+/// in half. The line is drawn from measurement: real microphone takes carry
+/// 53-63 dB between their peak and their floor, and a hit decaying into digital
+/// silence 69 dB, while dense percussive samples that sound to their last frame
+/// carry 13-32 dB. Nothing measured lands between 32 and 53.
+constexpr float kTrimSpanDb   = 40.0f;
 /// A jump this big from one hop to the next is an attack, not a room.
 constexpr float kTrimRiseDb   = 12.0f;
-/// How far under the peak the gate is held, whatever the floor says. This is
-/// what keeps the gate a silence detector: a take with no real silence in it
-/// has every hop above the gate and keeps both its ends, where a floor-anchored
-/// gate rose into the music and cut a sample that sounded to its last frame.
-constexpr float kTrimQuietDb  = 30.0f;
 /// ...and stands this far above everything between it and the gate, so a hit
 /// after a breath is found while a note fading up is not cut into.
 constexpr float kTrimSkipDb   = 20.0f;
-/// A tail is followed while it is this far above the floor; nearer than that
-/// is the room's own wobble, which would carry the end to the end of the take.
-constexpr float kTrimTailDb   = 3.0f;
+/// How far under the gate a tail is still followed. The gate sits in the gap
+/// between room and sound, so a few dB below it is still sound.
+constexpr float kTrimTailDb   = 6.0f;
 /// Kept after the last sound so a tail is not cut square. Nothing is kept
 /// before the attack: the one hop the start steps back is already as much
 /// silence as a pad should carry.
