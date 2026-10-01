@@ -94,32 +94,65 @@ TrimPoints autoTrim(const std::vector<uint8_t>& envelope, uint32_t hop, uint32_t
     const int ceiling = peak - (int)std::lround(3.0f / kEnvDbPerStep);
     if (gate > ceiling) gate = ceiling;
 
-    size_t first = envelope.size();
+    size_t firstAbove = envelope.size();
     for (size_t i = 0; i < envelope.size(); ++i) {
-        if ((int)envelope[i] >= gate) { first = i; break; }
+        if ((int)envelope[i] >= gate) { firstAbove = i; break; }
     }
-    if (first == envelope.size()) return out;       // nothing cleared it
+    if (firstAbove == envelope.size()) return out;      // nothing cleared it
 
-    /* The hop that shows a transient is not the one it began in: a stick is
-     * already moving while the hop before still averages mostly silence, so
-     * walk back while the level is above the floor rather than at it. */
-    const int foot = floorStep + 1;
-    while (first > 0 && (int)envelope[first - 1] > foot) --first;
+    /* The hit, not the sound before it. A sample is going under a pad: what
+     * must land the instant the pad is struck is the transient, and a take
+     * holds plenty that clears a gate without being one -- a breath, a chair,
+     * a hand on the case. So a transient is looked for first, and it has to
+     * be both: a jump of kTrimRiseDb between one hop and the next, landing
+     * within kTrimPeakDb of the loudest the take gets. Noise getting louder
+     * fails the second test; a fade-up fails the first.
+     *
+     * The search starts at the gate crossing and not before it, so the floor's
+     * own wobble cannot pass for an attack. */
+    const int rise    = (int)std::lround(kTrimRiseDb / kEnvDbPerStep);
+    const int loudest = peak - (int)std::lround(kTrimPeakDb / kEnvDbPerStep);
+    const int skip    = (int)std::lround(kTrimSkipDb / kEnvDbPerStep);
+    size_t at  = firstAbove;
+    int    pre = 0;          // the loudest hop between the gate and the candidate
+    for (size_t i = (firstAbove ? firstAbove : 1); i < envelope.size(); ++i) {
+        const int v = (int)envelope[i];
+        /* Three tests, and the third is the one that keeps a swell whole: what
+         * lies between the gate and this hop has to be negligible beside it.
+         * A breath 40 dB under the hit is; the first stage of a note fading up
+         * is not, and moving the start past it would cut the note. */
+        if (v - (int)envelope[i - 1] >= rise && v >= loudest && v - pre >= skip) {
+            at = i;
+            break;
+        }
+        /* The body of the take has arrived without a transient to find -- a
+         * bowed note, a pad swelling in. Where it cleared the gate is where it
+         * begins, and looking further can only land later than that. */
+        if (v >= loudest) break;
+        pre = std::max(pre, v);
+    }
 
-    size_t last = first;
-    for (size_t i = envelope.size(); i-- > first;) {
+    /* One hop back and no further: the attack began in the hop before the one
+     * that shows it, because that hop still averages mostly what came before.
+     * Going back by any rule that reads the level instead walks through a
+     * living room hop by hop -- which is how this put START a fifth of a
+     * second before the hit. No lead on top either: with a hop of ~5 ms, that
+     * single step is already as much silence as a pad should ever carry. */
+    const size_t foot = at ? at - 1 : 0;
+
+    size_t last = foot;
+    for (size_t i = envelope.size(); i-- > foot;) {
         if ((int)envelope[i] >= gate) { last = i; break; }
     }
-    /* A tail is under the gate and still sounding; it ends where it reaches
-     * the floor. */
-    while (last + 1 < envelope.size() && (int)envelope[last + 1] > foot) ++last;
+    /* A tail is under the gate and still sounding. It is followed while it is
+     * clearly above the floor -- not merely off it, or the room's wobble
+     * carries the end of the loop to the end of the take. */
+    const int tailFloor = floorStep + (int)std::lround(kTrimTailDb / kEnvDbPerStep);
+    while (last + 1 < envelope.size() && (int)envelope[last + 1] > tailFloor) ++last;
 
-    const uint32_t lead = sampleRate ? (uint32_t)sampleRate * kTrimLeadMs / 1000 : 0;
-    const uint32_t tail = sampleRate ? (uint32_t)sampleRate * kTrimTailMs / 1000 : 0;
-
-    uint64_t a = (uint64_t)envStart + (uint64_t)first * hop;
-    a = a > lead ? a - lead : 0;
-    uint64_t b = (uint64_t)envStart + ((uint64_t)last + 1) * hop + tail;
+    const uint32_t release = sampleRate ? (uint32_t)sampleRate * kTrimTailMs / 1000 : 0;
+    const uint64_t a = (uint64_t)envStart + (uint64_t)foot * hop;
+    const uint64_t b = (uint64_t)envStart + ((uint64_t)last + 1) * hop + release;
 
     out.start = (uint32_t)std::min<uint64_t>(a, frames);
     out.end   = (uint32_t)std::min<uint64_t>(b, frames);

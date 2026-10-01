@@ -38,13 +38,22 @@ struct TrimPoints {
 
 /// The sounding part of a take, from its level envelope (see WaveOverview).
 ///
-/// "Logical" is the whole point: the first frame that is not zero is a room,
-/// a preamp and a hand on the case, so the floor is measured first -- the
-/// quietest kTrimFloorPct of the take -- and the start is the first hop that
-/// rises kTrimGateDb clear of it, backed up to where that rise began. The end
-/// is the last hop still above the gate, carried on while the tail is still
-/// decaying. A guard either side keeps the attack whole (kTrimLeadMs) and the
-/// tail from being cut square (kTrimTailMs).
+/// Written for a sample going under a pad: what must sound the instant the pad
+/// is struck is the transient, so @c start is the attack itself and carries no
+/// pad of silence in front of it.
+///
+/// The floor is measured first -- the quietest kTrimFloorPct of the take -- and
+/// the sound is taken to begin where the envelope first clears it by
+/// kTrimGateDb. From there a *transient* is looked for: a jump of kTrimRiseDb
+/// from one hop to the next that lands within kTrimPeakDb of the take's peak.
+/// Both tests matter -- noise getting louder fails the second, a fade-up fails
+/// the first -- and when neither is met (a bowed note, a pad swelling in) the
+/// gate crossing stands. @c start is then one hop before that point and no
+/// further: the attack began in the hop the rise does not show yet, and any
+/// rule that reads the level to walk back instead walks through a living room
+/// hop by hop, which is how this once put the start a fifth of a second before
+/// the hit. The end is the last hop above the gate, followed while the tail is
+/// still clearly above the floor, plus kTrimTailMs so it is not cut square.
 ///
 /// A take with nothing to find -- empty, silent, or one unbroken level, where
 /// a gate would cut music rather than silence -- comes back as [0, @p frames):
@@ -59,10 +68,20 @@ constexpr float kTrimGateDb   = 9.0f;
 /// A take whose loudest part is not this far above its floor has no silence
 /// to trim -- only music that happens to be quiet.
 constexpr float kTrimSpanDb   = 12.0f;
-/// Kept before the first transient and after the last, so an attack is not
-/// clipped and a tail not cut square.
-constexpr uint16_t kTrimLeadMs = 5;
-constexpr uint16_t kTrimTailMs = 40;
+/// A jump this big from one hop to the next is an attack, not a room.
+constexpr float kTrimRiseDb   = 12.0f;
+/// ...as long as it also lands this close to the loudest the take gets,
+constexpr float kTrimPeakDb   = 24.0f;
+/// ...and stands this far above everything between it and the gate, so a hit
+/// after a breath is found while a note fading up is not cut into.
+constexpr float kTrimSkipDb   = 20.0f;
+/// A tail is followed while it is this far above the floor; nearer than that
+/// is the room's own wobble, which would carry the end to the end of the take.
+constexpr float kTrimTailDb   = 3.0f;
+/// Kept after the last sound so a tail is not cut square. Nothing is kept
+/// before the attack: the one hop the start steps back is already as much
+/// silence as a pad should carry.
+constexpr uint16_t kTrimTailMs = 20;
 
 /// @p count slices of equal length between @p start and @p end.
 std::vector<uint32_t> equal(uint32_t start, uint32_t end, uint8_t count);
