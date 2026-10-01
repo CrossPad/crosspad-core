@@ -54,6 +54,13 @@ public:
     /// Serialize kit metadata + pads back to JSON on disk.
     virtual bool saveKit(const KitInfo& kit) = 0;
 
+    /// Take a kit.json written since the last scan into the list, so it is
+    /// there without a restart; its id, or -1 when the list is full or the
+    /// file will not parse. A path already in the list returns its id.
+    /// Whoever wrote the file calls this -- the Slicer does, and so does the
+    /// browser when it makes an empty kit.
+    virtual int addKit(const std::string& kitJsonPath) { (void)kitJsonPath; return -1; }
+
     // ── Memory ────────────────────────────────────────────────────────
 
     /// Free the sample payload of the kit that stopped being current at

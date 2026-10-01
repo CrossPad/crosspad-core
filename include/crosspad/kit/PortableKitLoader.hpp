@@ -45,7 +45,7 @@ public:
     /// leaves (kSpareKits): growing the vector would move every KitInfo, and
     /// the GUI holds getCurrentKit() across card reads. Returns the new id,
     /// or -1 when there is no room -- a rescan (reboot, card reinsert) finds it.
-    int  addKit(const std::string& kitJsonPath);
+    int  addKit(const std::string& kitJsonPath) override;
     static constexpr size_t kSpareKits = 8;
     int  findKitIdByPath(const std::string& path) const;
     bool isKitKnown(const std::string& path) const;
