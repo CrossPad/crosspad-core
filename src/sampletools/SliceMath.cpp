@@ -88,11 +88,15 @@ TrimPoints autoTrim(const std::vector<uint8_t>& envelope, uint32_t hop, uint32_t
     const int span = (int)std::lround(kTrimSpanDb / kEnvDbPerStep);
     if (peak - floorStep < span) return out;
 
-    /* The gate sits above the floor, never so close to the peak that only the
-     * loudest hop of a gentle take clears it. */
-    int gate = floorStep + (int)std::lround(kTrimGateDb / kEnvDbPerStep);
-    const int ceiling = peak - (int)std::lround(3.0f / kEnvDbPerStep);
-    if (gate > ceiling) gate = ceiling;
+    /* The gate looks for silence, so it has to sit below the music -- and the
+     * floor measured above is only the quietest part of the take, which in
+     * something dense and loud is still music. Anchored to the floor alone the
+     * gate rose into the sound and cut it in half: a percussive sample that
+     * ran at full level to its last frame came back trimmed to 50 %. So it is
+     * also held at least kTrimQuietDb under the peak, which is what makes it a
+     * silence detector rather than a loudness one. */
+    const int gate = std::min(floorStep + (int)std::lround(kTrimGateDb / kEnvDbPerStep),
+                              peak - (int)std::lround(kTrimQuietDb / kEnvDbPerStep));
 
     size_t firstAbove = envelope.size();
     for (size_t i = 0; i < envelope.size(); ++i) {
@@ -111,7 +115,10 @@ TrimPoints autoTrim(const std::vector<uint8_t>& envelope, uint32_t hop, uint32_t
      * The search starts at the gate crossing and not before it, so the floor's
      * own wobble cannot pass for an attack. */
     const int rise    = (int)std::lround(kTrimRiseDb / kEnvDbPerStep);
-    const int loudest = peak - (int)std::lround(kTrimPeakDb / kEnvDbPerStep);
+    /* Measured from the gate, not from the peak: a take can hold a hi-hat and
+     * a kick 30 dB louder, and anchoring this to the loudest thing in the file
+     * made the hat fail the test and the start jump forward to the kick. */
+    const int loudest = gate + rise;
     const int skip    = (int)std::lround(kTrimSkipDb / kEnvDbPerStep);
     size_t at  = firstAbove;
     int    pre = 0;          // the loudest hop between the gate and the candidate

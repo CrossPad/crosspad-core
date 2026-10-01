@@ -70,8 +70,11 @@ constexpr float kTrimGateDb   = 9.0f;
 constexpr float kTrimSpanDb   = 12.0f;
 /// A jump this big from one hop to the next is an attack, not a room.
 constexpr float kTrimRiseDb   = 12.0f;
-/// ...as long as it also lands this close to the loudest the take gets,
-constexpr float kTrimPeakDb   = 24.0f;
+/// How far under the peak the gate is held, whatever the floor says. This is
+/// what keeps the gate a silence detector: a take with no real silence in it
+/// has every hop above the gate and keeps both its ends, where a floor-anchored
+/// gate rose into the music and cut a sample that sounded to its last frame.
+constexpr float kTrimQuietDb  = 30.0f;
 /// ...and stands this far above everything between it and the gate, so a hit
 /// after a breath is found while a note fading up is not cut into.
 constexpr float kTrimSkipDb   = 20.0f;
