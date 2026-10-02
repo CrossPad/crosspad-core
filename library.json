@@ -28,6 +28,7 @@
             "+<stm32/Stm32ConfigSync.cpp>",
             "+<music/MusicTheory.cpp>",
             "+<midi/MidiInputHandler.cpp>",
+            "+<net/WifiNetworkList.cpp>",
             "+<platform/CrosspadPlatformInit.cpp>",
             "+<platform/PlatformCapabilities.cpp>",
             "+<platform/PlatformServices.cpp>",
