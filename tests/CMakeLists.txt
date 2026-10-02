@@ -56,6 +56,9 @@ set(CORE_SOURCES
     ${CORE_DIR}/src/settings/SettingsIo.cpp
     ${CORE_DIR}/src/settings/SettingsScope.cpp
 
+    # Network
+    ${CORE_DIR}/src/net/WifiNetworkList.cpp
+
     # Protocol
     ${CORE_DIR}/src/protocol/Stm32CommandSender.cpp
     ${CORE_DIR}/src/protocol/Stm32MessageHandler.cpp

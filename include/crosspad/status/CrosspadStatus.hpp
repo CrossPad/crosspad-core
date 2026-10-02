@@ -121,6 +121,13 @@ public:
     bool bluetoothActive = false;
     bool bluetoothConnected = false;
     bool wifiConnected = false;
+    /// The platform's WiFi link (crosspad::WifiLinkState) and the last RSSI
+    /// it read while up. wifiConnected stays the "up" shorthand older readers use.
+    uint8_t wifiState = 0;
+    int8_t wifiRssi = 0;
+    /// Audio and other work stopped to make room for WiFi; the status bar
+    /// shows why the pads are silent.
+    bool wifiReclaimed = false;
     bool sdCardDetected = false;
     bool imuDetected = false;
     int8_t batteryPct = 0;
