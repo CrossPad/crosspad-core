@@ -134,3 +134,38 @@ TEST_CASE("nextQuotedArg: empty quotes, unterminated quote, overflow", "[wifi]")
     const char* r = "toolongtoken";
     CHECK_FALSE(nextQuotedArg(r, out, sizeof(out)));
 }
+
+TEST_CASE("not_network_mode is named and appended", "[wifi]") {
+    CHECK(std::strcmp(wifiFailName(WifiFail::NotNetworkMode), "not_network_mode") == 0);
+    CHECK(static_cast<int>(WifiFail::NotNetworkMode) == static_cast<int>(WifiFail::TransferMode) + 1);
+}
+
+TEST_CASE("bars look follows the spec table", "[wifi]") {
+    CHECK_FALSE(wifiBarsLook(false, WifiLinkState::Up, -40, 0).visible);   // not allowed: hidden
+
+    const auto asleep = wifiBarsLook(true, WifiLinkState::Off, 0, 0);       // allowed, radio asleep
+    CHECK(asleep.visible);
+    CHECK(asleep.lit == 0);
+    CHECK_FALSE(asleep.firstRed);
+    CHECK(wifiBarsLook(true, WifiLinkState::Stopping, 0, 0).lit == 0);
+
+    CHECK(wifiBarsLook(true, WifiLinkState::Up, -54, 0).lit == 4);
+    CHECK(wifiBarsLook(true, WifiLinkState::Up, -70, 0).lit == 2);
+    CHECK(wifiBarsLook(true, WifiLinkState::Up, -80, 0).lit == 1);
+
+    const auto failed = wifiBarsLook(true, WifiLinkState::Failed, 0, 0);
+    CHECK(failed.visible);
+    CHECK(failed.lit == 0);
+    CHECK(failed.firstRed);
+}
+
+TEST_CASE("connecting sweeps one bar per step, looping 1..4", "[wifi]") {
+    for (auto st : {WifiLinkState::Starting, WifiLinkState::Connecting}) {
+        CHECK(wifiBarsLook(true, st, 0, 0).lit == 1);
+        CHECK(wifiBarsLook(true, st, 0, kWifiConnectStepMs - 1).lit == 1);
+        CHECK(wifiBarsLook(true, st, 0, kWifiConnectStepMs).lit == 2);
+        CHECK(wifiBarsLook(true, st, 0, 3 * kWifiConnectStepMs).lit == 4);
+        CHECK(wifiBarsLook(true, st, 0, 4 * kWifiConnectStepMs).lit == 1);
+        CHECK_FALSE(wifiBarsLook(true, st, 0, 0).firstRed);
+    }
+}
