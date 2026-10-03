@@ -102,6 +102,11 @@ set(CORE_SOURCES
     ${CORE_DIR}/src/sampletools/SliceMath.cpp
     ${CORE_DIR}/src/sampletools/SampleFx.cpp
 
+    # Firmware updates
+    ${CORE_DIR}/src/fw/Semver.cpp
+    ${CORE_DIR}/src/fw/FwKit.cpp
+    ${CORE_DIR}/src/fw/FwSchedule.cpp
+
     # Loop recorder
     ${CORE_DIR}/src/sequencer/PatternSequencer.cpp
     ${CORE_DIR}/src/sequencer/SequenceStore.cpp
