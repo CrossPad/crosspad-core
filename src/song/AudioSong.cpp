@@ -24,6 +24,70 @@ Parse parseFile(const std::string& path, JsonDocument& doc)
 
 } // namespace
 
+static_assert(ClipSet::kCols == AudioSong::kTracks, "a set's row is one cell per track");
+
+namespace {
+const std::string kNoCell;
+}
+
+const std::string& ClipSet::at(uint32_t row, int col) const
+{
+    return inside(row, col) ? cells[row * kCols + col] : kNoCell;
+}
+
+void ClipSet::put(uint32_t row, int col, const std::string& file)
+{
+    if (col < 0 || col >= kCols || row >= kMaxRows) return;
+    if (row >= rows()) setRows(row + 1);
+    cells[row * kCols + col] = file;
+}
+
+void ClipSet::setRows(uint32_t n)
+{
+    cells.resize((size_t)std::min(n, kMaxRows) * kCols);
+}
+
+bool ClipSet::blank() const
+{
+    for (const auto& c : cells) if (!c.empty()) return false;
+    return true;
+}
+
+ClipSet clipSetFromFiles(const std::vector<std::string>& files, const std::string& name)
+{
+    ClipSet set;
+    set.name = name;
+    set.setRows((uint32_t)((files.size() + ClipSet::kCols - 1) / ClipSet::kCols));
+    for (size_t i = 0; i < files.size() && i < set.cells.size(); ++i) set.cells[i] = files[i];
+    return set;
+}
+
+ClipSet* AudioSong::currentClipSet()
+{
+    return currentSet < sets.size() ? &sets[currentSet] : nullptr;
+}
+
+const ClipSet* AudioSong::currentClipSet() const
+{
+    return currentSet < sets.size() ? &sets[currentSet] : nullptr;
+}
+
+int AudioSong::addClipSet(const ClipSet& set)
+{
+    if ((int)sets.size() >= kMaxSets) return -1;
+    sets.push_back(set);
+    currentSet = (uint8_t)(sets.size() - 1);
+    return (int)currentSet;
+}
+
+void AudioSong::removeClipSet(int index)
+{
+    if (index < 0 || index >= (int)sets.size()) return;
+    sets.erase(sets.begin() + index);
+    if (sets.empty()) currentSet = 0;
+    else if (currentSet >= sets.size()) currentSet = (uint8_t)(sets.size() - 1);
+}
+
 SongLoad AudioSong::load(const std::string& projectDir)
 {
     dir = projectDir;
@@ -36,6 +100,8 @@ SongLoad AudioSong::load(const std::string& projectDir)
     syncSeq = false;
     loopStart = loopEnd = 0;
     for (auto& t : tracks) t = SongTrack{};
+    sets.clear();
+    currentSet = 0;
 
     /* song.json, else what save() leaves when it is cut short: the new file
      * complete beside it (.tmp), or only the old one moved aside (.bak). */
@@ -75,6 +141,26 @@ SongLoad AudioSong::load(const std::string& projectDir)
         sortTrack(t);
         ++t;
     }
+    /* A row shorter or longer than the grid is padded or cut rather than
+     * refused: a set edited by hand should not cost somebody their song. */
+    for (JsonObjectConst so : doc["sets"].as<JsonArrayConst>()) {
+        if ((int)sets.size() >= kMaxSets) break;
+        ClipSet set;
+        set.name = so["name"] | "";
+        for (JsonArrayConst row : so["rows"].as<JsonArrayConst>()) {
+            if (set.rows() >= ClipSet::kMaxRows) break;
+            const uint32_t r = set.rows();
+            set.setRows(r + 1);
+            int c = 0;
+            for (JsonVariantConst cell : row) {
+                if (c >= ClipSet::kCols) break;
+                set.put(r, c++, cell.as<const char*>() ? cell.as<const char*>() : "");
+            }
+        }
+        sets.push_back(set);
+    }
+    currentSet = doc["set"] | 0u;
+    if (currentSet >= sets.size()) currentSet = 0;
     return SongLoad::Loaded;
 }
 
@@ -101,6 +187,20 @@ bool AudioSong::save() const
             co["bar"]  = c.bar;
             co["bars"] = c.bars;
         }
+    }
+
+    if (!sets.empty()) {
+        JsonArray ss = doc["sets"].to<JsonArray>();
+        for (const auto& set : sets) {
+            JsonObject so = ss.add<JsonObject>();
+            so["name"] = set.name;
+            JsonArray rows = so["rows"].to<JsonArray>();
+            for (uint32_t r = 0; r < set.rows(); ++r) {
+                JsonArray row = rows.add<JsonArray>();
+                for (int c = 0; c < ClipSet::kCols; ++c) row.add(set.at(r, c));
+            }
+        }
+        doc["set"] = currentSet;
     }
 
     const std::string path = dir + "/" + fileName();

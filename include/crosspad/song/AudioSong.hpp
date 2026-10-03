@@ -17,6 +17,41 @@ struct SongClip {
     uint16_t    bars = 1;    ///< length on the grid
 };
 
+/// A launcher set: the project's clips arranged in a grid to be played live,
+/// four to a row -- one per track -- and a row at a time as a scene. A cell
+/// names a clip in the project's clips/ folder, or nothing; a name whose file
+/// has gone is kept, so a set says which cell lost its audio instead of
+/// quietly closing the gap.
+///
+/// The set is the project's own and travels in song.json, and a project may
+/// hold several: one for a soundcheck, one for the set list. Firmware that
+/// predates them ignores the key and drops it the next time it saves that
+/// project, which is why nothing else depends on them.
+struct ClipSet {
+    static constexpr int      kCols    = 4;      ///< == AudioSong::kTracks
+    static constexpr uint32_t kMaxRows = 32;
+
+    std::string name;
+    /// rows x kCols, row-major. Always a whole number of rows.
+    std::vector<std::string> cells;
+
+    uint32_t rows() const { return (uint32_t)(cells.size() / kCols); }
+    bool inside(uint32_t row, int col) const
+    { return col >= 0 && col < kCols && row < rows(); }
+    /// The clip in a cell, or "" -- also for a cell outside the set, so a
+    /// screen drawing one row past the end needs no special case.
+    const std::string& at(uint32_t row, int col) const;
+    void put(uint32_t row, int col, const std::string& file);
+    /// Grow with empty rows or drop whole rows from the end, up to kMaxRows.
+    void setRows(uint32_t n);
+    /// No cell names a clip.
+    bool blank() const;
+};
+
+/// A set from @p files, four to a row in the order given: what a project that
+/// has never had one starts with.
+ClipSet clipSetFromFiles(const std::vector<std::string>& files, const std::string& name);
+
 /// What AudioSong::load() found. Unreadable (corrupt, or saved by newer
 /// firmware) is kept apart from New so nobody saves an empty song over it.
 enum class SongLoad : uint8_t { New, Loaded, Unreadable };
@@ -59,6 +94,20 @@ public:
     uint32_t    loopEnd = 0;
     bool hasRegion() const { return loopEnd > loopStart; }
     SongTrack   tracks[kTracks];
+    /// The launcher's sets, and which of them is on screen. Empty on a
+    /// project that has never had one.
+    std::vector<ClipSet> sets;
+    uint8_t     currentSet = 0;
+
+    /// The set the launcher plays from, or nullptr when the project has none.
+    ClipSet* currentClipSet();
+    const ClipSet* currentClipSet() const;
+    /// Append @p set and make it current. Returns its index, or -1 when the
+    /// project already holds kMaxSets.
+    int addClipSet(const ClipSet& set);
+    /// Drop set @p index; the one before it becomes current.
+    void removeClipSet(int index);
+    static constexpr int kMaxSets = 8;
 
     SongLoad load(const std::string& projectDir);
     /// Written beside song.json and swapped in, the old file kept as .bak
