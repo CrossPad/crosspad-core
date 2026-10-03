@@ -8,6 +8,9 @@ namespace crosspad {
 
 namespace {
 constexpr uint32_t kSegBytes = LooperEngine::kSegFrames * sizeof(int16_t);
+/// What Exclusive asks for: more than any arena holds, so it comes out as
+/// whatever the arena really had.
+constexpr float kExclusiveSeconds = 120.0f;
 inline int16_t clip16(int32_t v)
 {
     return (int16_t)(v > 32767 ? 32767 : (v < -32768 ? -32768 : v));
@@ -53,9 +56,15 @@ bool LooperEngine::grow(std::vector<int16_t*>& segs, uint32_t frames, bool undo)
 
 bool LooperEngine::open(float seconds)
 {
+    std::lock_guard<std::recursive_mutex> lock(memMutex_);
     if (capacity_) return true;
+    if (memory_.load() == LoopMemory::Shared) asked_ = seconds;
     rate_ = p.sampleRate() ? p.sampleRate() : 44100;
     if (seconds < 1.0f) seconds = 1.0f;
+    /* Room for every segment the buffer can ever hold, so topUp() appending
+     * one cannot move the array the audio thread is reading pointers from. */
+    buf_.reserve(kMaxSegs);
+    undo_.reserve(kMaxSegs);
     if (!grow(buf_, (uint32_t)(seconds * (float)rate_), false)) {
         char msg[96];
         snprintf(msg, sizeof(msg), "looper: no memory for a loop (%u kB free)",
@@ -77,6 +86,7 @@ bool LooperEngine::open(float seconds)
 
 void LooperEngine::close()
 {
+    std::lock_guard<std::recursive_mutex> lock(memMutex_);
     /* The audio thread must be out of the buffer before it goes. It takes the
      * latch on the next block and never touches the loop again. */
     copying_.store(true, std::memory_order_release);
@@ -98,6 +108,7 @@ LoopStatus LooperEngine::status() const
     LoopStatus s;
     s.state      = state_.load();
     s.grid       = grid_.load();
+    s.memory     = memory_.load();
     s.frames     = frames_.load();
     s.position   = pos_.load();
     s.capacity   = capacity_;
@@ -117,6 +128,7 @@ LoopStatus LooperEngine::status() const
 
 void LooperEngine::prepareUndo()
 {
+    std::lock_guard<std::recursive_mutex> lock(memMutex_);
     const uint32_t len = frames_.load();
     if (!len) return;
     undoReady_.store(false);
@@ -169,6 +181,7 @@ void LooperEngine::clear() { if (capacity_) req_.store(Req::Clear); }
 
 void LooperEngine::undo()
 {
+    std::lock_guard<std::recursive_mutex> lock(memMutex_);
     if (!undoReady_.load() || buf_.empty() || undo_.empty()) return;
     /* The two buffers trade places. Which segment the audio thread reads
      * changes under it, so it is told to keep its hands off for the one
@@ -187,7 +200,46 @@ void LooperEngine::undo()
     copying_.store(false, std::memory_order_release);
 }
 
+bool LooperEngine::topUp()
+{
+    std::lock_guard<std::recursive_mutex> lock(memMutex_);
+    if (!capacity_) return false;
+    const LoopState st = state_.load();
+    if (st == LoopState::Rec || st == LoopState::Overdub) return false;
+    const float want = memory_.load() == LoopMemory::Exclusive ? kExclusiveSeconds : asked_;
+    const uint32_t target = (uint32_t)(want * (float)rate_);
+    if (capacity_ >= target) return false;
+    const size_t before = buf_.size();
+    grow(buf_, target, false);
+    if (buf_.size() == before) return false;
+    capacity_ = (uint32_t)buf_.size() * kSegFrames;
+    revision_.fetch_add(1);
+    return true;
+}
+
 void LooperEngine::setGrid(LoopGrid grid) { grid_.store(grid); }
+
+bool LooperEngine::setMemory(LoopMemory memory)
+{
+    std::lock_guard<std::recursive_mutex> lock(memMutex_);
+    if (memory == memory_.load()) return true;
+    /* Only with nothing in the loop: the memory is given back and taken
+     * again, and a buffer that came from the engine's arena is wiped the
+     * moment that engine is restarted. */
+    if (frames_.load() || state_.load() != LoopState::Empty) return false;
+    const float asked = asked_;
+    const bool wasOpen = capacity_ != 0;
+    close();
+    if (!p.borrowEngine(memory == LoopMemory::Exclusive)) {
+        /* No engine to borrow: back as it was, with the buffer it had. */
+        if (wasOpen) open(asked);
+        return false;
+    }
+    memory_.store(memory);
+    /* Exclusive is asked for the lot and takes what the arena turns out to
+     * hold; Shared goes back to what the screen asked for. */
+    return wasOpen ? open(memory == LoopMemory::Exclusive ? kExclusiveSeconds : asked) : true;
+}
 void LooperEngine::setLevel(float gain)
 {
     gain_.store(gain < 0.0f ? 0.0f : (gain > 4.0f ? 4.0f : gain));
@@ -240,6 +292,21 @@ LoopExport LooperEngine::exportState() const
 std::string LooperEngine::exportName() const
 {
     return const_cast<ILooperPlatform&>(p).exportName();
+}
+
+void LooperEngine::surrenderEngine()
+{
+    std::lock_guard<std::recursive_mutex> lock(memMutex_);
+    /* Whatever the mode: a loop beside the engine holds the arena's slack,
+     * and that memory stops being the arena's the moment it is re-registered
+     * -- so the buffer goes either way, and the mode with it when the whole
+     * arena was ours. */
+    const bool wasExclusive = memory_.load() == LoopMemory::Exclusive;
+    if (!capacity_ && !wasExclusive) return;
+    close();
+    if (wasExclusive) memory_.store(LoopMemory::Shared);
+    /* Not reopened here: whoever took the memory is using it, and the screen
+     * (or the next open()) asks again when it is wanted. */
 }
 
 // ── the audio thread ───────────────────────────────────────────────────────

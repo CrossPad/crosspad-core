@@ -19,12 +19,23 @@ enum class LoopState : uint8_t {
 /// the tempo the board is keeping -- so a loop and the sequencer stay in step.
 enum class LoopGrid : uint8_t { Free, Sync };
 
+/// Where a loop's memory comes from.
+///
+/// Shared is beside whatever plays the pads: the slack of the memory the
+/// sample engine is not using, which on this hardware is seconds rather than
+/// minutes. Exclusive takes that engine's memory outright -- a loop six times
+/// longer -- and the pads fall silent for as long as it is held, so the only
+/// thing left to loop is what comes in through the inputs. Which is the trade
+/// a looper pedal makes anyway: it loops what you play into it.
+enum class LoopMemory : uint8_t { Shared, Exclusive };
+
 /// Where an export is.
 enum class LoopExport : uint8_t { Idle, Busy, Done, Failed };
 
 struct LoopStatus {
     LoopState state = LoopState::Empty;
     LoopGrid  grid  = LoopGrid::Free;
+    LoopMemory memory = LoopMemory::Shared;
     uint32_t  frames   = 0;        ///< the loop's length
     uint32_t  position = 0;        ///< where it is playing
     uint32_t  capacity = 0;        ///< the longest loop the memory holds
@@ -69,7 +80,16 @@ public:
     virtual void undo() = 0;
     virtual void clear() = 0;
     virtual void setGrid(LoopGrid grid) = 0;
+    /// Where the loop's memory comes from. Only with the loop empty -- the
+    /// memory is handed back and taken again, and whatever was in it goes.
+    /// False when the loop is not empty, or when this platform has no engine
+    /// to borrow. The capacity in status() is what it came out as.
+    virtual bool setMemory(LoopMemory memory) { return memory == LoopMemory::Shared; }
     virtual void setLevel(float gain) = 0;
+    /// Ask the memory again for what it would not give yet; the buffer only
+    /// grows. Cheap to call from a UI timer -- it is a comparison until
+    /// there is something to take. True when the capacity moved.
+    virtual bool topUp() { return false; }
     virtual float level() const = 0;
 
     /// A drawing of the loop: @p n buckets, the loudest sample of each as

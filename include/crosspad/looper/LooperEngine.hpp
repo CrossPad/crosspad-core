@@ -6,6 +6,7 @@
 
 #include <atomic>
 #include <cstdint>
+#include <mutex>
 #include <vector>
 
 namespace crosspad {
@@ -47,6 +48,14 @@ public:
     void undo() override;
     void clear() override;
     void setGrid(LoopGrid grid) override;
+    bool setMemory(LoopMemory memory) override;
+
+    /// Ask the memory again for what it would not give yet, and grow the
+    /// buffer into it. A loop opened while the arena was somebody else's --
+    /// a kit on its way back, say -- comes out a second long, and nothing has
+    /// to be lost to put that right: the buffer only ever grows, and never
+    /// while a pass is being written. True when it did grow.
+    bool topUp();
     void setLevel(float gain) override;
     float level() const override;
     void envelope(uint8_t* out, uint32_t n) const override;
@@ -59,6 +68,12 @@ public:
     void rtInput(const int16_t* stereo, uint32_t frames);
     /// Add the loop to @p out (interleaved stereo) and move the position on.
     void rtRender(float* out, uint32_t frames);
+
+    /// The memory is being taken back by whatever lends it: the loop goes and
+    /// the engine is Shared again. The platform calls this instead of asking
+    /// politely -- a kit being loaded needs its engine now, and it is already
+    /// in the middle of taking it, so nothing here may call back into it.
+    void surrenderEngine();
 
     /// The loop's audio, mono, for whoever writes it to a file. Not for the
     /// audio thread; safe while the loop plays.
@@ -84,6 +99,14 @@ private:
 
     ILooperPlatform& p;
 
+    /* Everything that takes or gives back memory, and nothing the audio
+     * thread does. There are three callers and they are three threads: the
+     * screen's timer, a host over the wire, and whatever is starting the
+     * sample engine and wants its arena back -- and two of them changing the
+     * segment list at once is the segment list in pieces. Recursive because
+     * setMemory() is close() and open(). */
+    mutable std::recursive_mutex memMutex_;
+
     std::vector<int16_t*> buf_;      ///< the loop
     std::vector<int16_t*> undo_;     ///< what it was before this overdub pass
     uint32_t capacity_ = 0;          ///< frames the buffer holds
@@ -91,6 +114,8 @@ private:
 
     std::atomic<LoopState> state_{LoopState::Empty};
     std::atomic<LoopGrid>  grid_{LoopGrid::Free};
+    std::atomic<LoopMemory> memory_{LoopMemory::Shared};
+    float                  asked_ = 0.0f;      ///< seconds open() was asked for
     std::atomic<uint32_t>  frames_{0};      ///< the loop's length
     /* Frames that have really been written since the loop was cleared. A
      * length rounded up to the bar reaches past it, and what is past it is

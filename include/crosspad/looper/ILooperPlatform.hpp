@@ -37,6 +37,13 @@ public:
     /// running -- then the footswitch acts at once and the loop is the grid.
     virtual uint32_t framesToBar() = 0;
 
+    /// Take the memory the instruments play from, or give it back, and say
+    /// whether it is now held. Whoever answers this stops and starts the
+    /// engine that owns it and puts the kit back afterwards -- the engine is
+    /// only ever lent with the loop's buffer already released. A platform
+    /// with no such engine answers false and the loop stays as it was.
+    virtual bool borrowEngine(bool take) { (void)take; return false; }
+
     /// Start writing the loop as a clip of the open project, laid at the end
     /// of @p track. The platform reads the audio back with
     /// LooperEngine::read() from its own task.
