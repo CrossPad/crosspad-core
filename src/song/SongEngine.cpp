@@ -288,6 +288,17 @@ struct FrameRing {
 /// a FILE: reads are whole chunks, and stdio's 4 kB buffer per open file was
 /// 16 kB of PSRAM with four tracks playing.
 struct ClipReader {
+    ClipReader() = default;
+    /* The descriptor is given back whatever happens. The card has a handful
+     * of them and every one held open is one a pad's sample cannot have:
+     * readPeaks() used to return without closing, and a project of thirty
+     * clips -- the clip launcher asks for every waveform in view -- left the
+     * card unable to open anything at all, opendir included (ENFILE). Not
+     * copyable, so a copy cannot close another's. */
+    ~ClipReader() { close(); }
+    ClipReader(const ClipReader&) = delete;
+    ClipReader& operator=(const ClipReader&) = delete;
+
     int         fd = -1;
     std::string path;
     uint32_t    dataOffset = 0;
@@ -801,6 +812,83 @@ struct SongEngine::Impl {
             }
         }
     }
+
+    // ── the clip launcher's live transport ───────────────────────────────
+    bool liveStart() {
+        if (!opened_.load() || !ensureWorker()) return false;
+        liveStartReq_.store(true);
+        p.wake();
+        return true;
+    }
+
+    bool liveLaunch(uint8_t track, const std::string& file, uint16_t bars) {
+        if (track >= kTracks || file.empty() || !opened_.load() || !ensureWorker()) return false;
+        std::string path;
+        {
+            std::lock_guard<std::recursive_mutex> l(songMutex_);
+            path = song_.clipPath(file);
+        }
+        {
+            std::lock_guard<std::mutex> l(liveMutex_);
+            LiveReq& r = liveReq_[track];
+            r.path = path;
+            r.name = file;
+            r.bars = bars ? bars : 1;
+            r.stop = false;
+            r.set  = true;
+        }
+        /* The first launch starts the transport: the request is already in,
+         * so it lands on the first sample the grid plays. */
+        if (!liveOn_.load()) liveStartReq_.store(true);
+        p.wake();
+        return true;
+    }
+
+    void liveQuant(uint8_t bars) { liveQuant_.store(bars ? bars : 1); }
+
+    bool liveStop(uint8_t track) {
+        if (!liveOn_.load()) return false;
+        {
+            std::lock_guard<std::mutex> l(liveMutex_);
+            for (int t = 0; t < kTracks; ++t) {
+                if (track < kTracks && t != (int)track) continue;
+                liveReq_[t] = LiveReq{};
+                liveReq_[t].stop = true;
+                liveReq_[t].set  = true;
+            }
+        }
+        p.wake();
+        return true;
+    }
+
+    bool liveState(ISongEngine::LiveState& out) {
+        out = ISongEngine::LiveState{};
+        const uint32_t spb = liveSpb_.load();
+        out.on = liveOn_.load();
+        out.quantBars = liveQuant_.load();
+        out.framesPerBar = spb;
+        if (!out.on) return true;
+        const uint32_t pos = pos_.load(std::memory_order_relaxed);
+        out.bars = spb ? (double)pos / (double)spb : 0.0;
+        std::lock_guard<std::mutex> l(liveMutex_);
+        for (int t = 0; t < kTracks; ++t) {
+            ISongEngine::LiveTrack& o = out.tracks[t];
+            const LiveSlot& c = liveCur_[t];
+            o.file       = c.name;
+            o.bars       = c.bars;
+            o.loopFrames = c.loop;
+            /* The worker fills the ring ahead of what is heard, so a clip
+             * applied a moment ago can start later than the audible
+             * position: nothing into its loop yet, not a huge phase. */
+            o.phase = c.loop && pos > c.startAt ? (pos - c.startAt) % c.loop : 0;
+            if (liveReq_[t].set) {
+                o.stopping = liveReq_[t].stop;
+                o.pending  = liveReq_[t].stop ? std::string() : liveReq_[t].name;
+            }
+        }
+        return true;
+    }
+
 
 private:
     /* Only playback is a standing job; a bounce is a request of its own, so a
@@ -1365,13 +1453,21 @@ private:
             const auto& tr = song_.tracks[t];
             gain_[t].store(tr.muted ? 0.0f : tr.volume);
         }
-        loop_.store(a.loop);
-        spBar_.store(a.samplesPerBar);
+        /* The live transport has a grid of its own and no end; a commit
+         * made while it runs (a fader, a mute) must not hand RT the
+         * arrangement's. */
+        const bool live = liveOn_.load();
+        if (!live) {
+            loop_.store(a.loop);
+            spBar_.store(a.samplesPerBar);
+        }
         {
             std::lock_guard<std::mutex> l(snapMutex_);
-            end_.store(a.end);
-            loopA_.store(a.loopA);
-            loopB_.store(a.loopB);
+            if (!live) {
+                end_.store(a.end);
+                loopA_.store(a.loopA);
+                loopB_.store(a.loopB);
+            }
             snap_ = std::move(a);
         }
     }
@@ -1409,6 +1505,10 @@ private:
             }
             if (stopReq_.exchange(false) || play_.load() == Play::Ended) {
                 endPlayback();
+                continue;
+            }
+            if (liveStartReq_.exchange(false)) {
+                startLive();
                 continue;
             }
             if (playReq_.exchange(false)) {
@@ -1579,6 +1679,81 @@ private:
         if (std::fclose(f) != 0 || !ok) std::remove(path.c_str());   // half a file would read as whole
     }
 
+    /// Worker: the live transport -- the clip launcher's. No arrangement:
+    /// each track plays whatever was launched on it, looped on the song's bar
+    /// grid, and the position simply runs. The cycle is a whole number of
+    /// bars just under where the sample counter wraps, which is a day at any
+    /// tempo, so a loop's phase is plain subtraction and nothing has to be
+    /// re-anchored while anybody is playing.
+    void startLive() {
+        /* A launch made with the transport stopped is what starts it, so the
+         * request it queued has to survive the stop endPlayback() performs
+         * here -- otherwise the grid starts with nothing on it. */
+        LiveReq keep[kTracks];
+        {
+            std::lock_guard<std::mutex> l(liveMutex_);
+            for (int t = 0; t < kTracks; ++t) keep[t] = liveReq_[t];
+        }
+        endPlayback();
+        {
+            std::lock_guard<std::mutex> l(liveMutex_);
+            for (int t = 0; t < kTracks; ++t) liveReq_[t] = keep[t];
+        }
+        uint32_t spb = 0;
+        {
+            std::lock_guard<std::recursive_mutex> l(songMutex_);
+            spb = song_.samplesPerBar(sampleRate_);
+            /* The song's faders and mutes are the launcher's too; they are
+             * only published on a commit, and a project that has had none
+             * since it was opened would play at gain zero. */
+            for (int t = 0; t < kTracks; ++t) {
+                const auto& tr = song_.tracks[t];
+                gain_[t].store(tr.muted ? 0.0f : tr.volume);
+            }
+        }
+        if (!spb) return;
+        if (!ring_.alloc(kSongRingFrames, kPrimeFrames)) {
+            logf(true, "live: not enough memory for the song ring (%u kB free)",
+                 (unsigned)(p.freeMemoryBytes() / 1024));
+            return;
+        }
+        liveSpb_.store(spb);
+        liveCycle_.store((0xFFFF0000u / spb) * spb);
+        writePos_ = 0;
+        debt_.store(0);
+        pos_.store(0);
+        startPos_ = 0;
+        end_.store(liveCycle_.load());
+        loop_.store(true);
+        loopA_.store(0);
+        loopB_.store(0);
+        spBar_.store(spb);
+        syncing_ = false;
+        take_ = SyncTake::None;
+        cinPlanned_.store(0);
+        countInReq_.store(0);
+        underruns_.store(0);
+        openFailures_.store(0);
+        played_.store(0);
+        liveOn_.store(true);
+        job_.store(Job::Play);
+        play_.store(Play::Priming, std::memory_order_seq_cst);
+    }
+
+    /// Worker: a launch or a stop takes effect, on sample @p at. Caller holds
+    /// liveMutex_.
+    void liveApply(int t, uint32_t at) {
+        LiveReq& r = liveReq_[t];
+        if (!r.set) return;
+        r.set = false;
+        if (r.stop || r.path.empty()) { liveCur_[t] = LiveSlot{}; return; }
+        liveCur_[t].path    = r.path;
+        liveCur_[t].name    = r.name;
+        liveCur_[t].bars    = r.bars ? r.bars : 1;
+        liveCur_[t].loop    = liveCur_[t].bars * liveSpb_.load();
+        liveCur_[t].startAt = at;
+    }
+
     /// Worker: from the snapshot, @p fromBar on. In sync the sequencer is the
     /// song's: at the song's tempo (its pattern is rescaled with it, so a take
     /// keeps its place in the bar), and stopped until the song starts it.
@@ -1636,6 +1811,13 @@ private:
         syncing_ = false;
         waitRtOut();
         played_.store(0);
+        liveOn_.store(false);
+        {
+            /* Neither what played nor what was launched outlives a stop: a
+             * clip left in a request would fire on the next start. */
+            std::lock_guard<std::mutex> l(liveMutex_);
+            for (int t = 0; t < kTracks; ++t) { liveCur_[t] = LiveSlot{}; liveReq_[t] = LiveReq{}; }
+        }
         for (auto& r : readers_) r.close();
         ring_.release();
         job_.store(Job::None);
@@ -1659,7 +1841,46 @@ private:
             struct Piece { char path[160]; uint32_t at, len, clipFrame; };
             Piece pieces[kTracks][3];
             int pieceCount[kTracks] = {};
-            {
+            if (liveOn_.load()) {
+                /* The launcher: the grid runs on by itself and every track
+                 * reads its clip at the phase the position puts it at. A
+                 * launch waiting for a line cuts the chunk exactly there, so
+                 * the next one starts with the new clips -- which is what
+                 * makes a whole row land on one sample. */
+                std::lock_guard<std::mutex> l(liveMutex_);
+                const uint32_t cycle = liveCycle_.load();
+                const uint32_t spb = liveSpb_.load();
+                if (!cycle || !spb) return;
+                wp += debt_.exchange(0);
+                if (wp >= cycle) wp %= cycle;
+                n = std::min(n, cycle - wp);
+                const uint8_t qb = liveQuant_.load();
+                const uint32_t q = (qb ? qb : 1) * spb;
+                bool waiting = false;
+                for (int t = 0; t < kTracks; ++t) waiting = waiting || liveReq_[t].set;
+                if (waiting) {
+                    if (wp % q == 0) for (int t = 0; t < kTracks; ++t) liveApply(t, wp);
+                    else n = std::min(n, q - wp % q);
+                }
+                for (int t = 0; t < kTracks; ++t) {
+                    LiveSlot& c = liveCur_[t];
+                    if (!c.loop || gain_[t].load(std::memory_order_relaxed) <= 0.0f) continue;
+                    if (c.startAt > wp) c.startAt = wp;        // once a day, at the wrap
+                    uint32_t off = (wp - c.startAt) % c.loop;
+                    uint32_t at = 0, left = n;
+                    while (left && pieceCount[t] < 3) {
+                        const uint32_t run = std::min(left, c.loop - off);
+                        Piece& pc = pieces[t][pieceCount[t]++];
+                        std::snprintf(pc.path, sizeof(pc.path), "%s", c.path.c_str());
+                        pc.at = at;
+                        pc.len = run;
+                        pc.clipFrame = off;
+                        at += run;
+                        left -= run;
+                        off = 0;
+                    }
+                }
+            } else {
                 std::lock_guard<std::mutex> l(snapMutex_);
                 const uint32_t end = snap_.end;
                 const uint32_t lim = snap_.loop && snap_.loopB > snap_.loopA ? snap_.loopB : end;
@@ -1960,6 +2181,22 @@ private:
     Arrangement snap_;
     std::mutex  snapMutex_;
 
+    /* Live clips (the clip launcher): what each track loops now, and what
+     * was launched and is waiting for the next quant line. Under liveMutex_
+     * -- the worker applies a request when the position reaches a line, the
+     * UI launches and asks. The clip's path is resolved where the launch is
+     * made, so the worker never needs songMutex_ while holding this one. */
+    struct LiveSlot { std::string path, name; uint32_t loop = 0, startAt = 0; uint16_t bars = 0; };
+    struct LiveReq  { std::string path, name; uint16_t bars = 0; bool stop = false, set = false; };
+    std::mutex            liveMutex_;
+    LiveSlot              liveCur_[kTracks];
+    LiveReq               liveReq_[kTracks];
+    std::atomic<uint32_t> liveSpb_{0};      // the grid's bar, samples
+    std::atomic<uint32_t> liveCycle_{0};    // where the position wraps
+    std::atomic<bool>     liveOn_{false};
+    std::atomic<bool>     liveStartReq_{false};
+    std::atomic<uint8_t>  liveQuant_{1};
+
     // Playback.
     FrameRing   ring_;
     ClipReader  readers_[kTracks];
@@ -2024,6 +2261,12 @@ void SongEngine::onSampleRateChange(uint32_t sr) { impl_->onSampleRateChange(sr)
 void SongEngine::mix(float* out, uint32_t frames) { impl_->mix(out, frames); }
 void SongEngine::rtCapture(const float* padsBus, uint32_t frames) { impl_->rtCapture(padsBus, frames); }
 void SongEngine::releaseRings() { impl_->releaseRings(); }
+bool SongEngine::liveStart() { return impl_->liveStart(); }
+bool SongEngine::liveLaunch(uint8_t track, const std::string& file, uint16_t bars)
+{ return impl_->liveLaunch(track, file, bars); }
+bool SongEngine::liveStop(uint8_t track) { return impl_->liveStop(track); }
+void SongEngine::liveQuant(uint8_t bars) { impl_->liveQuant(bars); }
+bool SongEngine::liveState(LiveState& out) { return impl_->liveState(out); }
 bool SongEngine::requestProjects() { return impl_->requestProjects(); }
 std::vector<std::string> SongEngine::projects() { return impl_->projects(); }
 bool SongEngine::requestOpen(const std::string& name) { return impl_->requestOpen(name); }

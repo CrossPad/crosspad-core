@@ -6,6 +6,7 @@
 #include "crosspad/song/ISongEnginePlatform.hpp"
 
 #include <memory>
+#include <string>
 
 namespace crosspad {
 
@@ -58,6 +59,11 @@ public:
     bool requestImport(const std::string& file, uint32_t start, uint32_t end,
                        uint8_t track, uint32_t bar, uint32_t lead) override;
     bool bounceScene(uint8_t scene, uint8_t track) override;
+    bool liveStart() override;
+    bool liveLaunch(uint8_t track, const std::string& file, uint16_t bars) override;
+    bool liveStop(uint8_t track) override;
+    void liveQuant(uint8_t bars) override;
+    bool liveState(LiveState& out) override;
     BounceStatus bounceStatus() override;
     void cancelBounce() override;
     bool play(uint32_t fromBar) override;
