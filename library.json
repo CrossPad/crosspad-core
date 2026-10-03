@@ -57,7 +57,10 @@
             "+<sampletools/SampleFx.cpp>",
             "+<fw/Semver.cpp>",
             "+<fw/FwKit.cpp>",
-            "+<fw/FwSchedule.cpp>"
+            "+<fw/FwSchedule.cpp>",
+            "+<fw/FwCatalog.cpp>",
+            "+<fw/FwManifest.cpp>",
+            "+<fw/FwLibraryGc.cpp>"
         ]
     }
 }

@@ -106,6 +106,9 @@ set(CORE_SOURCES
     ${CORE_DIR}/src/fw/Semver.cpp
     ${CORE_DIR}/src/fw/FwKit.cpp
     ${CORE_DIR}/src/fw/FwSchedule.cpp
+    ${CORE_DIR}/src/fw/FwCatalog.cpp
+    ${CORE_DIR}/src/fw/FwManifest.cpp
+    ${CORE_DIR}/src/fw/FwLibraryGc.cpp
 
     # Loop recorder
     ${CORE_DIR}/src/sequencer/PatternSequencer.cpp
