@@ -31,12 +31,18 @@ enum class SequencerState : uint8_t {
  * Note quantization grid.
  * Values match ML_MidiSeq quantization indices.
  */
+/// The grid a recorded hit snaps to. The triplets are three and six to the
+/// beat against the straight two, four and eight; their numbers are appended
+/// rather than put in musical order, so a value read back from anywhere still
+/// means what it meant when it was written.
 enum class Quantization : uint8_t {
-    Quarter      = 0,   // 1/4
-    Eighth       = 1,   // 1/8
-    Sixteenth    = 2,   // 1/16
-    ThirtySecond = 3,   // 1/32
-    Off          = 127
+    Quarter          = 0,   // 1/4
+    Eighth           = 1,   // 1/8
+    Sixteenth        = 2,   // 1/16
+    ThirtySecond     = 3,   // 1/32
+    EighthTriplet    = 4,   // 1/8T  -- three to the beat
+    SixteenthTriplet = 5,   // 1/16T -- six to the beat
+    Off              = 127
 };
 
 /// Sequencer constants

@@ -11,8 +11,11 @@
 #else
 #include <sys/stat.h>
 #include <dirent.h>
+#include <unistd.h>
 #endif
+#include <cstdio>
 #include <fstream>
+#include <memory>
 #include <algorithm>
 
 namespace crosspad {
@@ -47,6 +50,13 @@ static bool listNames(const std::string& path, std::vector<std::string>& out) {
     }
     return true;
 }
+
+/// A file, or a folder with everything under it.
+static bool removeTree(const std::string& path) {
+    std::error_code ec;
+    std::filesystem::remove_all(std::filesystem::u8path(path), ec);
+    return !ec;
+}
 #else
 static bool pathExists(const std::string& path) {
     struct stat st;
@@ -73,6 +83,31 @@ static bool listNames(const std::string& path, std::vector<std::string>& out) {
     }
     closedir(dir);
     return true;
+}
+
+/// A file, or a folder with everything under it.
+///
+/// Its own listing, not listNames(): that one leaves out every name beginning
+/// with a dot, and a kit keeps the copies rendered for its pads in ".fx" --
+/// skipped, they stay behind and the folder will not come off. The directory is
+/// read into a vector and closed before anything under it is unlinked, because
+/// removing entries from an open DIR is not something FATFS promises.
+static bool removeTree(const std::string& path) {
+    if (!isDir(path)) return std::remove(path.c_str()) == 0;
+    std::vector<std::string> names;
+    if (DIR* dir = opendir(path.c_str())) {
+        struct dirent* ent;
+        while ((ent = readdir(dir)) != nullptr) {
+            const std::string n = ent->d_name;
+            if (n != "." && n != "..") names.push_back(n);
+        }
+        closedir(dir);
+    } else {
+        return false;
+    }
+    bool ok = true;
+    for (const std::string& n : names) ok = removeTree(path + "/" + n) && ok;
+    return rmdir(path.c_str()) == 0 && ok;
 }
 #endif
 
@@ -139,6 +174,55 @@ int PortableKitLoader::addKit(const std::string& kitJsonPath) {
     if (!readKitJson(toFsPath(kitJsonPath), kit, false)) return -1;
     kits_.push_back(std::move(kit));
     return static_cast<int>(kits_.size()) - 1;
+}
+
+bool PortableKitLoader::saveKitInfo(int id, const KitInfo& meta) {
+    if (id < 0 || id >= static_cast<int>(kits_.size())) return false;
+    KitInfo& entry = kits_[id];
+    if (entry.path.empty()) return false;
+
+    /* The file as it stands, pads and all: four strings are being changed and
+     * everything else has to go back exactly as it came out.
+     *
+     * On the heap, not on the stack: a KitInfo is the best part of a kilobyte
+     * with its sixteen pads, and this runs inside a click callback on the UI
+     * thread, whose stack is shared with everything LVGL does under it. */
+    std::unique_ptr<KitInfo> onCard(new (std::nothrow) KitInfo());
+    if (!onCard) return false;
+    onCard->path = entry.path;
+    if (!readKitJson(toFsPath(entry.path), *onCard, true)) return false;
+    onCard->name        = meta.name;
+    onCard->author      = meta.author;
+    onCard->description = meta.description;
+    onCard->bpm         = meta.bpm;
+    if (!writeKitJson(toFsPath(entry.path), *onCard)) return false;
+
+    /* The listed entry says the same as the file now -- without taking the
+     * parsed pads of a kit that is loaded, which onCard holds its own copy of. */
+    entry.name        = meta.name;
+    entry.author      = meta.author;
+    entry.description = meta.description;
+    entry.bpm         = meta.bpm;
+    return true;
+}
+
+bool PortableKitLoader::removeKit(int id) {
+    if (id < 0 || id >= static_cast<int>(kits_.size())) return false;
+    if (id == currentKitId_ || id == retiredKitId_) return false;
+    const std::string path = kits_[id].path;
+    if (path.empty()) return false;
+
+    const std::string dir = parentDir(path);
+    if (dir.empty() || dir == "/") return false;
+    const std::string under = dir + "/";
+    for (size_t i = 0; i < kits_.size(); ++i) {
+        if (static_cast<int>(i) == id || kits_[i].path.empty()) continue;
+        if (kits_[i].path.compare(0, under.size(), under) == 0) return false;
+    }
+
+    if (!removeTree(toFsPath(dir))) return false;
+    kits_[id] = KitInfo{};     // blanked, not erased: every id and pointer holds
+    return true;
 }
 
 std::vector<KitInfo> PortableKitLoader::listKits(const std::string& rootDir) {

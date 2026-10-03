@@ -52,6 +52,7 @@
 #include <cstring>
 #include <iterator>
 #include <map>
+#include <set>
 #include <memory>
 #include <mutex>
 #include <string>
@@ -639,12 +640,14 @@ struct SongEngine::Impl {
             if (dir != peaksDir_) {           // another project: none of these are its
                 peaks_.clear();
                 peaksWanted_.clear();
+                peaksMissing_.clear();
                 peaksDir_ = dir;
             }
             auto it = peaks_.find(file);
             if (it != peaks_.end()) {
                 out.hop = kPeakHop;
                 out.values = it->second;
+                out.missing = peaksMissing_.count(file) != 0;
                 return true;
             }
             if (std::find(peaksWanted_.begin(), peaksWanted_.end(), file) != peaksWanted_.end()) return false;
@@ -1479,7 +1482,14 @@ private:
         const std::string cache = dir + "/" + kPeaksDir + "/" + file + ".pk";
         uint64_t bytes = 0;
         int64_t modified = 0;
-        if (fsx::fileInfo(wav, bytes, modified) && !loadPeaks(cache, bytes, *values)) {
+        /* No file: the clip is still cached, with nothing in it, so it is not
+         * read for again on every frame -- but it is remembered as missing,
+         * which is a different thing from a clip that is simply quiet. A song
+         * folder that has been through another computer comes back without some
+         * of its audio, and a screen has to be able to say so. */
+        const bool here = fsx::fileInfo(wav, bytes, modified);
+        if (!here) logf(false, "clip %s has no file in clips/", file.c_str());
+        if (here && !loadPeaks(cache, bytes, *values)) {
             if (!readPeaks(wav, *values)) return;
             if (!values->empty()) savePeaks(dir, cache, bytes, *values);
         }
@@ -1487,6 +1497,8 @@ private:
             std::lock_guard<std::mutex> l(peaksMutex_);
             if (dir != peaksDir_) return;           // another project opened meanwhile
             peaks_[file] = std::move(values);
+            if (here) peaksMissing_.erase(file);
+            else      peaksMissing_.insert(file);
             peaksWanted_.erase(std::remove(peaksWanted_.begin(), peaksWanted_.end(), file), peaksWanted_.end());
         }
         peaksGen_.fetch_add(1);
@@ -1532,8 +1544,20 @@ private:
                   h[4] == kPeaksVersion && (uint32_t)(h[6] | h[7] << 8) == kPeakHop &&
                   (h[8] | h[9] << 8 | h[10] << 16 | (uint32_t)h[11] << 24) == (uint32_t)wavBytes;
         if (ok) {
-            out.resize(h[12] | h[13] << 8 | h[14] << 16 | (size_t)h[15] << 24);
-            ok = std::fread(out.data(), 1, out.size(), f) == out.size();
+            const size_t want = h[12] | h[13] << 8 | h[14] << 16 | (size_t)h[15] << 24;
+            /* Against the cache file's own length, not only against the header:
+             * a .pk that was truncated or came back damaged from another
+             * computer would otherwise ask for a resize of whatever four bytes
+             * happened to be there. */
+            std::fseek(f, 0, SEEK_END);
+            const long len = std::ftell(f);
+            std::fseek(f, (long)kPeaksHeader, SEEK_SET);
+            const size_t have = len > (long)kPeaksHeader ? (size_t)(len - (long)kPeaksHeader) : 0;
+            ok = want && want <= have;
+            if (ok) {
+                out.resize(want);
+                ok = std::fread(out.data(), 1, out.size(), f) == out.size();
+            }
         }
         std::fclose(f);
         if (!ok) out.clear();
@@ -1924,6 +1948,7 @@ private:
      * for and not had yet, oldest first; under peaksMutex_. */
     std::map<std::string, std::shared_ptr<const std::vector<uint8_t>>> peaks_;
     std::vector<std::string> peaksWanted_;
+    std::set<std::string> peaksMissing_;   ///< clips whose file is not in clips/
     std::string peaksDir_;
     std::mutex  peaksMutex_;
     std::atomic<uint32_t> peaksGen_{0};

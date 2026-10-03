@@ -23,8 +23,30 @@ public:
     /// one ignores it and reports it off.
     virtual void    setCountIn(bool on) { (void)on; }
     virtual bool    countIn() const { return false; }
+    /// How long the count-in is, in beats, and 0 when it is off -- the one
+    /// answer to "how much PRE", so a take started from somewhere else (the
+    /// song's transport, with the sequencer in sync) counts the same beats as
+    /// a take started here.
+    virtual uint8_t countInBeats() const { return 0; }
     /// Beats of count-in still to go, 0 when not counting in.
     virtual uint8_t countInLeft() const { return 0; }
+
+    // --- Swing ---
+    /// How late every second subdivision sounds, as a percentage of one. 0 is
+    /// straight; 50 % puts the off-beat two thirds of the way through the pair,
+    /// which is the triplet feel. An engine without swing ignores it and
+    /// reports it off.
+    ///
+    /// Playback only: the pattern keeps its straight positions and the feel is
+    /// applied on the way out, so turning swing down leaves what was recorded
+    /// exactly where it was. A take made while it is on is pulled back to the
+    /// straight grid first -- the player aims at what they hear.
+    virtual void    setSwing(uint8_t percent) { (void)percent; }
+    virtual uint8_t swing() const { return 0; }
+    /// Which subdivision is swung, as a count to the beat: 2 for eighths, 4 for
+    /// sixteenths. Anything else is ignored.
+    virtual void    setSwingPerBeat(uint8_t perBeat) { (void)perBeat; }
+    virtual uint8_t swingPerBeat() const { return 2; }
 
     // --- Sequence selection ---
     virtual void selectSeqRecord(uint8_t seq) = 0;

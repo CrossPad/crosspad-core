@@ -44,6 +44,12 @@ struct ClipInfo {
 struct ClipPeaks {
     uint32_t hop = 0;
     std::shared_ptr<const std::vector<uint8_t>> values;
+    /// The clip's file is not in the project's clips folder. A song keeps the
+    /// name of what it plays, and a folder that has been through another
+    /// computer comes back without some of it -- so this is ordinary, not an
+    /// error, and a screen must be able to say which block has nothing behind
+    /// it instead of drawing it as silence.
+    bool missing = false;
 };
 
 struct BounceStatus {

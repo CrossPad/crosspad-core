@@ -27,18 +27,24 @@ namespace {
 constexpr uint32_t kUnquantisedGraceDiv = 8;
 }
 
+uint8_t PatternSequencer::gridPerBeat() const
+{
+    switch (quant_) {
+        case Quantization::Quarter:          return 1;
+        case Quantization::Eighth:           return 2;
+        case Quantization::EighthTriplet:    return 3;
+        case Quantization::Sixteenth:        return 4;
+        case Quantization::SixteenthTriplet: return 6;
+        case Quantization::ThirtySecond:     return 8;
+        default:                             return 0;   // off
+    }
+}
+
 uint32_t PatternSequencer::gridSamples() const
 {
-    if (!clock_) return 0;
-    uint32_t div = 0;
-    switch (quant_) {
-        case Quantization::Quarter:      div = 1; break;
-        case Quantization::Eighth:       div = 2; break;
-        case Quantization::Sixteenth:    div = 4; break;
-        case Quantization::ThirtySecond: div = 8; break;
-        default: return 0;
-    }
-    return clock_->samplesPerBeat() / div;
+    const uint8_t per = gridPerBeat();
+    if (!per || !clock_) return 0;
+    return clock_->samplesPerBeat() / per;
 }
 
 uint32_t PatternSequencer::downbeatGrace() const
@@ -50,10 +56,18 @@ uint32_t PatternSequencer::downbeatGrace() const
 
 uint32_t PatternSequencer::quantise(uint32_t pos, uint32_t loop) const
 {
-    const uint32_t grid = gridSamples();
-    if (grid < 2) return pos;
+    const uint8_t  per = gridPerBeat();
+    const uint32_t spb = clock_ ? clock_->samplesPerBeat() : 0;
+    if (!per || spb < 2) return pos;
 
-    const uint32_t snapped = ((pos + grid / 2) / grid) * grid;
+    /* The nearest line k, then the line itself as k*spb/per -- not as k steps
+     * of spb/per. Three to the beat divides no sample count evenly, and a step
+     * rounded down is short on every one of them: four bars are forty-eight
+     * steps, so the last line of a scene would sit a hundred samples before the
+     * beat it belongs to. Straight grids gain the same exactness, since a beat
+     * is rarely divisible by four either (22050 / 4 is not). */
+    const uint32_t k = (uint32_t)(((uint64_t)pos * per * 2 + spb) / ((uint64_t)spb * 2));
+    const uint32_t snapped = (uint32_t)(((uint64_t)k * spb) / per);
     /* A hit a few samples before the loop end rounds up to the loop end, which
      * is the same instant as the start -- put it where it is heard. */
     return (loop && snapped >= loop) ? 0 : snapped;
@@ -98,8 +112,10 @@ void PatternSequencer::drainInput(uint32_t loop)
              * part of the take. */
             if (h.early <= grace) addEvent(activeSeq_, 0, h.pad, h.vel);
         } else if (taking && state_ == SequencerState::Running) {
-            /* Into the scene that is sounding: you record into what you hear. */
-            addEvent(activeSeq_, quantise(h.pos, loop), h.pad, h.vel);
+            /* Into the scene that is sounding: you record into what you hear --
+             * including the swing, so the heard position comes back to the
+             * straight grid before it is snapped to it. */
+            addEvent(activeSeq_, quantise(unswung(h.pos), loop), h.pad, h.vel);
         }
         tail = (tail + 1) % kInputRing;
     }
@@ -108,13 +124,51 @@ void PatternSequencer::drainInput(uint32_t loop)
 
 // ── Playback ───────────────────────────────────────────────────────────────
 
+uint32_t PatternSequencer::swingSamples() const
+{
+    if (!clock_ || !swing_.load(std::memory_order_relaxed)) return 0;
+    const uint8_t per = swingPerBeat_.load(std::memory_order_relaxed);
+    const uint32_t spb = clock_->samplesPerBeat();
+    return per ? spb / per : 0;
+}
+
+uint32_t PatternSequencer::swung(uint32_t pos) const
+{
+    const uint32_t unit = swingSamples();
+    if (unit < 2) return pos;
+    /* Only every second subdivision moves: the pairs keep their first half
+     * where it was, which is what makes it a feel and not a shift. */
+    if (!((pos / unit) & 1u)) return pos;
+    const uint32_t late = (uint32_t)((uint64_t)unit * swing_.load(std::memory_order_relaxed) / 100u);
+    const uint32_t loop = clock_ ? clock_->loopSamples() : 0;
+    uint32_t at = pos + late;
+    /* A hit at the very end pushed past it comes round, where the next pass's
+     * window picks it up -- it does not vanish for one lap. */
+    if (loop && at >= loop) at -= loop;
+    return at;
+}
+
+uint32_t PatternSequencer::unswung(uint32_t pos) const
+{
+    const uint32_t unit = swingSamples();
+    if (unit < 2) return pos;
+    const uint32_t late = (uint32_t)((uint64_t)unit * swing_.load(std::memory_order_relaxed) / 100u);
+    /* Inside an odd subdivision and past where its hits were pushed to: that is
+     * a hit aimed at the swung off-beat, so it goes back to the straight one. */
+    if (((pos / unit) & 1u) && (pos % unit) >= late) return pos - late;
+    return pos;
+}
+
 void PatternSequencer::fireWindow(uint32_t from, uint32_t to)
 {
     if (!sink_ || from >= to) return;
     for (uint16_t i = 0; i < counts_[activeSeq_]; ++i) {
         const Event& e = events_[activeSeq_][i];
         if (e.fresh) continue;
-        if (e.pos >= from && e.pos < to) {
+        /* Where it sounds, not where it is stored: the pattern stays straight
+         * and the swing is applied on the way out. */
+        const uint32_t at = swung(e.pos);
+        if (at >= from && at < to) {
             emit(e.pad, e.vel, true);
             if (e.pad < 16) pendingRelease_ |= (uint16_t)(1u << e.pad);
         }
@@ -541,8 +595,9 @@ void PatternSequencer::startTake(SequencerMode m)
 {
     /* Already counting in: the take is still waiting for its beat one. */
     if (state_ == SequencerState::PreBeat) { setTransport(m, SequencerState::PreBeat); return; }
-    if (!clock_->running() && countIn()) {
-        clock_->startCountIn(clock_->beatsPerBar());
+    const uint8_t beats = clock_->running() ? 0 : countInBeats();
+    if (beats) {
+        clock_->startCountIn(beats);
         preBeatPos_ = lastPos_ = 0;
         setTransport(m, SequencerState::PreBeat);
         return;

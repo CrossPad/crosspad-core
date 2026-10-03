@@ -61,6 +61,30 @@ public:
     /// browser when it makes an empty kit.
     virtual int addKit(const std::string& kitJsonPath) { (void)kitJsonPath; return -1; }
 
+    /// What a kit says about itself -- its name, who made it, what it is and
+    /// the tempo it counts -- back into its own JSON. Only those four fields
+    /// are taken from @p meta.
+    ///
+    /// Not saveKit(): that serialises the KitInfo it is handed, pads and all,
+    /// and a kit this board has only ever listed carries sixteen empty pads --
+    /// saving one would take every sample out of the kit. Here the file is read
+    /// first and its pads are written back exactly as they were.
+    virtual bool saveKitInfo(int id, const KitInfo& meta) { (void)id; (void)meta; return false; }
+
+    /// The kit at @p id gone: its JSON, the folder it had to itself with
+    /// whatever it kept in there, and its place in the list. Refuses the kit
+    /// that is current -- that one is playing -- and refuses a folder another
+    /// listed kit lives under, which is the kits root or a pack and would take
+    /// their kits with it.
+    ///
+    /// The entry is blanked rather than erased: a KitInfo* handed out by
+    /// getKit() stays valid and no id shifts under code that cached one (see
+    /// releaseRetiredKit() for what reads a kit across a card read). A blanked
+    /// entry has an empty path, getKitCount() still counts it, and the next
+    /// scan is simply without it -- so anything walking the list skips a kit
+    /// whose path is empty.
+    virtual bool removeKit(int id) { (void)id; return false; }
+
     // ── Memory ────────────────────────────────────────────────────────
 
     /// Free the sample payload of the kit that stopped being current at

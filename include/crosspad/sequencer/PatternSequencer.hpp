@@ -96,6 +96,21 @@ public:
     void setPreLen(uint8_t len) override { setCountIn(len > 0); }
     void setCountIn(bool on) override { countIn_.store(on, std::memory_order_relaxed); }
     bool countIn() const override { return countIn_.load(std::memory_order_relaxed); }
+    uint8_t countInBeats() const override {
+        return countIn() && clock_ ? clock_->beatsPerBar() : 0;   // a bar of it
+    }
+
+    void setSwing(uint8_t percent) override {
+        swing_.store(percent > kMaxSwing ? kMaxSwing : percent, std::memory_order_relaxed);
+    }
+    uint8_t swing() const override { return swing_.load(std::memory_order_relaxed); }
+    void setSwingPerBeat(uint8_t perBeat) override {
+        if (perBeat == 2 || perBeat == 4) swingPerBeat_.store(perBeat, std::memory_order_relaxed);
+    }
+    uint8_t swingPerBeat() const override { return swingPerBeat_.load(std::memory_order_relaxed); }
+    /// Past this the off-beat would land on the next subdivision, which is not
+    /// a feel any more -- it is the note moved.
+    static constexpr uint8_t kMaxSwing = 75;
     uint8_t countInLeft() const override {
         return (state_ == SequencerState::PreBeat && clock_) ? clock_->countInBeatsLeft() : 0;
     }
@@ -241,7 +256,22 @@ private:
     /// loop end back to zero -- a hit a hair early on beat one belongs at the
     /// start of the loop, not the end of it.
     uint32_t quantise(uint32_t pos, uint32_t loop) const;
-    /// The grid a take snaps to in samples, 0 with quantisation off.
+    /// Samples of the subdivision swing is applied to, 0 when swing is off.
+    uint32_t swingSamples() const;
+    /// Where @p pos sounds with the swing on: every second subdivision later by
+    /// the swing's share of one, wrapping at the loop end.
+    uint32_t swung(uint32_t pos) const;
+    /// The inverse, for a hit recorded while swing was on: the player aimed at
+    /// what they heard, so the heard position comes back to the straight grid
+    /// before it is quantised. Without this, recording a swung eighth lands it
+    /// on the next sixteenth.
+    uint32_t unswung(uint32_t pos) const;
+    /// Grid lines to the beat: 1, 2, 3, 4, 6 or 8, and 0 with quantisation
+    /// off. The triplets are what make it a count rather than a divisor.
+    uint8_t  gridPerBeat() const;
+    /// The grid a take snaps to in samples, 0 with quantisation off. Rounded
+    /// down, so it answers "about how wide is a step" -- where a line actually
+    /// falls is quantise()'s business.
     uint32_t gridSamples() const;
     /// How far before beat one a count-in hit may be and still land on it:
     /// half a grid step, which is where it would have rounded anyway.
@@ -300,6 +330,8 @@ private:
     uint8_t  activeSeq_  = 0;
     uint8_t  pendingSeq_ = 0;
     std::atomic<bool> countIn_{false};
+    std::atomic<uint8_t> swing_{0};          ///< percent of a subdivision, 0 = straight
+    std::atomic<uint8_t> swingPerBeat_{2};   ///< 2 = eighths, 4 = sixteenths
     bool     loop_       = true;
     std::atomic<bool> dirty_{false};
     std::atomic<bool> erasing_{false};

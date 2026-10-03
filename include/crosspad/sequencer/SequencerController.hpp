@@ -21,6 +21,8 @@ public:
     static constexpr Quantization q_1_8      = Quantization::Eighth;
     static constexpr Quantization q_1_16     = Quantization::Sixteenth;
     static constexpr Quantization q_1_32     = Quantization::ThirtySecond;
+    static constexpr Quantization q_1_8T     = Quantization::EighthTriplet;
+    static constexpr Quantization q_1_16T    = Quantization::SixteenthTriplet;
     static constexpr Quantization q_INFINITE = Quantization::Off;
 
     void init(ISequencerEngine& engine) {
@@ -189,6 +191,11 @@ public:
     void    setCountIn(bool on)    { if (engine_) engine_->setCountIn(on); }
     bool    getCountIn() const     { return engine_ && engine_->countIn(); }
     uint8_t getCountInLeft() const { return engine_ ? engine_->countInLeft() : 0; }
+    uint8_t getCountInBeats() const { return engine_ ? engine_->countInBeats() : 0; }
+    void    setSwing(uint8_t pct)   { if (engine_) engine_->setSwing(pct); }
+    uint8_t getSwing() const        { return engine_ ? engine_->swing() : 0; }
+    void    setSwingPerBeat(uint8_t n) { if (engine_) engine_->setSwingPerBeat(n); }
+    uint8_t getSwingPerBeat() const { return engine_ ? engine_->swingPerBeat() : 2; }
 
     // ---------- song ----------
     uint8_t getSongLength() const  { return engine_ ? engine_->songLength() : 0; }
