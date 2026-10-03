@@ -49,6 +49,7 @@
             "+<instrument/PitchedInstrument.cpp>",
             "+<instrument/PitchedKitLoader.cpp>",
             "+<audio/WavWriter.cpp>",
+            "+<audio/OutputEq.cpp>",
             "+<song/AudioSong.cpp>",
             "+<looper/LooperEngine.cpp>",
             "+<looper/LooperAccess.cpp>",
