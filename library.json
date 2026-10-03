@@ -50,6 +50,8 @@
             "+<instrument/PitchedKitLoader.cpp>",
             "+<audio/WavWriter.cpp>",
             "+<song/AudioSong.cpp>",
+            "+<looper/LooperEngine.cpp>",
+            "+<looper/LooperAccess.cpp>",
             "+<song/LiveSet.cpp>",
             "+<song/SongEngine.cpp>",
             "+<sampletools/SliceMath.cpp>",
