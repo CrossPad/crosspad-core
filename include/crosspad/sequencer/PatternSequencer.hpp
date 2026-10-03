@@ -108,9 +108,11 @@ public:
         if (perBeat == 2 || perBeat == 4) swingPerBeat_.store(perBeat, std::memory_order_relaxed);
     }
     uint8_t swingPerBeat() const override { return swingPerBeat_.load(std::memory_order_relaxed); }
-    /// Past this the off-beat would land on the next subdivision, which is not
-    /// a feel any more -- it is the note moved.
-    static constexpr uint8_t kMaxSwing = 75;
+    /// The scale is 0..100 and 100 is as far as a sampler's swing knob goes:
+    /// the off-beat three quarters of the way through the pair. Past that it
+    /// would land on the next subdivision, which is not a feel any more -- it
+    /// is the note moved.
+    static constexpr uint8_t kMaxSwing = 100;
     uint8_t countInLeft() const override {
         return (state_ == SequencerState::PreBeat && clock_) ? clock_->countInBeatsLeft() : 0;
     }
@@ -258,6 +260,8 @@ private:
     uint32_t quantise(uint32_t pos, uint32_t loop) const;
     /// Samples of the subdivision swing is applied to, 0 when swing is off.
     uint32_t swingSamples() const;
+    /// How far the off-beat of a @p unit-long subdivision is pushed, in samples.
+    uint32_t swingLate(uint32_t unit) const;
     /// Where @p pos sounds with the swing on: every second subdivision later by
     /// the swing's share of one, wrapping at the loop end.
     uint32_t swung(uint32_t pos) const;

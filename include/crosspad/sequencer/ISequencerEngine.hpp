@@ -32,10 +32,14 @@ public:
     virtual uint8_t countInLeft() const { return 0; }
 
     // --- Swing ---
-    /// How late every second subdivision sounds, as a percentage of one. 0 is
-    /// straight; 50 % puts the off-beat two thirds of the way through the pair,
-    /// which is the triplet feel. An engine without swing ignores it and
-    /// reports it off.
+    /// How hard every second subdivision is pushed late, 0..100.
+    ///
+    /// One scale, because a player should not have to hold two in their head.
+    /// It is the sampler's 50..75 % range stretched over 0..100: a hardware
+    /// swing of 50 % (straight) is 0 here, 66 % (the triplet feel, the
+    /// off-beat two thirds of the way through the pair) is 67, and 75 % -- as
+    /// far as those machines go -- is 100. In samples the off-beat moves by
+    /// subdivision x intensity / 200.
     ///
     /// Playback only: the pattern keeps its straight positions and the feel is
     /// applied on the way out, so turning swing down leaves what was recorded

@@ -132,6 +132,15 @@ uint32_t PatternSequencer::swingSamples() const
     return per ? spb / per : 0;
 }
 
+uint32_t PatternSequencer::swingLate(uint32_t unit) const
+{
+    /* Intensity 0..100 over half a subdivision: 100 puts the off-beat three
+     * quarters of the way through the pair, which is where a sampler's swing
+     * knob stops at 75 %. The triplet feel is two thirds of the way, which
+     * falls at 67. */
+    return (uint32_t)((uint64_t)unit * swing_.load(std::memory_order_relaxed) / 200u);
+}
+
 uint32_t PatternSequencer::swung(uint32_t pos) const
 {
     const uint32_t unit = swingSamples();
@@ -139,7 +148,7 @@ uint32_t PatternSequencer::swung(uint32_t pos) const
     /* Only every second subdivision moves: the pairs keep their first half
      * where it was, which is what makes it a feel and not a shift. */
     if (!((pos / unit) & 1u)) return pos;
-    const uint32_t late = (uint32_t)((uint64_t)unit * swing_.load(std::memory_order_relaxed) / 100u);
+    const uint32_t late = swingLate(unit);
     const uint32_t loop = clock_ ? clock_->loopSamples() : 0;
     uint32_t at = pos + late;
     /* A hit at the very end pushed past it comes round, where the next pass's
@@ -152,7 +161,7 @@ uint32_t PatternSequencer::unswung(uint32_t pos) const
 {
     const uint32_t unit = swingSamples();
     if (unit < 2) return pos;
-    const uint32_t late = (uint32_t)((uint64_t)unit * swing_.load(std::memory_order_relaxed) / 100u);
+    const uint32_t late = swingLate(unit);
     /* Inside an odd subdivision and past where its hits were pushed to: that is
      * a hit aimed at the swung off-beat, so it goes back to the straight one. */
     if (((pos / unit) & 1u) && (pos % unit) >= late) return pos - late;
