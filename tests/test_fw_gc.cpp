@@ -1,4 +1,5 @@
 #include <catch2/catch_test_macros.hpp>
+#include <cstdint>
 #include <cstring>
 #include <vector>
 #include "crosspad/fw/FwLibraryGc.hpp"
@@ -85,4 +86,31 @@ TEST_CASE("an incoming package larger than the limit is refused", "[fw]") {
     lim.incoming = 600 * MB;
     FwGcPlan p = FwLibraryGc::select(nullptr, 0, lim);
     CHECK_FALSE(p.satisfiable);
+}
+
+TEST_CASE("cleanup skips a protected package even when it is the oldest", "[fw]") {
+    std::vector<FwGcPackage> v{
+        pkg("slot-a", "full", "1.0.0", 200, 1, true),
+        pkg("mid", "full", "1.1.0", 200, 2),
+        pkg("new", "full", "1.2.0", 100, 3),
+    };
+    FwGcLimits lim = kRoomy;
+    lim.incoming = 100 * MB;                            // 500 + 100 > 512
+    FwGcPlan p = FwLibraryGc::select(v.data(), v.size(), lim);
+    REQUIRE(p.satisfiable);
+    REQUIRE(p.count == 1);
+    CHECK(p.evict[0] == 1);
+}
+
+TEST_CASE("cleanup arithmetic saturates instead of wrapping", "[fw]") {
+    std::vector<FwGcPackage> v{pkg("a", "full", "1.0.0", 40, 1), pkg("b", "full", "1.1.0", 40, 2)};
+    // Unlimited library, card pressure only: one eviction is enough.
+    FwGcPlan p = FwLibraryGc::select(v.data(), v.size(), {UINT64_MAX, 1000 * MB, 120 * MB, 50 * MB});
+    REQUIRE(p.satisfiable);
+    REQUIRE(p.count == 1);
+    CHECK(p.evict[0] == 0);
+    // An incoming size that would wrap `incoming + minFree` is refused, not waved through.
+    p = FwLibraryGc::select(v.data(), v.size(), {UINT64_MAX, 1000 * MB, 120 * MB, UINT64_MAX - 5});
+    CHECK_FALSE(p.satisfiable);
+    CHECK(p.count == 0);
 }

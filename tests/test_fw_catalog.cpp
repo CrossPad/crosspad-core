@@ -102,13 +102,23 @@ TEST_CASE("catalog skips entries it cannot use safely", "[fw]") {
     std::string longTag = ver("full", "1.3.0-" + std::string(30, 'a'), "beta");
     std::string longTagOnly = good;
     longTagOnly.replace(longTagOnly.find("\"tag\":\"v1.3.0\""), 14, "\"tag\":\"v" + std::string(40, 'a') + "\"");
+    std::string dotTag = good;
+    dotTag.replace(dotTag.find("\"tag\":\"v1.3.0\""), 14, "\"tag\":\"..\"");
+    std::string dotName = good;
+    dotName.replace(dotName.find("\"name\":\"CrossPad-v1.3.0-v2-full.bin\""), 36, "\"name\":\"..\"");
+    std::string longName = good;
+    longName.replace(longName.find("CrossPad-v1.3.0-v2-full.bin"), 27, "CrossPad-" + std::string(71, 'a') + ".bin");
+    std::string longManifest = good;
+    longManifest.replace(longManifest.find("CrossPad-v1.3.0-v2-full-manifest.json"), 37,
+                         std::string(80, 'a'));
     std::string badChannel = ver("full", "1.3.1", "nightly");
     std::string badTier = ver("full", "1.3.2", "stable", "vendor");
     std::string badVersion = ver("full", "one", "stable");
     std::string noSize = good;
     noSize.replace(noSize.find("2568208"), 7, "0");
     auto c = parsed(catalog(
-        kitJson("full", slash + "," + space + "," + longTag + "," + longTagOnly + "," + badChannel + "," + badTier + "," +
+        kitJson("full", slash + "," + space + "," + longTag + "," + longTagOnly + "," + dotTag + "," + dotName + "," + longName + "," +
+                            longManifest + "," + badChannel + "," + badTier + "," +
                             badVersion + "," + noSize + "," + good) +
         "," + kitJson("Bad Kit", good) + "," + kitJson("full", ver("full", "9.9.9", "stable")) + "," +
         kitJson("empty", badChannel)));
@@ -132,6 +142,42 @@ TEST_CASE("catalog caps kits and versions", "[fw]") {
     CHECK(c->kitCount == kFwCatalogKits);
     CHECK(c->kits[0].count == kFwCatalogVersions);
     CHECK(std::strcmp(c->kits[0].versions[7].version, "1.0.7") == 0);   // the first eight are kept
+}
+
+TEST_CASE("catalog asset-name limit is exact", "[fw]") {
+    std::string at79 = ver("full", "1.3.0", "stable");
+    at79.replace(at79.find("CrossPad-v1.3.0-v2-full.bin"), 27, std::string(79, 'a'));
+    std::string at80 = ver("full", "1.3.1", "stable");
+    at80.replace(at80.find("CrossPad-v1.3.1-v2-full.bin"), 27, std::string(80, 'a'));
+    auto c = parsed(catalog(kitJson("full", at80 + "," + at79)));
+    REQUIRE(c->kitCount == 1);
+    REQUIRE(c->kits[0].count == 1);
+    CHECK(std::strlen(c->kits[0].versions[0].bin.name) == 79);
+}
+
+TEST_CASE("catalog rejects v<digits> kit ids and duplicate versions", "[fw]") {
+    auto c = parsed(catalog(kitJson("v1", ver("v1", "1.0.0", "stable")) + "," +
+                            kitJson("full", ver("full", "1.0.0", "stable") + "," + ver("full", "v1.0.0", "stable") +
+                                                "," + ver("full", "1.1.0", "stable"))));
+    REQUIRE(c->kitCount == 1);
+    CHECK(std::strcmp(c->kits[0].kit, "full") == 0);
+    REQUIRE(c->kits[0].count == 2);                       // "v1.0.0" is "1.0.0" again: the first wins
+    CHECK(std::strcmp(c->kits[0].versions[0].version, "1.0.0") == 0);
+    CHECK(std::strcmp(c->kits[0].versions[1].version, "1.1.0") == 0);
+}
+
+TEST_CASE("twelve versions of one kit among bad entries keep eight", "[fw]") {
+    std::string versions;
+    for (int i = 0; i < 12; ++i) {
+        versions += ver("full", "1.0." + std::to_string(i), "stable") + ",";
+        versions += ver("full", "2.0." + std::to_string(i), "nightly") + ",";
+    }
+    versions.pop_back();
+    auto c = parsed(catalog(kitJson("full", versions)));
+    REQUIRE(c->kitCount == 1);
+    REQUIRE(c->kits[0].count == kFwCatalogVersions);
+    for (int i = 0; i < kFwCatalogVersions; ++i)
+        CHECK(std::strcmp(c->kits[0].versions[i].version, ("1.0." + std::to_string(i)).c_str()) == 0);
 }
 
 static const char* kManifest = R"({
@@ -179,4 +225,29 @@ TEST_CASE("manifest from before channels still parses; broken ones do not", "[fw
       "files":{"CrossPad.bin":{"size":10,"sha256":"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"}}})";
     CHECK_FALSE(parseFwManifest(noRev, std::strlen(noRev), m));
     CHECK_FALSE(parseFwManifest("{", 1, m));
+}
+
+TEST_CASE("manifest refuses a path-like name or tag and keeps out untouched", "[fw]") {
+    const char* sha = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+    auto make = [&](const char* name, const char* tag) {
+        return std::string("{\"name\":\"") + name + "\",\"kit\":\"full\",\"version\":\"1.0.0\",\"board_rev\":2,\"tag\":\"" +
+               tag + "\",\"files\":{\"CrossPad.bin\":{\"size\":10,\"sha256\":\"" + sha + "\"}}}";
+    };
+    FwManifest m;
+    std::memset(&m, 0, sizeof m);
+    std::strcpy(m.kit, "keep");
+    for (const std::string& bad : {make("../../x", "v1"), make("..", "v1"), make(".", "v1"), make("a/b", "v1"),
+                                   make("", "v1"), make("x", ".."), make("x", "a b"),
+                                   make(std::string(48, 'a').c_str(), "v1")}) {
+        CHECK_FALSE(parseFwManifest(bad.data(), bad.size(), m));
+        CHECK(std::strcmp(m.kit, "keep") == 0);
+        CHECK(m.fileCount == 0);
+    }
+    const std::string ok = make(std::string(47, 'a').c_str(), "v1");
+    CHECK(parseFwManifest(ok.data(), ok.size(), m));
+    const char* zeroSize = R"({"name":"x","kit":"full","version":"1.0.0","board_rev":2,
+      "files":{"CrossPad.bin":{"size":0,"sha256":"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"}}})";
+    std::strcpy(m.kit, "keep");
+    CHECK_FALSE(parseFwManifest(zeroSize, std::strlen(zeroSize), m));
+    CHECK(std::strcmp(m.kit, "keep") == 0);
 }

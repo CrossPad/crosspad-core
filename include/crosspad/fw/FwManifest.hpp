@@ -28,7 +28,9 @@ struct FwManifest {
 
 /// False unless kit, version, board_rev and a CrossPad.bin entry with a
 /// 64-hex SHA-256 and a non-zero size are all present and valid. Manifests
-/// made before channels existed read as stable / official / no tag.
+/// made before channels existed read as stable / official / no tag. `name` must
+/// pass fwSafeName (it may become a directory name). `out` is left untouched
+/// on failure. The sha256 may be upper or lower case: compare case-insensitively.
 bool parseFwManifest(const char* json, size_t len, FwManifest& out, ArduinoJson::Allocator* alloc = nullptr);
 const FwManifestFile* fwManifestFile(const FwManifest& m, const char* name);
 /// Same kit, same board revision, and the same version as the catalog said.

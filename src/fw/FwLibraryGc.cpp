@@ -1,4 +1,5 @@
 #include "crosspad/fw/FwLibraryGc.hpp"
+#include <cstdint>
 #include <cstring>
 #include "crosspad/fw/Semver.hpp"
 
@@ -6,6 +7,8 @@ namespace crosspad {
 namespace {
 
 constexpr uint64_t kPercent = 100;
+
+uint64_t satAdd(uint64_t a, uint64_t b) { return a > UINT64_MAX - b ? UINT64_MAX : a + b; }
 
 /// a older than b: version first (unparseable lowest), then directory time, then name.
 bool olderThan(const FwGcPackage& a, const FwGcPackage& b) {
@@ -34,11 +37,12 @@ FwGcPlan FwLibraryGc::select(const FwGcPackage* pkgs, size_t n, const FwGcLimits
     FwGcPlan plan{};
     if (n > kFwGcMaxPackages) n = kFwGcMaxPackages;
     uint64_t library = 0;
-    for (size_t i = 0; i < n; ++i) library += pkgs[i].bytes;
+    for (size_t i = 0; i < n; ++i) library = satAdd(library, pkgs[i].bytes);
     const uint64_t minFree = lim.cardTotal / kPercent * kFwCardMinFreePct;
     uint64_t freed = 0;
     const auto fits = [&] {
-        return library + lim.incoming <= lim.libraryMax + freed && lim.cardFree + freed >= lim.incoming + minFree;
+        return satAdd(library, lim.incoming) <= satAdd(lim.libraryMax, freed) &&
+               satAdd(lim.cardFree, freed) >= satAdd(lim.incoming, minFree);
     };
     bool taken[kFwGcMaxPackages] = {};
     while (!fits()) {
@@ -51,7 +55,7 @@ FwGcPlan FwLibraryGc::select(const FwGcPackage* pkgs, size_t n, const FwGcLimits
         }
         if (best < 0) return FwGcPlan{};   // satisfiable=false, count=0
         taken[best] = true;
-        freed += pkgs[best].bytes;
+        freed = satAdd(freed, pkgs[best].bytes);
         plan.evict[plan.count++] = static_cast<uint16_t>(best);
     }
     plan.satisfiable = true;

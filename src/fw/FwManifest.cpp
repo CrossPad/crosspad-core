@@ -16,31 +16,17 @@ bool isHex64(const char* s) {
     return true;
 }
 
-bool tagOk(const char* s) {
-    const size_t n = std::strlen(s);
-    if (n >= kFwTagMax) return false;
-    for (const char* p = s; *p; ++p) {
-        const char c = *p;
-        if (!((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '.' ||
-              c == '_' || c == '-' || c == '+'))
-            return false;
-    }
-    return true;
-}
-
-} // namespace
-
-bool parseFwManifest(const char* json, size_t len, FwManifest& out, ArduinoJson::Allocator* alloc) {
+bool parseInto(const char* json, size_t len, FwManifest& out, ArduinoJson::Allocator* alloc) {
     std::memset(&out, 0, sizeof out);
     if (!json || len == 0) return false;
-    JsonDocument doc(alloc ? alloc : ArduinoJson::detail::DefaultAllocator::instance());
+    JsonDocument doc = alloc ? JsonDocument(alloc) : JsonDocument();
     if (deserializeJson(doc, json, len)) return false;
     const char* name = doc["name"] | "";
     const char* kit = doc["kit"] | "";
     const char* version = doc["version"] | "";
     const int rev = doc["board_rev"] | -1;
     Semver parsed;
-    if (std::strlen(name) >= sizeof out.name || !fwKitIdValid(kit) || std::strlen(version) >= sizeof out.version ||
+    if (!fwSafeName(name, sizeof out.name) || !fwKitIdValid(kit) || std::strlen(version) >= sizeof out.version ||
         !Semver::parse(version, parsed) || rev < 1 || rev > kBoardRevMax)
         return false;
     const char* channel = doc["channel"] | "stable";
@@ -52,7 +38,7 @@ bool parseFwManifest(const char* json, size_t len, FwManifest& out, ArduinoJson:
     if (std::strcmp(tier, "official") == 0) out.tier = FwTier::Official;
     else if (std::strcmp(tier, "community") == 0) out.tier = FwTier::Community;
     else return false;
-    if (!tagOk(tag)) return false;
+    if (!(tag[0] == '\0' || fwSafeName(tag, kFwTagMax))) return false;
     std::memcpy(out.name, name, std::strlen(name) + 1);
     std::memcpy(out.kit, kit, std::strlen(kit) + 1);
     std::memcpy(out.version, version, std::strlen(version) + 1);
@@ -73,6 +59,15 @@ bool parseFwManifest(const char* json, size_t len, FwManifest& out, ArduinoJson:
         std::memcpy(dst.sha256, sha, kShaHexLen + 1);
     }
     return fwManifestFile(out, "CrossPad.bin") != nullptr;
+}
+
+} // namespace
+
+bool parseFwManifest(const char* json, size_t len, FwManifest& out, ArduinoJson::Allocator* alloc) {
+    FwManifest parsed;
+    if (!parseInto(json, len, parsed, alloc)) return false;
+    out = parsed;
+    return true;
 }
 
 const FwManifestFile* fwManifestFile(const FwManifest& m, const char* name) {

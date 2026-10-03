@@ -46,10 +46,16 @@ struct FwCatalog {
     FwCatalogKit kits[kFwCatalogKits];
 };
 
+/// A name that may go into a URL path or a directory name unescaped: letters,
+/// digits and . _ - + only, shorter than `cap`, and not starting with '.'
+/// (so never "." or ".."; a hidden or relative name is never a CI asset).
+bool fwSafeName(const char* s, size_t cap);
+
 /// False on anything but {"v":1,"kits":[...]}; then out.kitCount is 0.
 /// Entries with a name the device would have to escape, an unknown channel or
 /// tier, a zero size or a field past its limit are skipped, as is a kit with
-/// no usable version or one already listed. Caps at 16 kits x 8 versions.
+/// no usable version or one already listed; a version already listed for its
+/// kit (compared as a version) is skipped, the first wins. Caps at 16 kits x 8 versions.
 /// `alloc` lets a platform keep the parse out of scarce RAM.
 bool parseFwCatalog(const char* json, size_t len, FwCatalog& out, ArduinoJson::Allocator* alloc = nullptr);
 

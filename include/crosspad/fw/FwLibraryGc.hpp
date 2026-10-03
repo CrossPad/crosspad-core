@@ -36,7 +36,9 @@ struct FwGcPlan {
 /// taken oldest version first within a kit and oldest directory across kits,
 /// that brings the library under libraryMax and leaves kFwCardMinFreePct of
 /// the card free with `incoming` written. Not satisfiable without touching a
-/// protected package -> satisfiable=false and nothing to delete.
+/// protected package -> satisfiable=false and nothing to delete. Sums
+/// saturate, so UINT64_MAX limits and huge `incoming` values do not wrap.
+/// At most kFwGcMaxPackages packages are considered; the scanner must cap.
 struct FwLibraryGc {
     static FwGcPlan select(const FwGcPackage* pkgs, size_t n, const FwGcLimits& lim);
 };

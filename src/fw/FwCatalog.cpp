@@ -2,11 +2,9 @@
 #include <cstring>
 
 namespace crosspad {
-namespace {
 
-/// Asset names and tags go into a URL path unescaped: letters, digits and . _ - + only.
-bool safeName(const char* s, size_t cap) {
-    if (!s || !*s) return false;
+bool fwSafeName(const char* s, size_t cap) {
+    if (!s || !*s || *s == '.') return false;
     size_t n = 0;
     for (const char* p = s; *p; ++p, ++n) {
         const char c = *p;
@@ -17,9 +15,11 @@ bool safeName(const char* s, size_t cap) {
     return n < cap;
 }
 
+namespace {
+
 bool copyName(char* out, size_t cap, JsonVariantConst v) {
     const char* s = v.as<const char*>();
-    if (!safeName(s, cap)) return false;
+    if (!fwSafeName(s, cap)) return false;
     std::memcpy(out, s, std::strlen(s) + 1);
     return true;
 }
@@ -59,12 +59,22 @@ const FwCatalogKit* findKit(const FwCatalog& c, const char* kit) {
     return nullptr;
 }
 
+bool hasVersion(const FwCatalogKit& k, const char* version) {
+    Semver want;
+    Semver::parse(version, want);   // readVersion already accepted it
+    for (size_t i = 0; i < k.count; ++i) {
+        Semver have;
+        if (Semver::parse(k.versions[i].version, have) && have == want) return true;
+    }
+    return false;
+}
+
 } // namespace
 
 bool parseFwCatalog(const char* json, size_t len, FwCatalog& out, ArduinoJson::Allocator* alloc) {
     out.kitCount = 0;
     if (!json || len == 0) return false;
-    JsonDocument doc(alloc ? alloc : ArduinoJson::detail::DefaultAllocator::instance());
+    JsonDocument doc = alloc ? JsonDocument(alloc) : JsonDocument();
     if (deserializeJson(doc, json, len)) return false;
     if ((doc["v"] | 0) != 1) return false;
     JsonArrayConst kits = doc["kits"].as<JsonArrayConst>();
@@ -78,7 +88,9 @@ bool parseFwCatalog(const char* json, size_t len, FwCatalog& out, ArduinoJson::A
         std::memcpy(dst.kit, kit, std::strlen(kit) + 1);
         for (JsonVariantConst v : k["versions"].as<JsonArrayConst>()) {
             if (dst.count >= kFwCatalogVersions) break;
-            if (readVersion(dst.versions[dst.count], v)) ++dst.count;
+            FwCatalogVersion cand;
+            if (!readVersion(cand, v) || hasVersion(dst, cand.version)) continue;
+            dst.versions[dst.count++] = cand;
         }
         if (dst.count > 0) ++out.kitCount;
     }
