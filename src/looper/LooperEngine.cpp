@@ -11,6 +11,8 @@ constexpr uint32_t kSegBytes = LooperEngine::kSegFrames * sizeof(int16_t);
 /// What Exclusive asks for: more than any arena holds, so it comes out as
 /// whatever the arena really had.
 constexpr float kExclusiveSeconds = 120.0f;
+/// Samples read per bucket of the drawing, at most.
+constexpr uint32_t kEnvProbes = 64;
 inline int16_t clip16(int32_t v)
 {
     return (int16_t)(v > 32767 ? 32767 : (v < -32768 ? -32768 : v));
@@ -250,13 +252,23 @@ void LooperEngine::envelope(uint8_t* out, uint32_t n) const
 {
     if (!out || !n) return;
     std::memset(out, 0, n);
-    const uint32_t len = frames_.load(), rec = recorded_.load();
+    const uint32_t rec = recorded_.load();
+    /* While the first pass is being written there is no length yet, so the
+     * picture is of what has been written -- which is what makes the
+     * waveform grow under the hand that is recording it. */
+    const uint32_t len = frames_.load() ? frames_.load() : rec;
     if (!len || buf_.empty()) return;
     for (uint32_t b = 0; b < n; ++b) {
         const uint32_t a = (uint32_t)((uint64_t)b * len / n);
         const uint32_t z = std::min(len, (uint32_t)((uint64_t)(b + 1) * len / n));
+        /* At most kProbes samples a bucket. Walking every sample of a
+         * half-megabyte loop is three megabytes off PSRAM, and a screen that
+         * redraws the waveform four times a second while it is being
+         * recorded would spend a third of its thread there. Sixty-odd
+         * samples across a bucket is the same picture at this size. */
+        const uint32_t step = std::max<uint32_t>(1, (z - a) / kEnvProbes);
         int32_t pk = 0;
-        for (uint32_t f = a; f < z && f < rec; ++f) {
+        for (uint32_t f = a; f < z && f < rec; f += step) {
             const int32_t v = *at(buf_, f);
             const int32_t m = v < 0 ? -v : v;
             if (m > pk) pk = m;
