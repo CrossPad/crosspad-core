@@ -22,11 +22,13 @@ inline bool parseHttpDate(const char* text, int64_t& unixSeconds) {
     constexpr int kSecondsPerDay = 86400;
     if (!text) return false;
     char weekday[4] = {}, month[4] = {};
-    int day = 0, year = 0, hour = 0, minute = 0, second = 0;
+    int day = 0, year = 0, hour = 0, minute = 0, second = 0, end = 0;
     // "%3s," reads "Fri" and leaves the comma for the literal that follows it.
-    if (std::sscanf(text, "%3s, %d %3s %d %d:%d:%d GMT", weekday, &day, month, &year, &hour,
-                    &minute, &second) != 7)
+    if (std::sscanf(text, "%3s, %d %3s %d %d:%d:%d GMT%n", weekday, &day, month, &year, &hour,
+                    &minute, &second, &end) != 7)
         return false;
+    // sscanf counts conversions, not literals: %n is reached only if " GMT" matched in full.
+    if (end == 0 || text[end] != '\0') return false;
     const char* m = std::strlen(month) == 3 ? std::strstr(kMonths, month) : nullptr;
     if (!m || (m - kMonths) % 3 != 0) return false;
     if (day < 1 || day > 31 || year < 1970 || year > 9999 || hour > 23 || minute > 59 || second > 60 ||

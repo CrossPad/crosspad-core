@@ -79,7 +79,9 @@ TEST_CASE("parseHttpDate reads IMF-fixdate", "[fw]") {
     CHECK(t == 1835481599);
     for (const char* bad : {"", "yesterday", "Fri, 02 Foo 2026 18:00:00 GMT",
                             "Fri, 32 Oct 2026 18:00:00 GMT", "Fri, 02 Oct 2026 24:00:00 GMT",
-                            "Fri, 02 Oc 2026 18:00:00 GMT"})
+                            "Fri, 02 Oc 2026 18:00:00 GMT", "Fri, 02 Oct 2026 18:00:00 UTC",
+                            "Fri, 02 Oct 2026 18:00:00 GMX", "Fri, 02 Oct 2026 18:00:00",
+                            "Fri, 02 Oct 2026 18:00:00 GMT+1", "Fri, 02 Oct 2026 18:00:00 GM"})
         CHECK_FALSE(parseHttpDate(bad, t));
     CHECK_FALSE(parseHttpDate(nullptr, t));
 }

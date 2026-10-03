@@ -3,8 +3,16 @@
 
 namespace crosspad {
 
+/// "v1" would read as a release tag in CrossPad-<tag>-<rev>-<kit>.bin.
+static bool looksLikeVersionTag(const char* kit) {
+    if (kit[0] != 'v' || !kit[1]) return false;
+    for (const char* p = kit + 1; *p; ++p)
+        if (*p < '0' || *p > '9') return false;
+    return true;
+}
+
 bool fwKitIdValid(const char* kit) {
-    if (!kit || kit[0] < 'a' || kit[0] > 'z') return false;
+    if (!kit || kit[0] < 'a' || kit[0] > 'z' || looksLikeVersionTag(kit)) return false;
     size_t n = 0;
     for (const char* p = kit; *p; ++p) {
         if (++n >= kFwKitMax) return false;

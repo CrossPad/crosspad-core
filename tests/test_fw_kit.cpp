@@ -14,6 +14,11 @@ TEST_CASE("kit ids", "[fw]") {
     CHECK_FALSE(fwKitIdValid("2kit"));
     CHECK_FALSE(fwKitIdValid("Full"));
     CHECK_FALSE(fwKitIdValid("my-kit"));
+    CHECK_FALSE(fwKitIdValid("v1"));                 // would read as a release tag
+    CHECK_FALSE(fwKitIdValid("v10"));
+    CHECK(fwKitIdValid("v1a"));
+    CHECK(fwKitIdValid("vx"));
+    CHECK(fwKitIdValid("v"));
 }
 
 TEST_CASE("beta kit list", "[fw]") {
