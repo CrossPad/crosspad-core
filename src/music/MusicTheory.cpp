@@ -13,6 +13,9 @@ static const ScaleDef scales[] = {
     {"Dorian",        {0,2,3,5,7,9,10,0,0,0,0,0},   7},
     {"Mixolydian",    {0,2,4,5,7,9,10,0,0,0,0,0},   7},
     {"Harmonic Min",  {0,2,3,5,7,8,11,0,0,0,0,0},   7},
+    /* Appended, not inserted: diatonicQuality is indexed by this array. */
+    {"Lydian",        {0,2,4,6,7,9,11,0,0,0,0,0},   7},
+    {"Phrygian",      {0,1,3,5,7,8,10,0,0,0,0,0},   7},
 };
 static const uint8_t SCALE_COUNT = sizeof(scales) / sizeof(scales[0]);
 
@@ -38,6 +41,15 @@ static const ChordDef chords[] = {
     {"Maj9",      "M9",   {0,4,7,11,14,0},  5},
     {"Min9",      "m9",   {0,3,7,10,14,0},  5},
     {"Dom9",      "9th",  {0,4,7,10,14,0},  5},
+    /* What the rest of a jazz, soul and trap list needs. The thirteenth
+     * drops its fifth -- root, third, flat seventh, ninth, thirteenth -- the
+     * way it is voiced rather than spelt, because six notes stacked from the
+     * root turn to mud down here. */
+    {"Min7b5",    "m7b5", {0,3,6,10,0,0},   4},
+    {"Dom7b9",    "7b9",  {0,4,7,10,13,0},  5},
+    {"Dom13",     "13",   {0,4,10,14,21,0}, 5},
+    {"MinMaj7",   "mM7",  {0,3,7,11,0,0},   4},
+    {"Min6",      "m6",   {0,3,7,9,0,0},    4},
     {"Diatonic",  "Dia",  {0,0,0,0,0,0},    1},  // special: per-degree chord
     {"Types",     "Typ",  {0,0,0,0,0,0},    1},  // special: each pad = different type
 };
@@ -67,32 +79,60 @@ static const uint8_t diatonicQuality[][12] = {
     {1, 2, 8, 1, 2, 2, 1, 0, 0, 0, 0, 0},
     // 8: Harmonic Min: i=min ii=dim III=aug iv=min V=Maj VI=Maj vii=dim
     {2, 8, 9, 2, 1, 1, 8, 0, 0, 0, 0, 0},
+    // 9: Lydian: I=Maj II=Maj iii=min #iv=dim V=Maj vi=min vii=min
+    {1, 1, 2, 8, 1, 2, 2, 0, 0, 0, 0, 0},
+    // 10: Phrygian: i=min II=Maj III=Maj iv=min v=dim VI=Maj vii=min
+    {2, 1, 1, 2, 8, 1, 2, 0, 0, 0, 0, 0},
 };
 
 // Chord type indices: 0=None,1=Maj,2=Min,3=7th,4=Maj7,5=Min7,6=Sus2,7=Sus4,8=Dim,9=Aug
 static const BuiltinProg builtinProgs[] = {
-    {"Pop",     {{0,1},{4,1},{5,2},{3,1}},                         4}, // I-V-vi-IV
-    {"Ballad",  {{0,1},{5,2},{3,1},{4,1}},                         4}, // I-vi-IV-V
-    {"Rock",    {{0,1},{3,1},{4,1},{3,1}},                         4}, // I-IV-V-IV
-    {"Jazz",    {{1,5},{4,3},{0,4},{5,2}},                         4}, // ii7-V7-Imaj7-vi
-    {"Trance",  {{5,2},{3,1},{0,1},{4,1}},                         4}, // vi-IV-I-V
-    {"House",   {{0,2},{5,1},{2,1},{6,1}},                         4}, // i-VI-III-VII
-    {"Techno",  {{0,2},{2,1},{6,1},{3,2}},                         4}, // i-III-VII-iv
-    {"Ambient", {{0,4},{2,5},{5,5},{3,4}},                         4}, // Imaj7-iii7-vi7-IVmaj7
-
-    /* R&B and soul. Degrees are of whichever scale is selected, so the major
-     * ones want Major and the minor ones Minor -- the name says which.
-     * "Tritone" is the exception and wants Chromatic: a flat II is not a
-     * degree of a major scale, and on Chromatic a degree *is* a semitone, so
-     * ii = 2, bII = 1, I = 0 and the substitution comes out right. */
-    {"Soul Turn",   {{0,4},{5,5},{1,5},{4,3}},                   4}, // Imaj7-vi7-ii7-V7
-    {"ii-V-I",      {{1,5},{4,3},{0,4}},                         3}, // ii7-V7-Imaj7
-    {"Gospel",      {{3,4},{0,1},{3,4},{0,1}},                   4}, // IVmaj7-I-IVmaj7-I
-    {"Deceptive",   {{0,4},{3,4},{4,3},{5,5}},                   4}, // Imaj7-IVmaj7-V7-vi7
-    {"Minor Soul",  {{0,5},{3,5},{6,3},{2,3}},                   4}, // i7-iv7-VII7-III7 (Minor)
-    {"Tritone",     {{2,5},{1,3},{0,4}},                         3}, // ii7-bII7-Imaj7 (Chromatic)
-    {"Neo-Soul",    {{0,13},{3,12},{6,14},{2,14}},               4}, // i9-IV9-bVII9-III9 (Minor)
-    {"Soul Shuffle",{{0,12},{3,12},{0,12},{4,14}},               4}, // I9-IV9-I9-V9
+    {"Pop",            {{0,1},{4,1},{5,2},{3,1}}, 4, 1},  // I-V-vi-IV
+    {"Ballad",         {{0,1},{5,2},{3,1},{4,1}}, 4, 1},  // I-vi-IV-V
+    {"Rock",           {{0,1},{3,1},{4,1},{3,1}}, 4, 1},  // I-IV-V-IV
+    {"Jazz",           {{1,5},{4,3},{0,4},{5,2}}, 4, 1},  // ii7-V7-Imaj7-vi
+    {"Trance",         {{5,2},{3,1},{0,1},{4,1}}, 4, 1},  // vi-IV-I-V
+    {"House",          {{0,2},{5,1},{2,1},{6,1}}, 4, 2},  // i-VI-III-VII
+    {"Techno",         {{0,2},{2,1},{6,1},{3,2}}, 4, 2},  // i-III-VII-iv
+    {"Ambient",        {{0,4},{2,5},{5,5},{3,4}}, 4, 1},  // Imaj7-iii7-vi7-IVmaj7
+    {"Soul Turn",      {{0,4},{5,5},{1,5},{4,3}}, 4, 1},  // Imaj7-vi7-ii7-V7
+    {"ii-V-I",         {{1,5},{4,3},{0,4}}, 3, 1},  // ii7-V7-Imaj7
+    {"Gospel",         {{3,4},{0,1},{3,4},{0,1}}, 4, 1},  // IVmaj7-I-IVmaj7-I
+    {"Deceptive",      {{0,4},{3,4},{4,3},{5,5}}, 4, 1},  // Imaj7-IVmaj7-V7-vi7
+    {"Minor Soul",     {{0,5},{3,5},{6,3},{2,3}}, 4, 2},  // i7-iv7-VII7-III7
+    {"Tritone",        {{2,5},{1,3},{0,4}}, 3, 0},  // ii7-bII7-Imaj7, degrees are semitones here
+    {"Neo-Soul",       {{0,13},{3,12},{6,14},{2,14}}, 4, 2},  // i9-IV9-bVII9-III9
+    {"Soul Shuffle",   {{0,12},{3,12},{0,12},{4,14}}, 4, 1},  // I9-IV9-I9-V9
+    {"Jazz Turn",      {{1,13},{4,17},{0,12}}, 3, 1},  // Dm9-G13-Cmaj9
+    {"Dilla Loop",     {{0,5},{3,5}}, 2, 2},  // Am7-Dm7
+    {"Soul Descent",   {{3,4},{2,5},{1,5},{0,4}}, 4, 1},  // Fmaj7-Em7-Dm7-Cmaj7
+    {"Minor ii-V-i",   {{1,15},{4,16},{0,13}}, 3, 2},  // Bm7b5-E7b9-Am9
+    {"Lo-fi Melanch",  {{3,4},{2,5},{5,5}}, 3, 1},  // Fmaj7-Em7-Am7
+    {"Classic Turn",   {{0,4},{5,3},{1,5},{4,3}}, 4, 1},  // Cmaj7-A7-Dm7-G7
+    {"Perpetual",      {{1,13},{4,3},{2,5},{5,3}}, 4, 1},  // Dm9-G7-Em7-A7
+    {"Cinema Dark",    {{0,2},{5,1},{4,1}}, 3, 2},  // Am-F-E
+    {"Epic Weight",    {{0,2},{5,1},{3,2},{4,1}}, 4, 2},  // Fm-Db-Bbm-C
+    {"Phrygian",       {{0,2},{1,1}}, 2, 10},  // Em-F
+    {"Simple Menace",  {{0,2},{5,1},{4,1}}, 3, 2},  // Cm-Ab-G (same shape as Cinema Dark)
+    {"Universal",      {{0,2},{5,1},{2,1},{6,1}}, 4, 2},  // Am-F-C-G
+    {"Sad Uplift",     {{0,2},{5,1},{2,1},{6,1}}, 4, 2},  // Dm-Bb-F-C (same shape as Universal)
+    {"Gospel Tears",   {{3,4},{3,19},{0,4}}, 3, 1},  // Fmaj7-Fm6-Cmaj7
+    {"Andalusian",     {{0,2},{6,1},{5,1},{4,1}}, 4, 2},  // Am-G-F-E
+    {"Pop Classic",    {{0,1},{4,1},{5,2},{3,1}}, 4, 1},  // C-G-Am-F (same shape as Pop)
+    {"Neo-soul Eb",    {{2,12},{1,5},{0,13},{3,17}}, 4, 2},  // Ebmaj9-Dm7-Cm9-F13
+    {"Dorian Vibe",    {{0,5},{3,3}}, 2, 6},  // Dm7-G7
+    {"90s R&B",        {{0,12},{5,13},{1,13},{4,17}}, 4, 1},  // Cmaj9-Am9-Dm9-G13
+    {"Ballad Pop",     {{0,1},{5,2},{3,1},{4,1}}, 4, 1},  // C-Am-F-G (same shape as Ballad)
+    {"Drill",          {{0,2},{5,1},{4,1}}, 3, 2},  // Gm-Eb-D (same shape as Cinema Dark)
+    {"Melodic Trap",   {{0,2},{3,2},{5,1},{4,1}}, 4, 2},  // Cm-Fm-Ab-G
+    {"Minor Cliche",   {{0,2},{0,18},{0,5},{0,19}}, 4, 2},  // Am-Am(maj7)-Am7-Am6
+    {"Backdoor",       {{0,4},{3,5},{6,3},{0,4}}, 4, 7},  // Cmaj7-Fm7-Bb7-Cmaj7
+    {"Rising",         {{3,1},{4,1},{5,2}}, 3, 1},  // F-G-Am
+    {"Canon",          {{0,1},{4,1},{5,2},{2,2},{3,1},{0,1},{3,1},{4,1}}, 8, 1},  // C-G-Am-Em-F-C-F-G
+    {"Church Amen",    {{3,1},{0,1}}, 2, 1},  // F-C, the plagal cadence
+    {"Blues",          {{0,3},{3,3},{0,3},{4,3}}, 4, 7},  // C7-F7-C7-G7
+    {"Lydian Dream",   {{0,4},{1,1}}, 2, 9},  // Cmaj7-D/C; the bass pedal is not expressible, the II is
+    {"Mixo Rock",      {{0,1},{6,1},{3,1},{0,1}}, 4, 7},  // C-Bb-F-C
 };
 static const uint8_t BUILTIN_PROG_COUNT = sizeof(builtinProgs) / sizeof(builtinProgs[0]);
 
@@ -121,6 +161,11 @@ char MusicTheory::chordQualChar(uint8_t chordTypeIdx) {
         case 13: return 'm'; // Min9 -- a pad label has room for one mark, and
                              // minor matters more on it than the ninth does
         case 14: return '9'; // Dom9
+        case 15: return 'x'; // Min7b5, the half-diminished
+        case 16: return 'b'; // Dom7b9
+        case 17: return '3'; // Dom13
+        case 18: return 'M'; // MinMaj7 -- the major seventh is what you hear
+        case 19: return '6'; // Min6
         default: return ' ';
     }
 }
@@ -143,6 +188,10 @@ bool MusicTheory::addCustomProgression(const char* name, const ProgStep* steps, 
     }
     customProgCount_++;
     return true;
+}
+
+uint8_t MusicTheory::builtinProgScale(uint8_t idx) {
+    return idx < BUILTIN_PROG_COUNT ? builtinProgs[idx].scale : 1;
 }
 
 const char* MusicTheory::chordName(uint8_t idx) const {

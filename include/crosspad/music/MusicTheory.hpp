@@ -35,6 +35,11 @@ struct BuiltinProg {
     const char* name;
     ProgStep steps[8];
     uint8_t stepCount;
+    /* The mode it is written in. A progression is degrees, so the same steps
+     * are a different record in another scale -- "Backdoor" wants Mixolydian
+     * for its flat seventh, "Lydian Dream" wants Lydian for its major II --
+     * and the UI has somewhere to look rather than the player guessing. */
+    uint8_t scale;
 };
 
 struct CustomProg {
@@ -72,6 +77,8 @@ public:
     static const char* scaleName(uint8_t idx);
     static const char* noteName(uint8_t midiNote);
     static char chordQualChar(uint8_t chordTypeIdx);
+    /// The scale a built-in progression is written in (an index into scales).
+    static uint8_t builtinProgScale(uint8_t idx);
 
     /* Special chord indices. Everything below CHORD_DIATONIC_IDX is a chord a
      * pad can be built from; the two after it are modes, and anything from
@@ -79,9 +86,9 @@ public:
      * the custom ones in the order they were added). The three moved up by
      * three when the ninths were added -- nothing persists them, so nothing
      * had to migrate. */
-    static constexpr int CHORD_DIATONIC_IDX   = 15;
-    static constexpr int CHORD_TYPES_IDX      = 16;
-    static constexpr int CHORD_PROG_START_IDX = 17;
+    static constexpr int CHORD_DIATONIC_IDX   = 20;
+    static constexpr int CHORD_TYPES_IDX      = 21;
+    static constexpr int CHORD_PROG_START_IDX = 22;
 
     /// How many of chords[] a pad can be built from: 0 .. CHORD_DIATONIC_IDX-1.
     static constexpr int playableChordCount() { return CHORD_DIATONIC_IDX; }
