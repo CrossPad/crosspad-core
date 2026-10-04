@@ -59,7 +59,7 @@ bool parseInto(const char* json, size_t len, FwManifest& out, ArduinoJson::Alloc
         if (out.fileCount >= kFwManifestFilesMax) break;
         const uint32_t size = f.value()["size"] | 0u;
         const char* sha = f.value()["sha256"] | "";
-        if (size == 0 || !isHex64(sha)) return false;
+        if (size == 0 || !isHex64(sha) || (std::strcmp(fname, "icon.bin") == 0 && size > kFwIconBytesMax)) return false;
         FwManifestFile& dst = out.files[out.fileCount++];
         std::memcpy(dst.name, fname, std::strlen(fname) + 1);
         dst.size = size;

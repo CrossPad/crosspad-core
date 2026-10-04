@@ -12,6 +12,8 @@ constexpr size_t kFwTagMax = 32;
 constexpr size_t kFwAssetNameMax = 80;
 constexpr size_t kFwCatalogKits = 16;
 constexpr size_t kFwCatalogVersions = 8;
+/// A kit icon is a 48x48 LVGL image (~7 kB); anything larger is not one.
+constexpr uint32_t kFwIconBytesMax = 16u * 1024u;
 
 enum class FwChannel : uint8_t { Stable, Beta };
 enum class FwTier : uint8_t { Official, Community };
@@ -56,6 +58,14 @@ bool fwSafeName(const char* s, size_t cap);
 /// in verb lines and shown on the LCD, so nothing else may get that far.
 bool fwVersionValid(const char* s);
 
+/// One catalog version entry, validated the one way every reader of the
+/// catalog shares (parseFwCatalog and the Store's card cache). False for a
+/// version the device cannot use; then `out` is untouched. An icon that is
+/// malformed or over kFwIconBytesMax costs the icon (name "", size 0), never
+/// the version.
+bool fwReadCatalogVersion(FwCatalogVersion& out, JsonVariantConst v);
+
+/// A FwCatalog (~61 kB) belongs on the heap or in static storage, never on a task stack.
 /// False on anything but {"v":1,"kits":[...]}; then out.kitCount is 0.
 /// Entries with a name the device would have to escape, an unknown channel or
 /// tier, a zero size or a field past its limit are skipped, as is a kit with

@@ -12,9 +12,12 @@ FwCardPlan fwCardPlan(const FwCardFacts& f) {
     if (f.readyThis) show(kFwActRunNew, true);
     if (f.onCard) {
         show(f.pinned ? kFwActUnpin : kFwActPin, !f.busyThis);
-        show(kFwActDelete, f.slot == FwSlotRole::None && !f.busyThis);
-        if (f.slot != FwSlotRole::None) p.deleteBlock = FwCardBlock::InSlot;
-        else if (f.busyThis) p.deleteBlock = FwCardBlock::Busy;
+        // Pin means keep: a pinned package is unpinned before it can be deleted.
+        if (!f.pinned) {
+            show(kFwActDelete, f.slot == FwSlotRole::None && !f.busyThis);
+            if (f.slot != FwSlotRole::None) p.deleteBlock = FwCardBlock::InSlot;
+            else if (f.busyThis) p.deleteBlock = FwCardBlock::Busy;
+        }
     }
     if (f.slot == FwSlotRole::Other && !f.readyThis) show(kFwActRun, idle);
     // An image already in a slot is run, never installed again.

@@ -1,6 +1,7 @@
 #include <catch2/catch_test_macros.hpp>
 #include <cstring>
 #include <memory>
+#include <sstream>
 #include <string>
 #include "crosspad/fw/FwStore.hpp"
 
@@ -8,10 +9,14 @@ using namespace crosspad;
 
 namespace {
 
+// The same entry the catalog parser accepts: names, sizes, tag, manifest, sig.
 std::string sver(const std::string& version, const char* channel, const char* tier = "official",
-                 const std::string& extra = "") {
-    return "{\"version\":\"" + version + "\",\"channel\":\"" + channel + "\",\"tier\":\"" + tier +
-           "\",\"bin\":{\"size\":2000000},\"assets\":{\"size\":1000000}" + extra + "}";
+                 const std::string& extra = "", uint32_t bin = 2000000, uint32_t assets = 1000000) {
+    const std::string base = "CrossPad-v" + version + "-v2-k";
+    return "{\"version\":\"" + version + "\",\"tag\":\"v" + version + "\",\"channel\":\"" + channel +
+           "\",\"tier\":\"" + tier + "\",\"bin\":{\"name\":\"" + base + ".bin\",\"size\":" + std::to_string(bin) +
+           "},\"assets\":{\"name\":\"" + base + "-assets.bin\",\"size\":" + std::to_string(assets) +
+           "},\"manifest\":\"" + base + "-manifest.json\",\"sig\":\"" + base + "-manifest.sig\"" + extra + "}";
 }
 
 std::string skit(const std::string& kit, const std::string& versions, const std::string& kitMeta = "") {
@@ -174,7 +179,7 @@ TEST_CASE("fwCopyText never splits a UTF-8 sequence", "[fw]") {
 
 TEST_CASE("store cache keeps the first of two equal versions and drops an unsafe icon name", "[fw]") {
     const std::string badIcon = ",\"icon\":{\"name\":\"../icon.bin\",\"size\":6924}";
-    auto s = load(envelope(skit("full", sver("1.3.0", "stable", "official", badIcon) + "," + sver("v1.3.0", "beta"))));
+    auto s = load(envelope(skit("full", sver("1.3.0", "stable", "official", badIcon) + "," + sver("1.3.0", "beta"))));
     REQUIRE(s->kitCount == 1);
     REQUIRE(s->kits[0].count == 1);
     CHECK(s->kits[0].versions[0].channel == FwChannel::Stable);
@@ -194,4 +199,113 @@ TEST_CASE("kit detail truncates display text at a character and drops unsafe app
     REQUIRE(d.appCount == 2);
     CHECK(std::strcmp(d.apps[0], "sampler") == 0);
     CHECK(std::strcmp(d.apps[1], "pad-mixer") == 0);
+}
+
+TEST_CASE("store cache applies the catalog's version rules", "[fw]") {
+    auto s = load(envelope(skit("full",
+        sver("1.0.0", "stable") + "," +
+        "{\"version\":\"1.1.0\",\"tag\":\"v1.1.0\",\"channel\":\"stable\",\"tier\":\"official\","
+        "\"bin\":{\"size\":1},\"assets\":{\"size\":1}}," +                 // no names, tag ok: unusable
+        sver("1.2.0", "stable", "official", "", 0) + "," +                       // zero-size image
+        sver("1.3.0", "stable", "official", "", 1, 0))));                        // zero-size assets
+    REQUIRE(s->kitCount == 1);
+    REQUIRE(s->kits[0].count == 1);
+    CHECK(std::strcmp(s->kits[0].versions[0].version, "1.0.0") == 0);
+}
+
+TEST_CASE("an icon over the cap is dropped, at the cap it stays", "[fw]") {
+    auto icon = [](uint32_t size) {
+        return ",\"icon\":{\"name\":\"i.bin\",\"size\":" + std::to_string(size) + "}";
+    };
+    auto s = load(envelope(skit("full", sver("1.2.0", "stable", "official", icon(kFwIconBytesMax)) + "," +
+                                        sver("1.1.0", "stable", "official", icon(kFwIconBytesMax + 1)))));
+    REQUIRE(s->kits[0].count == 2);
+    CHECK(s->kits[0].versions[0].hasIcon);
+    CHECK(s->kits[0].versions[0].bytes == 3000000u + kFwIconBytesMax);
+    CHECK_FALSE(s->kits[0].versions[1].hasIcon);
+    CHECK(s->kits[0].versions[1].bytes == 3000000u);
+}
+
+TEST_CASE("sizes add up saturating, a negative fetch time reads 0", "[fw]") {
+    std::string json = envelope(skit("full", sver("1.0.0", "stable", "official", "", 4000000000u, 4000000000u)));
+    auto s = load(json);
+    CHECK(s->kits[0].versions[0].bytes == UINT32_MAX);
+    json.replace(json.find("1790964000"), 10, "-5");
+    CHECK(load(json)->fetched == 0);
+}
+
+TEST_CASE("store cache caps at 16 kits of 8 versions", "[fw]") {
+    std::string kits;
+    for (char c = 'a'; c < 'a' + 18; ++c) {
+        std::string versions;
+        for (int v = 0; v < 10; ++v) versions += (v ? "," : "") + sver("1.0." + std::to_string(v), "stable");
+        kits += (kits.empty() ? "" : ",") + skit(std::string("k") + c, versions);
+    }
+    auto s = load(envelope(kits));
+    CHECK(s->kitCount == kFwCatalogKits);
+    CHECK(s->kits[0].count == kFwCatalogVersions);
+}
+
+TEST_CASE("the stream parsers agree with the buffer ones", "[fw]") {
+    std::istringstream in(kTwo);
+    auto s = std::make_unique<FwStore>();
+    REQUIRE(parseFwStoreCacheFrom(in, 2, *s) == FwStoreLoad::Ok);
+    CHECK(s->kitCount == 3);
+    CHECK(s->kits[0].versions[0].bytes == 3000000u);
+    std::istringstream bad("{\"v\":1,");
+    CHECK(parseFwStoreCacheFrom(bad, 2, *s) == FwStoreLoad::Format);
+    CHECK(s->kitCount == 0);
+
+    const std::string kitObj = skit("drums", sver("1.3.0", "stable", "official", kDetail));
+    std::istringstream detail(kitObj);
+    FwKitDetail d{};
+    REQUIRE(parseFwKitDetailFrom(detail, "1.3.0", d));
+    CHECK(std::strcmp(d.displayName, "Drum Machine") == 0);
+}
+
+TEST_CASE("a failed detail parse leaves the output byte for byte alone", "[fw]") {
+    const std::string kitObj = skit("drums", sver("1.3.0", "stable"));
+    FwKitDetail d;
+    std::memset(&d, 0xAB, sizeof d);
+    FwKitDetail before = d;
+    CHECK_FALSE(parseFwKitDetail(kitObj.data(), kitObj.size(), "2.0.0", d));
+    CHECK_FALSE(parseFwKitDetail("{", 1, "1.3.0", d));
+    CHECK_FALSE(parseFwManifestDetail("{", 1, d));
+    CHECK(std::memcmp(&d, &before, sizeof d) == 0);
+}
+
+TEST_CASE("app ids are deduplicated", "[fw]") {
+    const std::string kitObj = skit("drums", sver("1.3.0", "stable", "official",
+                                                  ",\"apps\":[\"sampler\",\"sampler\",\"pad-mixer\"]"));
+    FwKitDetail d{};
+    REQUIRE(parseFwKitDetail(kitObj.data(), kitObj.size(), "1.3.0", d));
+    CHECK(d.appCount == 2);
+}
+
+TEST_CASE("fwCopyText replaces invalid UTF-8 and drops control characters", "[fw]") {
+    char out[32];
+    auto copy = [&](const char* in) {
+        fwCopyText(out, sizeof out, in);
+        return std::string(out);
+    };
+    CHECK(copy("\xC0\x80") == "?");                        // overlong NUL
+    CHECK(copy("\xE0\x80\x80") == "?");                    // overlong 3-byte
+    CHECK(copy("\xED\xA0\x80") == "?");                    // surrogate
+    CHECK(copy("\xF4\x90\x80\x80") == "?");                // past U+10FFFF
+    CHECK(copy("\xFF") == "?");
+    CHECK(copy("\x80z") == "?z");                           // stray continuation
+    CHECK(copy("ab\xE2\x82") == "ab?");                     // truncated at the end
+    CHECK(copy("\xE2\x82" "x") == "?x");                    // truncated in the middle
+    CHECK(copy("a\x1b[0m") == "a[0m");
+    CHECK(copy("a\r\nb\tc\x7f") == "a\nbc");
+    CHECK(copy("z\xC5\x82\xE2\x82\xAC\xF0\x9F\x98\x80") == "z\xC5\x82\xE2\x82\xAC\xF0\x9F\x98\x80");
+    char one[1] = {'x'};
+    fwCopyText(one, 1, "abc");
+    CHECK(one[0] == '\0');
+    char none[1] = {'x'};
+    fwCopyText(none, 0, "abc");
+    CHECK(none[0] == 'x');
+    char tight[4];
+    fwCopyText(tight, sizeof tight, "a\xFF\xFF" "bcd");   // '?' counts against the room like any byte
+    CHECK(std::strcmp(tight, "a??") == 0);
 }

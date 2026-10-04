@@ -78,3 +78,49 @@ TEST_CASE("card: installed this boot offers Run the new version only", "[fw]") {
     CHECK((p.shown & kFwActRunNew) != 0);
     CHECK((p.shown & kFwActRun) == 0);
 }
+
+TEST_CASE("card: a pinned package is not offered Delete", "[fw]") {
+    FwCardFacts f = base();
+    f.onCard = f.complete = f.installable = true;
+    f.pinned = true;
+    FwCardPlan p = fwCardPlan(f);
+    CHECK((p.shown & kFwActUnpin) != 0);
+    CHECK((p.shown & kFwActDelete) == 0);
+    f.slot = FwSlotRole::Running;                // pinned and running: still only Unpin
+    p = fwCardPlan(f);
+    CHECK((p.shown & kFwActUnpin) != 0);
+    CHECK((p.shown & kFwActDelete) == 0);
+}
+
+TEST_CASE("card: the running image with no package on the card offers nothing", "[fw]") {
+    FwCardFacts f = base();
+    f.slot = FwSlotRole::Running;
+    CHECK(fwCardPlan(f).shown == 0);
+}
+
+TEST_CASE("card: a download that is starting shows its actions disabled", "[fw]") {
+    FwCardFacts f = base();
+    f.inCatalog = f.busyThis = f.updaterBusy = true;   // the directory does not exist yet
+    FwCardPlan p = fwCardPlan(f);
+    CHECK(p.shown == (kFwActDownload | kFwActInstall));
+    CHECK(p.enabled == 0);
+}
+
+TEST_CASE("card: Run the new version stays enabled beside a busy updater", "[fw]") {
+    FwCardFacts f = base();
+    f.onCard = f.complete = f.installable = f.inCatalog = true;
+    f.slot = FwSlotRole::Other;
+    f.readyThis = f.updaterBusy = true;
+    FwCardPlan p = fwCardPlan(f);
+    CHECK((p.enabled & kFwActRunNew) != 0);
+    CHECK((p.shown & kFwActRun) == 0);
+}
+
+TEST_CASE("card: a package that cannot be installed says so even when busy", "[fw]") {
+    FwCardFacts f = base();
+    f.onCard = f.complete = true;
+    f.updaterBusy = true;
+    FwCardPlan p = fwCardPlan(f);
+    CHECK((p.enabled & kFwActInstallRun) == 0);
+    CHECK(p.installBlock == FwCardBlock::NotInstallable);
+}

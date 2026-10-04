@@ -320,3 +320,28 @@ TEST_CASE("manifest lists icon.bin as a third signed file", "[fw]") {
     CHECK(icon->size == 6924);
     CHECK_FALSE(fwManifestFile(m, "notes.txt"));
 }
+
+TEST_CASE("an icon over the size cap is dropped from the catalog and refused by the manifest", "[fw]") {
+    auto withIcon = [](const char* version, uint32_t size) {
+        std::string v = ver("full", version, "stable");
+        v.insert(v.size() - 1, ",\"icon\":{\"name\":\"i.bin\",\"size\":" + std::to_string(size) + "}");
+        return v;
+    };
+    auto c = parsed(catalog(kitJson("full", withIcon("1.2.0", kFwIconBytesMax) + "," +
+                                            withIcon("1.1.0", kFwIconBytesMax + 1))));
+    REQUIRE(c->kits[0].count == 2);
+    CHECK(c->kits[0].versions[0].icon.size == kFwIconBytesMax);
+    CHECK(c->kits[0].versions[1].icon.size == 0);
+
+    auto manifest = [](uint32_t size) {
+        return "{\"name\":\"full-1.5.0\",\"kit\":\"full\",\"version\":\"1.5.0\",\"board_rev\":2,\"files\":{"
+               "\"CrossPad.bin\":{\"size\":10,\"sha256\":\"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\"},"
+               "\"icon.bin\":{\"size\":" + std::to_string(size) +
+               ",\"sha256\":\"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\"}}}";
+    };
+    FwManifest m;
+    const std::string atCap = manifest(kFwIconBytesMax);
+    const std::string over = manifest(kFwIconBytesMax + 1);
+    CHECK(parseFwManifest(atCap.data(), atCap.size(), m));
+    CHECK_FALSE(parseFwManifest(over.data(), over.size(), m));
+}

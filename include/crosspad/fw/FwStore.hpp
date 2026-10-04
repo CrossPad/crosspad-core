@@ -40,7 +40,8 @@ struct FwStoreKit {
 };
 
 /// What the Store and Updates views show (~5.4 kB): the catalog cached on the
-/// card by the last network-mode check.
+/// card by the last network-mode check. Heap or static storage, never a task
+/// stack (a job stack is 8 kB); the same goes for FwKitDetail (~1 kB).
 struct FwStore {
     int64_t fetched;   ///< server time of that check, 0 unknown
     uint8_t kitCount;
@@ -149,6 +150,8 @@ struct FwKitDetail {
 
 bool fwKitDetailFromDoc(const JsonDocument& doc, const char* version, FwKitDetail& out);
 
+/// The detail parsers read the whole document unfiltered: the caller caps how
+/// much of the file it hands over (64 kB is ample for 8 versions of notes).
 /// From .details/<kit>.json (/api/device/kit/<kit> verbatim): false when
 /// `version` is not in it; `out` is then untouched.
 bool parseFwKitDetail(const char* kitJson, size_t len, const char* version, FwKitDetail& out,

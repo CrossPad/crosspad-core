@@ -11,6 +11,35 @@ constexpr int kCatalogVersion = 1;
 constexpr unsigned kRevMax = 255;
 constexpr unsigned char kUtf8ContinuationMask = 0xC0;
 constexpr unsigned char kUtf8Continuation = 0x80;
+constexpr unsigned char kUtf8ContinuationLast = 0xBF;
+constexpr unsigned char kAsciiMax = 0x80;
+constexpr unsigned char kSpace = 0x20;
+constexpr unsigned char kDel = 0x7F;
+
+// Length of the well-formed UTF-8 sequence at `p` (lead byte >= 0x80), 0 when
+// it is not one: stray continuation, 0xC0/0xC1 and 0xF5.. leads, overlong
+// forms, surrogates, past U+10FFFF, or cut short by the end of the string.
+size_t utf8SequenceLength(const char* p) {
+    const unsigned char lead = static_cast<unsigned char>(p[0]);
+    size_t len;
+    unsigned char lo = kUtf8Continuation;   // allowed range of the second byte
+    unsigned char hi = kUtf8ContinuationLast;
+    if (lead >= 0xC2 && lead <= 0xDF) len = 2;
+    else if (lead >= 0xE0 && lead <= 0xEF) {
+        len = 3;
+        if (lead == 0xE0) lo = 0xA0;   // else overlong
+        if (lead == 0xED) hi = 0x9F;   // else a surrogate
+    } else if (lead >= 0xF0 && lead <= 0xF4) {
+        len = 4;
+        if (lead == 0xF0) lo = 0x90;   // else overlong
+        if (lead == 0xF4) hi = 0x8F;   // else past U+10FFFF
+    } else return 0;
+    for (size_t i = 1; i < len; ++i) {
+        const unsigned char b = static_cast<unsigned char>(p[i]);   // a NUL fails the range test
+        if (b < (i == 1 ? lo : kUtf8Continuation) || b > (i == 1 ? hi : kUtf8ContinuationLast)) return 0;
+    }
+    return len;
+}
 
 char lowerAscii(char c) { return (c >= 'A' && c <= 'Z') ? static_cast<char>(c - 'A' + 'a') : c; }
 
@@ -34,13 +63,6 @@ bool parseRev(const char* s, uint8_t& rev) {   // "v2" -> 2
     return true;
 }
 
-bool readChannel(const char* s, FwChannel& out) {
-    if (std::strcmp(s, "stable") == 0) out = FwChannel::Stable;
-    else if (std::strcmp(s, "beta") == 0) out = FwChannel::Beta;
-    else return false;
-    return true;
-}
-
 bool readTier(const char* s, FwTier& out) {
     if (std::strcmp(s, "official") == 0) out = FwTier::Official;
     else if (std::strcmp(s, "community") == 0) out = FwTier::Community;
@@ -48,8 +70,14 @@ bool readTier(const char* s, FwTier& out) {
     return true;
 }
 
+bool hasApp(const FwKitDetail& d, const char* id) {
+    for (size_t i = 0; i < d.appCount; ++i)
+        if (std::strcmp(d.apps[i], id) == 0) return true;
+    return false;
+}
+
 void readDetail(JsonVariantConst v, FwKitDetail& out) {
-    out = FwKitDetail{};
+    std::memset(&out, 0, sizeof out);   // no ~1 kB temporary on a job stack
     fwCopyText(out.displayName, sizeof out.displayName, v["display_name"] | "");
     fwCopyText(out.author, sizeof out.author, v["author"] | "");
     fwCopyText(out.description, sizeof out.description, v["description"] | "");
@@ -57,7 +85,7 @@ void readDetail(JsonVariantConst v, FwKitDetail& out) {
     for (JsonVariantConst a : v["apps"].as<JsonArrayConst>()) {
         if (out.appCount >= kFwAppsMax) break;
         const char* id = a.as<const char*>();
-        if (!fwSafeName(id, kFwAppIdMax)) continue;
+        if (!fwSafeName(id, kFwAppIdMax) || hasApp(out, id)) continue;
         std::memcpy(out.apps[out.appCount++], id, std::strlen(id) + 1);
     }
     FwTier tier = FwTier::Official;
@@ -85,18 +113,38 @@ bool isOlder(const FwStoreKit& k, uint8_t a, uint8_t b) {
 
 void fwCopyText(char* out, size_t cap, const char* text) {
     if (cap == 0) return;
-    if (!text) {
-        out[0] = '\0';
-        return;
+    size_t n = 0;
+    // One pass over the input: a valid sequence is copied whole or not at all,
+    // an invalid one (and the continuation bytes trailing it) becomes one '?',
+    // and control characters other than '\n' are dropped. This text is
+    // written by people after CI and ends up in LVGL labels.
+    for (const char* p = text; p && *p;) {
+        const unsigned char c = static_cast<unsigned char>(*p);
+        size_t len = 1;
+        bool valid = true;
+        if (c < kAsciiMax) {
+            if ((c < kSpace && c != '\n') || c == kDel) {
+                ++p;
+                continue;
+            }
+        } else {
+            len = utf8SequenceLength(p);
+            valid = len != 0;
+        }
+        if (!valid) {
+            ++p;
+            while ((static_cast<unsigned char>(*p) & kUtf8ContinuationMask) == kUtf8Continuation) ++p;
+            len = 1;
+        }
+        if (n + len > cap - 1) break;
+        if (valid) {
+            std::memcpy(out + n, p, len);
+            p += len;
+        } else {
+            out[n] = '?';
+        }
+        n += len;
     }
-    size_t n = std::strlen(text);
-    if (n >= cap) {
-        n = cap - 1;
-        // text[n] is the first byte left out; if it continues a sequence, the
-        // sequence started before the cut and has to go with it.
-        while (n > 0 && (static_cast<unsigned char>(text[n]) & kUtf8ContinuationMask) == kUtf8Continuation) --n;
-    }
-    std::memcpy(out, text, n);
     out[n] = '\0';
 }
 
@@ -123,7 +171,12 @@ void fwStoreCacheFilter(JsonDocument& f) {
     f["catalog"]["kits"][0]["versions"][0]["version"] = true;
     f["catalog"]["kits"][0]["versions"][0]["channel"] = true;
     f["catalog"]["kits"][0]["versions"][0]["tier"] = true;
+    f["catalog"]["kits"][0]["versions"][0]["tag"] = true;
+    f["catalog"]["kits"][0]["versions"][0]["manifest"] = true;
+    f["catalog"]["kits"][0]["versions"][0]["sig"] = true;
+    f["catalog"]["kits"][0]["versions"][0]["bin"]["name"] = true;
     f["catalog"]["kits"][0]["versions"][0]["bin"]["size"] = true;
+    f["catalog"]["kits"][0]["versions"][0]["assets"]["name"] = true;
     f["catalog"]["kits"][0]["versions"][0]["assets"]["size"] = true;
     f["catalog"]["kits"][0]["versions"][0]["icon"]["name"] = true;
     f["catalog"]["kits"][0]["versions"][0]["icon"]["size"] = true;
@@ -150,25 +203,19 @@ FwStoreLoad fwStoreFromDoc(const JsonDocument& doc, uint8_t boardRev, FwStore& o
         Semver newestV{};
         for (JsonVariantConst v : k["versions"].as<JsonArrayConst>()) {
             if (dst.count >= kFwCatalogVersions) break;
-            const char* version = v["version"] | "";
+            FwCatalogVersion cand;   // ~450 B: the same validator parseFwCatalog uses
             Semver parsed;
-            FwChannel channel;
-            FwTier tier;
-            if (std::strlen(version) >= kFwVersionMax || !Semver::parse(version, parsed) ||
-                !readChannel(v["channel"] | "", channel) || !readTier(v["tier"] | "", tier))
+            if (!fwReadCatalogVersion(cand, v) || !Semver::parse(cand.version, parsed) || hasVersion(dst, parsed))
                 continue;
-            if (hasVersion(dst, parsed)) continue;
             FwStoreVersion& sv = dst.versions[dst.count++];
-            std::memcpy(sv.version, version, std::strlen(version) + 1);
-            sv.channel = channel;
-            // Same test as the catalog's icon: a bad entry costs the icon, not the version.
-            const uint32_t icon = fwSafeName(v["icon"]["name"] | "", kFwAssetNameMax) ? v["icon"]["size"] | 0u : 0u;
-            sv.hasIcon = icon > 0;
-            sv.bytes = saturatingSum(saturatingSum(v["bin"]["size"] | 0u, v["assets"]["size"] | 0u), icon);
+            std::memcpy(sv.version, cand.version, sizeof sv.version);
+            sv.channel = cand.channel;
+            sv.hasIcon = cand.icon.size > 0;
+            sv.bytes = saturatingSum(saturatingSum(cand.bin.size, cand.assets.size), cand.icon.size);
             if (!any || newestV < parsed) {   // the tile's tier is the newest version's
                 any = true;
                 newestV = parsed;
-                dst.tier = tier;
+                dst.tier = cand.tier;
             }
         }
         if (dst.count == 0) continue;
