@@ -28,6 +28,7 @@ void fwCopyLine(char* out, size_t cap, const char* text);
 struct FwStoreVersion {
     char version[kFwVersionMax];
     FwChannel channel;
+    FwTier tier;      ///< this version's, as the catalog says; the signed manifest must agree
     bool hasIcon;
     uint32_t bytes;   ///< what a download puts on the card: image + assets + icon
 };
@@ -37,7 +38,7 @@ struct FwStoreKit {
     char kit[kFwKitMax];
     char displayName[kFwDisplayNameMax];   ///< the kit id when the catalog has none
     char author[kFwAuthorMax];
-    FwTier tier;
+    FwTier tier;   ///< the newest version's: Store order and section only, never a warning
     uint8_t count;
     FwStoreVersion versions[kFwCatalogVersions];
 };

@@ -214,6 +214,7 @@ FwStoreLoad fwStoreFromDoc(const JsonDocument& doc, uint8_t boardRev, FwStore& o
             FwStoreVersion& sv = dst.versions[dst.count++];
             std::memcpy(sv.version, cand.version, sizeof sv.version);
             sv.channel = cand.channel;
+            sv.tier = cand.tier;
             sv.hasIcon = cand.icon.size > 0;
             sv.bytes = saturatingSum(saturatingSum(cand.bin.size, cand.assets.size), cand.icon.size);
             if (!any || newestV < parsed) {   // the tile's tier is the newest version's

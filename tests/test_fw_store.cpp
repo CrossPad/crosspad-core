@@ -69,6 +69,17 @@ TEST_CASE("store cache parses kits, sizes, icons and display fields", "[fw]") {
     CHECK(fwStoreVersionIndex(*full, "9.9.9") == -1);
 }
 
+TEST_CASE("each version keeps its own tier, the kit takes the newest's", "[fw]") {
+    // A kit promoted from community: its older builds stay community.
+    auto s = load(envelope(skit("drums", sver("1.3.0", "stable") + "," + sver("1.1.0", "stable", "community"))));
+    const FwStoreKit* drums = fwStoreFind(*s, "drums");
+    REQUIRE(drums);
+    REQUIRE(drums->count == 2);
+    CHECK(drums->tier == FwTier::Official);
+    CHECK(drums->versions[fwStoreVersionIndex(*drums, "1.3.0")].tier == FwTier::Official);
+    CHECK(drums->versions[fwStoreVersionIndex(*drums, "1.1.0")].tier == FwTier::Community);
+}
+
 TEST_CASE("store cache refuses another envelope, another board, broken JSON", "[fw]") {
     load("", FwStoreLoad::Format);
     load("{\"v\":1,\"fetched\":1,\"rev\":\"v2\",\"catalog\":", FwStoreLoad::Format);   // a card pulled mid-write
