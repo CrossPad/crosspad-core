@@ -23,7 +23,7 @@ TEST_CASE("MusicTheory: scale data", "[music]") {
 
 TEST_CASE("MusicTheory: chord data", "[music]") {
     // 14 base chords (indices 0-13, including Diatonic and Types)
-    REQUIRE(MusicTheory::chordDefCount() == 14);
+    REQUIRE(MusicTheory::chordDefCount() == 17);   // twelve chords, three ninths, Diatonic and Types
 }
 
 TEST_CASE("MusicTheory: note names", "[music]") {

@@ -30,10 +30,21 @@ static const ChordDef chords[] = {
     {"Aug",       "Aug",  {0,4,8,0,0,0},    3},
     {"Power",     "P5",   {0,7,0,0,0,0},    2},
     {"Octave",    "Oct",  {0,12,0,0,0,0},   2},
+    /* The ninths. R&B and soul are built on them -- a neo-soul loop written
+     * with sevenths is a different record -- and ChordDef has room for six
+     * notes, so they cost nothing but their rows. They sit after the twelve
+     * so the diatonicQuality tables, which are indices into this array, do
+     * not move. */
+    {"Maj9",      "M9",   {0,4,7,11,14,0},  5},
+    {"Min9",      "m9",   {0,3,7,10,14,0},  5},
+    {"Dom9",      "9th",  {0,4,7,10,14,0},  5},
     {"Diatonic",  "Dia",  {0,0,0,0,0,0},    1},  // special: per-degree chord
     {"Types",     "Typ",  {0,0,0,0,0,0},    1},  // special: each pad = different type
 };
 static const uint8_t CHORD_COUNT = sizeof(chords) / sizeof(chords[0]);
+/* The ones a pad can actually be built from: everything before Diatonic and
+ * Types, which are modes rather than chords. */
+static const uint8_t CHORD_PLAYABLE = MusicTheory::CHORD_DIATONIC_IDX;
 
 // Diatonic chord qualities per scale degree
 // Values are indices into chords[]: 1=Major, 2=Minor, 8=Dim, 9=Aug
@@ -68,6 +79,20 @@ static const BuiltinProg builtinProgs[] = {
     {"House",   {{0,2},{5,1},{2,1},{6,1}},                         4}, // i-VI-III-VII
     {"Techno",  {{0,2},{2,1},{6,1},{3,2}},                         4}, // i-III-VII-iv
     {"Ambient", {{0,4},{2,5},{5,5},{3,4}},                         4}, // Imaj7-iii7-vi7-IVmaj7
+
+    /* R&B and soul. Degrees are of whichever scale is selected, so the major
+     * ones want Major and the minor ones Minor -- the name says which.
+     * "Tritone" is the exception and wants Chromatic: a flat II is not a
+     * degree of a major scale, and on Chromatic a degree *is* a semitone, so
+     * ii = 2, bII = 1, I = 0 and the substitution comes out right. */
+    {"Soul Turn",   {{0,4},{5,5},{1,5},{4,3}},                   4}, // Imaj7-vi7-ii7-V7
+    {"ii-V-I",      {{1,5},{4,3},{0,4}},                         3}, // ii7-V7-Imaj7
+    {"Gospel",      {{3,4},{0,1},{3,4},{0,1}},                   4}, // IVmaj7-I-IVmaj7-I
+    {"Deceptive",   {{0,4},{3,4},{4,3},{5,5}},                   4}, // Imaj7-IVmaj7-V7-vi7
+    {"Minor Soul",  {{0,5},{3,5},{6,3},{2,3}},                   4}, // i7-iv7-VII7-III7 (Minor)
+    {"Tritone",     {{2,5},{1,3},{0,4}},                         3}, // ii7-bII7-Imaj7 (Chromatic)
+    {"Neo-Soul",    {{0,13},{3,12},{6,14},{2,14}},               4}, // i9-IV9-bVII9-III9 (Minor)
+    {"Soul Shuffle",{{0,12},{3,12},{0,12},{4,14}},               4}, // I9-IV9-I9-V9
 };
 static const uint8_t BUILTIN_PROG_COUNT = sizeof(builtinProgs) / sizeof(builtinProgs[0]);
 
@@ -92,6 +117,10 @@ char MusicTheory::chordQualChar(uint8_t chordTypeIdx) {
         case 2:  return 'm'; // Minor
         case 8:  return 'o'; // Dim
         case 9:  return '+'; // Aug
+        case 12: return '^'; // Maj9
+        case 13: return 'm'; // Min9 -- a pad label has room for one mark, and
+                             // minor matters more on it than the ninth does
+        case 14: return '9'; // Dom9
         default: return ' ';
     }
 }
@@ -177,13 +206,13 @@ void MusicTheory::rebuildPadMap(PlaySettings& ps) const {
             if (midiNote < 0) midiNote = 0;
             if (midiNote > 127) midiNote = 127;
             uint8_t ct = progSteps[stepIdx].chordType;
-            padChord = &chords[ct < 12 ? ct : 0];
-            ps.padChordTypeIdx[pad] = ct < 12 ? ct : 0;
+            padChord = &chords[ct < CHORD_PLAYABLE ? ct : 0];
+            ps.padChordTypeIdx[pad] = ct < CHORD_PLAYABLE ? ct : 0;
         } else if (isTypes) {
             midiNote = baseNote;
             if (midiNote < 0) midiNote = 0;
             if (midiNote > 127) midiNote = 127;
-            int typeIdx = pad % 12;
+            int typeIdx = pad % CHORD_PLAYABLE;
             padChord = &chords[typeIdx];
             ps.padChordTypeIdx[pad] = typeIdx;
         } else {
