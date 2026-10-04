@@ -4,6 +4,10 @@
 
 namespace crosspad {
 
+/// Longest firmware version text including the NUL: what a catalog entry, the
+/// persisted latest version and the status field all hold.
+constexpr size_t kFwVersionMax = 24;
+
 /// A firmware version: major.minor.patch, an optional pre-release ("rc1",
 /// "beta.2") and, for a development build named by `git describe`, how many
 /// commits it is past that tag ("v1.0.1-284-gd676096" = 1.0.1 + 284 commits).

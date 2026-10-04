@@ -7,7 +7,6 @@
 
 namespace crosspad {
 
-constexpr size_t kFwVersionMax = 24;
 constexpr size_t kFwTagMax = 32;
 /// "CrossPad-" + tag (31) + "-v2-" + kit (15) + "-manifest.json" + NUL
 constexpr size_t kFwAssetNameMax = 80;

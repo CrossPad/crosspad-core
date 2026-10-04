@@ -1,6 +1,7 @@
 #pragma once
 #include <cstdint>
 #include <cstddef>
+#include "crosspad/fw/Semver.hpp"
 
 namespace crosspad {
 
@@ -144,7 +145,7 @@ public:
     /// Newest firmware a host reported (FW_LATEST, persisted by the platform so
     /// it survives a reset with no host attached) and whether it is newer than
     /// the running one.
-    char fwLatest[16] = {};
+    char fwLatest[kFwVersionMax] = {};
     bool fwUpdateAvailable = false;
 
     /// Three missed reports of a host that sends one every 2 s.
