@@ -20,6 +20,7 @@ TEST_CASE("Semver parses releases, a leading v and a missing patch", "[fw]") {
     CHECK(s.commits == 0);
     CHECK(v("1.2") == v("1.2.0"));
     CHECK(v("1.2.3+build.7") == v("1.2.3"));
+    CHECK(v("1.2.3-rc1+build.7") == v("1.2.3-rc1"));
 }
 
 TEST_CASE("Semver parses pre-releases and git describe builds", "[fw]") {
@@ -43,6 +44,13 @@ TEST_CASE("Semver rejects what is not a version", "[fw]") {
                             "1.2.3-rc..1", "70000.0.0", "c6d227d", "1.2.3-abcdefghijklmnopqrstuvwxyz"})
         CHECK_FALSE(Semver::parse(bad, s));
     CHECK_FALSE(Semver::parse(nullptr, s));
+}
+
+TEST_CASE("Semver checks +build like a pre-release", "[fw]") {
+    Semver s;
+    for (const char* bad : {"9.9.9+a b", "9.9.9+a\r\nFWUPD: state=x", "9.9.9+a/b", "9.9.9+%41", "9.9.9+",
+                            "9.9.9+a..b", "9.9.9-rc1+a b", "9.9.9-rc1+x/y", "9.9.9-rc1+"})
+        CHECK_FALSE(Semver::parse(bad, s));
 }
 
 TEST_CASE("Semver order: pre-release below release, describe builds in between", "[fw]") {

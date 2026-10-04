@@ -25,9 +25,8 @@ bool parseInto(const char* json, size_t len, FwManifest& out, ArduinoJson::Alloc
     const char* kit = doc["kit"] | "";
     const char* version = doc["version"] | "";
     const int rev = doc["board_rev"] | -1;
-    Semver parsed;
-    if (!fwSafeName(name, sizeof out.name) || !fwKitIdValid(kit) || std::strlen(version) >= sizeof out.version ||
-        !Semver::parse(version, parsed) || rev < 1 || rev > kBoardRevMax)
+    if (!fwSafeName(name, sizeof out.name) || !fwKitIdValid(kit) || !fwVersionValid(version) || rev < 1 ||
+        rev > kBoardRevMax)
         return false;
     const char* channel = doc["channel"] | "stable";
     const char* tier = doc["tier"] | "official";

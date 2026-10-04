@@ -50,6 +50,11 @@ struct FwCatalog {
 /// (so never "." or ".."; a hidden or relative name is never a CI asset).
 bool fwSafeName(const char* s, size_t cap);
 
+/// A firmware version from a catalog, a manifest or a host: a Semver that is
+/// also an fwSafeName shorter than kFwVersionMax. It is stored in NVS, printed
+/// in verb lines and shown on the LCD, so nothing else may get that far.
+bool fwVersionValid(const char* s);
+
 /// False on anything but {"v":1,"kits":[...]}; then out.kitCount is 0.
 /// Entries with a name the device would have to escape, an unknown channel or
 /// tier, a zero size or a field past its limit are skipped, as is a kit with

@@ -15,6 +15,11 @@ bool fwSafeName(const char* s, size_t cap) {
     return n < cap;
 }
 
+bool fwVersionValid(const char* s) {
+    Semver parsed;
+    return fwSafeName(s, kFwVersionMax) && Semver::parse(s, parsed);
+}
+
 namespace {
 
 bool copyName(char* out, size_t cap, JsonVariantConst v) {
@@ -33,8 +38,7 @@ bool readFile(FwCatalogFile& f, JsonVariantConst v) {
 bool readVersion(FwCatalogVersion& out, JsonVariantConst v) {
     FwCatalogVersion tmp{};
     const char* version = v["version"] | "";
-    Semver parsed;
-    if (std::strlen(version) >= sizeof tmp.version || !Semver::parse(version, parsed)) return false;
+    if (!fwVersionValid(version)) return false;
     std::memcpy(tmp.version, version, std::strlen(version) + 1);
     if (!copyName(tmp.tag, sizeof tmp.tag, v["tag"])) return false;
     const char* channel = v["channel"] | "";

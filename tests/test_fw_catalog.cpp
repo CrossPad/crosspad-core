@@ -127,6 +127,30 @@ TEST_CASE("catalog skips entries it cannot use safely", "[fw]") {
     CHECK(std::strcmp(c->kits[0].versions[0].version, "1.3.0") == 0);
 }
 
+TEST_CASE("fwVersionValid: a Semver with a safe name that fits the version fields", "[fw]") {
+    CHECK(fwVersionValid("1.3.0"));
+    CHECK(fwVersionValid("v1.1.0-fwstore.3"));
+    CHECK(fwVersionValid("1.2.3-rc1+build.7"));
+    CHECK(fwVersionValid(("1.0.0-" + std::string(17, 'a')).c_str()));          // 23 characters
+    CHECK_FALSE(fwVersionValid(("1.0.0-" + std::string(18, 'a')).c_str()));    // 24: no room for the NUL
+    for (const char* bad : {"", "one", "9.9.9+a b", "9.9.9+a\r\nX", "9.9.9+a/b", "9.9.9+%41", ".1.0.0"})
+        CHECK_FALSE(fwVersionValid(bad));
+    CHECK_FALSE(fwVersionValid(nullptr));
+}
+
+TEST_CASE("catalog skips a version whose +build is not a safe name", "[fw]") {
+    std::string entries;
+    for (const char* bad : {"9.9.9+a b", "9.9.9+a\\r\\nFWUPD", "9.9.9+a/b", "9.9.9+%41"}) {
+        std::string e = ver("full", "1.3.0", "stable");
+        e.replace(e.find("\"version\":\"1.3.0\""), 17, std::string("\"version\":\"") + bad + "\"");
+        entries += e + ",";
+    }
+    auto c = parsed(catalog(kitJson("full", entries + ver("full", "1.2.0", "stable"))));
+    REQUIRE(c->kitCount == 1);
+    REQUIRE(c->kits[0].count == 1);
+    CHECK(std::strcmp(c->kits[0].versions[0].version, "1.2.0") == 0);
+}
+
 TEST_CASE("catalog caps kits and versions", "[fw]") {
     std::string kits;
     for (int k = 0; k < 20; ++k) {
@@ -243,6 +267,10 @@ TEST_CASE("manifest refuses a path-like name or tag and keeps out untouched", "[
         CHECK(std::strcmp(m.kit, "keep") == 0);
         CHECK(m.fileCount == 0);
     }
+    const std::string badVersion = std::string("{\"name\":\"x\",\"kit\":\"full\",\"version\":\"9.9.9+a b\",") +
+                                   "\"board_rev\":2,\"files\":{\"CrossPad.bin\":{\"size\":10,\"sha256\":\"" + sha + "\"}}}";
+    CHECK_FALSE(parseFwManifest(badVersion.data(), badVersion.size(), m));
+    CHECK(std::strcmp(m.kit, "keep") == 0);
     const std::string ok = make(std::string(47, 'a').c_str(), "v1");
     CHECK(parseFwManifest(ok.data(), ok.size(), m));
     const char* zeroSize = R"({"name":"x","kit":"full","version":"1.0.0","board_rev":2,

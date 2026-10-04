@@ -20,7 +20,8 @@ struct Semver {
     uint16_t commits = 0;
 
     /// "1.2.3", "v1.2.3", "1.2" (patch 0), "1.3.0-rc1", "v1.1.0-rc1-64-gc6d227d",
-    /// "...-dirty", "...+build". False for anything else; `out` is then zeroed.
+    /// "...-dirty", "...+build" (dot-separated [0-9A-Za-z-] like a pre-release).
+    /// False for anything else; `out` is then zeroed.
     static bool parse(const char* text, Semver& out);
 };
 

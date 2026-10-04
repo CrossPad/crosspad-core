@@ -39,7 +39,7 @@ bool readNumber(const char*& p, uint16_t& out) {
     return true;
 }
 
-/// Dot-separated identifiers of [0-9A-Za-z-], none empty.
+/// Dot-separated identifiers of [0-9A-Za-z-], none empty: a pre-release or "+build".
 bool validPre(const char* s) {
     if (!*s) return false;
     bool empty = true;
@@ -133,6 +133,7 @@ bool Semver::parse(const char* text, Semver& out) {
         if (!readNumber(p, s.patch)) return false;
     }
     if (*p == '+' || *p == '\0') {   // "+build" metadata never orders versions
+        if (*p == '+' && !validPre(p + 1)) return false;
         out = s;
         return true;
     }
@@ -140,7 +141,7 @@ bool Semver::parse(const char* text, Semver& out) {
     ++p;
     char rest[kRestMax];
     const size_t n = std::strcspn(p, "+");
-    if (n == 0 || n >= sizeof rest) return false;
+    if (n == 0 || n >= sizeof rest || (p[n] == '+' && !validPre(p + n + 1))) return false;
     std::memcpy(rest, p, n);
     rest[n] = '\0';
     const size_t dl = sizeof kDirty - 1;
