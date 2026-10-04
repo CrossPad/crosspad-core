@@ -299,6 +299,15 @@ TEST_CASE("fwCopyText replaces invalid UTF-8 and drops control characters", "[fw
     CHECK(copy("a\x1b[0m") == "a[0m");
     CHECK(copy("a\r\nb\tc\x7f") == "a\nbc");
     CHECK(copy("z\xC5\x82\xE2\x82\xAC\xF0\x9F\x98\x80") == "z\xC5\x82\xE2\x82\xAC\xF0\x9F\x98\x80");
+    CHECK(copy("\xF4\x8F\xBF\xBF") == "\xF4\x8F\xBF\xBF");   // U+10FFFF
+    CHECK(copy("\xF0\x90\x80\x80") == "\xF0\x90\x80\x80");   // U+10000
+    CHECK(copy("\xF0\x80\x80\x80") == "?");                    // overlong 4-byte
+    CHECK(copy("\xED\x9F\xBF") == "\xED\x9F\xBF");            // U+D7FF, last before the surrogates
+    char five[5];
+    fwCopyText(five, sizeof five, "ab\xF0\x9F\x98\x80");        // 2 + 4 bytes into room for 4: dropped whole
+    CHECK(std::strcmp(five, "ab") == 0);
+    fwCopyLine(out, sizeof out, "a\nb");
+    CHECK(std::string(out) == "ab");
     char one[1] = {'x'};
     fwCopyText(one, 1, "abc");
     CHECK(one[0] == '\0');
@@ -308,4 +317,16 @@ TEST_CASE("fwCopyText replaces invalid UTF-8 and drops control characters", "[fw
     char tight[4];
     fwCopyText(tight, sizeof tight, "a\xFF\xFF" "bcd");   // '?' counts against the room like any byte
     CHECK(std::strcmp(tight, "a??") == 0);
+}
+
+TEST_CASE("one-line fields never keep a newline", "[fw]") {
+    auto s = load(envelope(skit("full", sver("1.0.0", "stable"), ",\"display_name\":\"Two\\nLines\",\"author\":\"A\\nB\"")));
+    CHECK(std::strcmp(s->kits[0].displayName, "TwoLines") == 0);
+    CHECK(std::strcmp(s->kits[0].author, "AB") == 0);
+    const std::string kitObj = skit("full", sver("1.0.0", "stable", "official",
+                                                 ",\"display_name\":\"X\\nY\",\"notes\":\"a\\nb\""));
+    FwKitDetail d{};
+    REQUIRE(parseFwKitDetail(kitObj.data(), kitObj.size(), "1.0.0", d));
+    CHECK(std::strcmp(d.displayName, "XY") == 0);
+    CHECK(std::strcmp(d.notes, "a\nb") == 0);
 }

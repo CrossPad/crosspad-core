@@ -7,7 +7,7 @@ namespace {
 constexpr size_t kShaHexLen = 64;
 constexpr int kBoardRevMax = 255;
 
-constexpr const char* kKnownFiles[] = {"CrossPad.bin", "assets.bin", "icon.bin"};
+constexpr const char* kKnownFiles[] = {"CrossPad.bin", "assets.bin", kFwManifestIconName};
 
 bool knownFile(const char* name) {
     for (const char* k : kKnownFiles)
@@ -59,7 +59,7 @@ bool parseInto(const char* json, size_t len, FwManifest& out, ArduinoJson::Alloc
         if (out.fileCount >= kFwManifestFilesMax) break;
         const uint32_t size = f.value()["size"] | 0u;
         const char* sha = f.value()["sha256"] | "";
-        if (size == 0 || !isHex64(sha) || (std::strcmp(fname, "icon.bin") == 0 && size > kFwIconBytesMax)) return false;
+        if (size == 0 || !isHex64(sha) || (std::strcmp(fname, kFwManifestIconName) == 0 && size > kFwIconBytesMax)) return false;
         FwManifestFile& dst = out.files[out.fileCount++];
         std::memcpy(dst.name, fname, std::strlen(fname) + 1);
         dst.size = size;

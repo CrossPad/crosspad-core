@@ -22,6 +22,9 @@ constexpr size_t kFwOwnedVersionMax = 32;
 /// it is never a path, a URL part or a directory name.
 void fwCopyText(char* out, size_t cap, const char* text);
 
+/// fwCopyText for a one-line field (name, author, version): '\n' is dropped too.
+void fwCopyLine(char* out, size_t cap, const char* text);
+
 struct FwStoreVersion {
     char version[kFwVersionMax];
     FwChannel channel;
@@ -152,6 +155,7 @@ bool fwKitDetailFromDoc(const JsonDocument& doc, const char* version, FwKitDetai
 
 /// The detail parsers read the whole document unfiltered: the caller caps how
 /// much of the file it hands over (64 kB is ample for 8 versions of notes).
+
 /// From .details/<kit>.json (/api/device/kit/<kit> verbatim): false when
 /// `version` is not in it; `out` is then untouched.
 bool parseFwKitDetail(const char* kitJson, size_t len, const char* version, FwKitDetail& out,

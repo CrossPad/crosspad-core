@@ -45,6 +45,7 @@ struct FwCardPlan {
 /// plan's: the confirmation before the first install of a community kit and
 /// the question before installing a version older than the newest.
 /// Delete is not offered while a package is pinned.
+
 /// Which actions a kit card shows for a version, and which of them are enabled.
 FwCardPlan fwCardPlan(const FwCardFacts& f);
 

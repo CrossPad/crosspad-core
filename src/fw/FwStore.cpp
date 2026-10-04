@@ -12,7 +12,7 @@ constexpr unsigned kRevMax = 255;
 constexpr unsigned char kUtf8ContinuationMask = 0xC0;
 constexpr unsigned char kUtf8Continuation = 0x80;
 constexpr unsigned char kUtf8ContinuationLast = 0xBF;
-constexpr unsigned char kAsciiMax = 0x80;
+constexpr unsigned char kAsciiLimit = 0x80;
 constexpr unsigned char kSpace = 0x20;
 constexpr unsigned char kDel = 0x7F;
 
@@ -78,8 +78,8 @@ bool hasApp(const FwKitDetail& d, const char* id) {
 
 void readDetail(JsonVariantConst v, FwKitDetail& out) {
     std::memset(&out, 0, sizeof out);   // no ~1 kB temporary on a job stack
-    fwCopyText(out.displayName, sizeof out.displayName, v["display_name"] | "");
-    fwCopyText(out.author, sizeof out.author, v["author"] | "");
+    fwCopyLine(out.displayName, sizeof out.displayName, v["display_name"] | "");
+    fwCopyLine(out.author, sizeof out.author, v["author"] | "");
     fwCopyText(out.description, sizeof out.description, v["description"] | "");
     fwCopyText(out.notes, sizeof out.notes, v["notes"] | "");
     for (JsonVariantConst a : v["apps"].as<JsonArrayConst>()) {
@@ -109,21 +109,19 @@ bool isOlder(const FwStoreKit& k, uint8_t a, uint8_t b) {
     return compareVersionText(k.versions[a].version, k.versions[b].version) < 0;
 }
 
-} // namespace
-
-void fwCopyText(char* out, size_t cap, const char* text) {
+void copyText(char* out, size_t cap, const char* text, bool keepNewline) {
     if (cap == 0) return;
     size_t n = 0;
     // One pass over the input: a valid sequence is copied whole or not at all,
     // an invalid one (and the continuation bytes trailing it) becomes one '?',
-    // and control characters other than '\n' are dropped. This text is
+    // and control characters (and '\n' unless keepNewline) are dropped. This text is
     // written by people after CI and ends up in LVGL labels.
     for (const char* p = text; p && *p;) {
         const unsigned char c = static_cast<unsigned char>(*p);
         size_t len = 1;
         bool valid = true;
-        if (c < kAsciiMax) {
-            if ((c < kSpace && c != '\n') || c == kDel) {
+        if (c < kAsciiLimit) {
+            if ((c < kSpace && !(keepNewline && c == '\n')) || c == kDel) {
                 ++p;
                 continue;
             }
@@ -147,6 +145,12 @@ void fwCopyText(char* out, size_t cap, const char* text) {
     }
     out[n] = '\0';
 }
+
+} // namespace
+
+void fwCopyText(char* out, size_t cap, const char* text) { copyText(out, cap, text, true); }
+
+void fwCopyLine(char* out, size_t cap, const char* text) { copyText(out, cap, text, false); }
 
 const char* fwStoreLoadName(FwStoreLoad r) {
     switch (r) {
@@ -219,9 +223,9 @@ FwStoreLoad fwStoreFromDoc(const JsonDocument& doc, uint8_t boardRev, FwStore& o
             }
         }
         if (dst.count == 0) continue;
-        fwCopyText(dst.displayName, sizeof dst.displayName, k["display_name"] | "");
-        if (!dst.displayName[0]) fwCopyText(dst.displayName, sizeof dst.displayName, kit);
-        fwCopyText(dst.author, sizeof dst.author, k["author"] | "");
+        fwCopyLine(dst.displayName, sizeof dst.displayName, k["display_name"] | "");
+        if (!dst.displayName[0]) fwCopyLine(dst.displayName, sizeof dst.displayName, kit);
+        fwCopyLine(dst.author, sizeof dst.author, k["author"] | "");
         ++out.kitCount;
     }
     return FwStoreLoad::Ok;
@@ -335,7 +339,7 @@ size_t fwStoreUpdates(const FwStore& s, const FwOwned* owned, size_t n, FwKitIsB
         FwUpdateRow& r = out[rows++];
         r.kit = order[o];
         r.version = static_cast<uint8_t>(best);
-        fwCopyText(r.have, sizeof r.have, have->version);
+        fwCopyLine(r.have, sizeof r.have, have->version);
     }
     return rows;
 }

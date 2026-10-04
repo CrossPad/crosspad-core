@@ -8,6 +8,7 @@ namespace crosspad {
 
 /// CrossPad.bin, assets.bin and (since core 1.41) icon.bin.
 constexpr size_t kFwManifestFilesMax = 3;
+constexpr const char* kFwManifestIconName = "icon.bin";
 
 struct FwManifestFile {
     char name[16];      ///< "CrossPad.bin" | "assets.bin" | "icon.bin"
@@ -32,6 +33,7 @@ struct FwManifest {
 /// A signed manifest is the authority, so a bad entry for any listed file
 /// (icon.bin too: size 0, a bad sha, over kFwIconBytesMax) makes the package
 /// unparseable, where the unsigned catalog only drops a bad icon.
+
 /// False unless kit, version, board_rev and a CrossPad.bin entry with a
 /// 64-hex SHA-256 and a non-zero size are all present and valid. Manifests
 /// made before channels existed read as stable / official / no tag. `name` must

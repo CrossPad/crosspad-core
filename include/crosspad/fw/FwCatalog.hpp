@@ -41,8 +41,8 @@ struct FwCatalogKit {
     FwCatalogVersion versions[kFwCatalogVersions];
 };
 
-/// crosspad.app's /api/device/catalog for one board revision. ~50 kB: the
-/// platform keeps it in PSRAM and only while it needs it.
+/// crosspad.app's /api/device/catalog for one board revision. ~61 kB: the
+/// platform keeps it in PSRAM and only while it needs it, never on a task stack.
 struct FwCatalog {
     uint8_t kitCount;
     FwCatalogKit kits[kFwCatalogKits];
@@ -65,7 +65,7 @@ bool fwVersionValid(const char* s);
 /// the version.
 bool fwReadCatalogVersion(FwCatalogVersion& out, JsonVariantConst v);
 
-/// A FwCatalog (~61 kB) belongs on the heap or in static storage, never on a task stack.
+
 /// False on anything but {"v":1,"kits":[...]}; then out.kitCount is 0.
 /// Entries with a name the device would have to escape, an unknown channel or
 /// tier, a zero size or a field past its limit are skipped, as is a kit with
