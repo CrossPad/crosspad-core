@@ -50,6 +50,9 @@ bool readVersion(FwCatalogVersion& out, JsonVariantConst v) {
     else if (std::strcmp(tier, "community") == 0) tmp.tier = FwTier::Community;
     else return false;
     if (!readFile(tmp.bin, v["bin"]) || !readFile(tmp.assets, v["assets"])) return false;
+    // Optional and cosmetic: a bad icon entry costs the icon, never the version.
+    JsonVariantConst icon = v["icon"];
+    if (!icon.isNull() && !readFile(tmp.icon, icon)) tmp.icon = FwCatalogFile{};
     if (!copyName(tmp.manifest, sizeof tmp.manifest, v["manifest"]) ||
         !copyName(tmp.sig, sizeof tmp.sig, v["sig"]))
         return false;

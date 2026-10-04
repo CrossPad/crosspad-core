@@ -28,6 +28,7 @@ struct FwCatalogVersion {
     FwTier tier;
     FwCatalogFile bin;
     FwCatalogFile assets;
+    FwCatalogFile icon;   ///< 48x48 LVGL image of the kit; name "" and size 0 when the release has none
     char manifest[kFwAssetNameMax];
     char sig[kFwAssetNameMax];
 };

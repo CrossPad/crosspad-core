@@ -6,8 +6,11 @@
 
 namespace crosspad {
 
+/// CrossPad.bin, assets.bin and (since core 1.41) icon.bin.
+constexpr size_t kFwManifestFilesMax = 3;
+
 struct FwManifestFile {
-    char name[16];      ///< "CrossPad.bin" | "assets.bin"
+    char name[16];      ///< "CrossPad.bin" | "assets.bin" | "icon.bin"
     uint32_t size;
     char sha256[65];    ///< hex, as written by tools/make_fw_package.py
 };
@@ -23,7 +26,7 @@ struct FwManifest {
     FwTier tier;
     char tag[kFwTagMax];
     uint8_t fileCount;
-    FwManifestFile files[2];
+    FwManifestFile files[kFwManifestFilesMax];
 };
 
 /// False unless kit, version, board_rev and a CrossPad.bin entry with a
