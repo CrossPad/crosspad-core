@@ -271,6 +271,17 @@ TEST_CASE("manifest refuses a path-like name or tag and keeps out untouched", "[
                                    "\"board_rev\":2,\"files\":{\"CrossPad.bin\":{\"size\":10,\"sha256\":\"" + sha + "\"}}}";
     CHECK_FALSE(parseFwManifest(badVersion.data(), badVersion.size(), m));
     CHECK(std::strcmp(m.kit, "keep") == 0);
+    // The manifest keeps the tag's 'v' in its version: a 23-character tag is the longest a board takes.
+    auto withVersion = [&](const std::string& version) {
+        return std::string("{\"name\":\"x\",\"kit\":\"full\",\"version\":\"") + version +
+               "\",\"board_rev\":2,\"files\":{\"CrossPad.bin\":{\"size\":10,\"sha256\":\"" + sha + "\"}}}";
+    };
+    const std::string tag23 = withVersion("v1.0.0-" + std::string(kFwVersionMax - 1 - 7, 'a'));
+    const std::string tag24 = withVersion("v1.0.0-" + std::string(kFwVersionMax - 7, 'a'));
+    CHECK(parseFwManifest(tag23.data(), tag23.size(), m));
+    std::strcpy(m.kit, "keep");
+    CHECK_FALSE(parseFwManifest(tag24.data(), tag24.size(), m));
+    CHECK(std::strcmp(m.kit, "keep") == 0);
     const std::string ok = make(std::string(47, 'a').c_str(), "v1");
     CHECK(parseFwManifest(ok.data(), ok.size(), m));
     const char* zeroSize = R"({"name":"x","kit":"full","version":"1.0.0","board_rev":2,
