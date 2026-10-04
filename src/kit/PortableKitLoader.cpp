@@ -430,12 +430,29 @@ bool PortableKitLoader::writeKitJson(const std::string& path,
                          : ArduinoJson::detail::DefaultAllocator::instance());
     kit_serialize(kit, doc);
 
-    // Opened only now: nothing that can throw runs while the handle is held.
-    FILE* file = std::fopen(path.c_str(), "w");
+    /* Written beside the real file and swapped in only once it is complete:
+     * a full card or a pulled one costs this save, never the kit already on
+     * the card. Opened only now, so nothing that can throw runs while the
+     * handle is held. */
+    const std::string tmp = path + ".tmp";
+    FILE* file = std::fopen(tmp.c_str(), "w");
     if (!file) return false;
     JsonFileWriter out{file};
     serializeJson(doc, out);
-    return closeWritten(file);
+    if (!closeWritten(file)) { std::remove(tmp.c_str()); return false; }
+
+    /* rename() will not replace a file on FatFs, so the old one steps aside
+     * first -- as .bak, not removed, so there is never a moment with neither. */
+    const std::string bak = path + ".bak";
+    std::remove(bak.c_str());
+    const bool hadOld = std::rename(path.c_str(), bak.c_str()) == 0;
+    if (std::rename(tmp.c_str(), path.c_str()) != 0) {
+        if (hadOld) std::rename(bak.c_str(), path.c_str());
+        std::remove(tmp.c_str());
+        return false;
+    }
+    std::remove(bak.c_str());
+    return true;
 }
 
 } // namespace crosspad

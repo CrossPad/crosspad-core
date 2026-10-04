@@ -89,7 +89,8 @@ protected:
     /// Read and parse a kit JSON file.
     bool readKitJson(const std::string& path, KitInfo& kit, bool parsePads);
 
-    /// Serialize and write a kit JSON file (creates parent dirs if needed).
+    /// Serialize and write a kit JSON file (creates parent dirs if needed),
+    /// through `.tmp` and `.bak`: a failed save leaves the old file as it was.
     bool writeKitJson(const std::string& path, const KitInfo& kit);
 
     /// Free the sample payload of a kit that is no longer current, so it can

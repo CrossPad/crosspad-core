@@ -15,11 +15,14 @@ namespace crosspad {
 /// on the board costs flash and, page for page, PSRAM.
 
 /// Reads through its own buffer, so the parser's one-character read() is not
-/// a locked stdio call per byte. The whole object is smaller than the
-/// std::ifstream it replaced (256 B on the S3), so no caller's stack grows.
-/// The file stays the caller's to close.
+/// a locked stdio call per byte. The file stays the caller's to close.
 class JsonFileReader {
 public:
+    /// The reader lives on the caller's stack -- the kit loader's and the LVGL
+    /// task's among them -- so the object stays under the 260 B a std::ifstream
+    /// takes on the S3, the budget those stacks were sized with.
+    static constexpr size_t kBufSize = 128;
+
     explicit JsonFileReader(FILE* f) : f_(f) {}
 
     int read() {
@@ -48,7 +51,7 @@ private:
     }
 
     FILE* f_;
-    char buf_[128];
+    char buf_[kBufSize];
     size_t pos_ = 0;
     size_t len_ = 0;
 };
