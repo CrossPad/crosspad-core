@@ -3,6 +3,7 @@
 #include <new>
 #include <crosspad/kit/KitPathUtils.hpp>
 #include "KitJsonParser.hpp"
+#include "../util/JsonStdio.hpp"
 
 #include <ArduinoJson.h>
 
@@ -14,7 +15,6 @@
 #include <unistd.h>
 #endif
 #include <cstdio>
-#include <fstream>
 #include <memory>
 #include <algorithm>
 
@@ -396,14 +396,15 @@ bool PortableKitLoader::discoverKitsRecursive(const std::string& dirPath,
 
 bool PortableKitLoader::readKitJson(const std::string& path, KitInfo& kit,
                                      bool parsePads) {
-    std::ifstream file(path);
-    if (!file.is_open()) return false;
+    FILE* file = std::fopen(path.c_str(), "r");
+    if (!file) return false;
 
     JsonDocument doc(jsonAllocator_
                          ? jsonAllocator_
                          : ArduinoJson::detail::DefaultAllocator::instance());
-    DeserializationError err = deserializeJson(doc, file);
-    file.close();
+    JsonFileReader in(file);
+    DeserializationError err = deserializeJson(doc, in);
+    std::fclose(file);
 
     if (err) {
         printf("KitLoader: %s: %s\n", path.c_str(), err.c_str());
@@ -424,17 +425,17 @@ bool PortableKitLoader::writeKitJson(const std::string& path,
                                       const KitInfo& kit) {
     mkdirRecursive(parentDir(path));
 
-    std::ofstream file(path);
-    if (!file.is_open()) return false;
-
     JsonDocument doc(jsonAllocator_
                          ? jsonAllocator_
                          : ArduinoJson::detail::DefaultAllocator::instance());
     kit_serialize(kit, doc);
-    serializeJson(doc, file);
-    file.close();
 
-    return true;
+    // Opened only now: nothing that can throw runs while the handle is held.
+    FILE* file = std::fopen(path.c_str(), "w");
+    if (!file) return false;
+    JsonFileWriter out{file};
+    serializeJson(doc, out);
+    return closeWritten(file);
 }
 
 } // namespace crosspad

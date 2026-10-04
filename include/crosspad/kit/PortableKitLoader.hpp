@@ -9,7 +9,7 @@
 
 namespace crosspad {
 
-/// Platform-agnostic kit loader using POSIX + std::fstream.
+/// Platform-agnostic kit loader using POSIX + stdio.
 /// Handles kit discovery, JSON I/O, and in-memory kit management.
 /// Does NOT load audio samples — platform wrappers add that.
 ///

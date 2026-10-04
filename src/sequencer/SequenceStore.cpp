@@ -1,11 +1,11 @@
 // SPDX-License-Identifier: MIT
 #include "crosspad/sequencer/SequenceStore.hpp"
+#include "../util/JsonStdio.hpp"
 
 #include <ArduinoJson.h>
 
 #include <cerrno>
 #include <cstdio>
-#include <fstream>
 #include <sys/stat.h>
 
 namespace crosspad {
@@ -23,8 +23,6 @@ bool SequenceStore::save(const PatternSequencer& seq, const std::string& path)
      * length of a card write would stall the beat, and a wrong velocity in one
      * event is a far smaller price. */
     const std::string tmp = path + ".tmp";
-    std::ofstream file(tmp);
-    if (!file.is_open()) return false;
 
     JsonDocument doc;
     doc["version"] = kVersion;
@@ -63,9 +61,11 @@ bool SequenceStore::save(const PatternSequencer& seq, const std::string& path)
         pair.add(reps);
     }
 
-    serializeJson(doc, file);
-    file.close();
-    if (!file) { std::remove(tmp.c_str()); return false; }
+    FILE* file = std::fopen(tmp.c_str(), "w");
+    if (!file) return false;
+    JsonFileWriter out{file};
+    serializeJson(doc, out);
+    if (!closeWritten(file)) { std::remove(tmp.c_str()); return false; }
 
     /* rename() will not replace a file on FatFs, so the old one steps aside
      * first -- as .bak, not removed, so there is never a moment with neither. */
@@ -93,8 +93,8 @@ SequenceLoad SequenceStore::open(PatternSequencer& seq, const std::string& path)
     bool found = false;
     for (const char* suffix : {"", ".tmp", ".bak"}) {
         const std::string p = path + suffix;
-        std::ifstream file(p);
-        if (!file.is_open()) {
+        FILE* file = std::fopen(p.c_str(), "r");
+        if (!file) {
             /* Only "no such file" is absent. A file that will not open -- on
              * the board, every FAT handle taken at boot -- is still somebody's
              * grooves, and must not read as "no scenes". */
@@ -105,7 +105,9 @@ SequenceLoad SequenceStore::open(PatternSequencer& seq, const std::string& path)
         }
         any = true;
         doc.clear();
-        const DeserializationError err = deserializeJson(doc, file);
+        JsonFileReader in(file);
+        const DeserializationError err = deserializeJson(doc, in);
+        std::fclose(file);
         if (err) continue;
         if (doc["version"].as<int>() > kVersion) return SequenceLoad::Unreadable;
         found = true;
