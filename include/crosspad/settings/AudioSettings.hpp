@@ -105,20 +105,15 @@ public:
     bool speakersEnabled;
     uint8_t inVolume;
     uint8_t outVolume;
-    /* The outputs' volumes, 0..100 (the ES8388's own range -- a UI slider
-     * must not go past it).
-     *
-     * These cells name **what you hear**, not a register:
-     *   [0][0] the speaker, [0][1] the headphones, [1][0] the line out.
-     *   [1][1] is spare.
-     *
-     * They used to be read as [codec][OUT1|OUT2] and the two platforms wrote
-     * down different wiring for the same board -- one of them a guess made
-     * when the only call available set a whole codec at once, which is how
-     * the top bar's "Speaker" slider came to drive the headphone amp. Which
-     * register each of these reaches is the platform's business now
-     * (IdfGuiPlatform), in one place, where it can be corrected by ear
-     * without touching anything that reads these. */
+    // Per-codec per-output volumes: [codec][out] where codec in {0,1}, out in {0=OUT1,1=OUT2}.
+    // Range is 0..100 (the ES8388 volume range) — UI sliders must not exceed it.
+    //
+    // Platform mapping (same NVS keys, different wiring — do not "unify" without
+    // touching the hardware):
+    //   ESP-IDF (dual codec): [0][0] = codec 0 = speakers, [1][0] = codec 1 =
+    //       headphones. The BSP only exposes whole-codec volume, so [*][1] is unused.
+    //   Arduino: OUT1 (=[c][0]) is the headphone amp and OUT2 (=[c][1]) the speaker
+    //       amp, both codecs driven together.
     uint8_t outVolumeCodec[2][2];
     uint8_t inVolumeCodec[2][2];
     Delay delay;
@@ -134,10 +129,10 @@ public:
 
     AudioSettings() : mute(false), speakersEnabled(true), inVolume(50), outVolume(50),
                       outVolumeCodec{}, inVolumeCodec{} {
-        outVolumeCodec[0][0] = 64;  // the speaker
-        outVolumeCodec[0][1] = 64;  // the headphones
-        outVolumeCodec[1][0] = 50;  // the line out
-        outVolumeCodec[1][1] = 50;  // spare
+        outVolumeCodec[0][0] = 64;  // Codec 0, OUT1 (Speakers)
+        outVolumeCodec[0][1] = 50;  // Codec 0, OUT2 (Line Out 1/2)
+        outVolumeCodec[1][0] = 64;  // Codec 1, OUT1 (Speakers)
+        outVolumeCodec[1][1] = 50;  // Codec 1, OUT2 (Line Out 3/4)
     }
 
     // The JSON form is what CrosspadSettings::saveTo() persists: levels, the
