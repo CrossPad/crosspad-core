@@ -124,3 +124,33 @@ TEST_CASE("card: a package that cannot be installed says so even when busy", "[f
     CHECK((p.enabled & kFwActInstallRun) == 0);
     CHECK(p.installBlock == FwCardBlock::NotInstallable);
 }
+
+TEST_CASE("card: a rolled-back other slot is run again or reinstalled", "[fw]") {
+    FwCardFacts f = base();
+    f.onCard = f.complete = f.installable = f.inCatalog = true;
+    f.slot = FwSlotRole::Other;
+    f.slotLabel = 'B';
+    f.slotRolledBack = true;
+    FwCardPlan p = fwCardPlan(f);
+    CHECK(p.shown == (kFwActRun | kFwActInstallRun | kFwActPin | kFwActDelete));
+    CHECK(p.enabled == (kFwActRun | kFwActInstallRun | kFwActPin));
+    CHECK(p.deleteBlock == FwCardBlock::InSlot);   // still in the slot: never deleted
+    f.updaterBusy = true;
+    CHECK((fwCardPlan(f).enabled & (kFwActRun | kFwActInstallRun)) == 0);
+    f = base();                                    // only the slot holds it: fetched and written afresh
+    f.inCatalog = true;
+    f.slot = FwSlotRole::Other;
+    f.slotLabel = 'B';
+    f.slotRolledBack = true;
+    CHECK(fwCardPlan(f).shown == (kFwActRun | kFwActDownload | kFwActInstall));
+    f.slotRolledBack = false;                      // a slot that started is only run
+    CHECK(fwCardPlan(f).shown == kFwActRun);
+}
+
+TEST_CASE("card: the running slot is never reinstalled", "[fw]") {
+    FwCardFacts f = base();
+    f.onCard = f.complete = f.installable = true;
+    f.slot = FwSlotRole::Running;
+    f.slotRolledBack = true;                       // not a state the platform reports; the rule holds anyway
+    CHECK((fwCardPlan(f).shown & (kFwActInstallRun | kFwActRun)) == 0);
+}

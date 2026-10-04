@@ -13,6 +13,7 @@ struct FwCardFacts {
     bool installable;   ///< the library verdict lets fw_install_start() take it
     FwSlotRole slot;    ///< where the image already is
     char slotLabel;     ///< 'A' / 'B' when slot != None
+    bool slotRolledBack;   ///< slot == Other, and that slot did not start last time
     bool pinned;
     bool busyThis;      ///< the updater is downloading/installing this version now
     bool readyThis;     ///< installed this boot, waiting for Run the new version
@@ -44,7 +45,9 @@ struct FwCardPlan {
 /// The table has no tier or age fact, so two prompts are the UI's, not this
 /// plan's: the confirmation before the first install of a community kit and
 /// the question before installing a version older than the newest.
-/// Delete is not offered while a package is pinned.
+/// Delete is not offered while a package is pinned. An image in a slot is run,
+/// never installed again -- unless the other slot rolled it back: then it is
+/// offered both ways, run once more or written into the slot afresh.
 
 /// Which actions a kit card shows for a version, and which of them are enabled.
 FwCardPlan fwCardPlan(const FwCardFacts& f);

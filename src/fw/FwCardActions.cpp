@@ -20,8 +20,10 @@ FwCardPlan fwCardPlan(const FwCardFacts& f) {
         }
     }
     if (f.slot == FwSlotRole::Other && !f.readyThis) show(kFwActRun, idle);
-    // An image already in a slot is run, never installed again.
-    if (f.slot != FwSlotRole::None) return p;
+    // An image already in a slot is run, never installed again -- except one the
+    // other slot rolled back: it did not start, and a fresh copy may be the cure.
+    const bool reinstall = f.slot == FwSlotRole::Other && f.slotRolledBack;
+    if (f.slot != FwSlotRole::None && !reinstall) return p;
     if (f.onCard && f.complete) {
         show(kFwActInstallRun, f.installable && idle);
         if (!f.installable) p.installBlock = FwCardBlock::NotInstallable;
