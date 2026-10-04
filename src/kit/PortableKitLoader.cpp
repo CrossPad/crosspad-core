@@ -14,6 +14,7 @@
 #include <dirent.h>
 #include <unistd.h>
 #endif
+#include <cerrno>
 #include <cstdio>
 #include <memory>
 #include <algorithm>
@@ -366,10 +367,16 @@ bool PortableKitLoader::discoverKitsRecursive(const std::string& dirPath,
         std::string kitJsonPath = entryPath + "/kit.json";
         std::string altJsonPath = entryPath + "/" + name + ".json";
 
+        /* A save cut between its two renames leaves only <file>.bak (see
+         * writeKitJson); readKitJson() falls back to it. A lone .tmp may be
+         * partial and is not a kit. */
+        const auto present = [](const std::string& p) {
+            return pathExists(p) || pathExists(p + ".bak");
+        };
         std::string jsonPath;
-        if (pathExists(kitJsonPath)) {
+        if (present(kitJsonPath)) {
             jsonPath = kitJsonPath;
-        } else if (pathExists(altJsonPath)) {
+        } else if (present(altJsonPath)) {
             jsonPath = altJsonPath;
         }
 
@@ -397,6 +404,8 @@ bool PortableKitLoader::discoverKitsRecursive(const std::string& dirPath,
 bool PortableKitLoader::readKitJson(const std::string& path, KitInfo& kit,
                                      bool parsePads) {
     FILE* file = std::fopen(path.c_str(), "r");
+    // Only a missing file falls back: what writeKitJson leaves when cut short.
+    if (!file && errno == ENOENT) file = std::fopen((path + ".bak").c_str(), "r");
     if (!file) return false;
 
     JsonDocument doc(jsonAllocator_
@@ -442,10 +451,15 @@ bool PortableKitLoader::writeKitJson(const std::string& path,
     if (!closeWritten(file)) { std::remove(tmp.c_str()); return false; }
 
     /* rename() will not replace a file on FatFs, so the old one steps aside
-     * first -- as .bak, not removed, so there is never a moment with neither. */
+     * first -- as .bak, not removed, so there is never a moment with neither.
+     * With no kit.json (a save cut short before), the .bak is the kit: it
+     * stays until the new file is in. */
     const std::string bak = path + ".bak";
-    std::remove(bak.c_str());
-    const bool hadOld = std::rename(path.c_str(), bak.c_str()) == 0;
+    bool hadOld = false;
+    if (pathExists(path)) {
+        std::remove(bak.c_str());
+        hadOld = std::rename(path.c_str(), bak.c_str()) == 0;
+    }
     if (std::rename(tmp.c_str(), path.c_str()) != 0) {
         if (hadOld) std::rename(bak.c_str(), path.c_str());
         std::remove(tmp.c_str());
