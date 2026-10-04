@@ -162,28 +162,21 @@ const char* fwStoreLoadName(FwStoreLoad r) {
     return "?";
 }
 
+// The fields fwStoreFromDoc reads. A document parsed from text rather than
+// built with proxy chains: ~1 kB less image text, which on the board is PSRAM.
+constexpr char kCacheFilterJson[] =
+    "{\"v\":true,\"fetched\":true,\"rev\":true,\"catalog\":{\"v\":true,\"kits\":[{"
+    "\"kit\":true,\"display_name\":true,\"author\":true,\"versions\":[{"
+    "\"version\":true,\"channel\":true,\"tier\":true,\"tag\":true,\"manifest\":true,\"sig\":true,"
+    "\"bin\":{\"name\":true,\"size\":true},\"assets\":{\"name\":true,\"size\":true},"
+    "\"icon\":{\"name\":true,\"size\":true}}]}]}}";
+
 void fwStoreCacheFilter(JsonDocument& f) {
-    f["v"] = true;
-    f["fetched"] = true;
-    f["rev"] = true;
-    f["catalog"]["v"] = true;
-    // Whole chains: a proxy converted to a JsonVariant does not create the
-    // element, so each path is written out from the root.
-    f["catalog"]["kits"][0]["kit"] = true;
-    f["catalog"]["kits"][0]["display_name"] = true;
-    f["catalog"]["kits"][0]["author"] = true;
-    f["catalog"]["kits"][0]["versions"][0]["version"] = true;
-    f["catalog"]["kits"][0]["versions"][0]["channel"] = true;
-    f["catalog"]["kits"][0]["versions"][0]["tier"] = true;
-    f["catalog"]["kits"][0]["versions"][0]["tag"] = true;
-    f["catalog"]["kits"][0]["versions"][0]["manifest"] = true;
-    f["catalog"]["kits"][0]["versions"][0]["sig"] = true;
-    f["catalog"]["kits"][0]["versions"][0]["bin"]["name"] = true;
-    f["catalog"]["kits"][0]["versions"][0]["bin"]["size"] = true;
-    f["catalog"]["kits"][0]["versions"][0]["assets"]["name"] = true;
-    f["catalog"]["kits"][0]["versions"][0]["assets"]["size"] = true;
-    f["catalog"]["kits"][0]["versions"][0]["icon"]["name"] = true;
-    f["catalog"]["kits"][0]["versions"][0]["icon"]["size"] = true;
+    // The same (const char*, size_t) parse parseFwCatalog links. Out of memory
+    // leaves the filter empty, and an empty filter keeps nothing: Format.
+    const char* json = kCacheFilterJson;
+    const size_t len = sizeof kCacheFilterJson - 1;
+    deserializeJson(f, json, len);
 }
 
 FwStoreLoad fwStoreFromDoc(const JsonDocument& doc, uint8_t boardRev, FwStore& out) {
