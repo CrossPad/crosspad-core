@@ -8,6 +8,14 @@ on:
     branches: [main]
   workflow_dispatch:
 
+# Opt-in local runner (as in platform-idf, tools/ci_runner.py there): with the
+# repository variable CI_RUNNER set (to `self-hosted`), jobs run on hardware
+# machine inside a clean ubuntu:24.04 container -- root, nothing installed on
+# the host. Unset, they run on ubuntu-latest exactly as before (an empty
+# container image means no container). Unset the variable before that machine
+# goes off; GitHub never falls back from a self-hosted label to a hosted runner.
+# SECURITY: pull_request then runs the PR's code on hardware PC. Before this
+# repository goes public, take pull_request off the self-hosted runner.
 jobs:
   dispatch:
     # Only run for tags, merged PRs (not closed-without-merge), or manual dispatch
@@ -15,7 +23,11 @@ jobs:
       github.event_name == 'push' ||
       github.event_name == 'workflow_dispatch' ||
       (github.event_name == 'pull_request' && github.event.pull_request.merged == true)
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.CI_RUNNER || 'ubuntu-latest' }}
+    container: ${{ vars.CI_RUNNER && 'ubuntu:24.04' || '' }}
+    defaults:
+      run:
+        shell: bash
 
     strategy:
       fail-fast: false
@@ -26,6 +38,15 @@ jobs:
           - repo: matixan/2playerCrosspad
 
     steps:
+      # The hosted image has these; the container has none. git before
+      # checkout, or actions/checkout falls back to a tarball.
+      - name: Base tools (container)
+        if: vars.CI_RUNNER
+        run: |
+          apt-get update
+          DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+            git ca-certificates curl xz-utils bzip2 python3 cmake ninja-build
+
       - name: Determine ref label
         id: label
         run: |

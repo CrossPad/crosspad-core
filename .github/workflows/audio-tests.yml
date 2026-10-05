@@ -19,18 +19,40 @@ on:
       - '.github/workflows/audio-tests.yml'
   workflow_dispatch:
 
+# Opt-in local runner (as in platform-idf, tools/ci_runner.py there): with the
+# repository variable CI_RUNNER set (to `self-hosted`), jobs run on hardware
+# machine inside a clean ubuntu:24.04 container -- root, nothing installed on
+# the host. Unset, they run on ubuntu-latest exactly as before (an empty
+# container image means no container). Unset the variable before that machine
+# goes off; GitHub never falls back from a self-hosted label to a hosted runner.
+# SECURITY: pull_request then runs the PR's code on hardware PC. Before this
+# repository goes public, take pull_request off the self-hosted runner.
 jobs:
   tier1-unit:
     name: Tier 1 portable unit tests
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.CI_RUNNER || 'ubuntu-latest' }}
+    container: ${{ vars.CI_RUNNER && 'ubuntu:24.04' || '' }}
+    defaults:
+      run:
+        shell: bash
     steps:
+      # The hosted image has these; the container has none. git before
+      # checkout, or actions/checkout falls back to a tarball.
+      - name: Base tools (container)
+        if: vars.CI_RUNNER
+        run: |
+          apt-get update
+          DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+            git ca-certificates curl xz-utils bzip2 python3 cmake ninja-build
+
       - name: Checkout
         uses: actions/checkout@v4
 
       - name: Install build deps
         run: |
-          sudo apt-get update
-          sudo apt-get install -y cmake ninja-build g++
+          SUDO=$([ "$(id -u)" = 0 ] || echo sudo)   # root in the container, no sudo there
+          $SUDO apt-get update
+          $SUDO apt-get install -y cmake ninja-build g++
 
       - name: Configure tests/
         working-directory: tests

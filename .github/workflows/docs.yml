@@ -13,19 +13,39 @@ on:
 permissions:
   contents: read
 
+# Opt-in local runner (as in platform-idf, tools/ci_runner.py there): with the
+# repository variable CI_RUNNER set (to `self-hosted`), jobs run on hardware
+# machine inside a clean ubuntu:24.04 container -- root, nothing installed on
+# the host. Unset, they run on ubuntu-latest exactly as before (an empty
+# container image means no container). Unset the variable before that machine
+# goes off; GitHub never falls back from a self-hosted label to a hosted runner.
 jobs:
   docs:
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.CI_RUNNER || 'ubuntu-latest' }}
+    container: ${{ vars.CI_RUNNER && 'ubuntu:24.04' || '' }}
+    defaults:
+      run:
+        shell: bash
     steps:
+      # The hosted image has these; the container has none. git before
+      # checkout, or actions/checkout falls back to a tarball.
+      - name: Base tools (container)
+        if: vars.CI_RUNNER
+        run: |
+          apt-get update
+          DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+            git ca-certificates curl xz-utils bzip2 python3 cmake ninja-build
+
       - uses: actions/checkout@v4
 
       - name: Install Doxygen + Graphviz
         run: |
-          sudo apt-get update
-          sudo apt-get install -y graphviz
-          wget -q https://www.doxygen.nl/files/doxygen-1.16.1.linux.bin.tar.gz
+          SUDO=$([ "$(id -u)" = 0 ] || echo sudo)   # root in the container, no sudo there
+          $SUDO apt-get update
+          $SUDO apt-get install -y graphviz
+          curl -fsSLO https://www.doxygen.nl/files/doxygen-1.16.1.linux.bin.tar.gz
           tar xzf doxygen-1.16.1.linux.bin.tar.gz
-          sudo install -m 755 doxygen-1.16.1/bin/doxygen /usr/local/bin/doxygen
+          $SUDO install -m 755 doxygen-1.16.1/bin/doxygen /usr/local/bin/doxygen
 
       - name: Generate docs
         run: |
