@@ -19,11 +19,13 @@ jobs:
       github.event_name == 'push' ||
       github.event_name == 'workflow_dispatch' ||
       (github.event_name == 'pull_request' && github.event.pull_request.merged == true)
-    # Always GitHub's runner, CI_RUNNER or not, and no container: a few
+    # GitHub's runner, whatever CI_RUNNER says, and no container: a few
     # seconds of API calls that need no tools, with a PAT that reaches other
-    # repositories -- never on hardware, where every job's container gets
-    # the host's Docker socket.
-    runs-on: ubuntu-latest
+    # repositories -- not for the bench, where every job's container gets
+    # the host's Docker socket. Only while GitHub's runners cannot start jobs
+    # (Actions billing) set the repository variable CI_SECRETS_RUNNER to
+    # `self-hosted`, and unset it again after.
+    runs-on: ${{ vars.CI_SECRETS_RUNNER || 'ubuntu-latest' }}
 
     strategy:
       fail-fast: false
