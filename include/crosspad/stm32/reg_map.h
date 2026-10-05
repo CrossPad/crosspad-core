@@ -10,7 +10,8 @@
  * config sync), crosspad-gui, the ESP-IDF stm32_hal component (which includes
  * this file through stm32_reg_map.h) and the Arduino Wire implementation.
  *
- * Last sync: 2026-08-30 (0x000F adds REG_IDENT_FW_PCB, REG_IDENT_PCB_REV becomes the OTP board rev).
+ * Last sync: 2026-10-04 (0x0010 adds REG_IDENT_SERIAL / REG_IDENT_OTP_BLOCK, the PCB serial from OTP).
+ * Previous: 2026-08-30 (0x000F adds REG_IDENT_FW_PCB, REG_IDENT_PCB_REV becomes the OTP board rev).
  * Previous: 2026-08-29 (0x000E adds REG_CMD_FW_UPDATE / FW_UPDATE_MAGIC —
  * the ESP-driven STM reflash). Previous: 2026-08-25 (mirror of STM 0x000B — REG_IDENT_BOOT_COUNT,
  * REG_IN_PAD_VELRAW_BASE/REG_IN_PAD_AB_BASE, LED1/LED2 FREQ_HI/LO,
@@ -43,7 +44,7 @@ extern "C" {
  * active/qualified flags. Bumped 2026-08-28 to 0x000C for the link-watchdog
  * reset telemetry (REG_ESP_RST_WD_*). Keep in sync with CrossPad_STM32_r20
  * app/inc/reg_map.h. */
-#define STM32_PROTO_VERSION         0x000F
+#define STM32_PROTO_VERSION         0x0010
 
 /* Block bases. */
 #define REG_IDENTITY_BASE           0x0000
@@ -84,7 +85,12 @@ extern "C" {
 #define REG_IDENT_PCB_REV           (REG_IDENTITY_BASE + 0x08)
 #define REG_IDENT_BOOT_COUNT        (REG_IDENTITY_BASE + 0x09) /* RO: low 8 bits of TAMP boot counter; ESP detects STM reset via change */
 #define REG_IDENT_FW_PCB            (REG_IDENTITY_BASE + 0x0A) /* PCB the running firmware was built for (0xFF on pre-0x000F STM) */
-#define REG_IDENT_LEN               0x0B
+#define REG_IDENT_SERIAL_B3         (REG_IDENTITY_BASE + 0x0B) /* PCB serial NNNN of CPNNNN, u32 BE; 0xFFFFFFFF = not provisioned (and on pre-0x0010 STM) */
+#define REG_IDENT_SERIAL_B2         (REG_IDENTITY_BASE + 0x0C)
+#define REG_IDENT_SERIAL_B1         (REG_IDENTITY_BASE + 0x0D)
+#define REG_IDENT_SERIAL_B0         (REG_IDENTITY_BASE + 0x0E)
+#define REG_IDENT_OTP_BLOCK         (REG_IDENTITY_BASE + 0x0F) /* OTP block in use, 1..15; 0 = none */
+#define REG_IDENT_LEN               0x10
 
 /* Inputs (RO snapshot). */
 #define REG_IN_ENCODER              (REG_INPUTS_BASE  + 0x00)  /* low 4 bits = detent index 0..15, bit7 = enc_btn */
