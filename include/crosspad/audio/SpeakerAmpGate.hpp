@@ -47,6 +47,10 @@ public:
     /// Maintenance-thread side: returns the state the amp should be in now.
     bool poll(uint32_t nowMs) {
         const float peak = peakSincePoll_.exchange(0.0f, std::memory_order_relaxed);
+        if (peak >= cfg_.offThreshold) {     // heard, whether or not the amp may run
+            lastSignalMs_ = nowMs;
+            heardSignal_ = true;
+        }
 
         if (!allowed_.load(std::memory_order_relaxed)) {
             on_ = false;
@@ -68,12 +72,20 @@ public:
 
     bool state() const { return on_; }
 
+    /// True when the output carried signal within windowMs of nowMs (as of the
+    /// last poll) — regardless of setAllowed(), so audio to headphones counts.
+    bool signalWithin(uint32_t nowMs, uint32_t windowMs) const {
+        return heardSignal_ && (uint32_t)(nowMs - lastSignalMs_) <= windowMs;
+    }
+
 private:
     Config cfg_{};
     std::atomic<float> peakSincePoll_{0.0f};
     std::atomic<bool>  allowed_{true};
     bool     on_ = false;
     uint32_t lastLoudMs_ = 0;
+    bool     heardSignal_ = false;
+    uint32_t lastSignalMs_ = 0;
 };
 
 } // namespace crosspad

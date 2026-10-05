@@ -27,7 +27,9 @@ bool Stm32ConfigSync::pushAll(const Stm32Settings& s) {
     // USB_GATE (REG_CTL_USB_GATE_S/E) intentionally omitted — charger source
     // supervisor is STM-owned; ESP writing these registers forces CHG_SRC_MANUAL
     // and disables STM charger arbitration.
-    w8(REG_CTL_EN_3V3_HOLD, s.en3v3Hold);
+    // EN_3V3_HOLD intentionally omitted too: the STM holds the ESP rail high on
+    // purpose (BOOT0 race on wake, esptool bridge) and a write of 1 released it
+    // to HiZ on every push; a stored 0 would cut the ESP's own power.
     w8(REG_CTL_WAKE_BRIGHT, s.wakeBrightness);
     w8(REG_CTL_USB_SUSP_S, s.usbSuspendS);
 

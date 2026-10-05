@@ -50,6 +50,9 @@ TEST_CASE("Stm32ConfigSync::pushAll writes the ESP-authoritative set", "[stm][sy
         }
     }
     REQUIRE(swapWrites == 16);
+
+    // The ESP rail is the STM's to hold: pushAll never writes EN_3V3_HOLD.
+    for (const auto& w : bus.writes) REQUIRE(w.reg != REG_CTL_EN_3V3_HOLD);
     REQUIRE(bus.lastByteAt(REG_MAPPING_BASE + 6 * REG_MAPPING_STRIDE + REG_MAPPING_FIELD_SWAP) == 1);  // pad 6 default
 
     // per-pad config block: pad 2 analog byte at PAD_CFG_BASE + 2*6 + FIELD_ANALOG
