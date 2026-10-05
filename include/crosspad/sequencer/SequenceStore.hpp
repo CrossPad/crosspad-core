@@ -30,8 +30,8 @@ enum class SequenceLoad : uint8_t { Absent, Loaded, Unreadable };
 /// file also carries the bpm it was played at, so the scenes come back at the
 /// tempo they were recorded.
 ///
-/// Portable: std::fstream and ArduinoJson, the same pair PortableKitLoader
-/// uses, so the PC simulator reads and writes the same files.
+/// Portable: stdio and ArduinoJson, the same pair PortableKitLoader uses, so
+/// the PC simulator reads and writes the same files.
 class SequenceStore {
 public:
     /// File format version written into every file. Bumped only when a reader

@@ -1,6 +1,7 @@
 #pragma once
 #include <cstdint>
 #include <cstddef>
+#include "crosspad/fw/Semver.hpp"
 
 namespace crosspad {
 
@@ -121,6 +122,10 @@ public:
     bool bluetoothActive = false;
     bool bluetoothConnected = false;
     bool wifiConnected = false;
+    /// The platform's WiFi link (crosspad::WifiLinkState) and the last RSSI
+    /// it read while up. wifiConnected stays the "up" shorthand older readers use.
+    uint8_t wifiState = 0;
+    int8_t wifiRssi = 0;
     bool sdCardDetected = false;
     bool imuDetected = false;
     int8_t batteryPct = 0;
@@ -140,7 +145,7 @@ public:
     /// Newest firmware a host reported (FW_LATEST, persisted by the platform so
     /// it survives a reset with no host attached) and whether it is newer than
     /// the running one.
-    char fwLatest[16] = {};
+    char fwLatest[kFwVersionMax] = {};
     bool fwUpdateAvailable = false;
 
     /// Three missed reports of a host that sends one every 2 s.
