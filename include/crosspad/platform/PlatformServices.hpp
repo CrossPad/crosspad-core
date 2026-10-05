@@ -47,6 +47,7 @@ class ISampleTools;
 class IInputGain;
 class IPadMix;
 class PitchedInstrument;
+class IInstrumentHost;
 class Stm32MessageHandler;
 
 /**
@@ -97,6 +98,10 @@ struct PlatformServices {
     /// reach it for what only the engine knows — its scope tap, its last note.
     /// Null on a platform without one; every user must check.
     PitchedInstrument* pitchedInstrument = nullptr;
+
+    /// Lends that engine to an app with an instrument of its own, and keeps
+    /// the app's instrument library. Null where the platform has none.
+    IInstrumentHost*  instrumentHost  = nullptr;
 
     /// Decoder of the CrossPad SysEx catalog (STM32 frames and host frames
     /// alike). A portable app hangs its host-protocol callback here

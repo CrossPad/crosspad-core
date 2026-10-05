@@ -17,7 +17,7 @@ enum class KitEngine : uint8_t {
 };
 
 /// Mirrors SampleBank::kMaxZones — zones beyond this are dropped at parse time.
-static constexpr uint8_t kInstrumentMaxZones = 4;
+static constexpr uint8_t kInstrumentMaxZones = 24;
 
 /// One recorded note of a pitched instrument.
 struct InstrumentZoneSpec {
