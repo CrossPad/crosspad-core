@@ -33,12 +33,15 @@ TEST_CASE("Stm32ConfigSync::pushAll writes the ESP-authoritative set", "[stm][sy
     REQUIRE(bus.lastByteAt(REG_CTL_SLEEP_TO_S_HI) == 0x04);
     REQUIRE(bus.lastByteAt(REG_CTL_SLEEP_TO_S_LO) == 0xD2);
 
-    // charger registers (0x0320..REG_CTL_VEL_CURVE_DEF-1) must NOT be touched.
+    // Charger and button globals (0x0320..REG_CTL_VEL_CURVE_DEF-1) must NOT be
+    // touched, press debounce excepted: the note-on window is the ESP's.
     // In the pad-mapping block only the swap field is ours (core 1.17.1): the
     // cell binding (mux/channel) stays the STM's, which cell is "left" is not.
+    REQUIRE(bus.lastByteAt(REG_CTL_BTN_PRESS_DB_MS) == BOARD_PRESS_DEBOUNCE_MS_DEF);
     int swapWrites = 0;
     for (const auto& w : bus.writes) {
-        bool inChargerRange = (w.reg >= REG_CTL_CHG_ICHG_HI && w.reg < REG_CTL_VEL_CURVE_DEF);
+        bool inChargerRange = (w.reg >= REG_CTL_CHG_ICHG_HI && w.reg < REG_CTL_VEL_CURVE_DEF &&
+                               w.reg != REG_CTL_BTN_PRESS_DB_MS);
         REQUIRE_FALSE(inChargerRange);
         if (w.reg >= REG_MAPPING_BASE && w.reg < REG_MAPPING_BASE + REG_MAPPING_LEN) {
             uint16_t off = (uint16_t)(w.reg - REG_MAPPING_BASE);
@@ -64,6 +67,16 @@ TEST_CASE("Stm32ConfigSync::pushAll writes the ESP-authoritative set", "[stm][sy
             foundPad2 = true;
         }
     REQUIRE(foundPad2);
+}
+
+TEST_CASE("Stm32ConfigSync::pushAll carries the press debounce the unit keeps", "[stm][sync]") {
+    MockStm32Bus bus;
+    Stm32Settings s;
+    s.pressDebounceMs = 9;
+    Stm32ConfigSync sync(bus);
+    REQUIRE(sync.pushAll(s) == true);
+    REQUIRE(bus.lastByteAt(REG_CTL_BTN_PRESS_DB_MS) == 9);
+    for (const auto& w : bus.writes) REQUIRE(w.reg != REG_CTL_BTN_RELEASE_DB_MS);
 }
 
 TEST_CASE("Stm32ConfigSync::readBootCount", "[stm][sync]") {

@@ -9,5 +9,6 @@
 #define BOARD_CC_PAN_BASE_DEF     48
 #define BOARD_ANALOG_MIN_MS_DEF   16
 #define BOARD_ANALOG_DELTA_DEF    2
+#define BOARD_PRESS_DEBOUNCE_MS_DEF 6    // note-on (and velocity) window; the STM builds with 15
 #define BOARD_LCD_BRIGHTNESS_DEF  100
 #define BOARD_RGB_BRIGHTNESS_DEF  100

@@ -44,8 +44,12 @@ bool Stm32ConfigSync::pushAll(const Stm32Settings& s) {
     w8(REG_CTL_ENC_CC_CHAN, s.encCcChan);
     w8(REG_CTL_ENC_CC_STEP, s.encCcStep);
 
-    // Charger registers (REG_CTL_CHG_ICHG_HI = 0x0320 .. REG_CTL_VEL_CURVE_DEF-1)
+    // Charger registers (REG_CTL_CHG_ICHG_HI = 0x0320 .. REG_CTL_CHG_AUTO_LIM_LO)
     // are intentionally skipped — charger is not ESP-authoritative.
+
+    // Press debounce (0x033C), the one button global the ESP owns: the note-on
+    // waits it out. Threshold, hysteresis and release debounce stay the STM's.
+    w8(REG_CTL_BTN_PRESS_DB_MS, s.pressDebounceMs);
 
     // analog globals (0x033E..0x0344)
     w8(REG_CTL_VEL_CURVE_DEF, s.velCurveDef);
