@@ -10,8 +10,6 @@
 #include "crosspad/event/IEventBus.hpp"
 #include "esp_event.h"
 
-#include <atomic>
-
 namespace crosspad {
 
 /// Configuration for the event bus
@@ -60,10 +58,6 @@ public:
     bool sendNoteOn(uint8_t channel, uint8_t note, uint8_t velocity, EventSource source) override;
     bool sendNoteOff(uint8_t channel, uint8_t note, EventSource source) override;
 
-    /// Engine feedback (postSamplePlayback from EventSource::SamplePlayback)
-    /// not posted since boot: the queue was full, and feedback never waits.
-    uint32_t feedbackDropped() const { return feedbackDropped_.load(std::memory_order_relaxed); }
-
 private:
     struct Subscription {
         EventHandler handler;
@@ -75,14 +69,12 @@ private:
     static void espEventTrampoline(void* handler_arg, esp_event_base_t base,
                                    int32_t id, void* event_data);
 
-    /// @p wait 0 neither waits for room in the queue nor logs a miss.
-    bool postEvent(EventType type, const void* data, size_t dataSize, TickType_t wait = portMAX_DELAY);
+    bool postEvent(EventType type, const void* data, size_t dataSize);
     bool sendEvent(EventType type, const void* data, size_t dataSize);
 
     esp_event_loop_handle_t eventLoop_ = nullptr;
     bool initialized_ = false;
     EspEventBusConfig config_;
-    std::atomic<uint32_t> feedbackDropped_{0};
 };
 
 } // namespace crosspad

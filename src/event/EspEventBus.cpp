@@ -96,16 +96,14 @@ void EspEventBus::unsubscribe(SubscriptionHandle handle) {
 
 // -- Post helpers -------------------------------------------------------------
 
-bool EspEventBus::postEvent(EventType type, const void* data, size_t dataSize, TickType_t wait) {
+bool EspEventBus::postEvent(EventType type, const void* data, size_t dataSize) {
     if (!eventLoop_) return false;
 
     esp_err_t err = esp_event_post_to(
         eventLoop_, CROSSPAD_EVENTS, static_cast<int32_t>(type),
-        const_cast<void*>(data), dataSize, wait);
+        const_cast<void*>(data), dataSize, portMAX_DELAY);
 
-    /* A post that may not wait comes from a task that may not print either
-     * (the audio render); its caller counts the miss. */
-    if (err != ESP_OK && wait) {
+    if (err != ESP_OK) {
         ESP_LOGW(TAG, "Failed to post %s: %s", getEventName(type), esp_err_to_name(err));
     }
     return err == ESP_OK;
@@ -176,20 +174,20 @@ bool EspEventBus::postGuiUpdateRequired(EventSource source) {
 }
 
 bool EspEventBus::postSamplePlayback(uint8_t note, uint8_t wavIdx, bool isOn, EventSource source, uint8_t velocity) {
+    /* The engine's report that a voice started or ended (EventSource::
+     * SamplePlayback) is not sent on this bus. It comes from the audio
+     * render, which may not wait for this queue's task (priority 4, no
+     * inheritance through a queue), and it has nothing to say: the render
+     * has already set the pad's state (PadManager::handleSamplePlay). Posted,
+     * it was ~2/3 of the queue's traffic -- requests to play from the pads,
+     * MIDI and BLE waited behind it -- and, posted without waiting, a
+     * subscriber could apply an older report's isOn after a newer one was
+     * dropped and leave a pad lit. A request to play (App, MIDI) is posted
+     * and waits: losing it would lose a note. */
+    if (source == EventSource::SamplePlayback) return true;
     SamplePlaybackData data = { .note = note, .wavIdx = wavIdx, .isOn = isOn, .velocity = velocity, .source = source };
     ESP_LOGD(TAG, "Post SamplePlayback: note=%d wav=%d on=%s vel=%d src=%s",
              note, wavIdx, isOn ? "true" : "false", velocity, getSourceName(source));
-    /* The engine's report that a voice started or ended is posted from the
-     * audio render, which must never wait for this queue's task (a lower
-     * priority, no inheritance through a queue). It is redundant -- the render
-     * has already set the pad's state -- so with the queue full it is dropped
-     * and counted. A request to play (App, MIDI) still waits: losing it would
-     * lose a note. */
-    if (source == EventSource::SamplePlayback) {
-        if (postEvent(EventType::SamplePlayback, &data, sizeof(data), 0)) return true;
-        feedbackDropped_.fetch_add(1, std::memory_order_relaxed);
-        return false;
-    }
     return postEvent(EventType::SamplePlayback, &data, sizeof(data));
 }
 
