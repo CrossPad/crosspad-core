@@ -69,6 +69,20 @@ public:
     /// sub-folder per instrument, its file named kFileName.
     virtual std::string libraryRoot() const = 0;
 
+    /// What the loaded bank made of a zone: the length of its PCM and the
+    /// rate it ended up at. A caller setting loop points needs this -- the
+    /// spec stores them as frames, and frames mean nothing without a length
+    /// to put them against, so a UI without it can only guess.
+    ///
+    /// Not pure, and zero where nothing is loaded: a host that does not keep
+    /// its bank around (the PC simulator) is still a host, and a caller must
+    /// treat frames == 0 as "cannot say" rather than "empty".
+    struct ZoneAudio {
+        uint32_t frames     = 0;
+        uint32_t sampleRate = 0;
+    };
+    virtual ZoneAudio zoneAudio(uint8_t zoneIdx) const { (void)zoneIdx; return {}; }
+
     static constexpr const char* kFileName = "instrument.json";
 
     /// A zone longer than this is cut to it on load: an instrument is notes,
