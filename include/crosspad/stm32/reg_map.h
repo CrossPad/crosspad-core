@@ -179,6 +179,8 @@ extern "C" {
 #define REG_SOC_FLAG_CONVERGED      0x02
 #define REG_SOC_SRC_MASK            0x0C   /* >>2: 0 rest, 1 chg, 2 dischg, 3 full */
 #define REG_SOC_FLAG_COLD           0x10
+#define REG_SOC_FLAG_NO_BATTERY     0x20   /* charger's no-battery latch; VALID is clear then */
+#define REG_SOC_FLAG_LOW_BATTERY    0x40   /* on its own power, VBAT below 3.3 V */
 
 /* CHG_FLAGS bitmask helpers. */
 #define REG_CHG_FLAG_PG             0x01
