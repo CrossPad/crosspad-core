@@ -12,40 +12,33 @@ on:
 
 permissions:
   contents: read
+  packages: read   # pulls the CI image
 
-# Opt-in local runner (as in platform-idf, tools/ci_runner.py there): with the
-# repository variable CI_RUNNER set (to `self-hosted`), jobs run on hardware
-# machine inside a clean ubuntu:24.04 container -- root, nothing installed on
-# the host. Unset, they run on ubuntu-latest exactly as before (an empty
-# container image means no container). Unset the variable before that machine
-# goes off; GitHub never falls back from a self-hosted label to a hosted runner.
+# CI image: ghcr.io/crosspad/crosspad-ci (tools/ci/Dockerfile in platform-idf),
+# the same image -- and so the same cmake, ninja, compilers and Python -- for
+# every CrossPad repository, on hardware machine (repository variable
+# CI_RUNNER=self-hosted, tools/ci_runner.py in platform-idf) and on GitHub's
+# runners alike. It is pinned here by tag and digest (GHCR lets a tag be
+# moved, not a digest); moving to a new image revision is a commit like any
+# other. Unset CI_RUNNER before the self-hosted runner goes off:
+# GitHub never falls back from a self-hosted label to a hosted runner.
 jobs:
   docs:
     runs-on: ${{ vars.CI_RUNNER || 'ubuntu-latest' }}
-    container: ${{ vars.CI_RUNNER && 'ubuntu:24.04' || '' }}
+    container:
+      image: ghcr.io/crosspad/crosspad-ci:v5.5.5-1
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
     defaults:
       run:
         shell: bash
     steps:
-      # The hosted image has these; the container has none. git before
-      # checkout, or actions/checkout falls back to a tarball.
-      - name: Base tools (container)
-        if: vars.CI_RUNNER
-        run: |
-          apt-get update
-          DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
-            git ca-certificates curl xz-utils bzip2 python3 cmake ninja-build
-
       - uses: actions/checkout@v4
 
-      - name: Install Doxygen + Graphviz
-        run: |
-          SUDO=$([ "$(id -u)" = 0 ] || echo sudo)   # root in the container, no sudo there
-          $SUDO apt-get update
-          $SUDO apt-get install -y graphviz
-          curl -fsSLO https://www.doxygen.nl/files/doxygen-1.16.1.linux.bin.tar.gz
-          tar xzf doxygen-1.16.1.linux.bin.tar.gz
-          $SUDO install -m 755 doxygen-1.16.1/bin/doxygen /usr/local/bin/doxygen
+      # Doxygen 1.16.1 and graphviz are in the image.
+      - name: Doxygen version
+        run: doxygen --version
 
       - name: Generate docs
         run: |
