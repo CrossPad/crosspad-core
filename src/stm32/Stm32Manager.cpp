@@ -142,6 +142,13 @@ void Stm32Manager::maintenanceLoop() {
                 if (configSync_->pushAll(settings_->stm)) {
                     lastBootCount_ = bc;
                     ampApplied_ = -1;   // pushAll wrote AUDIO_EN — re-assert the gate
+                    // A reset STM boots its backlight at its own default (50 %)
+                    // and pushAll does not carry brightness; setBrightness()
+                    // skips an unchanged value, so the user's level never came
+                    // back — the screen stayed brighter (or dimmer) than set.
+                    if (cmdSender_ && lastBrightness_ != 0xFF) {
+                        cmdSender_->sendBrightness(lastBrightness_);
+                    }
                 }
             }
         }
