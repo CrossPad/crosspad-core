@@ -96,14 +96,16 @@ void EspEventBus::unsubscribe(SubscriptionHandle handle) {
 
 // -- Post helpers -------------------------------------------------------------
 
-bool EspEventBus::postEvent(EventType type, const void* data, size_t dataSize) {
+bool EspEventBus::postEvent(EventType type, const void* data, size_t dataSize, TickType_t wait) {
     if (!eventLoop_) return false;
 
     esp_err_t err = esp_event_post_to(
         eventLoop_, CROSSPAD_EVENTS, static_cast<int32_t>(type),
-        const_cast<void*>(data), dataSize, portMAX_DELAY);
+        const_cast<void*>(data), dataSize, wait);
 
-    if (err != ESP_OK) {
+    /* A post that may not wait comes from a task that may not print either
+     * (the audio render); its caller counts the miss. */
+    if (err != ESP_OK && wait) {
         ESP_LOGW(TAG, "Failed to post %s: %s", getEventName(type), esp_err_to_name(err));
     }
     return err == ESP_OK;
@@ -177,6 +179,17 @@ bool EspEventBus::postSamplePlayback(uint8_t note, uint8_t wavIdx, bool isOn, Ev
     SamplePlaybackData data = { .note = note, .wavIdx = wavIdx, .isOn = isOn, .velocity = velocity, .source = source };
     ESP_LOGD(TAG, "Post SamplePlayback: note=%d wav=%d on=%s vel=%d src=%s",
              note, wavIdx, isOn ? "true" : "false", velocity, getSourceName(source));
+    /* The engine's report that a voice started or ended is posted from the
+     * audio render, which must never wait for this queue's task (a lower
+     * priority, no inheritance through a queue). It is redundant -- the render
+     * has already set the pad's state -- so with the queue full it is dropped
+     * and counted. A request to play (App, MIDI) still waits: losing it would
+     * lose a note. */
+    if (source == EventSource::SamplePlayback) {
+        if (postEvent(EventType::SamplePlayback, &data, sizeof(data), 0)) return true;
+        feedbackDropped_.fetch_add(1, std::memory_order_relaxed);
+        return false;
+    }
     return postEvent(EventType::SamplePlayback, &data, sizeof(data));
 }
 
