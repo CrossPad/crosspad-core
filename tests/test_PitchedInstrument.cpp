@@ -210,14 +210,15 @@ TEST_CASE("PitchedInstrument: the voice cap clamps every setParams", "[instrumen
     PitchedInstrument inst;
     REQUIRE(inst.voiceCap() == PitchedInstrument::kMaxSounding);
 
-    // A kit or the editor asking for 24 under a cap of 12 gets 12, every time.
-    inst.setVoiceCap(12);
+    // A kit or the editor asking for 24 under the board's cap of 10 gets 10,
+    // every time.
+    inst.setVoiceCap(10);
     inst.setParams(params(24));
-    REQUIRE(inst.maxVoices() == 12);
+    REQUIRE(inst.maxVoices() == 10);
     inst.setParams(params(8));
     REQUIRE(inst.maxVoices() == 8);
     inst.setParams(params(PitchedInstrument::kMaxSounding));
-    REQUIRE(inst.maxVoices() == 12);
+    REQUIRE(inst.maxVoices() == 10);
 
     // The cap itself stays within 1..kMaxSounding.
     inst.setVoiceCap(0);
