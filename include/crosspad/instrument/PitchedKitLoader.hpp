@@ -53,7 +53,30 @@ struct PitchedLoadEnv {
         = &resolveKitSamplePath;
     void (*log)(const char* line) = nullptr;
     size_t maxBankBytes = 0;
+    /// Longest a zone may be, in engine-rate frames; 0 leaves the budget the
+    /// only limit. An instrument is notes, not takes: a minute picked by
+    /// mistake would otherwise convert for a minute and fill the bank.
+    uint32_t maxZoneFrames = 0;
+    /// Called between blocks of reading and converting, so the thread that
+    /// builds a bank can let others run: converting a few seconds of 44.1 kHz
+    /// to 48 kHz is seconds of CPU. Null never yields.
+    void (*yield)() = nullptr;
+    /// Convert a zone at another rate than the engine's when it is loaded --
+    /// band-limited, and seconds of CPU per second of audio on a device -- or
+    /// keep it at its own rate and let the voice step by the ratio as it
+    /// plays (Zone::rate): free, with the varispeed's own interpolation, which
+    /// every transposed note goes through anyway.
+    bool convertRate = true;
+    /// Give each zone the gain that brings its peak to kNormalizePeak (at
+    /// most kNormalizeMaxGain, so a zone of near-silence is not raised into
+    /// noise). Off, a zone plays at the level it was recorded.
+    bool normalize = false;
 };
+
+/// Where PitchedLoadEnv::normalize puts a zone's peak: -1 dBFS.
+constexpr float kNormalizePeak = 0.89f;
+/// The most PitchedLoadEnv::normalize raises a zone: +24 dB.
+constexpr float kNormalizeMaxGain = 16.0f;
 
 /**
  * @brief What a load did beyond succeeding, for the caller to show.
