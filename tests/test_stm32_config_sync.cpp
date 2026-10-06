@@ -33,13 +33,24 @@ TEST_CASE("Stm32ConfigSync::pushAll writes the ESP-authoritative set", "[stm][sy
     REQUIRE(bus.lastByteAt(REG_CTL_SLEEP_TO_S_HI) == 0x04);
     REQUIRE(bus.lastByteAt(REG_CTL_SLEEP_TO_S_LO) == 0xD2);
 
-    // charger registers (0x0320..REG_CTL_VEL_CURVE_DEF-1) must NOT be touched,
-    // and pad-mapping block must NOT be touched
+    // charger registers (0x0320..REG_CTL_VEL_CURVE_DEF-1) must NOT be touched.
+    // In the pad-mapping block only the swap field is ours (core 1.17.1): the
+    // cell binding (mux/channel) stays the STM's, which cell is "left" is not.
+    int swapWrites = 0;
     for (const auto& w : bus.writes) {
         bool inChargerRange = (w.reg >= REG_CTL_CHG_ICHG_HI && w.reg < REG_CTL_VEL_CURVE_DEF);
         REQUIRE_FALSE(inChargerRange);
-        REQUIRE_FALSE((w.reg >= REG_MAPPING_BASE && w.reg < REG_MAPPING_BASE + REG_MAPPING_LEN));
+        if (w.reg >= REG_MAPPING_BASE && w.reg < REG_MAPPING_BASE + REG_MAPPING_LEN) {
+            uint16_t off = (uint16_t)(w.reg - REG_MAPPING_BASE);
+            REQUIRE(off % REG_MAPPING_STRIDE == REG_MAPPING_FIELD_SWAP);
+            REQUIRE(w.data.size() == 1);
+            int pad = off / REG_MAPPING_STRIDE;
+            REQUIRE(w.data[0] == ((s.padPanSwap >> pad) & 1u));
+            ++swapWrites;
+        }
     }
+    REQUIRE(swapWrites == 16);
+    REQUIRE(bus.lastByteAt(REG_MAPPING_BASE + 6 * REG_MAPPING_STRIDE + REG_MAPPING_FIELD_SWAP) == 1);  // pad 6 default
 
     // per-pad config block: pad 2 analog byte at PAD_CFG_BASE + 2*6 + FIELD_ANALOG
     uint16_t pad2 = REG_PAD_CFG_BASE + 2 * REG_PAD_CFG_STRIDE;

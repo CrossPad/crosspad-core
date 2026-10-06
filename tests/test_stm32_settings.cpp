@@ -30,7 +30,8 @@ TEST_CASE("Stm32Settings: defaults match STM compiled defaults", "[settings][stm
     REQUIRE(s.encCcChan == 0);
     REQUIRE(s.encCcStep == 1);
     REQUIRE(s.velCurveDef == 0);
-    REQUIRE(s.panCcEn == 0);
+    REQUIRE(s.panCcEn == 1);         // pan reaches pad logic since core 1.17.0 (onPadPan)
+    REQUIRE(s.padPanSwap == (1u << 6));  // pad 6 reports its pan inverted (1.17.1)
 #if defined(PAD_CONFIG_PER_PAD)
     for (int i = 0; i < 16; ++i) {
         REQUIRE(s.padAnalogMode[i] == 2);     // ANALOG_AFTER_TOUCH
