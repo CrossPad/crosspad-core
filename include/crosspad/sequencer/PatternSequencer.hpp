@@ -76,6 +76,9 @@ public:
     /// Stamp a hit with the clock position it happened at. Cheap and wait-free;
     /// safe to call when nothing is recording (it is dropped in poll()).
     void noteIn(uint8_t pad, uint8_t velocity);
+    /// The pad let go: how long it was held becomes the length of the note
+    /// its press recorded. Wait-free, like noteIn().
+    void noteRelease(uint8_t pad);
 
     // ── Driven from a timer or the audio task ─────────────────────────────
 
@@ -167,6 +170,7 @@ public:
     uint16_t eventCount(uint8_t s) const { return s < kNumSequences ? counts_[s] : 0; }
     uint16_t sceneEventCount(uint8_t s) const override { return eventCount(s); }
     bool     sceneEvent(uint8_t seq, uint16_t i, float& at, uint8_t& pad, uint8_t& vel) const override;
+    float    sceneEventLength(uint8_t seq, uint16_t i) const override;
     uint16_t eventCount() const;
     /// Bars of the scene that is sounding.
     uint8_t  bars() const { return sceneBars(activeSeq_); }
@@ -216,6 +220,13 @@ public:
         vel = events_[seq][i].vel;
         return true;
     }
+    /// How long event @p i is held, in samples; 0 for a tap -- one made before
+    /// lengths were recorded, or one whose pad is still down.
+    uint32_t eventLength(uint8_t seq, uint16_t i) const {
+        std::lock_guard<std::recursive_mutex> lock(editMutex_);
+        if (seq >= kNumSequences || i >= counts_[seq] || events_[seq][i].open) return 0;
+        return events_[seq][i].len;
+    }
 
     // ── Storage ───────────────────────────────────────────────────────────
     // Positions cross this boundary as ticks, never samples: see kPpq.
@@ -227,9 +238,12 @@ public:
 
     /// Add an event straight into a scene, position in ticks. For loading.
     /// Not RT-safe against a running poll(); load while stopped.
-    bool addEventTicks(uint8_t seq, uint32_t ticks, uint8_t pad, uint8_t vel);
+    /// @p lenTicks 0 is a tap: released on the poll after it fires.
+    bool addEventTicks(uint8_t seq, uint32_t ticks, uint8_t pad, uint8_t vel, uint32_t lenTicks = 0);
     /// One event with its position in ticks, for saving.
     bool eventAtTicks(uint8_t seq, uint16_t i, uint32_t& ticks, uint8_t& pad, uint8_t& vel) const;
+    /// eventLength() in ticks, for saving.
+    uint32_t eventLengthTicks(uint8_t seq, uint16_t i) const;
     /// True when something changed that the card does not have yet. The store
     /// clears it once the write lands. Atomic because the flag is set on the
     /// poll thread and read on whichever thread owns the card.
@@ -246,11 +260,15 @@ private:
     /// a hit quantised a few samples backwards lands inside the window about to
     /// fire and sounds twice -- once from the pad, once from its own recording.
     /// Cleared at the wrap, where the loop legitimately comes round to it.
-    struct Event { uint32_t pos; uint8_t pad; uint8_t vel; uint8_t fresh; };
+    /// `len` is how long the pad was held, 0 for a tap. `open` marks a note
+    /// whose pad is still down in a take: its length is not known yet.
+    struct Event { uint32_t pos; uint32_t len; uint8_t pad; uint8_t vel; uint8_t fresh; uint8_t open; };
     /// `early`: count-in samples still to play when the hit was made, 0 once
     /// the loop runs. The clock holds position 0 through a count-in, so this
-    /// is the only record of how far before beat one a hit was.
-    struct Hit   { uint32_t pos; uint32_t early; uint8_t pad; uint8_t vel; };
+    /// is the only record of how far before beat one a hit was. `elapsed` is
+    /// the clock's unwrapped count, what a note's length is measured on. `on`
+    /// false is a release.
+    struct Hit   { uint32_t pos; uint32_t early; uint32_t elapsed; uint8_t pad; uint8_t vel; uint8_t on; };
 
     /// Rounds to the nearest grid line, wrapping a hit that rounds up past the
     /// loop end back to zero -- a hit a hair early on beat one belongs at the
@@ -277,7 +295,19 @@ private:
     /// half a grid step, which is where it would have rounded anyway.
     uint32_t downbeatGrace() const;
     void     drainInput(uint32_t loop);
+    /// Push a hit into the ring; dropped when the ring is full.
+    void     pushHit(uint8_t pad, uint8_t vel, bool on);
+    /// Give the open note of @p pad its length: from its press to @p elapsed,
+    /// on the clock's unwrapped count, at most one loop.
+    void     closeNote(uint8_t pad, uint32_t elapsed, uint32_t loop);
+    /// Close every open note at @p elapsed -- a take that ends with pads down.
+    void     closeAllNotes(uint32_t elapsed, uint32_t loop);
     void     fireWindow(uint32_t from, uint32_t to);
+    /// Release every note whose length runs out inside [from, to).
+    void     releaseWindow(uint32_t from, uint32_t to);
+    /// Hand every pad held by a length to the next poll's release: the loop
+    /// it was timed against has changed under it.
+    void     dropGates();
     /// poll() under editMutex_; its presses are collected, not played.
     void     pollLocked();
     /// A press or release for the sink: played at once, or -- inside poll()
@@ -285,7 +315,8 @@ private:
     /// logic that can wait on the sample player; holding the lock through it
     /// held every UI read of the pattern for as long.
     void     emit(uint8_t pad, uint8_t vel, bool on);
-    void     addEvent(uint8_t seq, uint32_t pos, uint8_t pad, uint8_t vel);
+    /// Returns the index the event went in, or -1 when the scene is full.
+    int      addEvent(uint8_t seq, uint32_t pos, uint8_t pad, uint8_t vel);
     /// Drop every event of @p pad from @p seq.
     void     erasePad(uint8_t seq, uint8_t pad);
     /// setSceneBars() without taking the lock, for callers that hold it.
@@ -337,8 +368,12 @@ private:
     std::atomic<bool> erasing_{false};
     mutable std::recursive_mutex editMutex_;
     struct Press { uint8_t pad; uint8_t vel; bool on; };
-    /// A poll fires at most a whole scene and releases every pad.
-    static constexpr uint16_t kMaxPresses = kMaxEvents + 16;
+    /// A poll fires at most a whole scene, releases each of those notes, and
+    /// every pad held from before it.
+    static constexpr uint16_t kMaxPresses = 2 * kMaxEvents + 32;
+    /// poll()'s collection, here rather than on the poll task's stack: it is
+    /// over a kilobyte, and only the one thread that polls ever fills it.
+    Press    pressBuf_[kMaxPresses] = {};
     Press*   presses_    = nullptr;   // set only while poll() collects
     uint16_t pressCount_ = 0;
 
@@ -358,6 +393,12 @@ private:
     /// One poll of gate -- shorter than any human tap, long enough that the
     /// press and the release are not the same instant.
     uint16_t pendingRelease_ = 0;
+    /// Pads held by a recorded length, each released when the loop reaches
+    /// its releaseAt_.
+    uint16_t gated_ = 0;
+    uint32_t releaseAt_[16] = {};
+    /// When each pad's open note was pressed, on the clock's unwrapped count.
+    uint32_t openAt_[16] = {};
 };
 
 } // namespace crosspad

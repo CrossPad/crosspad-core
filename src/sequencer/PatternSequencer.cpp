@@ -7,6 +7,16 @@ namespace crosspad {
 
 void PatternSequencer::noteIn(uint8_t pad, uint8_t velocity)
 {
+    pushHit(pad, velocity, true);
+}
+
+void PatternSequencer::noteRelease(uint8_t pad)
+{
+    pushHit(pad, 0, false);
+}
+
+void PatternSequencer::pushHit(uint8_t pad, uint8_t vel, bool on)
+{
     if (!clock_) return;
     const uint32_t head = ringHead_.load(std::memory_order_relaxed);
     const uint32_t next = (head + 1) % kInputRing;
@@ -16,7 +26,8 @@ void PatternSequencer::noteIn(uint8_t pad, uint8_t velocity)
     if (next == ringTail_.load(std::memory_order_acquire)) return;
 
     const uint32_t early = clock_->countInSamplesLeft();
-    ring_[head] = { early ? 0u : clock_->positionSamples(), early, pad, velocity };
+    ring_[head] = { early ? 0u : clock_->positionSamples(), early, clock_->elapsedSamples(),
+                    pad, vel, (uint8_t)(on ? 1 : 0) };
     ringHead_.store(next, std::memory_order_release);
 }
 
@@ -73,11 +84,36 @@ uint32_t PatternSequencer::quantise(uint32_t pos, uint32_t loop) const
     return (loop && snapped >= loop) ? 0 : snapped;
 }
 
-void PatternSequencer::addEvent(uint8_t seq, uint32_t pos, uint8_t pad, uint8_t vel)
+int PatternSequencer::addEvent(uint8_t seq, uint32_t pos, uint8_t pad, uint8_t vel)
 {
-    if (seq >= kNumSequences || counts_[seq] >= kMaxEvents) return;
-    events_[seq][counts_[seq]++] = { pos, pad, vel, 1 };
+    if (seq >= kNumSequences || counts_[seq] >= kMaxEvents) return -1;
+    const uint16_t i = counts_[seq]++;
+    events_[seq][i] = { pos, 0, pad, vel, 1, 0 };
     markDirty();
+    return i;
+}
+
+void PatternSequencer::closeNote(uint8_t pad, uint32_t elapsed, uint32_t loop)
+{
+    for (uint8_t s = 0; s < kNumSequences; ++s) {
+        for (uint16_t i = 0; i < counts_[s]; ++i) {
+            Event& e = events_[s][i];
+            if (!e.open || e.pad != pad) continue;
+            /* Measured on the unwrapped count, so a hold over the loop end --
+             * or over several -- is not mistaken for a short one. A note
+             * cannot outlast the loop it plays in. */
+            uint32_t len = elapsed - openAt_[pad];
+            if (loop && len > loop) len = loop;
+            e.len  = len;
+            e.open = 0;
+            markDirty();
+        }
+    }
+}
+
+void PatternSequencer::closeAllNotes(uint32_t elapsed, uint32_t loop)
+{
+    for (uint8_t pad = 0; pad < 16; ++pad) closeNote(pad, elapsed, loop);
 }
 
 void PatternSequencer::erasePad(uint8_t seq, uint8_t pad)
@@ -103,19 +139,32 @@ void PatternSequencer::drainInput(uint32_t loop)
 
     while (tail != head) {
         const Hit& h = ring_[tail];
-        /* Erase held: the hit names a pad to take out, it is not a note. */
-        if (erasing) {
+        int idx = -1;
+        if (!h.on) {
+            /* A release only ends a note a take opened; whatever the
+             * transport did since, how long the pad was down is the length. */
+            if (h.pad < 16) closeNote(h.pad, h.elapsed, loop);
+        } else if (erasing) {
+            /* Erase held: the hit names a pad to take out, it is not a note. */
             erasePad(activeSeq_, h.pad);
         } else if (taking && h.early) {
             /* Made during the count-in: a hair early for beat one is beat
              * one -- the player aimed at it -- anything earlier was not
              * part of the take. */
-            if (h.early <= grace) addEvent(activeSeq_, 0, h.pad, h.vel);
+            if (h.early <= grace) idx = addEvent(activeSeq_, 0, h.pad, h.vel);
         } else if (taking && state_ == SequencerState::Running) {
             /* Into the scene that is sounding: you record into what you hear --
              * including the swing, so the heard position comes back to the
              * straight grid before it is snapped to it. */
-            addEvent(activeSeq_, quantise(unswung(h.pos), loop), h.pad, h.vel);
+            idx = addEvent(activeSeq_, quantise(unswung(h.pos), loop), h.pad, h.vel);
+        }
+        /* The length runs from where the pad went down, not from the grid line
+         * the note was snapped to: it is how long it was held that is kept. A
+         * second press with the first never released ends the first there. */
+        if (idx >= 0 && h.pad < 16) {
+            closeNote(h.pad, h.elapsed, loop);
+            openAt_[h.pad] = h.elapsed;
+            events_[activeSeq_][idx].open = 1;
         }
         tail = (tail + 1) % kInputRing;
     }
@@ -162,17 +211,52 @@ uint32_t PatternSequencer::unswung(uint32_t pos) const
 void PatternSequencer::fireWindow(uint32_t from, uint32_t to)
 {
     if (!sink_ || from >= to) return;
+    const uint32_t loop = clock_->loopSamples();
     for (uint16_t i = 0; i < counts_[activeSeq_]; ++i) {
         const Event& e = events_[activeSeq_][i];
         if (e.fresh) continue;
         /* Where it sounds, not where it is stored: the pattern stays straight
          * and the swing is applied on the way out. */
         const uint32_t at = swung(e.pos);
-        if (at >= from && at < to) {
-            emit(e.pad, e.vel, true);
-            if (e.pad < 16) pendingRelease_ |= (uint16_t)(1u << e.pad);
+        if (at < from || at >= to) continue;
+        if (e.pad >= 16) { emit(e.pad, e.vel, true); continue; }
+        const uint16_t bit = (uint16_t)(1u << e.pad);
+        /* Still held by the note before it: let go first, so every press the
+         * sink sees has its own release. */
+        if (gated_ & bit) {
+            emit(e.pad, 0, false);
+            gated_ &= (uint16_t)~bit;
+        }
+        emit(e.pad, e.vel, true);
+        /* A tap (or a note whose pad is still down in the take) gets one poll
+         * of gate; a held note keeps its pad down until its length runs out. */
+        const uint32_t len = e.open ? 0 : e.len;
+        if (!len || !loop) { pendingRelease_ |= bit; continue; }
+        const uint32_t end = (uint32_t)(((uint64_t)at + len) % loop);
+        if (end > at && end < to) {
+            pendingRelease_ |= bit;     // over inside this poll
+        } else {
+            releaseAt_[e.pad] = end;
+            gated_ |= bit;
         }
     }
+}
+
+void PatternSequencer::releaseWindow(uint32_t from, uint32_t to)
+{
+    if (!gated_ || from >= to) return;
+    for (uint8_t pad = 0; pad < 16; ++pad) {
+        const uint16_t bit = (uint16_t)(1u << pad);
+        if (!(gated_ & bit) || releaseAt_[pad] < from || releaseAt_[pad] >= to) continue;
+        emit(pad, 0, false);
+        gated_ &= (uint16_t)~bit;
+    }
+}
+
+void PatternSequencer::dropGates()
+{
+    pendingRelease_ |= gated_;
+    gated_ = 0;
 }
 
 void PatternSequencer::emit(uint8_t pad, uint8_t vel, bool on)
@@ -187,18 +271,17 @@ void PatternSequencer::emit(uint8_t pad, uint8_t vel, bool on)
 void PatternSequencer::poll()
 {
     if (!clock_) return;
-    Press presses[kMaxPresses];
     uint16_t n = 0;
     {
         std::lock_guard<std::recursive_mutex> lock(editMutex_);
-        presses_ = presses;
+        presses_ = pressBuf_;
         pressCount_ = 0;
         pollLocked();
         n = pressCount_;
         presses_ = nullptr;
     }
     if (!sink_) return;
-    for (uint16_t i = 0; i < n; ++i) sink_(sinkCtx_, presses[i].pad, presses[i].vel, presses[i].on);
+    for (uint16_t i = 0; i < n; ++i) sink_(sinkCtx_, pressBuf_[i].pad, pressBuf_[i].vel, pressBuf_[i].on);
 }
 
 void PatternSequencer::pollLocked()
@@ -241,8 +324,10 @@ void PatternSequencer::pollLocked()
     /* Half-open [from, to): every position is covered exactly once across
      * consecutive polls, so nothing fires twice and nothing is skipped. */
     if (now >= lastPos_) {
+        releaseWindow(lastPos_, now);
         fireWindow(lastPos_, now);
     } else {
+        releaseWindow(lastPos_, loop);
         fireWindow(lastPos_, loop);
         /* The loop has come round: what was recorded during the pass just
          * ended is now part of the pattern and plays from here on. */
@@ -258,6 +343,7 @@ void PatternSequencer::pollLocked()
             applyScene(pendingSeq_);
         }
 
+        releaseWindow(0, now);
         fireWindow(0, now);
 
         if (!loop_) stop();
@@ -272,6 +358,8 @@ void PatternSequencer::applyScene(uint8_t seq, bool remember)
     if (seq >= kNumSequences) return;
     activeSeq_  = seq;
     pendingSeq_ = seq;
+    /* A note held over the change was timed against the old loop. */
+    dropGates();
     /* The scene's length is the loop, and the click counts that same loop --
      * handing it to the metronome is what keeps bar one and the downbeat the
      * same instant. */
@@ -316,6 +404,7 @@ void PatternSequencer::applySceneBars(uint8_t seq, uint8_t bars)
     counts_[seq] = kept;
 
     if (seq == activeSeq_) {
+        dropGates();
         clock_->setBarCount(bars);
         if (lastPos_ >= loop) lastPos_ = 0;
     }
@@ -334,7 +423,7 @@ bool PatternSequencer::doubleScene(uint8_t seq)
     const uint32_t loop = (uint32_t)clock_->samplesPerBeat() * clock_->beatsPerBar() * bars;
     for (uint16_t i = 0; i < n; ++i) {
         const Event& e = events_[seq][i];
-        events_[seq][n + i] = { e.pos + loop, e.pad, e.vel, 0 };
+        events_[seq][n + i] = { e.pos + loop, e.len, e.pad, e.vel, 0, 0 };
     }
     counts_[seq] = (uint16_t)(n * 2);
     applySceneBars(seq, (uint8_t)(bars * 2));
@@ -486,8 +575,12 @@ void PatternSequencer::setClickBpm(float bpm)
     for (uint8_t s = 0; s < kNumSequences; ++s) {
         for (uint16_t i = 0; i < counts_[s]; ++i) {
             events_[s][i].pos = (uint32_t)(((uint64_t)events_[s][i].pos * after) / before);
+            if (!events_[s][i].open)
+                events_[s][i].len = (uint32_t)(((uint64_t)events_[s][i].len * after) / before);
         }
     }
+    for (uint8_t pad = 0; pad < 16; ++pad)
+        releaseAt_[pad] = (uint32_t)(((uint64_t)releaseAt_[pad] * after) / before);
     /* The clock cannot be moved from here, so take its position as read --
      * firing everything between the old playhead and the rescaled one would
      * empty the pattern into a single poll. */
@@ -641,8 +734,11 @@ void PatternSequencer::stop()
         songPos_.store(0);
         songPass_.store(0);
         songJump_.store(-1);
-        held = pendingRelease_;
+        /* A take that ends with pads down: their notes end here. */
+        if (clock_) closeAllNotes(clock_->elapsedSamples(), clock_->loopSamples());
+        held = (uint16_t)(pendingRelease_ | gated_);
         pendingRelease_ = 0;
+        gated_ = 0;
         if (presses_) {
             for (uint8_t pad = 0; pad < 16; ++pad) {
                 if (held & (1u << pad)) emit(pad, 0, false);
@@ -735,6 +831,21 @@ bool PatternSequencer::sceneEvent(uint8_t seq, uint16_t i, float& at, uint8_t& p
     return true;
 }
 
+float PatternSequencer::sceneEventLength(uint8_t seq, uint16_t i) const
+{
+    std::lock_guard<std::recursive_mutex> lock(editMutex_);
+    if (seq >= kNumSequences || i >= counts_[seq] || !clock_) return 0.0f;
+    const uint32_t loop = (uint32_t)clock_->samplesPerBeat() * clock_->beatsPerBar() * bars_[seq];
+    const Event& e = events_[seq][i];
+    if (!loop) return 0.0f;
+    if (!e.open) return (float)e.len / (float)loop;
+    /* The pad is still down: as long as it has been held so far, so the note
+     * grows under the finger instead of appearing whole on the release. */
+    uint32_t len = clock_->elapsedSamples() - openAt_[e.pad];
+    if (len > loop) len = loop;
+    return (float)len / (float)loop;
+}
+
 uint16_t PatternSequencer::eventCount() const
 {
     uint16_t n = 0;
@@ -751,7 +862,8 @@ float PatternSequencer::progress() const
 
 // ── Storage ────────────────────────────────────────────────────────────────
 
-bool PatternSequencer::addEventTicks(uint8_t seq, uint32_t ticks, uint8_t pad, uint8_t vel)
+bool PatternSequencer::addEventTicks(uint8_t seq, uint32_t ticks, uint8_t pad, uint8_t vel,
+                                     uint32_t lenTicks)
 {
     std::lock_guard<std::recursive_mutex> lock(editMutex_);
     if (seq >= kNumSequences || !clock_ || counts_[seq] >= kMaxEvents) return false;
@@ -761,8 +873,10 @@ bool PatternSequencer::addEventTicks(uint8_t seq, uint32_t ticks, uint8_t pad, u
      * scene's end, where they would never play and would confuse the count. */
     const uint32_t loop = spb * clock_->beatsPerBar() * bars_[seq];
     if (loop && pos >= loop) return false;
+    uint32_t len = (uint32_t)(((uint64_t)lenTicks * spb) / kPpq);
+    if (loop && len > loop) len = loop;
 
-    events_[seq][counts_[seq]++] = { pos, pad, vel, 0 };
+    events_[seq][counts_[seq]++] = { pos, len, pad, vel, 0, 0 };
     return true;
 }
 
@@ -778,6 +892,16 @@ bool PatternSequencer::eventAtTicks(uint8_t seq, uint16_t i,
     pad   = events_[seq][i].pad;
     vel   = events_[seq][i].vel;
     return true;
+}
+
+uint32_t PatternSequencer::eventLengthTicks(uint8_t seq, uint16_t i) const
+{
+    std::lock_guard<std::recursive_mutex> lock(editMutex_);
+    if (seq >= kNumSequences || i >= counts_[seq] || !clock_) return 0;
+    const uint32_t spb = clock_->samplesPerBeat();
+    const Event& e = events_[seq][i];
+    if (!spb || e.open) return 0;
+    return (uint32_t)(((uint64_t)e.len * kPpq + spb / 2) / spb);
 }
 
 } // namespace crosspad
