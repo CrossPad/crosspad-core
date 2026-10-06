@@ -14,6 +14,7 @@
 #include <cstring>
 #include <filesystem>
 #include <mutex>
+#include <random>
 #include <thread>
 #include <utility>
 #include <vector>
@@ -127,7 +128,12 @@ struct Rig {
     fs::path dir;
 
     Rig() {
-        dir = fs::temp_directory_path() / ("songengine_" + std::to_string(std::rand()));
+        /* ctest runs each case in its own process; an unseeded std::rand()
+         * gave them all the same directory, so ctest -j removed each
+         * other's clips. */
+        dir = fs::temp_directory_path() /
+              ("songengine_" + std::to_string(std::random_device{}()) + "_" +
+               std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
         fs::remove_all(dir);
         fs::create_directories(dir);
         platform.root = (dir / "SONGS").string();
