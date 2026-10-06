@@ -39,7 +39,7 @@ jobs:
     name: Tier 1 portable unit tests
     runs-on: ${{ vars.CI_RUNNER || 'ubuntu-latest' }}
     container:
-      image: ghcr.io/crosspad/crosspad-ci:v5.5.5-1
+      image: ghcr.io/crosspad/crosspad-ci:v5.5.5-1@sha256:d89e2175ab2371eca90278a6a8774108b9387775344b2bbf837eabc2a30036bd
       credentials:
         username: ${{ github.actor }}
         password: ${{ secrets.GITHUB_TOKEN }}
