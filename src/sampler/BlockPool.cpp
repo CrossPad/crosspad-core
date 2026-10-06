@@ -35,6 +35,9 @@ bool BlockPool::configure(const Config& cfg)
     tableAlloc_ = cfg.tableAlloc ? cfg.tableAlloc : cfg.alloc;
     tableFree_  = cfg.tableFree  ? cfg.tableFree  : cfg.free;
     tableCtx_   = cfg.tableAlloc ? cfg.tableCtx   : cfg.ctx;
+    lock_    = cfg.lock;
+    unlock_  = cfg.unlock;
+    lockCtx_ = cfg.lockCtx;
     blockBytes_ = cfg.blockBytes;
     pageBytes_  = cfg.pageBytes;
     perPage_    = static_cast<uint32_t>(cfg.pageBytes / cfg.blockBytes);
@@ -106,7 +109,7 @@ uint32_t BlockPool::reserve(uint32_t blocks)
         uint32_t have;
         uint32_t slot;
         {
-            Spin g(lock_);
+            Spin g(*this);
             have = livePages_ * perPage_;
             slot = freeSlotLocked();
         }
@@ -115,10 +118,10 @@ uint32_t BlockPool::reserve(uint32_t blocks)
         /* Outside the lock: the allocator may take one of its own. */
         uint8_t* base = static_cast<uint8_t*>(alloc_(pageBytes_, ctx_));
         if (!base) {
-            Spin g(lock_);
+            Spin g(*this);
             return livePages_ * perPage_;
         }
-        Spin g(lock_);
+        Spin g(*this);
         /* Another thread may have taken that slot while the heap was busy. */
         const uint32_t p = pages_[slot].base ? freeSlotLocked() : slot;
         if (p >= maxPages_) {
@@ -145,7 +148,7 @@ uint32_t BlockPool::trim()
     for (uint32_t p = 0; p < maxPages_; ++p) {
         uint8_t* give = nullptr;
         {
-            Spin g(lock_);
+            Spin g(*this);
             if (p >= pageSlots_) break;
             if (!pages_[p].base) continue;
             if (!pullPageBlocksLocked(p)) continue;
@@ -163,7 +166,7 @@ uint32_t BlockPool::trim()
 void BlockPool::forgetPages()
 {
     if (!pages_) return;
-    Spin g(lock_);
+    Spin g(*this);
     for (uint32_t p = 0; p < maxPages_; ++p) pages_[p] = Page{};
     const size_t slots = static_cast<size_t>(maxPages_) * perPage_;
     for (size_t i = 0; i < slots; ++i) next_[i] = kInvalid;
@@ -185,7 +188,7 @@ uint32_t BlockPool::acquire()
 {
     uint32_t b;
     {
-        Spin g(lock_);
+        Spin g(*this);
         b = freeHead_;
         if (b == kInvalid) {
             acquireFails_.fetch_add(1, std::memory_order_relaxed);
@@ -205,7 +208,7 @@ void BlockPool::release(uint32_t block)
 {
     if (block == kInvalid || !pages_) return;
     {
-        Spin g(lock_);
+        Spin g(*this);
         const uint32_t p = block / perPage_;
         if (p >= pageSlots_ || !pages_[p].base) return;   // a page already given back
         next_[block] = freeHead_;
@@ -228,7 +231,7 @@ BlockPool::Stats BlockPool::stats() const
 {
     Stats s;
     {
-        Spin g(lock_);
+        Spin g(*this);
         s.pages = livePages_;
         s.blocksTotal = livePages_ * perPage_;
     }

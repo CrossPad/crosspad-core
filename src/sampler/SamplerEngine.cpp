@@ -125,6 +125,17 @@ uint8_t SamplerEngine::voicesActive() const
 
 void SamplerEngine::noteOn(uint8_t pad, uint8_t velocity)
 {
+    const uint32_t t0 = now_ ? now_() : 0;
+    noteOnBody(pad, velocity);
+    if (now_) {
+        const uint32_t dt = now_() - t0;
+        uint32_t m = cNoteOnMaxUs_.load(std::memory_order_relaxed);
+        while (dt > m && !cNoteOnMaxUs_.compare_exchange_weak(m, dt, std::memory_order_relaxed)) { }
+    }
+}
+
+void SamplerEngine::noteOnBody(uint8_t pad, uint8_t velocity)
+{
     if (pad >= kPads) return;
     if (mutating_.load(std::memory_order_acquire)) return;
     const SamplerKit* k = kit_.load(std::memory_order_acquire);
@@ -399,6 +410,7 @@ SamplerEngine::Counters SamplerEngine::counters() const
     Counters c;
     c.notesStarted  = cNotes_.load(std::memory_order_relaxed);
     c.silenced      = cSilenced_.load(std::memory_order_relaxed);
+    c.noteOnMaxUs   = cNoteOnMaxUs_.load(std::memory_order_relaxed);
     c.notesDropped  = cDropped_.load(std::memory_order_relaxed);
     c.steals        = cSteals_.load(std::memory_order_relaxed);
     c.streamRefused = cStreamRefused_.load(std::memory_order_relaxed);
@@ -411,6 +423,7 @@ void SamplerEngine::resetCounters()
 {
     cNotes_ = 0; cDropped_ = 0; cSteals_ = 0;
     cStreamRefused_ = 0; cUnderruns_ = 0; cVoicesPeak_ = 0; cSilenced_ = 0;
+    cNoteOnMaxUs_ = 0;
 }
 
 } // namespace crosspad

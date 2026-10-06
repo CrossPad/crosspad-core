@@ -111,7 +111,26 @@ public:
         uint32_t underruns     = 0;   ///< a voice reached frames the streamer had not delivered
         uint32_t voicesPeak    = 0;
         uint32_t rtMaxUs       = 0;   ///< set by the port, which owns the clock
+        /**
+         * @brief Longest noteOn() call, in whatever unit the clock gives.
+         *
+         * Measured because the note latency this engine showed on the board
+         * was *worse* than the engine it replaces -- 2238 us average against
+         * 1198 under a 20 hits/s storm, with a 12.6 ms outlier -- and the two
+         * candidate explanations need telling apart. Either noteOn() itself is
+         * slow (it takes eight blocks from the pool for the stream window,
+         * under a spinlock the render and the streamer also want), or it is
+         * quick and the thread that calls it is simply not being scheduled.
+         *
+         * Only this half is the engine's to answer for.
+         */
+        uint32_t noteOnMaxUs   = 0;
     };
+
+    /// Microseconds, for the one thing this engine times itself. The port
+    /// gives it the platform's clock; without one, noteOnMaxUs stays 0.
+    using NowFn = uint32_t (*)();
+    void setClock(NowFn now) { now_ = now; }
 
     /// Called when a voice starts and when it ends, with the pad and the layer.
     /// Fired from the render thread: whatever they do must be RT-safe.
@@ -197,6 +216,7 @@ private:
         uint32_t quiet = 0;      ///< consecutive frames below silenceLevel
     };
 
+    void   noteOnBody(uint8_t pad, uint8_t velocity);
     Voice* claimVoice();
     void   stealOldest();
     void   startFade(Voice& v);
@@ -217,6 +237,8 @@ private:
     Params params_;
     uint32_t sampleRate_ = 44100;
 
+    NowFn  now_ = nullptr;
+    std::atomic<uint32_t> cNoteOnMaxUs_{0};
     NoteCb onNote_ = nullptr, offNote_ = nullptr;
     void*  cbCtx_  = nullptr;
 

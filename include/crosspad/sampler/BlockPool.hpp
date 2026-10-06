@@ -78,6 +78,29 @@ public:
         AllocFn  tableAlloc = nullptr;
         FreeFn   tableFree  = nullptr;
         void*    tableCtx   = nullptr;
+
+        /**
+         * @brief The platform's own short critical section, if it has one.
+         *
+         * The free list is guarded for a handful of instructions, which a
+         * plain busy-wait flag would seem to be enough for. It is not, and the
+         * board said so: the thread that strikes a note runs below the render
+         * thread on the same core, so it can be preempted *while holding the
+         * lock* -- and the streaming thread, above both on the other core,
+         * then spins on a flag whose owner cannot be scheduled until the
+         * render gives the core back. Measured as a single noteOn() taking
+         * **50.7 ms**, with the render itself healthy at 1219 us.
+         *
+         * A section that suspends preemption while it is held removes the
+         * inversion, and on ESP-IDF that is `portENTER_CRITICAL`. The file
+         * port next door reached the same conclusion for the same reason.
+         *
+         * Null keeps the built-in flag, which is right for a host test and
+         * wrong for anything with priorities.
+         */
+        void (*lock)(void* ctx)   = nullptr;
+        void (*unlock)(void* ctx) = nullptr;
+        void*  lockCtx            = nullptr;
     };
 
     struct Stats {
@@ -147,14 +170,20 @@ private:
         uint32_t inUse = 0;      ///< blocks of this page handed out
     };
 
+    /// The platform's critical section where there is one, a busy-wait flag
+    /// where there is not. See Config::lock.
     class Spin {
     public:
-        explicit Spin(std::atomic_flag& f) : f_(f) {
-            while (f_.test_and_set(std::memory_order_acquire)) { }
+        explicit Spin(const BlockPool& p) : p_(p) {
+            if (p_.lock_) { p_.lock_(p_.lockCtx_); return; }
+            while (p_.flag_.test_and_set(std::memory_order_acquire)) { }
         }
-        ~Spin() { f_.clear(std::memory_order_release); }
+        ~Spin() {
+            if (p_.unlock_) { p_.unlock_(p_.lockCtx_); return; }
+            p_.flag_.clear(std::memory_order_release);
+        }
     private:
-        std::atomic_flag& f_;
+        const BlockPool& p_;
     };
 
     /// Under lock_. The lowest empty slot, or maxPages_ when there is none.
@@ -189,7 +218,10 @@ private:
     uint32_t* next_ = nullptr;        ///< maxPages_ * perPage_ entries
     uint32_t  freeHead_ = kInvalid;
 
-    mutable std::atomic_flag lock_ = ATOMIC_FLAG_INIT;
+    void (*lock_)(void*)   = nullptr;
+    void (*unlock_)(void*) = nullptr;
+    void*  lockCtx_        = nullptr;
+    mutable std::atomic_flag flag_ = ATOMIC_FLAG_INIT;
     std::atomic<uint32_t> used_{0};
     std::atomic<uint32_t> peak_{0};
     std::atomic<uint32_t> acquireFails_{0};
