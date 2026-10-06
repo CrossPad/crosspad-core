@@ -71,14 +71,22 @@ public:
         const float f = static_cast<float>(static_cast<uint32_t>(phase)) * kFracNorm;
 
         if (i >= 1 && i + 2 < static_cast<int64_t>(headFrames_)) {
-            const int16_t* p = head_ + (static_cast<size_t>(i) - 1) * channels_;
-            if (channels_ == 1) {
-                left = right = hermite4(p[0], p[1], p[2], p[3], f);
-            } else {
-                left  = hermite4(p[0], p[2], p[4], p[6], f);
-                right = hermite4(p[1], p[3], p[5], p[7], f);
+            return walk(head_ + (static_cast<size_t>(i) - 1) * channels_, f, left, right);
+        }
+
+        /* Past the head, the same walk over the streamer's blocks -- as long
+         * as all four taps are inside one of them. Resolving a tap costs a
+         * shift, a mask and an atomic read of how far delivery has got, and
+         * doing that four times a frame was most of this engine's render time
+         * on the board (measured: rt_max 3054 us at five voices, against 814
+         * for sixteen resident ones). One ask a frame, and a block is 1024 or
+         * 2048 frames, so the slow path below is one frame in a thousand. */
+        if (window_ && i >= 1) {
+            uint32_t first = 0, last = 0;
+            const int16_t* p = window_->run(static_cast<uint32_t>(i) - 1, first, last);
+            if (p && static_cast<uint32_t>(i) + 2 < last) {
+                return walk(p, f, left, right);
             }
-            return true;
         }
 
         float l[4], r[4];
@@ -91,6 +99,19 @@ public:
     }
 
 private:
+    /// Four neighbouring frames from @p p, interpolated. @p p is the tap at
+    /// i-1, so the caller has already checked that four frames fit.
+    bool walk(const int16_t* p, float f, float& left, float& right) const
+    {
+        if (channels_ == 1) {
+            left = right = hermite4(p[0], p[1], p[2], p[3], f);
+        } else {
+            left  = hermite4(p[0], p[2], p[4], p[6], f);
+            right = hermite4(p[1], p[3], p[5], p[7], f);
+        }
+        return true;
+    }
+
     /// Catmull-Rom over four taps. y1 is the sample at the integer position.
     static float hermite4(float y0, float y1, float y2, float y3, float f)
     {

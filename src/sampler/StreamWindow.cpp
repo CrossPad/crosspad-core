@@ -19,6 +19,11 @@ bool StreamWindow::open(BlockPool& pool, const char* path, uint8_t channels,
 
     const uint32_t frames = static_cast<uint32_t>(pool.blockBytes() / (channels * sizeof(int16_t)));
     if (frames == 0) return false;
+    /* A block that is not a power of two frames would put a division back in
+     * the render path, so it is refused rather than quietly paid for. */
+    if ((frames & (frames - 1)) != 0) return false;
+    uint8_t shift = 0;
+    while ((1u << shift) < frames) ++shift;
 
     for (uint8_t i = 0; i < blocks; ++i) {
         const uint32_t b = pool.acquire();
@@ -37,6 +42,8 @@ bool StreamWindow::open(BlockPool& pool, const char* path, uint8_t channels,
     blocks_ = blocks;
     channels_ = channels;
     blockFrames_ = frames;
+    blockShift_  = shift;
+    blockMask_   = frames - 1;
     streamStart_ = streamStart;
     sampleFrames_ = sampleFrames;
     nextBlock_ = 0;
@@ -63,13 +70,13 @@ uint32_t StreamWindow::service(ISampleSource& src, uint32_t playFrame, uint8_t m
      * not reached the stream at all, so block 0 is what it wants next. */
     const uint32_t playBlock = playFrame <= streamStart_
                                    ? 0
-                                   : (playFrame - streamStart_) / blockFrames_;
+                                   : ((playFrame - streamStart_) >> blockShift_);
 
     uint32_t delivered = 0;
     uint8_t done = 0;
     while (done < maxBlocks) {
         const uint32_t n = nextBlock_;
-        const uint32_t first = streamStart_ + n * blockFrames_;
+        const uint32_t first = streamStart_ + (n << blockShift_);
         if (first >= sampleFrames_) break;              // the file is all delivered
         /* Slot n % blocks_ still carries block n - blocks_. Writing it now
          * would pull the floor out from under a voice that has not left it.
@@ -101,12 +108,18 @@ uint32_t StreamWindow::service(ISampleSource& src, uint32_t playFrame, uint8_t m
 
 const int16_t* StreamWindow::frame(uint32_t f) const
 {
+    uint32_t first = 0, last = 0;
+    return run(f, first, last);
+}
+
+const int16_t* StreamWindow::run(uint32_t f, uint32_t& first, uint32_t& last) const
+{
     if (!pool_ || f < streamStart_) return nullptr;
     const uint32_t valid = validUpTo_.load(std::memory_order_acquire);
     if (f >= valid || valid <= streamStart_) return nullptr;
 
     const uint32_t rel = f - streamStart_;
-    const uint32_t n = rel / blockFrames_;
+    const uint32_t n = rel >> blockShift_;
     /* How far back the ring still reaches, derived from the one word the two
      * threads share rather than from nextBlock_, which only the streaming
      * thread may read. Below it is a voice that went backwards -- a loop into
@@ -116,10 +129,18 @@ const int16_t* StreamWindow::frame(uint32_t f) const
      * right now is not yet counted in `valid`, so `hi` is one short of what
      * the ring really holds, and the frame this refuses was going to be
      * overwritten next anyway. */
-    const uint32_t hi = (valid - 1 - streamStart_) / blockFrames_;
+    const uint32_t hi = (valid - 1 - streamStart_) >> blockShift_;
     const uint32_t oldest = hi >= blocks_ ? hi - (blocks_ - 1) : 0;
     if (n < oldest) return nullptr;
-    return data_[n % blocks_] + static_cast<size_t>(rel % blockFrames_) * channels_;
+
+    const uint32_t off = rel & blockMask_;
+    first = streamStart_ + (n << blockShift_);
+    /* The run ends where the block does or where delivery does, whichever
+     * comes first -- the caller may read every frame in between with no
+     * further checks. */
+    const uint32_t blockEnd = first + blockFrames_;
+    last = blockEnd < valid ? blockEnd : valid;
+    return data_[n % blocks_] + static_cast<size_t>(off) * channels_;
 }
 
 } // namespace crosspad

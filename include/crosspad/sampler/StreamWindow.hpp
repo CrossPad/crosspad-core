@@ -104,6 +104,20 @@ public:
     /// and still in the ring. Render thread.
     const int16_t* frame(uint32_t f) const;
 
+    /**
+     * @brief The run of frames around @p f that is one contiguous block.
+     *
+     * The interpolator wants four neighbouring frames, and resolving each one
+     * on its own costs three integer divisions -- twelve a frame, which on
+     * this chip was most of the render. This answers once: the block holding
+     * @p f, as a pointer and the half-open range of frames it covers, so the
+     * caller walks it. nullptr when @p f is not readable.
+     *
+     * @param first  set to the first frame the returned pointer covers
+     * @param last   set to one past the last
+     */
+    const int16_t* run(uint32_t f, uint32_t& first, uint32_t& last) const;
+
     /// Frames of one block for this voice's channel count.
     uint32_t blockFrames() const { return blockFrames_; }
     uint32_t streamStart() const { return streamStart_; }
@@ -124,6 +138,12 @@ private:
     uint8_t  channels_ = 1;
 
     uint32_t blockFrames_  = 0;
+    /* blockFrames_ is a power of two by construction (a block is 4096 bytes
+     * and a frame is 2 or 4), so the block a frame lives in is a shift and a
+     * mask rather than a division. On Xtensa a 32-bit divide is ~30 cycles and
+     * the read path wanted twelve of them per frame. */
+    uint8_t  blockShift_   = 0;
+    uint32_t blockMask_    = 0;
     uint32_t streamStart_  = 0;
     uint32_t sampleFrames_ = 0;
     uint32_t nextBlock_    = 0;         ///< block number the streaming thread fills next

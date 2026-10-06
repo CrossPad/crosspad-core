@@ -83,8 +83,17 @@ struct HeadPlan {
  */
 class SampleStore {
 public:
-    /// Sixteen pads of up to eight layers.
-    static constexpr uint16_t kMaxSlots = 128;
+    /**
+     * @brief Distinct samples one kit may hold.
+     *
+     * Not sixteen pads times eight layers: a slot is a *path*, and a kit that
+     * puts the same file on four pads pays for one. The widest kit measured
+     * on this author's card has 24 samples, and the Sampler's own editor
+     * assigns one per pad. Sixty-four leaves room for a kit nobody has made
+     * yet without charging the board for it -- every slot is a path and a
+     * header, and the table is in RAM for as long as the kit is.
+     */
+    static constexpr uint16_t kMaxSlots = 64;
     static constexpr uint16_t kNoSlot   = 0xFFFF;
     /// Paths are kept whole: the card's own, UTF-8, with the mount point.
     static constexpr size_t   kMaxPath  = 160;

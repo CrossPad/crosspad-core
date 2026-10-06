@@ -127,6 +127,8 @@ public:
     /// Level and pan of a pad, live, without a reload -- what the Pad Mixer
     /// turns. Applies to voices already sounding.
     void setPadMix(uint8_t pad, int volume, int pan);
+    /// The same, already in the engine's own units: linear gain and -1..+1.
+    void setPadMixGains(uint8_t pad, float gain, float balance);
 
     // ── Notes, from the event thread ──────────────────────────────────────
     void noteOn(uint8_t pad, uint8_t velocity);

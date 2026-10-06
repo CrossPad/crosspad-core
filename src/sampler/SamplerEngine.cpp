@@ -63,10 +63,15 @@ void SamplerEngine::setKit(const SamplerKit* k)
 
 void SamplerEngine::setPadMix(uint8_t pad, int volume, int pan)
 {
+    setPadMixGains(pad, SamplerKit::volumeToGain(volume), SamplerKit::panToBalance(pan));
+}
+
+void SamplerEngine::setPadMixGains(uint8_t pad, float gain, float balance)
+{
     if (pad >= kPads) return;
     float l = 0, r = 0;
-    SamplerKit::panGains(SamplerKit::panToBalance(pan), l, r);
-    const float g = SamplerKit::volumeToGain(volume);
+    SamplerKit::panGains(balance, l, r);
+    const float g = gain;
     /* Live, on voices already sounding: the Pad Mixer's fader is turned while
      * a loop is playing and must be heard on that loop, not on the next hit. */
     for (auto& v : voices_) {

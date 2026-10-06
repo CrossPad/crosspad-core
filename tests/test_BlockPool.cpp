@@ -252,3 +252,31 @@ TEST_CASE("HeadPlan on the author's real kits stays near a megabyte", "[headplan
     // Against the 5 533 984 B the prebuilt engine took whatever was loaded.
     REQUIRE(HeadPlan::cost(fdb.data(), 24, 64u * 1024) < 5533984u / 3);
 }
+
+TEST_CASE("HeadPlan spends the arena's spare room on the real kits", "[headplan]") {
+    /* What the board actually offers: a 4605 kB arena, less the pool ceiling
+     * (24 pages of 64 kB) and a 512 kB margin. */
+    HeadPlan p;
+    p.headBytes = 256 * 1024;
+    p.budgetBytes = 4605u * 1024 - (24u * 64 * 1024) - 512u * 1024;   // ~2.5 MB
+
+    // Lapsky_kit: 16 samples, 1.5 MB in all -- every one fits its head, so the
+    // kit is resident whole and never touches the card again.
+    std::vector<uint32_t> lapsky(16, 93u * 1024);
+    const uint32_t hLapsky = p.resolve(lapsky.data(), 16);
+    REQUIRE(hLapsky == 256u * 1024);
+    REQUIRE(HeadPlan::cost(lapsky.data(), 16, hLapsky) == 16u * 93 * 1024);
+
+    // CLASSIC: 16 samples averaging 425 kB. 256 kB heads would be 4 MB, so it
+    // halves once -- 0.74 s of stereo resident per pad.
+    std::vector<uint32_t> classic(16, 425u * 1024);
+    const uint32_t hClassic = p.resolve(classic.data(), 16);
+    REQUIRE(hClassic == 128u * 1024);
+    REQUIRE(HeadPlan::cost(classic.data(), 16, hClassic) <= p.budgetBytes);
+    // Twice what the fixed 64 kB head held, and still inside the arena.
+    REQUIRE(hClassic == 2 * 64u * 1024);
+
+    // SNIK_kit, the biggest on the card: 16 x 1.6 MB.
+    std::vector<uint32_t> snik(16, 1600u * 1024);
+    REQUIRE(HeadPlan::cost(snik.data(), 16, p.resolve(snik.data(), 16)) <= p.budgetBytes);
+}
