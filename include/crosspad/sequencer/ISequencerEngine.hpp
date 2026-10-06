@@ -90,6 +90,12 @@ public:
     virtual bool     sceneEvent(uint8_t seq, uint16_t i, float& at, uint8_t& pad, uint8_t& vel) const {
         (void)seq; (void)i; (void)at; (void)pad; (void)vel; return false;
     }
+    /// How long event @p i is held, as a fraction of the scene's loop; 0 for a
+    /// tap, which a UI draws at its narrowest. A note whose pad is still down
+    /// in a take answers how long it has been held so far.
+    virtual float    sceneEventLength(uint8_t seq, uint16_t i) const {
+        (void)seq; (void)i; return 0.0f;
+    }
     /// Twice the bars, the second half a copy of the first; false when it
     /// would not fit.
     virtual bool     doubleScene(uint8_t seq) { (void)seq; return false; }

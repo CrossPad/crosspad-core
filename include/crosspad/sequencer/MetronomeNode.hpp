@@ -134,6 +134,10 @@ public:
         return pending() ? cmdPos_.load(std::memory_order_relaxed)
                          : posSamples_.load(std::memory_order_relaxed);
     }
+    /// Samples rendered while running, count-in included. Never wraps at the
+    /// loop and never resets on a start: only a difference of two readings
+    /// means anything -- how long a pad was held, however many loops that took.
+    uint32_t elapsedSamples() const { return elapsed_.load(std::memory_order_relaxed); }
     /// The grid, in samples. The sequencer quantises against this exact number
     /// so a take cannot land on a grid the click does not play.
     uint32_t samplesPerBeat() const { return samplesPerBeat_; }
@@ -192,6 +196,7 @@ public:
         }
         countInLeft_.store(cin, std::memory_order_relaxed);
         posSamples_.store(pos, std::memory_order_relaxed);
+        elapsed_.store(elapsed_.load(std::memory_order_relaxed) + frames, std::memory_order_relaxed);
         if (wasCounting && !cin) countInEnded_.store(true, std::memory_order_release);
     }
 
@@ -254,6 +259,7 @@ private:
     std::atomic<bool>     audible_{true};
     std::atomic<bool>     running_{false};
     std::atomic<uint32_t> posSamples_{0};
+    std::atomic<uint32_t> elapsed_{0};
     std::atomic<uint32_t> countInLeft_{0};    // pre-roll samples still to play
     std::atomic<uint32_t> countInTotal_{0};
     std::atomic<bool>     countInEnded_{false};
