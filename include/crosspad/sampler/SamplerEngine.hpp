@@ -112,17 +112,22 @@ public:
         uint32_t voicesPeak    = 0;
         uint32_t rtMaxUs       = 0;   ///< set by the port, which owns the clock
         /**
-         * @brief Longest noteOn() call, in whatever unit the clock gives.
+         * @brief Longest noteOn() call in **wall time** -- work and waiting both.
          *
-         * Measured because the note latency this engine showed on the board
-         * was *worse* than the engine it replaces -- 2238 us average against
-         * 1198 under a 20 hits/s storm, with a 12.6 ms outlier -- and the two
-         * candidate explanations need telling apart. Either noteOn() itself is
-         * slow (it takes eight blocks from the pool for the stream window,
-         * under a spinlock the render and the streamer also want), or it is
-         * quick and the thread that calls it is simply not being scheduled.
+         * It was added to tell two explanations for a late note apart: a slow
+         * noteOn(), or a note thread that is not being scheduled. It does not,
+         * because it is a clock read either side of the call, so a thread
+         * descheduled inside it counts the same as work. That is worth knowing
+         * before trusting the number.
          *
-         * Only this half is the engine's to answer for.
+         * What it did settle, by subtraction: with the pool taken off the note
+         * path entirely -- no blocks taken, no lock touched, nothing left but
+         * field writes -- it still measured **98 642 us** on the board. A call
+         * that does nothing cannot take 99 ms, so that is the note thread
+         * waiting for its core, and the engine is not what makes a note late.
+         *
+         * It stays because that subtraction is worth being able to repeat, not
+         * because the number means what its name suggests.
          */
         uint32_t noteOnMaxUs   = 0;
     };
