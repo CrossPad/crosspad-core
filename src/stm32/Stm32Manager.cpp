@@ -87,6 +87,7 @@ void Stm32Manager::taskEntry(void* param) {
 void Stm32Manager::maintenanceLoop() {
     TickType_t lastKeepAlive = 0;
     TickType_t lastRouting = 0;
+    TickType_t lastAudioActivity = 0;
 
     const TickType_t keepAliveInterval = pdMS_TO_TICKS(5000);
     const TickType_t routingInterval = pdMS_TO_TICKS(3000);
@@ -122,7 +123,16 @@ void Stm32Manager::maintenanceLoop() {
         // config push, which sets REG_CTL_AUDIO_EN from settings behind our back.
         if (configSync_) {
             if (settings_) ampGate_.setAllowed(settings_->masterFX.speakersEnabled);
-            bool wantAmp = ampGate_.poll((uint32_t)(now * portTICK_PERIOD_MS));
+            const uint32_t nowMs = (uint32_t)(now * portTICK_PERIOD_MS);
+            bool wantAmp = ampGate_.poll(nowMs);
+            // Audible output (speaker or headphones) is use: the STM's idle
+            // timer only sees pads/encoder/buttons/touch, so playback left alone
+            // went silent at the dim timeout (LIGHT cuts the amp) and off at the
+            // sleep timeout. Every 5 s at most, like the keep-alive.
+            if (ampGate_.signalWithin(nowMs, 2000) &&
+                now - lastAudioActivity >= pdMS_TO_TICKS(5000)) {
+                if (configSync_->writeReg8(REG_CMD_USER_ACTIVITY, 1)) lastAudioActivity = now;
+            }
             if (ampResyncPending_) {
                 ampResyncPending_ = false;
                 ampApplied_ = -1;
@@ -142,6 +152,13 @@ void Stm32Manager::maintenanceLoop() {
                 if (configSync_->pushAll(settings_->stm)) {
                     lastBootCount_ = bc;
                     ampApplied_ = -1;   // pushAll wrote AUDIO_EN — re-assert the gate
+                    // A reset STM boots its backlight at its own default (50 %)
+                    // and pushAll does not carry brightness; setBrightness()
+                    // skips an unchanged value, so the user's level never came
+                    // back — the screen stayed brighter (or dimmer) than set.
+                    if (cmdSender_ && lastBrightness_ != 0xFF) {
+                        cmdSender_->sendBrightness(lastBrightness_);
+                    }
                 }
             }
         }

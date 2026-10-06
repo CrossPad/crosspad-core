@@ -92,8 +92,10 @@ public:
      * gains it is fading are in there. So the note that stole it needs a
      * *different* slot, and InstrumentParams::maxVoices is clamped to
      * kMaxVoices - kFadeSlots to guarantee one. Four is the depth at which a
-     * burst of steals inside a single 2 ms fade stops finding free slots; past
-     * that the oldest fade is cut short instead.
+     * burst of steals inside a single kStealFadeMs fade stops finding free
+     * slots at the full polyphony; past that the oldest fade is cut short
+     * instead. Under a voice cap (setVoiceCap()) every slot above it is free
+     * for fades.
      */
     static constexpr uint8_t kFadeSlots = 4;
 
@@ -103,12 +105,14 @@ public:
     /**
      * @brief Fade applied to a stolen voice, in milliseconds.
      *
-     * Long enough that cutting a loud sustain is inaudible, short enough that
-     * the fading voice is gone before the next steal wants its slot. A hard
-     * cut at an arbitrary phase is a click at full scale — the one artefact a
-     * sampler cannot hide.
+     * Long enough that cutting a loud sustain is inaudible -- 5 ms is a
+     * quarter period of a 50 Hz note, where 2 ms was a cut of a low one --
+     * short enough that the fading voice is gone before the next steal wants
+     * its slot. A hard cut at an arbitrary phase is a click at full scale —
+     * the one artefact a sampler cannot hide. A fade still renders: it is
+     * ~3.5 blocks of one more voice at 64 frames, 44.1 kHz.
      */
-    static constexpr float kStealFadeMs = 2.0f;
+    static constexpr float kStealFadeMs = 5.0f;
 
     static constexpr uint8_t kPads = 16;
 
@@ -118,8 +122,36 @@ public:
     void setBank(SampleBank* bank);
     SampleBank* bank() const { return bank_.load(std::memory_order_acquire); }
 
+    /// Applies @p p, its maxVoices clamped to kMaxSounding and to voiceCap().
     void setParams(const InstrumentParams& p);
     void setPadMix(uint8_t pad, int volume, int pan);
+
+    /**
+     * @brief The platform's ceiling on maxVoices: what one render pass has
+     *        room for, whatever a kit or an editor asks.
+     *
+     * Every setParams() clamps to it -- a kit load and the kit editor's
+     * Attack/Release/Voices alike -- so no path can raise the polyphony past
+     * it. Takes effect at the next setParams(). Clamped to 1..kMaxSounding;
+     * kMaxSounding (no ceiling) until set.
+     */
+    void setVoiceCap(uint8_t cap);
+    uint8_t voiceCap() const { return voiceCap_.load(std::memory_order_relaxed); }
+
+    /// The polyphony in force: the last setParams()'s, capped.
+    uint8_t maxVoices() const { return maxVoices_.load(std::memory_order_relaxed); }
+
+    /**
+     * @brief The render is over its budget: hold the polyphony where it is.
+     *
+     * Raised by the platform while its audio task's average pass is close to
+     * a block. Until it is lowered, a note takes the place of a voice that
+     * sounds -- stolen as at the cap, a release tail first -- instead of
+     * adding one. The cap is a guess at the budget; this is the budget
+     * measured, with whatever else the pass is carrying.
+     */
+    void setOverloaded(bool on) { overloaded_.store(on, std::memory_order_relaxed); }
+    bool overloaded() const { return overloaded_.load(std::memory_order_relaxed); }
 
     /**
      * @brief Close the note path so the loader can retire the current bank.
@@ -237,7 +269,12 @@ public:
     uint8_t soundingVoices() const;
 
     uint32_t stealCount() const { return steals_.load(std::memory_order_relaxed); }
-    void resetStats() { steals_.store(0, std::memory_order_relaxed); }
+    /// The steals setOverloaded() forced below the cap (part of stealCount()).
+    uint32_t shedCount() const { return sheds_.load(std::memory_order_relaxed); }
+    void resetStats() {
+        steals_.store(0, std::memory_order_relaxed);
+        sheds_.store(0, std::memory_order_relaxed);
+    }
 
 private:
     struct Voice {
@@ -297,11 +334,14 @@ private:
     std::atomic<bool> gated_{false};
     std::atomic<bool> rendering_{false};
     std::atomic<uint8_t> maxVoices_{24};
+    std::atomic<uint8_t> voiceCap_{kMaxSounding};
+    std::atomic<bool> overloaded_{false};
     std::atomic<float> attackMs_{2.0f};
     std::atomic<float> releaseMs_{150.0f};
     std::atomic<int16_t> padVolume_[kPads];
     std::atomic<int16_t> padPan_[kPads];
     std::atomic<uint32_t> steals_{0};
+    std::atomic<uint32_t> sheds_{0};
     std::atomic<float> lastNoteHz_{0.0f};
 
     Voice voices_[kMaxVoices];

@@ -23,6 +23,7 @@ TEST_CASE("Stm32Settings: defaults match STM compiled defaults", "[settings][stm
     REQUIRE(s.ccPanBase == 48);
     REQUIRE(s.analogMinMs == 16);
     REQUIRE(s.analogDelta == 2);
+    REQUIRE(s.pressDebounceMs == 6);  // not the STM's 15: the note-on waits it out
     REQUIRE(s.en3v3Hold == 1);
     REQUIRE(s.usbSuspendS == 30);
     REQUIRE(s.encCcMode == 0);
@@ -55,6 +56,7 @@ TEST_CASE("Stm32Settings: persistence round-trip", "[settings][stm]") {
     a.midiChannel = 5;
     a.noteOffset = -12;
     a.sleepTimeoutS = 900;
+    a.pressDebounceMs = 11;
 #if defined(PAD_CONFIG_PER_PAD)
     a.padAnalogMode[3] = 1;
     a.padSensitivity[3] = 250;
@@ -72,6 +74,7 @@ TEST_CASE("Stm32Settings: persistence round-trip", "[settings][stm]") {
     REQUIRE(b.midiChannel == 5);
     REQUIRE(b.noteOffset == -12);
     REQUIRE(b.sleepTimeoutS == 900);
+    REQUIRE(b.pressDebounceMs == 11);
 #if defined(PAD_CONFIG_PER_PAD)
     REQUIRE(b.padAnalogMode[3] == 1);
     REQUIRE(b.padSensitivity[3] == 250);
@@ -95,6 +98,7 @@ TEST_CASE("Stm32Settings: analog defaults sourced from board profile", "[setting
     REQUIRE(s.ccPanBase   == BOARD_CC_PAN_BASE_DEF);
     REQUIRE(s.analogMinMs == BOARD_ANALOG_MIN_MS_DEF);
     REQUIRE(s.analogDelta == BOARD_ANALOG_DELTA_DEF);
+    REQUIRE(s.pressDebounceMs == BOARD_PRESS_DEBOUNCE_MS_DEF);
 }
 
 TEST_CASE("Stm32Settings: accessors alias per-pad storage", "[settings][stm][accessor]") {
@@ -115,4 +119,22 @@ TEST_CASE("Stm32Settings: accessors alias per-pad storage", "[settings][stm][acc
     REQUIRE(cs.sensitivity(0) == 200);   // one global value, all indices alias it
     REQUIRE(cs.sensitivity(15) == 200);
 #endif
+}
+
+TEST_CASE("Stm32Settings: a store saved before press debounce existed loads 6 ms", "[settings][stm]") {
+    // Older firmware never wrote "press_db" (the STM ran its own 15 ms), so such
+    // a unit gets the new window on its first boot; one tuned since keeps its value.
+    test::MemoryKVStore kv;
+    kv.saveU8("cfg_stm", "an_min_ms", 16);   // what a development unit has stored
+    kv.saveU8("cfg_stm", "an_delta", 2);
+    Stm32Settings old;
+    old.load(kv);
+    REQUIRE(old.analogMinMs == 16);          // the stream rate cap, not the window
+    REQUIRE(old.pressDebounceMs == BOARD_PRESS_DEBOUNCE_MS_DEF);
+
+    old.pressDebounceMs = 10;
+    old.save(kv);
+    Stm32Settings tuned;
+    tuned.load(kv);
+    REQUIRE(tuned.pressDebounceMs == 10);
 }
