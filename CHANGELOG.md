@@ -6,6 +6,31 @@ carries the same number) and consumers gate on it with
 `crosspad/RequireVersion.hpp`. This file starts at 1.45.0; earlier releases
 are described in their `chore: X.Y.Z` commits.
 
+## 1.46.1 — 2026-10-07
+
+Review fixes (fix/steve-review: 802e51a, 3ed896d).
+
+### Fixed
+
+- `SongEngine`: opening another project while a commit waits out the save
+  delay first saves that commit to the song it was made in. The edit used to
+  be lost, and the delayed save wrote the newly opened song.
+- `SongEngine` merge: when the target track keeps blocks outside the range,
+  its volume stays and the clip is mixed relative to it; it used to go to
+  unity and change the loudness of those blocks. Tracks at volume 0 are left
+  out like muted ones. (The mix still saturates at 16 bits, so a quiet target
+  merged with loud tracks can clip.)
+- `SongEngine` edits run one at a time: a rename, delete, tempo, merge,
+  import or export requested while `editState()` is Busy is refused, and the
+  parameters of the edit in flight are no longer overwritten by the next
+  request.
+
+### Removed
+
+- `PadAnimator::setProgressColor()`: no caller left (the boot splash draws
+  with `showFrame()` since 1.36.0; nothing in platform-idf, crosspad-pc or
+  the apps calls it).
+
 ## 1.46.0 — 2026-10-07
 
 The sequencer note length (#21, bc0789a/bc4e3ef), which was merged into
