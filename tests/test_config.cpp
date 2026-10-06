@@ -11,6 +11,7 @@ TEST_CASE("config: board profile defaults match baseline", "[config]") {
     REQUIRE(BOARD_CC_PAN_BASE_DEF     == 48);
     REQUIRE(BOARD_ANALOG_MIN_MS_DEF   == 16);
     REQUIRE(BOARD_ANALOG_DELTA_DEF    == 2);
+    REQUIRE(BOARD_PRESS_DEBOUNCE_MS_DEF == 6);
     REQUIRE(BOARD_LCD_BRIGHTNESS_DEF  == 100);
     REQUIRE(BOARD_RGB_BRIGHTNESS_DEF  == 100);
 }

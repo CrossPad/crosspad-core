@@ -128,7 +128,11 @@ public:
     int8_t wifiRssi = 0;
     bool sdCardDetected = false;
     bool imuDetected = false;
+    /// SoC 0..100; negative = no battery fitted.
     int8_t batteryPct = 0;
+    /// Running on the battery with the cell nearly empty. The STM turns the
+    /// unit off by itself shortly after (VBAT < 3.25 V for 30 s).
+    bool batteryLow = false;
 
     /// What a host companion (a DAW script's worker, a browser tab) last
     /// reported through the HOST_INFO companion verb. hostSeenUs is IClock
