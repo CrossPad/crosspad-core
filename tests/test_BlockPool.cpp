@@ -280,3 +280,52 @@ TEST_CASE("HeadPlan spends the arena's spare room on the real kits", "[headplan]
     std::vector<uint32_t> snik(16, 1600u * 1024);
     REQUIRE(HeadPlan::cost(snik.data(), 16, p.resolve(snik.data(), 16)) <= p.budgetBytes);
 }
+
+TEST_CASE("BlockPool keeps its tables out of the pool it hands out", "[blockpool]") {
+    // The board's shape: pages come from a heap that is wiped wholesale by
+    // re-registering it, and the tables must not be in that heap.
+    Heap pages, tables;
+    BlockPool pool;
+    BlockPool::Config c = cfg(pages);
+    c.tableAlloc = &Heap::alloc;
+    c.tableFree  = &Heap::free_;
+    c.tableCtx   = &tables;
+    REQUIRE(pool.configure(c));
+
+    // Two allocations for the tables, none for pages until asked.
+    REQUIRE(tables.live.load() == 2);
+    REQUIRE(pages.live.load() == 0);
+
+    REQUIRE(pool.reserve(8) == 8);
+    REQUIRE(pages.live.load() == 2);
+    REQUIRE(tables.live.load() == 2);
+}
+
+TEST_CASE("BlockPool forgets pages its owner reclaimed underneath it", "[blockpool]") {
+    Heap h;
+    BlockPool pool;
+    REQUIRE(pool.configure(cfg(h)));
+    REQUIRE(pool.reserve(8) == 8);
+    const uint32_t held = pool.acquire();
+    REQUIRE(held != BlockPool::kInvalid);
+    REQUIRE(pool.stats().pages == 2);
+
+    /* The owner has re-registered the whole heap. releaseAll() cannot help --
+     * a block is still out, and freeing the pages one at a time would free
+     * into a heap that no longer knows them. */
+    REQUIRE_FALSE(pool.releaseAll());
+    pool.forgetPages();
+
+    REQUIRE(pool.stats().pages == 0);
+    REQUIRE(pool.stats().blocksTotal == 0);
+    REQUIRE(pool.stats().blocksUsed == 0);
+    REQUIRE(pool.acquire() == BlockPool::kInvalid);      // nothing to give
+    REQUIRE(pool.data(held) == nullptr);                 // and nothing to read
+
+    // And it works again from scratch.
+    REQUIRE(pool.reserve(8) == 8);
+    const uint32_t fresh = pool.acquire();
+    REQUIRE(fresh != BlockPool::kInvalid);
+    REQUIRE(pool.data(fresh) != nullptr);
+    pool.release(fresh);
+}

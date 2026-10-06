@@ -11,8 +11,10 @@ BlockPool::~BlockPool()
         for (uint32_t p = 0; p < pageSlots_; ++p) {
             if (pages_[p].base) free_(pages_[p].base, ctx_);
         }
-        if (pages_) free_(pages_, ctx_);
-        if (next_)  free_(next_, ctx_);
+    }
+    if (tableFree_) {
+        if (pages_) tableFree_(pages_, tableCtx_);
+        if (next_)  tableFree_(next_, tableCtx_);
     }
     pages_ = nullptr;
     next_ = nullptr;
@@ -30,19 +32,22 @@ bool BlockPool::configure(const Config& cfg)
     alloc_ = cfg.alloc;
     free_  = cfg.free;
     ctx_   = cfg.ctx;
+    tableAlloc_ = cfg.tableAlloc ? cfg.tableAlloc : cfg.alloc;
+    tableFree_  = cfg.tableFree  ? cfg.tableFree  : cfg.free;
+    tableCtx_   = cfg.tableAlloc ? cfg.tableCtx   : cfg.ctx;
     blockBytes_ = cfg.blockBytes;
     pageBytes_  = cfg.pageBytes;
     perPage_    = static_cast<uint32_t>(cfg.pageBytes / cfg.blockBytes);
     maxPages_   = cfg.maxPages;
 
-    pages_ = static_cast<Page*>(alloc_(sizeof(Page) * maxPages_, ctx_));
+    pages_ = static_cast<Page*>(tableAlloc_(sizeof(Page) * maxPages_, tableCtx_));
     if (!pages_) return false;
     for (uint32_t i = 0; i < maxPages_; ++i) pages_[i] = Page{};
 
     const size_t slots = static_cast<size_t>(maxPages_) * perPage_;
-    next_ = static_cast<uint32_t*>(alloc_(sizeof(uint32_t) * slots, ctx_));
+    next_ = static_cast<uint32_t*>(tableAlloc_(sizeof(uint32_t) * slots, tableCtx_));
     if (!next_) {
-        free_(pages_, ctx_);
+        tableFree_(pages_, tableCtx_);
         pages_ = nullptr;
         return false;
     }
@@ -153,6 +158,19 @@ uint32_t BlockPool::trim()
         ++released;
     }
     return released;
+}
+
+void BlockPool::forgetPages()
+{
+    if (!pages_) return;
+    Spin g(lock_);
+    for (uint32_t p = 0; p < maxPages_; ++p) pages_[p] = Page{};
+    const size_t slots = static_cast<size_t>(maxPages_) * perPage_;
+    for (size_t i = 0; i < slots; ++i) next_[i] = kInvalid;
+    freeHead_ = kInvalid;
+    pageSlots_ = 0;
+    livePages_ = 0;
+    used_.store(0, std::memory_order_relaxed);
 }
 
 bool BlockPool::releaseAll()

@@ -59,6 +59,25 @@ public:
         AllocFn  alloc = nullptr;
         FreeFn   free  = nullptr;
         void*    ctx   = nullptr;
+        /**
+         * @brief Where the pool's own two tables come from, if not @c alloc.
+         *
+         * They must outlive the pages, and on the device the pages come from a
+         * pool that is wiped wholesale by re-registering it -- the two sample
+         * engines take turns owning it. A table allocated out of that pool is
+         * a dangling pointer the moment the pool is reset, and the symptom is
+         * not a crash: `reserve()` reads a page array that is no longer its
+         * own, decides it already has pages, and hands out nothing. Measured
+         * on the board as every streaming voice refused its ring
+         * (`norings=187`) while the card was never read at all.
+         *
+         * So the tables get an allocator of their own -- a couple of kilobytes
+         * from the ordinary heap, which nobody resets. Null falls back to
+         * @c alloc, which is right for a test and wrong for the board.
+         */
+        AllocFn  tableAlloc = nullptr;
+        FreeFn   tableFree  = nullptr;
+        void*    tableCtx   = nullptr;
     };
 
     struct Stats {
@@ -87,6 +106,18 @@ public:
     /// Give back every page with no block of it in use. Worker thread only.
     /// @return pages released.
     uint32_t trim();
+
+    /**
+     * @brief Every page is gone, however it went. Nothing is freed.
+     *
+     * For the one case releaseAll() cannot cover: the memory the pages came
+     * from was reclaimed wholesale by its owner, so freeing them individually
+     * would be freeing into a heap that no longer knows them. The pool goes
+     * back to holding nothing and the next reserve() starts again.
+     *
+     * The caller is asserting that nothing is reading a block. Worker thread.
+     */
+    void forgetPages();
 
     /// Give back everything. Only legal when no block is out -- a block handed
     /// to a voice points into a page this would free. Returns false, and keeps
@@ -137,6 +168,9 @@ private:
     AllocFn alloc_ = nullptr;
     FreeFn  free_  = nullptr;
     void*   ctx_   = nullptr;
+    AllocFn tableAlloc_ = nullptr;
+    FreeFn  tableFree_  = nullptr;
+    void*   tableCtx_   = nullptr;
 
     size_t   blockBytes_ = 0;
     size_t   pageBytes_  = 0;
