@@ -37,7 +37,6 @@ bool StreamWindow::open(BlockPool& pool, const char* path, uint8_t channels,
         data_[i] = static_cast<int16_t*>(pool.data(b));
     }
 
-    pool_ = &pool;
     path_ = path;
     blocks_ = blocks;
     channels_ = channels;
@@ -49,14 +48,17 @@ bool StreamWindow::open(BlockPool& pool, const char* path, uint8_t channels,
     nextBlock_ = 0;
     idlePasses_ = 0;
     validUpTo_.store(streamStart, std::memory_order_release);
+    /* Last: everything above is in place before the render thread may look. */
+    pool_.store(&pool, std::memory_order_release);
     return true;
 }
 
 void StreamWindow::close(BlockPool& pool)
 {
+    /* First: the render thread stops reading here before a block goes back. */
+    pool_.store(nullptr, std::memory_order_release);
     for (uint8_t i = 0; i < blocks_; ++i) pool.release(block_[i]);
     blocks_ = 0;
-    pool_ = nullptr;
     path_ = nullptr;
     nextBlock_ = 0;
     validUpTo_.store(0, std::memory_order_release);
@@ -64,7 +66,7 @@ void StreamWindow::close(BlockPool& pool)
 
 uint32_t StreamWindow::service(ISampleSource& src, uint32_t playFrame, uint8_t maxBlocks)
 {
-    if (!pool_ || !path_) return 0;
+    if (!pool_.load(std::memory_order_acquire) || !path_) return 0;
 
     /* The block the voice is reading from. A voice still inside the head has
      * not reached the stream at all, so block 0 is what it wants next. */
@@ -114,7 +116,7 @@ const int16_t* StreamWindow::frame(uint32_t f) const
 
 const int16_t* StreamWindow::run(uint32_t f, uint32_t& first, uint32_t& last) const
 {
-    if (!pool_ || f < streamStart_) return nullptr;
+    if (!pool_.load(std::memory_order_acquire) || f < streamStart_) return nullptr;
     const uint32_t valid = validUpTo_.load(std::memory_order_acquire);
     if (f >= valid || valid <= streamStart_) return nullptr;
 

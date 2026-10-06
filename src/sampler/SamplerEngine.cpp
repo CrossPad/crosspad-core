@@ -186,18 +186,17 @@ void SamplerEngine::noteOnBody(uint8_t pad, uint8_t velocity)
     uint32_t last  = (kl.end == 0 || kl.end > total) ? total : kl.end;
     if (first >= last) { first = 0; last = total; }
 
-    /* The streamed part, if any. Opened here, off the render thread; a
-     * refusal is a voice that plays its resident head and stops, which is a
-     * short note rather than a glitch, and it is counted. */
-    v.window.close(*pool_);
-    const bool needsStream = !slot->complete && last > slot->headFrames;
-    if (needsStream) {
-        if (!v.window.open(*pool_, slot->path, slot->desc.channels, slot->headFrames, last)) {
-            cStreamRefused_.fetch_add(1, std::memory_order_relaxed);
-        }
-    }
-    v.cursor.bind(slot->head, slot->headFrames, slot->desc.channels, last,
-                  v.window.isOpen() ? &v.window : nullptr);
+    /* The streamed part, if any, is left to the streaming thread.
+     *
+     * It used to be opened here, which meant sixteen trips through a pool
+     * shared with the render and the streamer on the one thread that must not
+     * do any work -- the thread a player is waiting on. The resident head is
+     * 0.74 s and the streaming pass runs every millisecond, so the ring is
+     * always there long before the voice reaches it; there is no reason for
+     * the note to pay for it. */
+    v.slot = slot;
+    v.wantStream = !slot->complete && last > slot->headFrames;
+    v.cursor.bind(slot->head, slot->headFrames, slot->desc.channels, last, &v.window);
 
     /* One increment carries both reasons a voice does not step by exactly one
      * frame: the file's rate against the engine's, and the pad's pitch. The
@@ -396,11 +395,25 @@ void SamplerEngine::serviceIo()
              * without being on a 1.45 ms clock. */
             v.window.close(*pool_);
             v.cursor.clear();
+            v.wantStream = false;
+            v.slot = nullptr;
             v.state.store(static_cast<uint8_t>(VoiceState::Free), std::memory_order_release);
             continue;
         }
         if (st != static_cast<uint8_t>(VoiceState::Playing)) continue;
-        if (!v.window.isOpen() || !src) continue;
+        if (!src) continue;
+        /* Open the ring the note asked for, here rather than there. A refusal
+         * is a voice that plays its resident head and stops -- a short note
+         * rather than a glitch -- and it is counted. */
+        if (v.wantStream && !v.window.isOpen()) {
+            v.wantStream = false;
+            const SampleStore::Slot* sl = v.slot;
+            if (!sl || !v.window.open(*pool_, sl->path, sl->desc.channels, sl->headFrames, v.last)) {
+                cStreamRefused_.fetch_add(1, std::memory_order_relaxed);
+                continue;
+            }
+        }
+        if (!v.window.isOpen()) continue;
         v.window.service(*src, v.playFrame.load(std::memory_order_acquire));
     }
 }

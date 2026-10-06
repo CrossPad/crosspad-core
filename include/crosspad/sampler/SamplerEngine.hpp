@@ -214,6 +214,10 @@ private:
         uint8_t  pad = 0, layer = 0, choke = 0;
         uint32_t age = 0;        ///< order of starting, for the steal
         uint32_t quiet = 0;      ///< consecutive frames below silenceLevel
+        /* What the streaming thread needs to open this voice's ring, left for
+         * it by noteOn() rather than done there. */
+        const SampleStore::Slot* slot = nullptr;
+        bool wantStream = false;
     };
 
     void   noteOnBody(uint8_t pad, uint8_t velocity);

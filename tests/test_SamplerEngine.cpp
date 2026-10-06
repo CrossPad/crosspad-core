@@ -336,6 +336,10 @@ TEST_CASE("SamplerEngine plays its head when the pool has no blocks", "[samplere
 
     rig.engine.noteOn(0, 127);
     rig.engine.noteOn(1, 127);
+    /* The note itself takes nothing from the pool -- the ring is opened by the
+     * streaming thread on its next pass, which is where the refusal shows. */
+    REQUIRE(rig.engine.counters().streamRefused == 0);
+    rig.engine.serviceIo();
     REQUIRE(rig.engine.counters().streamRefused >= 1);
     // The refused one still sounds -- it has its head -- and then stops
     // cleanly rather than reading something that is not its own sample.
@@ -392,6 +396,9 @@ TEST_CASE("SamplerEngine gives the pool back once a kit stops sounding", "[sampl
 
     REQUIRE(rig.pool.stats().blocksUsed == 0);
     for (int p = 0; p < 8; ++p) rig.engine.noteOn(static_cast<uint8_t>(p), 127);
+    // Still nothing: striking a pad does not touch the pool.
+    REQUIRE(rig.pool.stats().blocksUsed == 0);
+    rig.engine.serviceIo();
     REQUIRE(rig.pool.stats().blocksUsed > 0);
 
     rig.engine.allNotesOff();
@@ -462,4 +469,33 @@ TEST_CASE("SamplerEngine lets a loop run through its quiet part", "[samplerengin
     REQUIRE(rig.engine.counters().silenced == 0);
     rig.engine.allNotesOff();
     rig.run(20);
+}
+
+
+TEST_CASE("SamplerEngine takes nothing from the pool on the note thread", "[samplerengine]") {
+    /* The one thread a player is waiting on must do no work that can be
+     * contended. Striking a pad therefore leaves the ring to the streaming
+     * thread, and this is the test that says so. */
+    Rig rig;
+    rig.build();
+    rig.src.add("long.wav", 60000, 1);
+    rig.assign(0, "long.wav", 1024);
+    rig.publish();
+
+    const uint32_t before = rig.pool.stats().blocksUsed;
+    rig.engine.noteOn(0, 127);
+    REQUIRE(rig.pool.stats().blocksUsed == before);
+
+    // And it sounds straight away regardless -- the head is resident.
+    std::vector<float> out(128, 0.0f);
+    rig.engine.mix(out.data(), 64);
+    float peak = 0.0f;
+    for (float v : out) peak = std::max(peak, std::fabs(v));
+    REQUIRE(peak > 0.0f);
+
+    // The ring arrives on the next pass, well before the voice needs it.
+    rig.engine.serviceIo();
+    REQUIRE(rig.pool.stats().blocksUsed > before);
+    REQUIRE(rig.run(1000) > 0.0f);
+    REQUIRE(rig.engine.counters().underruns == 0);
 }

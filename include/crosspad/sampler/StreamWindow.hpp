@@ -84,7 +84,7 @@ public:
     /// Give the blocks back. Audio-safe; call it when the voice ends.
     void close(BlockPool& pool);
 
-    bool isOpen() const { return pool_ != nullptr; }
+    bool isOpen() const { return pool_.load(std::memory_order_acquire) != nullptr; }
 
     /**
      * @brief Read what the voice will want next. Streaming thread only.
@@ -130,7 +130,14 @@ public:
     uint32_t idlePasses() const { return idlePasses_; }
 
 private:
-    BlockPool* pool_ = nullptr;
+    /* Published last by open() and cleared first by close(), both on the
+     * streaming thread, and read first by everything the render thread calls.
+     * That makes the window safe to open *after* the voice has started, which
+     * is the point: taking eight blocks from a shared pool is work, and the
+     * thread that strikes a note is the one thread that must not do any. The
+     * resident head is 0.74 s and this runs every millisecond, so the ring is
+     * always there long before the voice reaches it. */
+    std::atomic<BlockPool*> pool_{nullptr};
     const char* path_ = nullptr;        ///< owned by the store's slot, outlives the voice
     uint32_t block_[kMaxBlocks] = {};
     int16_t* data_[kMaxBlocks] = {};
