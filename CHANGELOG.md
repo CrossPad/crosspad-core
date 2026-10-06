@@ -6,6 +6,35 @@ carries the same number) and consumers gate on it with
 `crosspad/RequireVersion.hpp`. This file starts at 1.45.0; earlier releases
 are described in their `chore: X.Y.Z` commits.
 
+## 1.46.0 — 2026-10-07
+
+The sequencer note length (#21, bc0789a/bc4e3ef), which was merged into
+release/core-1.41.0 after that branch had gone to main and so never reached it.
+
+### Added
+
+- A recorded note is as long as its pad was held. `PatternSequencer::noteRelease()`
+  (wait-free, like `noteIn()`) closes the note its press opened; a note whose pad
+  is still down grows under the finger. Playback holds the pad down for the
+  length and releases it inside the window it runs out in; a tap still gets one
+  poll of gate.
+- `ISequencerEngine::sceneEventLength()` and
+  `SequencerController::getSceneEventLength()`: an event's length as a fraction
+  of the scene's loop (0 for a tap), for drawing.
+- `PatternSequencer::eventLength()`, `eventLengthTicks()`, and a `lenTicks`
+  argument to `addEventTicks()` (default 0, a tap).
+- `MetronomeNode::elapsedSamples()`: samples rendered while running, never
+  wrapped or reset -- what a hold is measured on.
+
+### Changed
+
+- Scene files: a held note is saved as `[ticks, pad, vel, len]`; a tap stays a
+  triple, and files without lengths load as taps.
+- A scene change or a new bar count releases every pad held by a length;
+  `stop()` closes the notes of pads still down.
+- `poll()` collects its presses in a member buffer (`2 * kMaxEvents + 32`)
+  instead of on the poll task's stack.
+
 ## 1.45.0 — 2026-10-07
 
 The firmware sale line -- 1.42.0, 1.43.0 and the press debounce

@@ -183,6 +183,9 @@ public:
     bool    getSceneEvent(uint8_t s, uint16_t i, float& at, uint8_t& pad, uint8_t& vel) const {
         return engine_ ? engine_->sceneEvent(s, i, at, pad, vel) : false;
     }
+    float   getSceneEventLength(uint8_t s, uint16_t i) const {
+        return engine_ ? engine_->sceneEventLength(s, i) : 0.0f;
+    }
     bool    doubleScene(uint8_t s) { return engine_ ? engine_->doubleScene(s) : false; }
     bool    halveScene(uint8_t s)  { return engine_ ? engine_->halveScene(s) : false; }
     void    setErasing(bool on)    { if (engine_) engine_->setErasing(on); }
