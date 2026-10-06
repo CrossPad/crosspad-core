@@ -1,6 +1,6 @@
 {
     "name": "crosspad-core",
-    "version": "1.38.1",
+    "version": "1.46.0",
     "description": "CrossPad portable core library",
     "keywords": ["crosspad", "midi", "sampler", "embedded"],
     "frameworks": ["arduino", "espidf"],
@@ -28,6 +28,7 @@
             "+<stm32/Stm32ConfigSync.cpp>",
             "+<music/MusicTheory.cpp>",
             "+<midi/MidiInputHandler.cpp>",
+            "+<net/WifiNetworkList.cpp>",
             "+<platform/CrosspadPlatformInit.cpp>",
             "+<platform/PlatformCapabilities.cpp>",
             "+<platform/PlatformServices.cpp>",
@@ -53,7 +54,15 @@
             "+<song/LiveSet.cpp>",
             "+<song/SongEngine.cpp>",
             "+<sampletools/SliceMath.cpp>",
-            "+<sampletools/SampleFx.cpp>"
+            "+<sampletools/SampleFx.cpp>",
+            "+<fw/Semver.cpp>",
+            "+<fw/FwKit.cpp>",
+            "+<fw/FwSchedule.cpp>",
+            "+<fw/FwCatalog.cpp>",
+            "+<fw/FwManifest.cpp>",
+            "+<fw/FwLibraryGc.cpp>",
+            "+<fw/FwStore.cpp>",
+            "+<fw/FwCardActions.cpp>"
         ]
     }
 }

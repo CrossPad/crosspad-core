@@ -71,6 +71,10 @@ constexpr uint32_t kBounceMinFrames  = 8192;   // 32 kB (~170 ms), the least a b
  * track fader is heard a ring's depth late, ~170 ms. */
 constexpr uint32_t kSongRingFrames   = 8192;   // 32 kB, ~170 ms ahead
 constexpr uint32_t kChunkFrames      = 1024;   // 4 kB per card access
+/// A bounce's first piece fills up the 4 kB the WAV header starts, so every
+/// piece after it ends on a 4 kB boundary of the file.
+constexpr uint32_t kFirstChunkFrames = (kChunkFrames * 4 - WavWriter::kHeaderBytes) / 4;
+static_assert(WavWriter::kHeaderBytes % 4 == 0, "the WAV header is whole frames");
 constexpr uint32_t kPrimeFrames      = kSongRingFrames / 2;
 /// A project name, as a folder on the card and a row in a list.
 constexpr size_t   kMaxNameLen       = 32;
@@ -1865,34 +1869,52 @@ private:
         const int64_t deadline = p.nowUs() +
                                  (int64_t)total * 1000000 / sampleRate_ + 3000000;
         const char* error = nullptr;
-        char why[64];
+        char why[80];
         uint32_t done = 0;
         int64_t maxGapUs = 0, lastPop = 0;   // from the first block on: not the wait for bar one
+        int64_t firstPop = 0;
+        uint32_t ioUs = 0, ioMaxUs = 0, ioChunks = 0, drain = 0;
+        bool tooSlow = false;
         bool seqStopped = false;
         for (;;) {
             /* A lost block is a failed take, whatever else is true: checked
              * first, so a ring that overflowed and then drained is never
              * reported as a finished clip. */
-            if (bOverflow_.load()) {
-                std::snprintf(why, sizeof(why), "card too slow (stalled %u ms, buffer %u ms)",
-                              (unsigned)(maxGapUs / 1000),
-                              (unsigned)((uint64_t)bRing_.cap * 1000 / sampleRate_));
-                error = why;
-                break;
-            }
+            if (bOverflow_.load()) { tooSlow = true; break; }
             /* The take is complete the moment RT has its last frame: stop the
              * scene there, not when the card has caught up. */
             if (!seqStopped && bDone_.load()) { seq.stop(); seqStopped = true; }
-            const uint32_t n = bRing_.pop(chunk, kChunkFrames);
+            /* Only whole pieces, each ending on a 4 kB boundary of the file
+             * (the first fills up the header's), until the take's last: a
+             * piece ending mid-sector made the filesystem read that sector
+             * back before writing it, and a short piece is a card command
+             * for less than it costs. */
+            const uint32_t want = done ? kChunkFrames : kFirstChunkFrames;
+            const uint32_t n = bRing_.used() >= want || bDone_.load() ? bRing_.pop(chunk, want) : 0;
             if (n) {
-                if (!w.write(chunk, n)) { error = "card write failed"; break; }
+                const int64_t t0 = p.nowUs();
+                if (!firstPop) firstPop = t0;
+                if (!p.writeIo(w.stream(), chunk, n * 4)) { error = "card write failed"; break; }
+                w.advance(n);
                 const int64_t now = p.nowUs();
+                const uint32_t us = (uint32_t)(now - t0);
+                ioUs += us;
+                if (us > ioMaxUs) ioMaxUs = us;
+                ++ioChunks;
                 if (lastPop) maxGapUs = std::max(maxGapUs, now - lastPop);
                 lastPop = now;
                 done += n;
+                /* How the card keeps up: bytes per millisecond from the start
+                 * of the first piece is kB/s. */
+                const uint32_t ms = (uint32_t)(now - firstPop) / 1000;
+                drain = ms ? done * 4 / ms : 0;
                 {
                     std::lock_guard<std::mutex> l(statusMutex_);
                     status_.framesDone = done;
+                    status_.chunks     = ioChunks;
+                    status_.chunkAvgUs = ioUs / ioChunks;
+                    status_.chunkMaxUs = ioMaxUs;
+                    status_.drainKBps  = drain;
                 }
                 p.yieldIo();
                 continue;
@@ -1901,6 +1923,12 @@ private:
             if (bCancel_.load()) { error = "cancelled"; break; }
             if (p.nowUs() > deadline) { error = "timed out"; break; }
             p.sleepMs(2);
+        }
+        if (tooSlow) {
+            std::snprintf(why, sizeof(why), "card too slow (stalled %u ms, buffer %u ms, drain %u kB/s)",
+                          (unsigned)(maxGapUs / 1000),
+                          (unsigned)((uint64_t)bRing_.cap * 1000 / sampleRate_), (unsigned)drain);
+            error = why;
         }
         if (!error && done != total) error = "take incomplete";
 

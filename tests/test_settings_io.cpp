@@ -137,6 +137,7 @@ TEST_CASE("SettingsIo: pad tuning round-trip", "[settings][io]") {
     src.stm.ccPanBase = 52;
     src.stm.analogMinMs = 24;
     src.stm.analogDelta = 5;
+    src.stm.pressDebounceMs = 8;
 #if defined(PAD_CONFIG_PER_PAD)
     for (int i = 0; i < Stm32Settings::kPads; ++i) {
         src.stm.padSensitivity[i] = (uint16_t)(100 + i);
@@ -169,6 +170,7 @@ TEST_CASE("SettingsIo: pad tuning round-trip", "[settings][io]") {
     REQUIRE(dst.stm.ccPanBase == 52);
     REQUIRE(dst.stm.analogMinMs == 24);
     REQUIRE(dst.stm.analogDelta == 5);
+    REQUIRE(dst.stm.pressDebounceMs == 8);
 #if defined(PAD_CONFIG_PER_PAD)
     for (int i = 0; i < Stm32Settings::kPads; ++i) {
         REQUIRE(dst.stm.padSensitivity[i] == (uint16_t)(100 + i));
@@ -313,6 +315,7 @@ TEST_CASE("SettingsIo: out-of-range values are clamped", "[settings][io]") {
     writeRaw(file.c_str(),
              "{\"kind\":\"crosspad-pads\",\"version\":1,\"pads\":{"
              "\"velFloorDef\":900,\"velCurveDef\":9,\"ccPressBase\":500,\"panCcEn\":4,"
+             "\"pressDebounceMs\":0,"
              "\"padSensitivity\":[99999,0,-3],"
              "\"padLrRatio\":[0,250,50],"
              "\"padAnalogMode\":[9,1,2],"
@@ -327,6 +330,7 @@ TEST_CASE("SettingsIo: out-of-range values are clamped", "[settings][io]") {
     REQUIRE(dst.stm.velCurveDef == 2);
     REQUIRE(dst.stm.ccPressBase == 127);
     REQUIRE(dst.stm.panCcEn == 1);
+    REQUIRE(dst.stm.pressDebounceMs == Stm32Settings::kPressDebounceMinMs);
 #if defined(PAD_CONFIG_PER_PAD)
     REQUIRE(dst.stm.padSensitivity[0] == 4095);   // saturates instead of wrapping
     REQUIRE(dst.stm.padSensitivity[1] == 1);

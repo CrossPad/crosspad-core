@@ -58,6 +58,16 @@ struct BounceStatus {
     uint32_t    framesTotal = 0;
     std::string file;          ///< clip name inside the project's clips/
     std::string error;         ///< why it failed; with Done, a warning (tempo off the grid)
+    /// How the card keeps up, after every piece and kept once the take ends or
+    /// fails: pieces written (ISongEnginePlatform::writeIo), the average and
+    /// longest time one took, and kB/s from the start of the first piece --
+    /// the pads bus makes 176 kB/s at 44.1 kHz, so a drain under that
+    /// overflows the ring. While the card keeps up the drain is the bus's own
+    /// rate; what the card could take is 4096000 / chunkAvgUs kB/s.
+    uint32_t    chunks     = 0;
+    uint32_t    chunkAvgUs = 0;
+    uint32_t    chunkMaxUs = 0;
+    uint32_t    drainKBps  = 0;
 };
 
 /// The audio song side of the platform: projects on the card, bouncing a

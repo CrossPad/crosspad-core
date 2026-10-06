@@ -3,6 +3,7 @@
 #include <new>
 #include <crosspad/kit/KitPathUtils.hpp>
 #include "KitJsonParser.hpp"
+#include "../util/JsonStdio.hpp"
 
 #include <ArduinoJson.h>
 
@@ -13,8 +14,8 @@
 #include <dirent.h>
 #include <unistd.h>
 #endif
+#include <cerrno>
 #include <cstdio>
-#include <fstream>
 #include <memory>
 #include <algorithm>
 
@@ -366,10 +367,16 @@ bool PortableKitLoader::discoverKitsRecursive(const std::string& dirPath,
         std::string kitJsonPath = entryPath + "/kit.json";
         std::string altJsonPath = entryPath + "/" + name + ".json";
 
+        /* A save cut between its two renames leaves only <file>.bak (see
+         * writeKitJson); readKitJson() falls back to it. A lone .tmp may be
+         * partial and is not a kit. */
+        const auto present = [](const std::string& p) {
+            return pathExists(p) || pathExists(p + ".bak");
+        };
         std::string jsonPath;
-        if (pathExists(kitJsonPath)) {
+        if (present(kitJsonPath)) {
             jsonPath = kitJsonPath;
-        } else if (pathExists(altJsonPath)) {
+        } else if (present(altJsonPath)) {
             jsonPath = altJsonPath;
         }
 
@@ -396,14 +403,17 @@ bool PortableKitLoader::discoverKitsRecursive(const std::string& dirPath,
 
 bool PortableKitLoader::readKitJson(const std::string& path, KitInfo& kit,
                                      bool parsePads) {
-    std::ifstream file(path);
-    if (!file.is_open()) return false;
+    FILE* file = std::fopen(path.c_str(), "r");
+    // Only a missing file falls back: what writeKitJson leaves when cut short.
+    if (!file && errno == ENOENT) file = std::fopen((path + ".bak").c_str(), "r");
+    if (!file) return false;
 
     JsonDocument doc(jsonAllocator_
                          ? jsonAllocator_
                          : ArduinoJson::detail::DefaultAllocator::instance());
-    DeserializationError err = deserializeJson(doc, file);
-    file.close();
+    JsonFileReader in(file);
+    DeserializationError err = deserializeJson(doc, in);
+    std::fclose(file);
 
     if (err) {
         printf("KitLoader: %s: %s\n", path.c_str(), err.c_str());
@@ -424,16 +434,38 @@ bool PortableKitLoader::writeKitJson(const std::string& path,
                                       const KitInfo& kit) {
     mkdirRecursive(parentDir(path));
 
-    std::ofstream file(path);
-    if (!file.is_open()) return false;
-
     JsonDocument doc(jsonAllocator_
                          ? jsonAllocator_
                          : ArduinoJson::detail::DefaultAllocator::instance());
     kit_serialize(kit, doc);
-    serializeJson(doc, file);
-    file.close();
 
+    /* Written beside the real file and swapped in only once it is complete:
+     * a full card or a pulled one costs this save, never the kit already on
+     * the card. Opened only now, so nothing that can throw runs while the
+     * handle is held. */
+    const std::string tmp = path + ".tmp";
+    FILE* file = std::fopen(tmp.c_str(), "w");
+    if (!file) return false;
+    JsonFileWriter out{file};
+    serializeJson(doc, out);
+    if (!closeWritten(file)) { std::remove(tmp.c_str()); return false; }
+
+    /* rename() will not replace a file on FatFs, so the old one steps aside
+     * first -- as .bak, not removed, so there is never a moment with neither.
+     * With no kit.json (a save cut short before), the .bak is the kit: it
+     * stays until the new file is in. */
+    const std::string bak = path + ".bak";
+    bool hadOld = false;
+    if (pathExists(path)) {
+        std::remove(bak.c_str());
+        hadOld = std::rename(path.c_str(), bak.c_str()) == 0;
+    }
+    if (std::rename(tmp.c_str(), path.c_str()) != 0) {
+        if (hadOld) std::rename(bak.c_str(), path.c_str());
+        std::remove(tmp.c_str());
+        return false;
+    }
+    std::remove(bak.c_str());
     return true;
 }
 

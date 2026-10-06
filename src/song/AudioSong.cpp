@@ -1,11 +1,11 @@
 // SPDX-License-Identifier: MIT
 #include "crosspad/song/AudioSong.hpp"
+#include "../util/JsonStdio.hpp"
 
 #include <ArduinoJson.h>
 
 #include <algorithm>
 #include <cstdio>
-#include <fstream>
 
 namespace crosspad {
 
@@ -15,9 +15,12 @@ enum class Parse : uint8_t { Missing, Bad, Newer, Ok };
 
 Parse parseFile(const std::string& path, JsonDocument& doc)
 {
-    std::ifstream f(path);
-    if (!f.is_open()) return Parse::Missing;
-    if (deserializeJson(doc, f)) return Parse::Bad;
+    FILE* f = std::fopen(path.c_str(), "r");
+    if (!f) return Parse::Missing;
+    JsonFileReader in(f);
+    const DeserializationError err = deserializeJson(doc, in);
+    std::fclose(f);
+    if (err) return Parse::Bad;
     if ((doc["version"] | 0) > AudioSong::kVersion) return Parse::Newer;
     return Parse::Ok;
 }
@@ -107,11 +110,11 @@ bool AudioSong::save() const
     const std::string tmp = path + ".tmp";
     const std::string bak = path + ".bak";
     {
-        std::ofstream f(tmp);
-        if (!f.is_open()) return false;
-        serializeJson(doc, f);
-        f.close();                      // a full card shows up on the flush, not the write
-        if (!f) { std::remove(tmp.c_str()); return false; }
+        FILE* f = std::fopen(tmp.c_str(), "w");
+        if (!f) return false;
+        JsonFileWriter out{f};
+        serializeJson(doc, out);
+        if (!closeWritten(f)) { std::remove(tmp.c_str()); return false; }
     }
     /* rename() will not replace a file on FatFs, so the old one steps aside
      * first -- as .bak, not removed, so there is never a moment with neither. */
