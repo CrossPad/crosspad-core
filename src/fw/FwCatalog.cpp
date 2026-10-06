@@ -35,7 +35,25 @@ bool readFile(FwCatalogFile& f, JsonVariantConst v) {
     return f.size > 0;
 }
 
-bool readVersion(FwCatalogVersion& out, JsonVariantConst v) {
+const FwCatalogKit* findKit(const FwCatalog& c, const char* kit) {
+    for (size_t i = 0; i < c.kitCount; ++i)
+        if (std::strcmp(c.kits[i].kit, kit) == 0) return &c.kits[i];
+    return nullptr;
+}
+
+bool hasVersion(const FwCatalogKit& k, const char* version) {
+    Semver want;
+    Semver::parse(version, want);   // fwReadCatalogVersion already accepted it
+    for (size_t i = 0; i < k.count; ++i) {
+        Semver have;
+        if (Semver::parse(k.versions[i].version, have) && have == want) return true;
+    }
+    return false;
+}
+
+} // namespace
+
+bool fwReadCatalogVersion(FwCatalogVersion& out, JsonVariantConst v) {
     FwCatalogVersion tmp{};
     const char* version = v["version"] | "";
     if (!fwVersionValid(version)) return false;
@@ -50,30 +68,15 @@ bool readVersion(FwCatalogVersion& out, JsonVariantConst v) {
     else if (std::strcmp(tier, "community") == 0) tmp.tier = FwTier::Community;
     else return false;
     if (!readFile(tmp.bin, v["bin"]) || !readFile(tmp.assets, v["assets"])) return false;
+    // Optional and cosmetic: a bad icon entry costs the icon, never the version.
+    JsonVariantConst icon = v["icon"];
+    if (!icon.isNull() && (!readFile(tmp.icon, icon) || tmp.icon.size > kFwIconBytesMax)) tmp.icon = FwCatalogFile{};
     if (!copyName(tmp.manifest, sizeof tmp.manifest, v["manifest"]) ||
         !copyName(tmp.sig, sizeof tmp.sig, v["sig"]))
         return false;
     out = tmp;
     return true;
 }
-
-const FwCatalogKit* findKit(const FwCatalog& c, const char* kit) {
-    for (size_t i = 0; i < c.kitCount; ++i)
-        if (std::strcmp(c.kits[i].kit, kit) == 0) return &c.kits[i];
-    return nullptr;
-}
-
-bool hasVersion(const FwCatalogKit& k, const char* version) {
-    Semver want;
-    Semver::parse(version, want);   // readVersion already accepted it
-    for (size_t i = 0; i < k.count; ++i) {
-        Semver have;
-        if (Semver::parse(k.versions[i].version, have) && have == want) return true;
-    }
-    return false;
-}
-
-} // namespace
 
 bool parseFwCatalog(const char* json, size_t len, FwCatalog& out, ArduinoJson::Allocator* alloc) {
     out.kitCount = 0;
@@ -93,7 +96,7 @@ bool parseFwCatalog(const char* json, size_t len, FwCatalog& out, ArduinoJson::A
         for (JsonVariantConst v : k["versions"].as<JsonArrayConst>()) {
             if (dst.count >= kFwCatalogVersions) break;
             FwCatalogVersion cand;
-            if (!readVersion(cand, v) || hasVersion(dst, cand.version)) continue;
+            if (!fwReadCatalogVersion(cand, v) || hasVersion(dst, cand.version)) continue;
             dst.versions[dst.count++] = cand;
         }
         if (dst.count > 0) ++out.kitCount;

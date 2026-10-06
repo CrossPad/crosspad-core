@@ -9,13 +9,16 @@
 #include "wav_fixture.hpp"
 
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <filesystem>
 #include <map>
+#include <random>
 #include <string>
+#include <system_error>
 #include <vector>
 
 using namespace crosspad;
@@ -81,12 +84,21 @@ std::string testResolve(const std::string& kitPath, const std::string& sample) {
 /// a4.wav at 48 kHz (A4, 440 Hz) so one zone exercises rate conversion.
 struct KitDir {
     KitDir() {
-        g_root = (std::filesystem::temp_directory_path() / "cp_pitched_kit").string();
+        /* Per process: ctest -j runs the cases side by side, and a shared
+         * directory was removed under the one still reading it. */
+        g_root = (std::filesystem::temp_directory_path() /
+                  ("cp_pitched_kit_" + std::to_string(std::random_device{}()) + "_" +
+                   std::to_string(std::chrono::steady_clock::now().time_since_epoch().count())))
+                     .string();
         std::filesystem::remove_all(g_root);
         std::filesystem::create_directories(g_root);
         test::writeSineWav(g_root + "/a3.wav", 220.0, 44100, 0.5);
         test::writeSineWav(g_root + "/a4.wav", 440.0, 48000, 0.5);
         g_log.clear();
+    }
+    ~KitDir() {
+        std::error_code ec;
+        std::filesystem::remove_all(g_root, ec);
     }
 };
 
