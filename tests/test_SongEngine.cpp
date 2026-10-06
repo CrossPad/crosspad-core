@@ -85,7 +85,10 @@ struct FakePlatform final : ISongEnginePlatform {
     void* allocScratch(size_t b) override { return std::malloc(b); }
     size_t freeMemoryBytes() override { return size_t(1) << 30; }
     bool storageReady() override { ++storageAsked; return storage.load(); }
-    void yieldIo() override {}
+    std::atomic<bool> holdIo{false};
+    void yieldIo() override {
+        while (holdIo.load()) std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
     bool writeIo(FILE* f, const void* data, size_t bytes) override {
         std::lock_guard<std::mutex> l(ioMutex);
         if ((int)writes.size() == failWriteAt) return false;
@@ -631,6 +634,61 @@ TEST_CASE("song engine: merge leaves muted tracks out and cuts a block reaching 
     CHECK(s.tracks[0].clips[1].bar == 1);
     REQUIRE(s.tracks[1].clips.size() == 1);   // muted: untouched
     CHECK(s.tracks[1].clips[0].file == "m.wav");
+}
+
+TEST_CASE("song engine: merge keeps the volume of a track whose other blocks stay", "[song]") {
+    Rig r;
+    REQUIRE(r.open("Demo"));
+    placeClip(r, "a.wav", 1000, 1, 0, 1);
+    placeClip(r, "keep.wav", 400, 1, 3, 1);
+    placeClip(r, "b.wav", 300, 2, 0, 1);
+    {
+        std::lock_guard<std::recursive_mutex> l(r.engine->songMutex());
+        r.engine->song().tracks[1].volume = 0.5f;
+    }
+    r.engine->commit();
+    REQUIRE(r.engine->requestMerge(0b0110, 0, 1));
+    REQUIRE(editDone(r));
+
+    /* Heard before: 1000 * 0.5 + 300 * 1.0 = 800, played back at track 1's 0.5. */
+    const std::vector<int16_t> pcm = readWavData((r.clipsDir("Demo") / "merge_01.wav").string());
+    REQUIRE_FALSE(pcm.empty());
+    CHECK(pcm.front() == 1600);
+
+    std::lock_guard<std::recursive_mutex> l(r.engine->songMutex());
+    const AudioSong& s = r.engine->song();
+    CHECK(s.tracks[1].volume == 0.5f);
+    REQUIRE(s.tracks[1].clips.size() == 2);
+    CHECK(s.tracks[1].clips[1].file == "keep.wav");
+}
+
+TEST_CASE("song engine: an edit asked for while another runs is refused", "[song]") {
+    Rig r;
+    REQUIRE(r.open("Demo"));
+    placeClip(r, "a.wav", 1000, 0, 0, 1);
+    r.engine->commit();
+    r.platform.holdIo.store(true);
+    REQUIRE(r.engine->requestMerge(0b0001, 0, 1));
+    CHECK(r.engine->editState() == SongOpState::Busy);
+    CHECK_FALSE(r.engine->requestTempo(90.0f));
+    CHECK_FALSE(r.engine->requestRename("Other"));
+    CHECK_FALSE(r.engine->requestImport((r.clipsDir("Demo") / "a.wav").string(), 0, 0, 1, 0, 0));
+    r.platform.holdIo.store(false);
+    REQUIRE(editDone(r));
+    REQUIRE(r.engine->requestTempo(90.0f));
+    REQUIRE(editDone(r));
+}
+
+TEST_CASE("song engine: opening another project saves the edit still waiting", "[song]") {
+    Rig r;
+    REQUIRE(r.open("Demo"));
+    placeClip(r, "a.wav", 1000, 0, 0, 1);
+    r.engine->commit();                             // saved only after kSaveDelayMs
+    REQUIRE(r.open("Other"));
+    REQUIRE(r.open("Demo"));
+    std::lock_guard<std::recursive_mutex> l(r.engine->songMutex());
+    REQUIRE(r.engine->song().tracks[0].clips.size() == 1);
+    CHECK(r.engine->song().tracks[0].clips[0].file == "a.wav");
 }
 
 TEST_CASE("song engine: a new tempo resizes every block to its file", "[song]") {

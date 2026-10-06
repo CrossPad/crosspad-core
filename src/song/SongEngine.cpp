@@ -87,6 +87,9 @@ constexpr uint32_t kStreamPollMs     = 3;
 /// A commit is saved once nothing has been committed for this long: a fader
 /// turned is dozens of commits, and each one a card write under playback.
 constexpr uint32_t kSaveDelayMs      = 400;
+/// requestTempo(): the tempi a song may have.
+constexpr float    kMinBpm           = 20.0f;
+constexpr float    kMaxBpm           = 400.0f;
 /// releaseRings(): how often it logs that it is still waiting (a bounce
 /// notices a cancel within one card write).
 constexpr uint32_t kReleaseWaitMs    = 3000;
@@ -591,7 +594,7 @@ struct SongEngine::Impl {
     SongOpState openState() const { return openState_.load(); }
 
     bool requestRename(const std::string& name) {
-        if (!valid_name(name) || !ensureWorker()) return false;
+        if (!valid_name(name) || !ensureWorker() || !claimEdit()) return false;
         {
             std::lock_guard<std::recursive_mutex> l(songMutex_);
             editName_ = name;
@@ -600,12 +603,12 @@ struct SongEngine::Impl {
     }
 
     bool requestDelete() {
-        if (!ensureWorker()) return false;
+        if (!ensureWorker() || !claimEdit()) return false;
         return requestEdit(kEditDelete);
     }
 
     bool requestTempo(float bpm) {
-        if (!(bpm >= 20.0f && bpm <= 400.0f) || !ensureWorker()) return false;
+        if (!(bpm >= kMinBpm && bpm <= kMaxBpm) || !ensureWorker() || !claimEdit()) return false;
         editBpm_.store(bpm);
         return requestEdit(kEditTempo);
     }
@@ -614,7 +617,7 @@ struct SongEngine::Impl {
 
     bool requestMerge(uint8_t trackMask, uint32_t fromBar, uint32_t toBar) {
         const uint8_t all = (uint8_t)((1u << kTracks) - 1);
-        if (!(trackMask & all) || toBar <= fromBar || !ensureWorker()) return false;
+        if (!(trackMask & all) || toBar <= fromBar || !ensureWorker() || !claimEdit()) return false;
         editMask_.store(trackMask & all);
         editFrom_.store(fromBar);
         editTo_.store(toBar);
@@ -624,7 +627,7 @@ struct SongEngine::Impl {
     uint8_t editProgress() const { return editProgress_.load(); }
 
     bool requestExportLiveSet() {
-        if (!ensureWorker()) return false;
+        if (!ensureWorker() || !claimEdit()) return false;
         return requestEdit(kEditExport);
     }
     std::vector<std::string> editReport() {
@@ -668,7 +671,9 @@ struct SongEngine::Impl {
 
     bool requestImport(const std::string& file, uint32_t start, uint32_t end,
                        uint8_t track, uint32_t bar, uint32_t lead) {
-        if (file.empty() || track >= kTracks || (end && end <= start) || !ensureWorker()) return false;
+        if (file.empty() || track >= kTracks || (end && end <= start) || !ensureWorker() || !claimEdit()) {
+            return false;
+        }
         {
             std::lock_guard<std::recursive_mutex> l(songMutex_);
             editName_ = file;
@@ -822,8 +827,18 @@ private:
         return true;
     }
 
+    /// One edit at a time: the caller that turns editState_ Busy owns the
+    /// edit parameters until the worker has finished with them.
+    bool claimEdit() {
+        SongOpState s = editState_.load();
+        do {
+            if (s == SongOpState::Busy) return false;
+        } while (!editState_.compare_exchange_weak(s, SongOpState::Busy));
+        return true;
+    }
+
+    /// Publish a claimed edit; its parameters are written before this.
     bool requestEdit(uint8_t edit) {
-        editState_.store(SongOpState::Busy);
         editReq_.store(edit);
         p.wake();
         return true;
@@ -1044,8 +1059,10 @@ private:
             std::lock_guard<std::recursive_mutex> l(songMutex_);
             copy = song_;
         }
-        /* Muted tracks are not what is heard: left out, left alone. */
-        for (int t = 0; t < kTracks; ++t) if (copy.tracks[t].muted) mask &= (uint8_t)~(1u << t);
+        /* Muted or silent tracks are not what is heard: left out, left alone. */
+        for (int t = 0; t < kTracks; ++t) {
+            if (copy.tracks[t].muted || copy.tracks[t].volume <= 0.0f) mask &= (uint8_t)~(1u << t);
+        }
         if (!mask) return SongOpState::Failed;
         for (int t = 0; t < kTracks; ++t) {
             if (!(mask & (1u << t))) continue;
@@ -1053,6 +1070,16 @@ private:
                 if (c.bar >= fromBar && c.bar < toBar) toBar = std::max<uint32_t>(toBar, c.bar + c.bars);
             }
         }
+        int target = 0;
+        while (!(mask & (1u << target))) ++target;
+        /* Blocks the merge leaves on the target track keep playing at its
+         * volume, so the clip is mixed relative to it; with none left the
+         * volumes go into the clip and the track goes to unity. */
+        bool targetKeepsBlocks = false;
+        for (const auto& c : copy.tracks[target].clips) {
+            if (c.bar < fromBar || c.bar >= toBar) targetKeepsBlocks = true;
+        }
+        const float refVolume = targetKeepsBlocks ? copy.tracks[target].volume : 1.0f;
         const Arrangement arr = flatten(copy);
         const uint32_t spBar = arr.samplesPerBar;
         const uint32_t a = fromBar * spBar, b = toBar * spBar;
@@ -1076,7 +1103,7 @@ private:
             std::memset(acc_, 0, n * 8);
             for (int t = 0; t < kTracks; ++t) {
                 if (!(mask & (1u << t))) continue;
-                const float g = copy.tracks[t].volume;
+                const float g = copy.tracks[t].volume / refVolume;
                 for (const auto& sg : arr.tracks[t]) {
                     if (sg.end <= f) continue;
                     if (sg.start >= f + n) break;
@@ -1104,10 +1131,8 @@ private:
 
         {
             std::lock_guard<std::recursive_mutex> l(songMutex_);
-            int target = -1;
             for (int t = 0; t < kTracks; ++t) {
                 if (!(mask & (1u << t))) continue;
-                if (target < 0) target = t;
                 auto& cs = song_.tracks[t].clips;
                 cs.erase(std::remove_if(cs.begin(), cs.end(), [&](const SongClip& c) {
                     return c.bar >= fromBar && c.bar < toBar;
@@ -1123,7 +1148,7 @@ private:
             c.bar = fromBar;
             c.bars = (uint16_t)std::max<uint32_t>(1, toBar - fromBar);
             song_.addClip(target, c);
-            song_.tracks[target].volume = 1.0f;      // the tracks' volumes are in the clip now
+            if (!targetKeepsBlocks) song_.tracks[target].volume = 1.0f;
             rebuild();
         }
         doSave();
@@ -1133,9 +1158,6 @@ private:
         return SongOpState::Ready;
     }
 
-    /// Worker: a region of a WAV into the project's clips/, laid on a track
-    /// -- see ISongEngine::requestImport. The clip is named after its source,
-    /// numbered when the project has one of that name already.
     /// Worker: the open song as a Live Set in its own folder -- see
     /// ISongEngine::requestExportLiveSet. The song is copied, the clips'
     /// headers read, and the Set written to a .tmp that only replaces the
@@ -1242,6 +1264,9 @@ private:
         return finish(SongOpState::Ready);
     }
 
+    /// Worker: a region of a WAV into the project's clips/, laid on a track
+    /// -- see ISongEngine::requestImport. The clip is named after its source,
+    /// numbered when the project has one of that name already.
     SongOpState doImport() {
         std::string src;
         {
@@ -1428,6 +1453,7 @@ private:
                 /* A project asked for by name is the one open: opening the
                  * last one afterwards would read it back over unsaved edits. */
                 lastTried_ = true;
+                if (saveReq_.exchange(false)) doSave();   // the edits waiting go to the song they were made in
                 openState_.store(doOpen(name));
                 continue;
             }
@@ -1962,7 +1988,7 @@ private:
     SyncTake    take_ = SyncTake::None;          // worker: what the sequencer starts doing
     static constexpr uint8_t kEditRename = 1, kEditTempo = 2, kEditMerge = 3, kEditImport = 4,
                              kEditDelete = 5, kEditExport = 6;
-    uint32_t    importA_ = 0, importB_ = 0, importBar_ = 0, importLead_ = 0;   // set before editReq_
+    uint32_t    importA_ = 0, importB_ = 0, importBar_ = 0, importLead_ = 0;   // owned by claimEdit()'s caller until editReq_
     uint8_t     importTrack_ = 0;
     std::atomic<uint8_t>  editMask_{0}, editProgress_{0};
     std::atomic<uint32_t> editFrom_{0}, editTo_{0};

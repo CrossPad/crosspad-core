@@ -123,13 +123,17 @@ public:
     /// resized to what its file lasts at the new tempo (no time-stretch: a
     /// clip keeps its speed). editState() says when it is done.
     virtual bool requestTempo(float bpm) { (void)bpm; return false; }
+    /// One edit (rename, delete, tempo, merge, import, export) at a time: a
+    /// request made while this is Busy is refused.
     virtual SongOpState editState() const { return SongOpState::Idle; }
     /// Mix the tracks in @p trackMask (bit t = track t; muted ones are left
     /// out) from @p fromBar up to @p toBar -- or further, to the end of the
     /// last block that starts inside -- into one new clip, at each track's
     /// volume. The clip lands on the lowest of those tracks at @p fromBar;
     /// the blocks it replaces go, and a block reaching into the range from
-    /// before it is cut at @p fromBar. editState() says when it is done,
+    /// before it is cut at @p fromBar. Blocks of that track left outside the
+    /// range keep its volume and the clip is mixed relative to it; with none
+    /// left the track goes to unity. editState() says when it is done,
     /// editProgress() how far it is.
     virtual bool requestMerge(uint8_t trackMask, uint32_t fromBar, uint32_t toBar)
     {
