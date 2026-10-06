@@ -80,10 +80,31 @@ public:
         float   attackMs  = 0.5f;
         /// What a release in Hold mode takes.
         float   releaseMs = 8.0f;
+        /**
+         * @brief Stop a one-shot once it has been inaudible this long.
+         *
+         * A drum hit's file is mostly tail, and the tail is mostly silence: a
+         * 2.5 s sample of a 0.5 s hit spends two seconds streaming nothing
+         * from the card. The engine this replaces never had the problem
+         * because its per-voice buffer simply ended at 0.56 s and the rest of
+         * the file was never played at all -- a truncation, not a decision.
+         *
+         * Here the whole file plays, and a voice that has gone quiet is
+         * stopped instead. Measured on this author's CLASSIC kit: thirteen
+         * voices alive at twenty hits a second, where the audible part of a
+         * hit is over in half a second.
+         *
+         * Only one-shots. A loop is meant to carry on, and a held note is the
+         * player's to release. 0 disables it.
+         */
+        float   silenceMs = 200.0f;
+        /// What counts as inaudible, as a fraction of full scale. -80 dBFS.
+        float   silenceLevel = 1.0e-4f;
     };
 
     struct Counters {
         uint32_t notesStarted  = 0;
+    uint32_t silenced      = 0;   ///< one-shots stopped because they had gone quiet
         uint32_t notesDropped  = 0;   ///< no voice free, not even to steal
         uint32_t steals        = 0;
         uint32_t streamRefused = 0;   ///< the pool had no blocks: the voice plays its head only
@@ -173,6 +194,7 @@ private:
 
         uint8_t  pad = 0, layer = 0, choke = 0;
         uint32_t age = 0;        ///< order of starting, for the steal
+        uint32_t quiet = 0;      ///< consecutive frames below silenceLevel
     };
 
     Voice* claimVoice();
@@ -199,7 +221,7 @@ private:
     void*  cbCtx_  = nullptr;
 
     std::atomic<uint32_t> cNotes_{0}, cDropped_{0}, cSteals_{0};
-    std::atomic<uint32_t> cStreamRefused_{0}, cUnderruns_{0}, cVoicesPeak_{0};
+    std::atomic<uint32_t> cStreamRefused_{0}, cUnderruns_{0}, cVoicesPeak_{0}, cSilenced_{0};
 };
 
 } // namespace crosspad

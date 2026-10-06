@@ -216,6 +216,7 @@ void SamplerEngine::noteOn(uint8_t pad, uint8_t velocity)
     const float attackFrames = params_.attackMs * 0.001f * static_cast<float>(sampleRate_);
     v.envStep = attackFrames > 1.0f ? (1.0f / attackFrames) : 1.0f;
 
+    v.quiet = 0;
     v.announced = false;
     v.fading.store(false, std::memory_order_relaxed);
     v.releasing.store(false, std::memory_order_relaxed);
@@ -293,6 +294,13 @@ bool SamplerEngine::renderVoice(Voice& v, float* out, uint32_t frames)
     const bool releasing = v.releasing.load(std::memory_order_acquire);
     const float down = fading ? fadeStep : (releasing ? relStep : 0.0f);
 
+    /* Only a one-shot: a loop is meant to carry on and a held note is the
+     * player's to release. */
+    const uint32_t quietLimit =
+        (!v.loop && !releasing && params_.silenceMs > 0.0f)
+            ? static_cast<uint32_t>(params_.silenceMs * 0.001f * static_cast<float>(sampleRate_))
+            : 0;
+
     const uint64_t lastQ = static_cast<uint64_t>(v.last) * kOne;
     const uint64_t firstQ = static_cast<uint64_t>(v.first) * kOne;
     const uint64_t spanQ = lastQ > firstQ ? (lastQ - firstQ) : kOne;
@@ -318,8 +326,27 @@ bool SamplerEngine::renderVoice(Voice& v, float* out, uint32_t frames)
         }
 
         const float e = v.env * (1.0f / 32768.0f);
-        out[i * 2 + 0] += l * v.gainL * e;
-        out[i * 2 + 1] += r * v.gainR * e;
+        const float ol = l * v.gainL * e;
+        const float orr = r * v.gainR * e;
+        out[i * 2 + 0] += ol;
+        out[i * 2 + 1] += orr;
+
+        /* A one-shot that has gone inaudible is stopped rather than played
+         * and streamed to the end of its file. Counted on what actually
+         * reaches the bus, after the gain and the envelope, so a pad turned
+         * down does not keep a voice alive on a signal nobody can hear. */
+        if (quietLimit) {
+            const float a = (ol < 0 ? -ol : ol) > (orr < 0 ? -orr : orr)
+                                ? (ol < 0 ? -ol : ol) : (orr < 0 ? -orr : orr);
+            if (a < params_.silenceLevel) {
+                if (++v.quiet >= quietLimit) {
+                    cSilenced_.fetch_add(1, std::memory_order_relaxed);
+                    return false;
+                }
+            } else {
+                v.quiet = 0;
+            }
+        }
 
         v.phase += v.inc;
         if (v.phase >= lastQ) {
@@ -371,6 +398,7 @@ SamplerEngine::Counters SamplerEngine::counters() const
 {
     Counters c;
     c.notesStarted  = cNotes_.load(std::memory_order_relaxed);
+    c.silenced      = cSilenced_.load(std::memory_order_relaxed);
     c.notesDropped  = cDropped_.load(std::memory_order_relaxed);
     c.steals        = cSteals_.load(std::memory_order_relaxed);
     c.streamRefused = cStreamRefused_.load(std::memory_order_relaxed);
@@ -382,7 +410,7 @@ SamplerEngine::Counters SamplerEngine::counters() const
 void SamplerEngine::resetCounters()
 {
     cNotes_ = 0; cDropped_ = 0; cSteals_ = 0;
-    cStreamRefused_ = 0; cUnderruns_ = 0; cVoicesPeak_ = 0;
+    cStreamRefused_ = 0; cUnderruns_ = 0; cVoicesPeak_ = 0; cSilenced_ = 0;
 }
 
 } // namespace crosspad

@@ -402,3 +402,64 @@ TEST_CASE("SamplerEngine gives the pool back once a kit stops sounding", "[sampl
     REQUIRE(rig.pool.trim() > 0);
     REQUIRE(rig.pool.stats().pages == 0);
 }
+
+TEST_CASE("SamplerEngine stops a one-shot once it has gone inaudible", "[samplerengine]") {
+    Rig rig;
+    rig.build();
+    // A long file whose first 2000 frames sound and whose tail is silence --
+    // which is what a drum hit's file is.
+    rig.src.add("hit.wav", 60000, 1);
+    const uint16_t slot = rig.store.load("hit.wav", 60000);
+    REQUIRE(slot != SampleStore::kNoSlot);
+    // Silence everything past 2000 frames, in the store's resident head.
+    auto* head = const_cast<int16_t*>(rig.store.slot(slot)->head);
+    for (uint32_t i = 2000; i < 60000; ++i) head[i] = 0;
+
+    KitPad& kp = rig.kit.pad[0];
+    kp.layers[0].slot = slot;
+    kp.layerCount = 1;
+    kp.gain = 1.0f;
+    rig.publish();
+
+    SamplerEngine::Params pr;
+    pr.silenceMs = 20.0f;              // 882 frames
+    rig.engine.setParams(pr);
+
+    rig.engine.noteOn(0, 127);
+    rig.run(20);                       // 1280 frames: still in the sounding part
+    REQUIRE(rig.engine.padSounding(0));
+
+    rig.run(40);                       // past 2000 + 882
+    REQUIRE_FALSE(rig.engine.padSounding(0));
+    REQUIRE(rig.engine.counters().silenced == 1);
+    // And it stopped long before the file ended.
+    REQUIRE(rig.engine.counters().notesStarted == 1);
+}
+
+TEST_CASE("SamplerEngine lets a loop run through its quiet part", "[samplerengine]") {
+    Rig rig;
+    rig.build();
+    rig.src.add("loop.wav", 8000, 1);
+    const uint16_t slot = rig.store.load("loop.wav", 8000);
+    auto* head = const_cast<int16_t*>(rig.store.slot(slot)->head);
+    // A loop with a long silent stretch in the middle -- a bar of rest.
+    for (uint32_t i = 1000; i < 7000; ++i) head[i] = 0;
+
+    KitPad& kp = rig.kit.pad[0];
+    kp.layers[0].slot = slot;
+    kp.layerCount = 1;
+    kp.gain = 1.0f;
+    kp.mode = PadMode::Loop;
+    rig.publish();
+
+    SamplerEngine::Params pr;
+    pr.silenceMs = 20.0f;
+    rig.engine.setParams(pr);
+
+    rig.engine.noteOn(0, 127);
+    rig.run(100);                      // 6400 frames, most of them silent
+    REQUIRE(rig.engine.padSounding(0));          // a loop is never cut short
+    REQUIRE(rig.engine.counters().silenced == 0);
+    rig.engine.allNotesOff();
+    rig.run(20);
+}
