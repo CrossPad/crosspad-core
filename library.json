@@ -79,7 +79,9 @@
       "+<fw/FwLibraryGc.cpp>",
       "+<sampler/BlockPool.cpp>",
       "+<sampler/SampleStore.cpp>",
-      "+<sampler/StreamWindow.cpp>"
+      "+<sampler/StreamWindow.cpp>",
+      "+<sampler/SamplerKit.cpp>",
+      "+<sampler/SamplerEngine.cpp>"
     ]
   }
 }

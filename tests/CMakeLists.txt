@@ -118,6 +118,8 @@ set(CORE_SOURCES
     ${CORE_DIR}/src/sampler/BlockPool.cpp
     ${CORE_DIR}/src/sampler/SampleStore.cpp
     ${CORE_DIR}/src/sampler/StreamWindow.cpp
+    ${CORE_DIR}/src/sampler/SamplerKit.cpp
+    ${CORE_DIR}/src/sampler/SamplerEngine.cpp
 )
 
 # ── Test sources ──

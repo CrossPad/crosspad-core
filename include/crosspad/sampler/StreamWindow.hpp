@@ -53,9 +53,12 @@ public:
      * than one such pass is a ring that runs dry whenever the card is busy,
      * which is exactly when a player notices.
      *
-     * Eight blocks of 4 kB is 16384 frames mono / 8192 stereo -- 370 ms /
-     * 185 ms at 44.1 kHz, and half that for a voice an octave up. That clears
-     * the measured worst case; four blocks does not. Eight voices at eight
+     * One of them is history, not lookahead: the interpolator's leftmost tap
+     * on the first frame of a block is the last frame of the one before, so
+     * the block behind the voice is kept. Eight blocks of 4 kB is therefore
+     * seven ahead -- 14336 frames mono / 7168 stereo, 325 ms / 162 ms at
+     * 44.1 kHz, and half that for a voice an octave up. That clears the
+     * measured worst case; four blocks does not. Eight voices at eight
      * blocks is 256 kB, against the 3.1 MB the engine this replaces held in
      * per-voice stream buffers whether a voice existed or not.
      */

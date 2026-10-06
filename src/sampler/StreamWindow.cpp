@@ -72,8 +72,16 @@ uint32_t StreamWindow::service(ISampleSource& src, uint32_t playFrame, uint8_t m
         const uint32_t first = streamStart_ + n * blockFrames_;
         if (first >= sampleFrames_) break;              // the file is all delivered
         /* Slot n % blocks_ still carries block n - blocks_. Writing it now
-         * would pull the floor out from under a voice that has not left it. */
-        if (n >= playBlock + blocks_) { ++idlePasses_; break; }
+         * would pull the floor out from under a voice that has not left it.
+         *
+         * One block further back than that, though: the interpolator reads
+         * four taps around its position, and on the very first frame of block
+         * p the leftmost tap is the *last frame of block p - 1*. A rule that
+         * only protected block p recycled p - 1 the moment p + blocks_ - 1
+         * was written, and the voice died on the seam -- which is exactly what
+         * it did, at the first block boundary, every time. So the window
+         * keeps one block of history and its lookahead is blocks_ - 1. */
+        if (n + 1 >= playBlock + blocks_) { ++idlePasses_; break; }
 
         const uint32_t want = (sampleFrames_ - first) < blockFrames_
                                   ? (sampleFrames_ - first) : blockFrames_;

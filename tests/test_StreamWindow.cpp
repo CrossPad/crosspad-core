@@ -103,9 +103,11 @@ TEST_CASE("StreamWindow keeps stereo frames interleaved and addressable", "[stre
     StreamWindow w;
     REQUIRE(w.open(pool, "s.wav", 2, 100, 4000, 4));
     REQUIRE(w.blockFrames() == 256);              // 1024 bytes / (2 ch * 2 B)
-    REQUIRE(w.service(src, 100, 4) == 1024);
+    // Three blocks ahead, not four: the fourth is the history the
+    // interpolator's leftmost tap needs at a block boundary.
+    REQUIRE(w.service(src, 100, 4) == 768);
 
-    for (uint32_t f = 100; f < 100 + 1024; f += 37) {
+    for (uint32_t f = 100; f < 100 + 768; f += 37) {
         const int16_t* p = w.frame(f);
         REQUIRE(p != nullptr);
         REQUIRE(p[0] == CountingSource::expect(f, 0));
@@ -124,22 +126,24 @@ TEST_CASE("StreamWindow will not overwrite a block the voice is still in", "[str
     StreamWindow w;
     REQUIRE(w.open(pool, "x.wav", 1, head, total, 4));
 
-    // Fill the ring with the voice still at frame 0: four blocks and no more,
-    // however many times it is asked.
+    // Fill the ring with the voice still at frame 0: three blocks and no
+    // more, however many times it is asked. The fourth slot is the block
+    // behind the voice, which the interpolator still reads from.
     for (int i = 0; i < 10; ++i) w.service(src, 0, 4);
-    REQUIRE(w.validUpTo() == 4 * 512);
+    REQUIRE(w.validUpTo() == 3 * 512);
     REQUIRE(w.idlePasses() > 0);
 
     // What is delivered must still read correctly -- nothing was recycled.
-    for (uint32_t f = 0; f < 4 * 512; f += 101) {
+    for (uint32_t f = 0; f < 3 * 512; f += 101) {
         REQUIRE(w.frame(f) != nullptr);
         REQUIRE(*w.frame(f) == CountingSource::expect(f, 0));
     }
 
-    // The voice moves into block 2; blocks 4 and 5 may now be written.
+    // The voice moves into block 2; blocks 3 and 4 may now be written, and
+    // block 1 stays as the history behind it.
     w.service(src, 2 * 512 + 10, 4);
-    REQUIRE(w.validUpTo() == 6 * 512);
-    for (uint32_t f = 2 * 512; f < 6 * 512; f += 97) {
+    REQUIRE(w.validUpTo() == 5 * 512);
+    for (uint32_t f = 1 * 512; f < 5 * 512; f += 97) {
         REQUIRE(w.frame(f) != nullptr);
         REQUIRE(*w.frame(f) == CountingSource::expect(f, 0));
     }
