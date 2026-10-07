@@ -99,6 +99,26 @@ public:
          */
         float   silenceMs = 200.0f;
         /**
+         * @brief Voices that may be **streaming** at once.
+         *
+         * A resident voice is arithmetic; a streaming one also has to be fed
+         * off the card, and that is the smaller budget. Measured on a v2 with
+         * the card at 4-bit/40 MHz, 2 s stereo samples: ten stream cleanly at
+         * 78 % of the block, at eleven voices start ending early and at twelve
+         * the underrun counter moves.
+         *
+         * Without this the engine happily starts a twelfth streaming voice and
+         * several of them then starve -- which is heard as notes cutting out
+         * at random. With it, the oldest streaming voice is faded instead:
+         * one deliberate ending rather than a handful of ragged ones, and the
+         * hit the player just made is the one that survives.
+         *
+         * Resident voices are not counted against it; `maxVoices` still caps
+         * the total.
+         */
+        uint8_t maxStreamingVoices = 10;
+
+        /**
          * @brief A pad cuts its own sound when it is hit again.
          *
          * True because that is what this instrument does: the prebuilt engine
@@ -205,6 +225,20 @@ public:
      */
     void stopPad(uint8_t pad);
 
+    /// How many sounding voices are reading the card rather than RAM. The
+    /// budget that binds first on a kit of long samples.
+    uint8_t streamingVoices() const;
+
+    /// What a meter should show: voices sounding, and the limit that applies.
+    /// `limit` is the streaming budget once anything streams, because that is
+    /// the one the player will hit.
+    struct Meter {
+        uint8_t active    = 0;
+        uint8_t streaming = 0;
+        uint8_t limit     = 0;
+    };
+    Meter meter() const;
+
     /// True while any voice of @p pad is rendering -- what lets the kit loader
     /// rebuild a pad without gating the render thread.
     bool padSounding(uint8_t pad) const;
@@ -247,12 +281,26 @@ private:
         /* What the streaming thread needs to open this voice's ring, left for
          * it by noteOn() rather than done there. */
         const SampleStore::Slot* slot = nullptr;
+        /** Still waiting for its ring.
+         *
+         * **Not "this voice streams".** `serviceIo()` clears it the moment it
+         * opens the window, so a voice that is reading the card has it false
+         * and `window.isOpen()` true. Ask `streamsOrWillStream()` instead;
+         * reading this flag as "is streaming" made the streaming budget see
+         * nothing at all. */
         bool wantStream = false;
     };
 
     void   noteOnBody(uint8_t pad, uint8_t velocity);
     Voice* claimVoice();
     void   stealOldest();
+    /// The oldest voice that is reading the card. Used when the streaming
+    /// budget is full and a resident voice would be the wrong one to lose.
+    void   stealOldestStreaming();
+    /// Whether @p v is charged to the streaming budget: still waiting for a
+    /// ring, or already being fed through one. See the definition -- the
+    /// `wantStream` flag alone is not this question.
+    static bool streamsOrWillStream(const Voice& v);
     void   startFade(Voice& v);
     void   endVoice(Voice& v);
     bool   renderVoice(Voice& v, float* out, uint32_t frames);

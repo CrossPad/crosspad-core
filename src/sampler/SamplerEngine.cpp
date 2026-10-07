@@ -114,6 +114,75 @@ void SamplerEngine::stealOldest()
     }
 }
 
+/* Is this voice charged to the streaming budget?
+ *
+ * **Not `wantStream` alone.** That flag means "this voice still needs its
+ * ring opened": `serviceIo()` clears it the moment the window is open, so a
+ * voice that is actually reading the card has it *false*. Counting it alone
+ * made the budget see nothing and never fire -- a host test caught that, by
+ * asking for steals that never happened.
+ *
+ * Both halves, so the count is exact in the window between a note and the
+ * streaming pass that serves it: still waiting (`wantStream`), or already
+ * being fed (`window.isOpen()`).
+ */
+bool SamplerEngine::streamsOrWillStream(const Voice& v)
+{
+    return v.wantStream || v.window.isOpen();
+}
+
+void SamplerEngine::stealOldestStreaming()
+{
+    Voice* oldest = nullptr;
+    uint32_t best = 0xFFFFFFFFu;
+    for (auto& v : voices_) {
+        if (v.state.load(std::memory_order_acquire) != static_cast<uint8_t>(VoiceState::Playing)) continue;
+        if (v.fading.load(std::memory_order_acquire)) continue;
+        if (!streamsOrWillStream(v)) continue;    // a resident voice costs the card nothing
+        if (v.age < best) { best = v.age; oldest = &v; }
+    }
+    if (oldest) {
+        startFade(*oldest);
+        cSteals_.fetch_add(1, std::memory_order_relaxed);
+    }
+}
+
+uint8_t SamplerEngine::streamingVoices() const
+{
+    uint8_t n = 0;
+    for (const auto& v : voices_) {
+        if (v.state.load(std::memory_order_acquire) != static_cast<uint8_t>(VoiceState::Playing)) continue;
+        if (streamsOrWillStream(v)) ++n;
+    }
+    return n;
+}
+
+SamplerEngine::Meter SamplerEngine::meter() const
+{
+    Meter m;
+    for (const auto& v : voices_) {
+        if (v.state.load(std::memory_order_acquire) != static_cast<uint8_t>(VoiceState::Playing)) continue;
+        ++m.active;
+        if (streamsOrWillStream(v)) ++m.streaming;
+    }
+    /* Which ceiling applies comes from the **kit**, not from what happens to
+     * be sounding this instant.
+     *
+     * Deriving it from `m.streaming` looked right and was wrong: the limit
+     * flipped back to the resident one the moment the last streaming voice
+     * faded, so a meter would have flickered between two numbers while a
+     * player held a groove. A kit holding any sample too long to be resident
+     * can be asked for a streaming voice at any time, so that is its ceiling
+     * for as long as it is loaded. (A host test caught this.) */
+    bool anyStreams = false;
+    if (store_) {
+        const SampleStore::Stats st = store_->stats();
+        anyStreams = st.slots > st.completeSlots;
+    }
+    m.limit = anyStreams ? params_.maxStreamingVoices : params_.maxVoices;
+    return m;
+}
+
 uint8_t SamplerEngine::voicesActive() const
 {
     uint8_t n = 0;
@@ -184,6 +253,27 @@ void SamplerEngine::noteOnBody(uint8_t pad, uint8_t velocity)
         if (sameChoke || samePad) startFade(v);
     }
 
+    /* The trim, before anything is claimed: whether this note will have to be
+     * fed off the card decides which budget it is charged to, and that has to
+     * be known before a voice is taken. Nothing here depends on the voice. */
+    const uint32_t total = slot->desc.frames;
+    uint32_t first = kl.start < total ? kl.start : 0;
+    uint32_t last  = (kl.end == 0 || kl.end > total) ? total : kl.end;
+    if (first >= last) { first = 0; last = total; }
+    const bool willStream = !slot->complete && last > slot->headFrames;
+
+    /* Two ceilings, and the one that binds depends on the note.
+     *
+     * A resident voice is arithmetic; a streaming one also has to be fed off
+     * the card, and the card gives out first. Without the second ceiling the
+     * engine starts a twelfth streaming voice and several then starve, which
+     * is heard as notes cutting out at random. Fading the oldest *streaming*
+     * voice instead is one deliberate ending rather than a handful of ragged
+     * ones, and it leaves the resident voices -- which cost the card nothing
+     * -- alone. */
+    if (willStream && streamingVoices() >= params_.maxStreamingVoices) {
+        stealOldestStreaming();
+    }
     if (voicesActive() >= params_.maxVoices) stealOldest();
 
     Voice* vp = claimVoice();
@@ -192,11 +282,6 @@ void SamplerEngine::noteOnBody(uint8_t pad, uint8_t velocity)
         return;
     }
     Voice& v = *vp;
-
-    const uint32_t total = slot->desc.frames;
-    uint32_t first = kl.start < total ? kl.start : 0;
-    uint32_t last  = (kl.end == 0 || kl.end > total) ? total : kl.end;
-    if (first >= last) { first = 0; last = total; }
 
     /* The streamed part, if any, is left to the streaming thread.
      *
@@ -207,7 +292,7 @@ void SamplerEngine::noteOnBody(uint8_t pad, uint8_t velocity)
      * always there long before the voice reaches it; there is no reason for
      * the note to pay for it. */
     v.slot = slot;
-    v.wantStream = !slot->complete && last > slot->headFrames;
+    v.wantStream = willStream;
     v.cursor.bind(slot->head, slot->headFrames, slot->desc.channels, last, &v.window);
 
     /* One increment carries both reasons a voice does not step by exactly one

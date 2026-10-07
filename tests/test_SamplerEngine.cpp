@@ -640,3 +640,52 @@ TEST_CASE("SamplerEngine retriggers a pad instead of layering on it", "[samplere
     rig.run(10);
     REQUIRE(rig.engine.voicesActive() > 2);
 }
+
+TEST_CASE("SamplerEngine keeps the streaming voices inside their own budget",
+          "[samplerengine]") {
+    /* A resident voice is arithmetic; a streaming one also has to be fed off
+     * the card, and the card gives out first. Measured on a v2: sixteen
+     * resident voices fit the block, ten streaming ones do, and from twelve
+     * the engine cannot feed them all -- several starve, which is heard as
+     * notes cutting out at random. The budget turns that into one deliberate
+     * fade of the oldest streaming voice. */
+    Rig rig;
+    rig.build();
+    auto p = SamplerEngine::Params{};
+    p.maxVoices = 16;
+    p.maxStreamingVoices = 4;        // small, so the test is short
+    p.monoPerPad = false;            // one pad per voice is not the point here
+    rig.engine.setParams(p);
+
+    /* Eight pads, each a sample far longer than its head: every voice streams. */
+    for (int i = 0; i < 8; ++i) {
+        const std::string name = "s" + std::to_string(i) + ".wav";
+        rig.src.add(name.c_str(), 400000, 1);
+        rig.assign(static_cast<uint8_t>(i), name.c_str(), 1024, PadMode::Loop);
+    }
+    rig.publish();
+
+    for (int i = 0; i < 8; ++i) { rig.engine.noteOn(static_cast<uint8_t>(i), 110); rig.run(2); }
+    rig.run(30);                     // past the fades the budget asked for
+
+    const auto m = rig.engine.meter();
+    REQUIRE(m.streaming <= 4);                 // the budget held
+    /* The limit a meter shows comes from the kit, so it is steady while the
+     * kit is loaded rather than flipping back every time the last streaming
+     * voice fades -- which is what the first version of this did. */
+    REQUIRE(m.limit == 4);
+    REQUIRE(rig.engine.counters().steals > 0); // tails were cut, deliberately
+    REQUIRE(rig.engine.counters().notesDropped == 0);   // no hit was ever lost
+
+    /* A resident pad is not charged to it. */
+    rig.src.add("short.wav", 500, 1);
+    rig.assign(9, "short.wav", 1024, PadMode::Loop);
+    rig.publish();
+    const uint8_t before = rig.engine.meter().streaming;
+    rig.engine.noteOn(9, 110);
+    rig.run(4);
+    REQUIRE(rig.engine.meter().streaming == before);
+    REQUIRE(rig.engine.padSounding(9));
+    /* And the kit still holds long samples, so the ceiling has not moved. */
+    REQUIRE(rig.engine.meter().limit == 4);
+}
