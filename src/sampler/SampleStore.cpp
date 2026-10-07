@@ -64,6 +64,13 @@ void SampleStore::unload()
     headBytes_ = 0;
 }
 
+void SampleStore::forget()
+{
+    for (auto& s : slots_) s = Slot{};
+    count_ = 0;
+    headBytes_ = 0;
+}
+
 uint16_t SampleStore::load(const char* path, uint32_t headFrames)
 {
     if (!src_ || !alloc_ || !free_ || !path || !path[0]) return kNoSlot;

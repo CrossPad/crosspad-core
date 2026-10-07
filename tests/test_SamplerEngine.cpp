@@ -571,3 +571,39 @@ TEST_CASE("SamplerEngine stops one pad and leaves the others alone", "[sampleren
     rig.engine.stopPad(99);                    // out of range: nothing happens
     REQUIRE_FALSE(rig.engine.anySounding());
 }
+
+TEST_CASE("SampleStore::forget drops heads without freeing them", "[samplestore]") {
+    /* The arena is one block that gets re-registered. A pointer from before
+     * that is not the heap's any more, so handing one back asserts -- which
+     * is what unload() would do. forget() is the other half of
+     * BlockPool::forgetPages(), and the pair is what makes an arena reset
+     * safe from any caller. */
+    struct Alloc {
+        static void* a(size_t n, void*) { return std::malloc(n); }
+        static void  f(void* p, void*)  { ++frees(); std::free(p); }
+        static int&  frees() { static int n = 0; return n; }
+    };
+    Alloc::frees() = 0;
+
+    MemSource src;
+    src.add("a.wav", 8000, 1);
+    src.add("b.wav", 8000, 2);
+
+    SampleStore store;
+    store.bind(&src, &Alloc::a, &Alloc::f, nullptr);
+    REQUIRE(store.load("a.wav", 1024) != SampleStore::kNoSlot);
+    REQUIRE(store.load("b.wav", 1024) != SampleStore::kNoSlot);
+    REQUIRE(store.slotCount() == 2);
+    REQUIRE(store.stats().headBytes > 0);
+
+    store.forget();
+    REQUIRE(Alloc::frees() == 0);              // nothing was handed back
+    REQUIRE(store.slotCount() == 0);
+    REQUIRE(store.stats().headBytes == 0);
+    REQUIRE(store.slot(0) == nullptr);
+
+    /* And the store is usable again afterwards, against a fresh allocator. */
+    REQUIRE(store.load("a.wav", 1024) != SampleStore::kNoSlot);
+    store.unload();
+    REQUIRE(Alloc::frees() == 1);              // this one *is* handed back
+}

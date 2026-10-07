@@ -128,6 +128,22 @@ public:
     void unload();
 
     /**
+     * @brief Drop every head **without freeing it**.
+     *
+     * For when the allocator took the memory back wholesale: the engine arena
+     * is one block that gets re-registered, and a pointer from before that is
+     * not one the heap knows any more -- freeing it later asserts inside
+     * multi_heap_free. So the owner of the arena tells the store to forget,
+     * and nothing is handed back one piece at a time.
+     *
+     * `BlockPool::forgetPages()` exists for the same reason and was written
+     * first; this is the half that was missed, and a pitched kit loading
+     * between two sample kits found it (the pitched engine resets the arena,
+     * and the next take's unload() then freed stale heads).
+     */
+    void forget();
+
+    /**
      * @brief Take a path into a slot, reading its head.
      *
      * Loader thread. A path already held is returned as the slot it is in
