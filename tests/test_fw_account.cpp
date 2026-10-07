@@ -37,12 +37,19 @@ TEST_CASE("codes and tokens have one shape", "[fw]") {
 
 TEST_CASE("pair replies", "[fw]") {
     FwPairStart s{};
-    const std::string start = R"({"code":"K7M2QX","expires_in":600})";
+    const std::string poll(64, 'a');
+    const std::string start = R"({"code":"K7M2QX","poll":")" + poll + R"(","expires_in":600})";
     REQUIRE(parseFwPairStart(start.data(), start.size(), s));
     CHECK(std::strcmp(s.code, "K7M2QX") == 0);
+    CHECK(std::string(s.poll) == poll);
     CHECK(s.expiresIn == 600);
-    const std::string badCode = R"({"code":"K7M2Q0","expires_in":600})";
+    const std::string badCode = R"({"code":"K7M2Q0","poll":")" + poll + R"(","expires_in":600})";
     CHECK_FALSE(parseFwPairStart(badCode.data(), badCode.size(), s));
+    // No poll secret, or a malformed one: the server is not one this board pairs with.
+    const std::string noPoll = R"({"code":"K7M2QX","expires_in":600})";
+    CHECK_FALSE(parseFwPairStart(noPoll.data(), noPoll.size(), s));
+    const std::string badPoll = R"({"code":"K7M2QX","poll":")" + std::string(64, 'G') + R"(","expires_in":600})";
+    CHECK_FALSE(parseFwPairStart(badPoll.data(), badPoll.size(), s));
 
     FwPairToken t{};
     const std::string waiting = R"({"status":"waiting"})";

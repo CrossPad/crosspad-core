@@ -26,11 +26,17 @@ bool fwPairCodeValid(const char* code);
 /// kFwDeviceTokenLen lower-case hex digits.
 bool fwDeviceTokenValid(const char* token);
 
+/// The poll secret pair/start hands the board (64 lower-case hex): pair/token mints
+/// a token only with it, so the code shown on the screen alone gets nobody a token.
+constexpr size_t kFwPairPollLen = 64;
+
 struct FwPairStart {
     char code[kFwPairCodeLen + 1];
+    char poll[kFwPairPollLen + 1];   ///< secret: never shown, never logged
     uint32_t expiresIn;   ///< seconds
 };
-/// The 200 body of pair/start; false for a malformed code or no expiry, `out` then untouched.
+/// The 200 body of pair/start; false for a malformed code or poll secret, or no
+/// expiry, `out` then untouched.
 bool parseFwPairStart(const char* json, size_t len, FwPairStart& out);
 
 enum class FwPairReply : uint8_t { Waiting, Token, Expired, Bad };

@@ -56,9 +56,12 @@ bool parseFwPairStart(const char* json, size_t len, FwPairStart& out) {
     JsonDocument doc;
     if (deserializeJson(doc, json, len)) return false;
     const char* code = doc["code"] | "";
+    const char* poll = doc["poll"] | "";
     const uint32_t expires = doc["expires_in"] | 0u;
-    if (!fwPairCodeValid(code) || expires == 0) return false;
+    // The poll secret has the device token's shape: 64 lower-case hex.
+    if (!fwPairCodeValid(code) || !fwDeviceTokenValid(poll) || expires == 0) return false;
     std::memcpy(out.code, code, kFwPairCodeLen + 1);
+    std::memcpy(out.poll, poll, kFwPairPollLen + 1);
     out.expiresIn = expires;
     return true;
 }
