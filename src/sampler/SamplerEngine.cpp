@@ -259,6 +259,15 @@ void SamplerEngine::noteOff(uint8_t pad)
     }
 }
 
+void SamplerEngine::stopPad(uint8_t pad)
+{
+    if (pad >= kPads) return;
+    for (auto& v : voices_) {
+        if (v.state.load(std::memory_order_acquire) != static_cast<uint8_t>(VoiceState::Playing)) continue;
+        if (v.pad == pad) startFade(v);
+    }
+}
+
 void SamplerEngine::allNotesOff()
 {
     for (auto& v : voices_) {

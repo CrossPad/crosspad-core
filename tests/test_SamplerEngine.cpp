@@ -540,3 +540,34 @@ TEST_CASE("SamplerEngine moves a fader on the voice already sounding", "[sampler
     rig.engine.allNotesOff();
     rig.run(20);
 }
+
+TEST_CASE("SamplerEngine stops one pad and leaves the others alone", "[samplerengine]") {
+    /* What the pad editor needs before it points a pad at a different file.
+     * noteOff() is not it: a one-shot ignores a release and a loop keeps
+     * going, which is the whole reason this exists. */
+    Rig rig;
+    rig.build();
+    rig.src.add("loop.wav", 400, 1);
+    rig.src.add("hit.wav", 40000, 1);
+    rig.assign(0, "loop.wav", 1024, PadMode::Loop);
+    rig.assign(1, "hit.wav", 1024, PadMode::OneShot);
+    rig.publish();
+
+    rig.engine.noteOn(0, 127);
+    rig.engine.noteOn(1, 127);
+    rig.run(10);
+    REQUIRE(rig.engine.padSounding(0));
+    REQUIRE(rig.engine.padSounding(1));
+
+    rig.engine.stopPad(0);
+    rig.run(20);                               // the fade is 2 ms = 88 frames
+    REQUIRE_FALSE(rig.engine.padSounding(0));
+    REQUIRE(rig.engine.padSounding(1));        // the one-shot was not touched
+
+    rig.engine.stopPad(1);
+    rig.run(20);
+    REQUIRE_FALSE(rig.engine.anySounding());
+
+    rig.engine.stopPad(99);                    // out of range: nothing happens
+    REQUIRE_FALSE(rig.engine.anySounding());
+}

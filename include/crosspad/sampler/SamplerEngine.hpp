@@ -180,6 +180,16 @@ public:
     void noteOff(uint8_t pad);
     void allNotesOff();
 
+    /**
+     * @brief Silence one pad now, whatever its mode says.
+     *
+     * Not noteOff(): a release is only heard in Hold mode, and this is the
+     * other thing an editor needs -- the pad is about to point at a different
+     * file, so what is sounding on it has to go whether it is a one-shot or a
+     * loop. Fades rather than cuts, for the same reason a steal does.
+     */
+    void stopPad(uint8_t pad);
+
     /// True while any voice of @p pad is rendering -- what lets the kit loader
     /// rebuild a pad without gating the render thread.
     bool padSounding(uint8_t pad) const;
