@@ -12,8 +12,8 @@
 #include <cstdint>
 
 #define CROSSPAD_CORE_VERSION_MAJOR 1
-#define CROSSPAD_CORE_VERSION_MINOR 46
-#define CROSSPAD_CORE_VERSION_PATCH 1
+#define CROSSPAD_CORE_VERSION_MINOR 47
+#define CROSSPAD_CORE_VERSION_PATCH 0
 
 /* Built from the triple rather than written out, so a bump cannot leave the
  * string a version behind — which is what happened to crosspad-gui. */
