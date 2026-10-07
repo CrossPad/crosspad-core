@@ -163,13 +163,25 @@ void SamplerEngine::noteOnBody(uint8_t pad, uint8_t velocity)
     const SampleStore::Slot* slot = store_->slot(kl.slot);
     if (!slot) return;
 
-    /* Choke: a hit in a group fades what the group was already playing. A cut
-     * at an arbitrary phase is a click, so this is the same fade a steal uses. */
-    if (kp.choke != 0) {
-        for (auto& v : voices_) {
-            if (v.state.load(std::memory_order_acquire) != static_cast<uint8_t>(VoiceState::Playing)) continue;
-            if (v.choke == kp.choke) startFade(v);
-        }
+    /* A pad retriggers itself, and chokes its group.
+     *
+     * The engine this replaces had one player slot per pad, so hitting a pad
+     * again restarted *that* pad -- which is what every kit, every pattern
+     * and every player on this device was built against. Allocating a voice
+     * per note instead meant four fast hits left four copies of the sample
+     * sounding from four different places, reported as "pressing a pad plays
+     * it several times from the beginning instead of starting it again".
+     * Measured before the fix: one hit one voice, four hits four voices,
+     * nothing cut.
+     *
+     * Both cuts are the fade a steal uses: a cut at an arbitrary phase is a
+     * click. `monoPerPad` turns the first off for a kit that wants its pads
+     * to layer. */
+    for (auto& v : voices_) {
+        if (v.state.load(std::memory_order_acquire) != static_cast<uint8_t>(VoiceState::Playing)) continue;
+        const bool sameChoke = kp.choke != 0 && v.choke == kp.choke;
+        const bool samePad   = params_.monoPerPad && v.pad == pad;
+        if (sameChoke || samePad) startFade(v);
     }
 
     if (voicesActive() >= params_.maxVoices) stealOldest();

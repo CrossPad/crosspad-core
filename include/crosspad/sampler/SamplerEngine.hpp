@@ -98,6 +98,21 @@ public:
          * player's to release. 0 disables it.
          */
         float   silenceMs = 200.0f;
+        /**
+         * @brief A pad cuts its own sound when it is hit again.
+         *
+         * True because that is what this instrument does: the prebuilt engine
+         * held one player slot per pad, so a second hit restarted the pad
+         * rather than layering on it, and every kit and pattern here was made
+         * against that. A voice-per-note engine layers unless told otherwise,
+         * which was heard at once as a pad "playing several times from the
+         * beginning".
+         *
+         * The cut is the steal's fade, not a hard stop. Set false for a kit
+         * whose pads are meant to pile up.
+         */
+        bool monoPerPad = true;
+
         /// What counts as inaudible, as a fraction of full scale. -80 dBFS.
         float   silenceLevel = 1.0e-4f;
     };

@@ -607,3 +607,36 @@ TEST_CASE("SampleStore::forget drops heads without freeing them", "[samplestore]
     store.unload();
     REQUIRE(Alloc::frees() == 1);              // this one *is* handed back
 }
+
+TEST_CASE("SamplerEngine retriggers a pad instead of layering on it", "[samplerengine]") {
+    /* The prebuilt engine had one player slot per pad, so a second hit
+     * restarted that pad. Allocating a voice per note layers unless told
+     * otherwise, and four fast hits left four copies sounding -- heard as a
+     * pad "playing several times from the beginning". */
+    Rig rig;
+    rig.build();
+    rig.src.add("long.wav", 40000, 1);
+    rig.assign(0, "long.wav", 1024, PadMode::OneShot);
+    rig.assign(1, "long.wav", 1024, PadMode::OneShot);
+    rig.publish();
+
+    for (int i = 0; i < 4; ++i) { rig.engine.noteOn(0, 110); rig.run(2); }
+    rig.run(20);                               // past the 2 ms retrigger fade
+    REQUIRE(rig.engine.voicesActive() == 1);   // one pad, one voice
+    REQUIRE(rig.engine.padSounding(0));
+
+    /* Another pad is untouched by it. */
+    rig.engine.noteOn(1, 110);
+    rig.run(20);
+    REQUIRE(rig.engine.voicesActive() == 2);
+    REQUIRE(rig.engine.padSounding(0));
+    REQUIRE(rig.engine.padSounding(1));
+
+    /* And a kit that wants its pads to pile up can still say so. */
+    auto p = SamplerEngine::Params{};
+    p.monoPerPad = false;
+    rig.engine.setParams(p);
+    for (int i = 0; i < 3; ++i) { rig.engine.noteOn(0, 110); rig.run(2); }
+    rig.run(10);
+    REQUIRE(rig.engine.voicesActive() > 2);
+}
