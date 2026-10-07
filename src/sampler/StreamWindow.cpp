@@ -25,16 +25,39 @@ bool StreamWindow::open(BlockPool& pool, const char* path, uint8_t channels,
     uint8_t shift = 0;
     while ((1u << shift) < frames) ++shift;
 
-    for (uint8_t i = 0; i < blocks; ++i) {
-        const uint32_t b = pool.acquire();
-        if (b == BlockPool::kInvalid) {
-            /* Partly open is worse than not open: give back what was taken so
-             * the next voice can have it, and let the caller play the head. */
-            for (uint8_t j = 0; j < i; ++j) pool.release(block_[j]);
-            return false;
+    /* One contiguous run if the pool can give one.
+     *
+     * Blocks of a page sit next to each other, and the port sizes a ring to
+     * exactly a page, so the whole ring becomes one span. That buys two
+     * things the render and the streamer both want: `service()` fills several
+     * blocks with a single read, and `run()` can hand the cursor a run that
+     * crosses block boundaries instead of stopping at every one.
+     *
+     * Falling back to loose blocks rather than refusing: a fragmented pool
+     * should cost a seam, not a voice. */
+    contig_ = false;
+    const uint32_t runFirst = pool.acquireRun(blocks);
+    if (runFirst != BlockPool::kInvalid) {
+        auto* base = static_cast<int16_t*>(pool.data(runFirst));
+        const size_t step = static_cast<size_t>(frames) * channels;
+        for (uint8_t i = 0; i < blocks; ++i) {
+            block_[i] = runFirst + i;
+            data_[i]  = base + static_cast<size_t>(i) * step;
         }
-        block_[i] = b;
-        data_[i] = static_cast<int16_t*>(pool.data(b));
+        contig_ = true;
+    } else {
+        for (uint8_t i = 0; i < blocks; ++i) {
+            const uint32_t b = pool.acquire();
+            if (b == BlockPool::kInvalid) {
+                /* Partly open is worse than not open: give back what was taken
+                 * so the next voice can have it, and let the caller play the
+                 * head. */
+                for (uint8_t j = 0; j < i; ++j) pool.release(block_[j]);
+                return false;
+            }
+            block_[i] = b;
+            data_[i] = static_cast<int16_t*>(pool.data(b));
+        }
     }
 
     path_ = path;
@@ -57,8 +80,11 @@ void StreamWindow::close(BlockPool& pool)
 {
     /* First: the render thread stops reading here before a block goes back. */
     pool_.store(nullptr, std::memory_order_release);
+    /* Block by block either way: a run's indices are consecutive, and
+     * release() accounts for each the same. */
     for (uint8_t i = 0; i < blocks_; ++i) pool.release(block_[i]);
     blocks_ = 0;
+    contig_ = false;
     path_ = nullptr;
     nextBlock_ = 0;
     validUpTo_.store(0, std::memory_order_release);
@@ -92,18 +118,46 @@ uint32_t StreamWindow::service(ISampleSource& src, uint32_t playFrame, uint8_t m
          * keeps one block of history and its lookahead is blocks_ - 1. */
         if (n + 1 >= playBlock + blocks_) { ++idlePasses_; break; }
 
-        const uint32_t want = (sampleFrames_ - first) < blockFrames_
-                                  ? (sampleFrames_ - first) : blockFrames_;
-        const uint32_t got = src.read(path_, first, want, data_[n % blocks_]);
+        /* How many blocks may be filled in one go: the slots have to be
+         * consecutive in memory, so up to the ring's wrap, and no further
+         * than the lookahead or the end of the file allows. One read of
+         * several blocks instead of several reads of one is the whole point
+         * of a contiguous ring -- the cost here is per read, not per byte
+         * (measured: a 4 kB read averaged 1784 us at sixteen voices). */
+        const uint32_t slot = n % blocks_;
+        uint32_t span = 1;
+        if (contig_) {
+            const uint32_t toWrap    = blocks_ - slot;
+            const uint32_t toLookahd = (playBlock + blocks_) - (n + 1);
+            span = toWrap < toLookahd ? toWrap : toLookahd;
+            const uint32_t framesLeft = sampleFrames_ - first;
+            const uint32_t blocksLeft = (framesLeft + blockFrames_ - 1) >> blockShift_;
+            if (blocksLeft < span) span = blocksLeft;
+            const uint32_t left = static_cast<uint32_t>(maxBlocks - done);
+            if (left < span) span = left;
+            if (span == 0) span = 1;
+        }
+
+        const uint32_t wantSpan = span << blockShift_;
+        const uint32_t want = (sampleFrames_ - first) < wantSpan
+                                  ? (sampleFrames_ - first) : wantSpan;
+        const uint32_t got = src.read(path_, first, want, data_[slot]);
         if (got == 0) break;                            // the card said nothing; try next pass
 
-        nextBlock_ = n + 1;
+        /* Blocks *covered*, rounded up: a read that ended 188 frames into the
+         * second block has nothing more to fetch there, and advancing by the
+         * floor made the next turn of the loop read that tail again and count
+         * it twice (a 700-frame file reported 888 delivered). `validUpTo_` is
+         * the truth about what is readable; a short read means the card gave
+         * what it had, which is the same contract one-block-at-a-time had. */
+        const uint32_t covered = (got + blockFrames_ - 1) >> blockShift_;
+        nextBlock_ = n + (covered ? covered : 1);
         delivered += got;
         /* Published last, and only after the bytes are in place: this is the
          * one word the render thread reads. */
         validUpTo_.store(first + got, std::memory_order_release);
         if (got < want) break;                          // short read: the file ended early
-        ++done;
+        done = static_cast<uint8_t>(done + (covered ? covered : 1));
     }
     return delivered;
 }
@@ -136,13 +190,19 @@ const int16_t* StreamWindow::run(uint32_t f, uint32_t& first, uint32_t& last) co
     if (n < oldest) return nullptr;
 
     const uint32_t off = rel & blockMask_;
+    const uint32_t slot = n % blocks_;
     first = streamStart_ + (n << blockShift_);
-    /* The run ends where the block does or where delivery does, whichever
-     * comes first -- the caller may read every frame in between with no
-     * further checks. */
-    const uint32_t blockEnd = first + blockFrames_;
-    last = blockEnd < valid ? blockEnd : valid;
-    return data_[n % blocks_] + static_cast<size_t>(off) * channels_;
+    /* The run ends where the *contiguous* slots do, or where delivery does,
+     * whichever comes first -- the caller may read every frame in between
+     * with no further checks.
+     *
+     * With a contiguous ring that is several blocks rather than one, so the
+     * interpolator crosses a block boundary on the fast path and the cursor
+     * asks again far less often. Without one it is a single block, as before. */
+    const uint32_t spanBlocks = contig_ ? (blocks_ - slot) : 1u;
+    const uint32_t spanEnd = first + (spanBlocks << blockShift_);
+    last = spanEnd < valid ? spanEnd : valid;
+    return data_[slot] + static_cast<size_t>(off) * channels_;
 }
 
 } // namespace crosspad

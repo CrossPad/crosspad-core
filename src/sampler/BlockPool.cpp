@@ -184,6 +184,67 @@ bool BlockPool::releaseAll()
     return used_.load(std::memory_order_acquire) == 0 && livePages_ == 0;
 }
 
+bool BlockPool::pullRangeLocked(uint32_t first, uint32_t count)
+{
+    /* All or nothing, in two passes over a list that is at most
+     * maxPages * perPage long: count what is there, then take it. Removing as
+     * we go and putting back on a miss would be the same work with a harder
+     * failure path. */
+    uint32_t have = 0;
+    for (uint32_t cur = freeHead_; cur != kInvalid; cur = next_[cur]) {
+        if (cur >= first && cur < first + count) ++have;
+    }
+    if (have != count) return false;
+
+    uint32_t prev = kInvalid;
+    uint32_t cur = freeHead_;
+    while (cur != kInvalid) {
+        const uint32_t nxt = next_[cur];
+        if (cur >= first && cur < first + count) {
+            if (prev == kInvalid) freeHead_ = nxt; else next_[prev] = nxt;
+            next_[cur] = kInvalid;
+        } else {
+            prev = cur;
+        }
+        cur = nxt;
+    }
+    return true;
+}
+
+uint32_t BlockPool::acquireRun(uint32_t count)
+{
+    if (!pages_ || count == 0 || count > perPage_) return kInvalid;
+    uint32_t first = kInvalid;
+    {
+        Spin g(*this);
+        /* Page-aligned starts only. A run has to live in one page to be
+         * contiguous, and the only size this is asked for is a whole ring,
+         * which the port sizes to a page exactly. */
+        for (uint32_t p = 0; p < pageSlots_; ++p) {
+            if (!pages_[p].base) continue;
+            const uint32_t base = p * perPage_;
+            if (!pullRangeLocked(base, count)) continue;
+            pages_[p].inUse += count;
+            first = base;
+            break;
+        }
+        if (first == kInvalid) {
+            acquireFails_.fetch_add(1, std::memory_order_relaxed);
+            return kInvalid;
+        }
+    }
+    const uint32_t u = used_.fetch_add(count, std::memory_order_relaxed) + count;
+    uint32_t pk = peak_.load(std::memory_order_relaxed);
+    while (u > pk && !peak_.compare_exchange_weak(pk, u, std::memory_order_relaxed)) { }
+    return first;
+}
+
+void BlockPool::releaseRun(uint32_t first, uint32_t count)
+{
+    if (first == kInvalid) return;
+    for (uint32_t i = 0; i < count; ++i) release(first + i);
+}
+
 uint32_t BlockPool::acquire()
 {
     uint32_t b;

@@ -151,6 +151,11 @@ private:
      * always there long before the voice reaches it. */
     std::atomic<BlockPool*> pool_{nullptr};
     const char* path_ = nullptr;        ///< owned by the store's slot, outlives the voice
+    /* Whether the ring is one span of memory (one page of the pool) rather
+     * than loose blocks. Set by open(); decides whether service() may fill
+     * several blocks with one read and whether run() may hand back a run that
+     * crosses a block boundary. A fragmented pool costs a seam, not a voice. */
+    bool     contig_ = false;
     uint32_t block_[kMaxBlocks] = {};
     int16_t* data_[kMaxBlocks] = {};
     uint8_t  blocks_ = 0;

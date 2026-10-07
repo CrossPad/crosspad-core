@@ -151,6 +151,23 @@ public:
     /// never blocks for longer than another thread's list push. Audio-safe.
     uint32_t acquire();
 
+    /**
+     * @brief @p count blocks that are **contiguous in memory**, as one run.
+     *
+     * Blocks of one page sit next to each other (see data()), so a run taken
+     * from a single page is one span the caller can read into with a single
+     * I/O and walk across without a seam. That is what lets a voice's whole
+     * ring be filled by one read and its interpolator cross a block boundary
+     * on the fast path.
+     *
+     * @return the first block's index, or kInvalid when no page has that many
+     *         free in a row. `count` may not exceed blocksPerPage().
+     */
+    uint32_t acquireRun(uint32_t count);
+
+    /// Give a run from acquireRun() back. Equivalent to releasing each block.
+    void releaseRun(uint32_t first, uint32_t count);
+
     /// Back to the free list. Audio-safe. Ignores kInvalid.
     void release(uint32_t block);
 
@@ -188,6 +205,8 @@ private:
 
     /// Under lock_. The lowest empty slot, or maxPages_ when there is none.
     uint32_t freeSlotLocked() const;
+    /// Unlink blocks [first, first+count) from the free list, all or nothing.
+    bool     pullRangeLocked(uint32_t first, uint32_t count);
     /// Under lock_. Pushes every block of @p page onto the free list.
     void pushPageBlocksLocked(uint32_t page);
     /// Under lock_. Pulls them back off; false (and nothing changed) when one

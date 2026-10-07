@@ -72,6 +72,44 @@ public:
      *         voice then stops rather than reading something that is not its
      *         own sample, and the engine counts it.
      */
+    /**
+     * @brief The frame at @p i, with no interpolation at all.
+     *
+     * For a voice stepping exactly one frame a frame -- the file at the
+     * engine's rate and no pitch on the pad, which is most of a drum kit.
+     * A 4-tap Catmull-Rom at a zero fraction returns the middle tap
+     * unchanged, so this is the same samples the interpolated path produces,
+     * for one load a channel instead of four plus twenty flops.
+     *
+     * That matters because the *render* is what caps streaming polyphony on
+     * this board: at sixteen streaming voices the pass measured 1450 us of a
+     * 1451 us block, and ~82 us of that was each voice's interpolation over
+     * PSRAM.
+     */
+    bool sample(uint32_t i, float& left, float& right) const
+    {
+        if (i + 1 < headFrames_) {
+            return one(head_ + static_cast<size_t>(i) * channels_, left, right);
+        }
+        if (window_) {
+            if (runPtr_ && i >= runFirst_ && i + 1 < runLast_) {
+                return one(runPtr_ + static_cast<size_t>(i - runFirst_) * channels_,
+                           left, right);
+            }
+            uint32_t first = 0, last = 0;
+            const int16_t* p = window_->run(i, first, last);
+            if (p && i + 1 < last) {
+                runPtr_ = p; runFirst_ = i; runLast_ = last;
+                return one(p, left, right);
+            }
+            runPtr_ = nullptr;
+        }
+        /* The seams and the very end: the interpolated path already knows how
+         * to resolve a tap wherever it lives, and at a zero fraction it gives
+         * the same answer. One frame in thousands comes through here. */
+        return read(static_cast<uint64_t>(i) << 32, left, right);
+    }
+
     bool read(uint64_t phase, float& left, float& right) const
     {
         const int64_t i = static_cast<int64_t>(phase >> 32);
@@ -180,6 +218,13 @@ private:
 
     const int16_t*     head_ = nullptr;
     const StreamWindow* window_ = nullptr;
+
+    bool one(const int16_t* p, float& left, float& right) const
+    {
+        left  = static_cast<float>(p[0]);
+        right = channels_ == 2 ? static_cast<float>(p[1]) : left;
+        return true;
+    }
 
     void forgetRun() const { runPtr_ = nullptr; runFirst_ = 0; runLast_ = 0; }
 

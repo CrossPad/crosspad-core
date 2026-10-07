@@ -77,10 +77,14 @@ TEST_CASE("StreamWindow delivers the frames after the head, in order", "[streamw
     REQUIRE(w.validUpTo() == head);
     REQUIRE(w.frame(head) == nullptr);            // nothing delivered yet
 
-    // One pass fills two blocks by default.
+    // One pass fills two blocks by default -- and, since a ring taken as one
+    // contiguous run is one span of memory, with a *single* read rather than
+    // one per block. The cost of streaming here is per read, not per byte.
+    const uint32_t readsBefore = src.reads.load();
     REQUIRE(w.service(src, head) == 1024);
     REQUIRE(w.validUpTo() == head + 1024);
-    REQUIRE(src.lastFirst == head + 512);
+    REQUIRE(src.reads.load() - readsBefore == 1);
+    REQUIRE(src.lastFirst == head);
 
     for (uint32_t f = head; f < head + 1024; ++f) {
         const int16_t* p = w.frame(f);

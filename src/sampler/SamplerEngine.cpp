@@ -421,9 +421,17 @@ bool SamplerEngine::renderVoice(Voice& v, float* out, uint32_t frames)
     const uint64_t firstQ = static_cast<uint64_t>(v.first) * kOne;
     const uint64_t spanQ = lastQ > firstQ ? (lastQ - firstQ) : kOne;
 
+    /* A voice stepping exactly one frame a frame needs no interpolation: the
+     * file is at the engine's rate and the pad has no pitch on it, which is
+     * most of a kit. Decided once a block, not once a frame. */
+    const bool unitRate = (v.inc == kOne) && ((v.phase & (kOne - 1)) == 0);
+
     for (uint32_t i = 0; i < frames; ++i) {
         float l = 0.0f, r = 0.0f;
-        if (!v.cursor.read(v.phase, l, r)) {
+        const bool got = unitRate
+                             ? v.cursor.sample(static_cast<uint32_t>(v.phase >> 32), l, r)
+                             : v.cursor.read(v.phase, l, r);
+        if (!got) {
             /* The frame is not here. Either the sample ended -- the ordinary
              * case -- or the streamer has not delivered it, which is the one
              * thing this engine must never do quietly. */
