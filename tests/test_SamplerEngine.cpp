@@ -83,10 +83,15 @@ struct Rig {
     SamplerEngine engine;
     SamplerKit   kit;
 
-    void build(uint32_t headFrames = 1024, uint32_t maxPages = 16) {
+    /// @p blocksPerPage lets a test size the pool in *rings* rather than in
+    /// blocks, so it keeps meaning what it meant when StreamWindow's ring
+    /// depth changes (it went from eight blocks to four when the block got
+    /// four times bigger).
+    void build(uint32_t headFrames = 1024, uint32_t maxPages = 16,
+               uint32_t blocksPerPage = 8) {
         BlockPool::Config pc;
         pc.blockBytes = 2048;
-        pc.pageBytes  = 16384;
+        pc.pageBytes  = 2048 * blocksPerPage;
         pc.maxPages   = maxPages;
         pc.alloc = &heapAlloc;
         pc.free  = &heapFree;
@@ -325,9 +330,10 @@ TEST_CASE("SamplerEngine does nothing while the loader has the kit", "[sampleren
 
 TEST_CASE("SamplerEngine plays its head when the pool has no blocks", "[samplerengine]") {
     Rig rig;
-    // One page of eight blocks, and a voice wants eight: the second voice gets
-    // nothing to stream through.
-    rig.build(1024, 1);
+    /* One page holding exactly one ring, and one page only: the second voice
+     * gets nothing to stream through. Written against kDefaultBlocks so it
+     * stays true if the ring depth changes again. */
+    rig.build(1024, 1, crosspad::StreamWindow::kDefaultBlocks);
     rig.src.add("a.wav", 40000, 1);
     rig.src.add("b.wav", 40000, 1);
     rig.assign(0, "a.wav", 1024);

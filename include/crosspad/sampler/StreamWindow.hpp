@@ -63,7 +63,19 @@ public:
      * per-voice stream buffers whether a voice existed or not.
      */
     static constexpr uint8_t kMaxBlocks = 8;
-    static constexpr uint8_t kDefaultBlocks = 8;
+    /* Four, not eight.
+     *
+     * What limits streaming polyphony on this board is the *per-read*
+     * overhead, not the card's bandwidth: measured at sixteen voices, a 4 kB
+     * read averaged 1784 us and peaked at 12704 -- 2.2 MB/s out of a 4-bit
+     * card at 40 MHz that moves many times that. The streamer is one task
+     * issuing those reads in series, so sixteen voices at 43 blocks a second
+     * each wanted more read-time than a second has.
+     *
+     * So: a block four times bigger (the port's kBlockBytes) and four of them
+     * instead of eight. Same memory a voice, same milliseconds of lookahead,
+     * a quarter of the reads. */
+    static constexpr uint8_t kDefaultBlocks = 4;
 
     StreamWindow() = default;
     ~StreamWindow();

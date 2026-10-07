@@ -40,9 +40,16 @@ public:
         channels_ = channels < 1 ? 1 : (channels > 2 ? 2 : channels);
         totalFrames_ = totalFrames;
         window_ = window;
+        /* A new sample behind the same cursor: whatever run was remembered
+         * belonged to the old one. */
+        forgetRun();
     }
 
-    void clear() { head_ = nullptr; window_ = nullptr; headFrames_ = totalFrames_ = 0; }
+    void clear()
+    {
+        head_ = nullptr; window_ = nullptr; headFrames_ = totalFrames_ = 0;
+        forgetRun();
+    }
 
     uint32_t totalFrames() const { return totalFrames_; }
     uint32_t headFrames() const { return headFrames_; }
@@ -75,18 +82,44 @@ public:
         }
 
         /* Past the head, the same walk over the streamer's blocks -- as long
-         * as all four taps are inside one of them. Resolving a tap costs a
-         * shift, a mask and an atomic read of how far delivery has got, and
-         * doing that four times a frame was most of this engine's render time
-         * on the board (measured: rt_max 3054 us at five voices, against 814
-         * for sixteen resident ones). One ask a frame, and a block is 1024 or
-         * 2048 frames, so the slow path below is one frame in a thousand. */
+         * as all four taps are inside one of them.
+         *
+         * Resolving a tap costs a shift, a mask and an *atomic* read of how
+         * far delivery has got, and doing that four times a frame was most of
+         * this engine's render time on the board (measured: rt_max 3054 us at
+         * five voices, against 814 for sixteen resident ones). Asking once a
+         * frame instead fixed that.
+         *
+         * Once a frame is still too often. The run `window_->run()` hands
+         * back is good for thousands of frames -- a block is 4096 of them --
+         * so it is remembered here and the window is only asked again when
+         * the voice walks out of it. Two atomic acquire loads on objects in
+         * PSRAM, 64 times a block per voice, were what stopped sixteen
+         * *streaming* voices fitting the block: the render saturated core 1
+         * and the task watchdog took the board down on IDLE1.
+         *
+         * Safe to cache: the run's bounds come from `validUpTo_`, which only
+         * ever grows, and from the ring's floor, which the window will not
+         * move under a frame this voice has not passed yet (it keeps a block
+         * of history for exactly this reason). The cursor is per voice and
+         * only the render thread touches it. */
         if (window_ && i >= 1) {
+            const uint32_t left4 = static_cast<uint32_t>(i) - 1;
+            if (runPtr_ && left4 >= runFirst_ && static_cast<uint32_t>(i) + 2 < runLast_) {
+                return walk(runPtr_ + static_cast<size_t>(left4 - runFirst_) * channels_,
+                            f, left, right);
+            }
             uint32_t first = 0, last = 0;
-            const int16_t* p = window_->run(static_cast<uint32_t>(i) - 1, first, last);
+            const int16_t* p = window_->run(left4, first, last);
             if (p && static_cast<uint32_t>(i) + 2 < last) {
+                /* `p` points at `left4`; remember where the run starts so the
+                 * next frames can index off it without asking again. */
+                runPtr_   = p;
+                runFirst_ = left4;
+                runLast_  = last;
                 return walk(p, f, left, right);
             }
+            runPtr_ = nullptr;
         }
 
         float l[4], r[4];
@@ -147,6 +180,15 @@ private:
 
     const int16_t*     head_ = nullptr;
     const StreamWindow* window_ = nullptr;
+
+    void forgetRun() const { runPtr_ = nullptr; runFirst_ = 0; runLast_ = 0; }
+
+    /* The run last handed back by the window, so it is asked once a block
+     * rather than once a frame. Mutable: `read()` is const because it does
+     * not change what the cursor *plays*, only what it remembers. */
+    mutable const int16_t* runPtr_   = nullptr;
+    mutable uint32_t       runFirst_ = 0;
+    mutable uint32_t       runLast_  = 0;
     uint32_t headFrames_ = 0;
     uint32_t totalFrames_ = 0;
     uint8_t  channels_ = 1;
