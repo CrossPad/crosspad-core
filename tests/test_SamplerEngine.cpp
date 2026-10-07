@@ -499,3 +499,44 @@ TEST_CASE("SamplerEngine takes nothing from the pool on the note thread", "[samp
     REQUIRE(rig.run(1000) > 0.0f);
     REQUIRE(rig.engine.counters().underruns == 0);
 }
+
+TEST_CASE("SamplerEngine moves a fader on the voice already sounding", "[samplerengine]") {
+    /* A level turned over a playing loop has to be heard on that loop, not on
+     * the next hit -- that is what the Pad Mixer's fader means. */
+    Rig rig;
+    rig.build();
+    rig.src.add("loop.wav", 4000, 1);
+    rig.assign(0, "loop.wav", 8000, PadMode::Loop);
+    rig.publish();
+
+    SamplerEngine::Params pr;
+    pr.silenceMs = 0.0f;                   // do not cut it while measuring
+    pr.attackMs  = 0.0f;                   // full level from the first frame
+    rig.engine.setParams(pr);
+
+    rig.engine.noteOn(0, 127);
+    rig.run(4);                            // past any rise
+    const float loud = rig.run(8);
+    REQUIRE(loud > 0.0f);
+
+    // Halve the pad's level while the voice is mid-loop.
+    rig.engine.setPadMix(0, 50, 64);       // volume 50 of 100, centre
+    const float quiet = rig.run(8);
+    REQUIRE(quiet > 0.0f);
+    REQUIRE(quiet < loud * 0.75f);         // audibly down, on this voice
+
+    // And panned hard left, the right channel goes quiet while the left does not.
+    rig.engine.setPadMix(0, 100, 0);
+    std::vector<float> out(64 * 2, 0.0f);
+    rig.engine.mix(out.data(), 64);
+    float pl = 0.0f, pr2 = 0.0f;
+    for (uint32_t i = 0; i < 64; ++i) {
+        pl  = std::max(pl,  std::fabs(out[i * 2]));
+        pr2 = std::max(pr2, std::fabs(out[i * 2 + 1]));
+    }
+    REQUIRE(pl > 0.0f);
+    REQUIRE(pr2 < pl * 0.2f);
+
+    rig.engine.allNotesOff();
+    rig.run(20);
+}
