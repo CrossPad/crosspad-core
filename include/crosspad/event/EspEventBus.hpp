@@ -52,7 +52,8 @@ public:
     bool postTempoChanged(float bpm, EventSource source) override;
     bool postLiveModeChanged(bool enabled, EventSource source) override;
     bool postGuiUpdateRequired(EventSource source) override;
-    bool postSamplePlayback(uint8_t note, uint8_t wavIdx, bool isOn, EventSource source, uint8_t velocity) override;
+    bool postSamplePlayback(uint8_t note, uint8_t wavIdx, bool isOn, EventSource source, uint8_t velocity,
+                            int8_t transpose, uint8_t key) override;
     bool postMotionGesture(MotionGesture gesture, uint8_t orientation, EventSource source) override;
 
     bool sendNoteOn(uint8_t channel, uint8_t note, uint8_t velocity, EventSource source) override;

@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: MIT
 #include <catch2/catch_test_macros.hpp>
 
+#include "crosspad/platform/PlatformServices.hpp"
+#include "crosspad/sequencer/SequencerController.hpp"
 #include "crosspad/transport/Transport.hpp"
 
 #include <string>
@@ -127,4 +129,63 @@ TEST_CASE("Releasing a target that is not holding it leaves the holder alone",
     REQUIRE(crosspad::transportTarget() == &a);
     crosspad::transportRelease(&a);
     REQUIRE(crosspad::transportTarget() == nullptr);
+}
+
+namespace {
+/// A target with a position of its own that the bar may move.
+class Locatable : public Fake {
+public:
+    Locatable() : Fake("ARR", crosspad::kTransportCanPlay | crosspad::kTransportCanStop |
+                                  crosspad::kTransportCanLocate) {}
+    void locate(int bars) override { moved += bars; }
+    int moved = 0;
+};
+} // namespace
+
+TEST_CASE("Transport locates only a stopped holder that can", "[transport][locate]") {
+    Locatable arr;
+    crosspad::transportClaim(&arr);
+    crosspad::transportLocate(3);
+    crosspad::transportLocate(-1);
+    REQUIRE(arr.moved == 2);
+    crosspad::transportPlay();
+    crosspad::transportLocate(4);
+    REQUIRE(arr.moved == 2);   // playing: the position is the song's
+
+    Fake seq("PATTERN", kAll);
+    crosspad::transportClaim(&seq);
+    crosspad::transportLocate(1);   // cannot: nothing happens
+    crosspad::transportClaim(nullptr);
+}
+
+TEST_CASE("Transport tempo is the sequencer's, clamped, and follows the host flag", "[transport][tempo]") {
+    crosspad::SequencerController ctrl;
+    crosspad::getPlatformServices().sequencer = &ctrl;
+    crosspad::transportSetTempo(500.0f);
+    REQUIRE(crosspad::transportTempo() == crosspad::kTransportTempoMax);
+    crosspad::transportSetTempo(92.0f);
+    REQUIRE(crosspad::transportTempo() == 92.0f);
+    crosspad::transportCommitTempo();   // no song engine: the clock only
+    REQUIRE(crosspad::transportTempo() == 92.0f);
+
+    REQUIRE_FALSE(crosspad::transportTempoFromHost());
+    crosspad::transportSetTempoFromHost(true);
+    REQUIRE(crosspad::transportTempoFromHost());
+    crosspad::transportSetTempoFromHost(false);
+    crosspad::getPlatformServices().sequencer = nullptr;
+    REQUIRE(crosspad::transportTempo() == 0.0f);
+}
+
+TEST_CASE("Transport metronome is one switch no command flips", "[transport][click]") {
+    crosspad::SequencerController ctrl;
+    crosspad::getPlatformServices().sequencer = &ctrl;
+    crosspad::transportSetClick(false);
+    REQUIRE_FALSE(crosspad::transportClick());
+    ctrl.record();
+    REQUIRE_FALSE(crosspad::transportClick());   // a take does not turn it on
+    crosspad::transportSetClick(true);
+    ctrl.stop();
+    REQUIRE(crosspad::transportClick());         // nor a stop off
+    crosspad::getPlatformServices().sequencer = nullptr;
+    REQUIRE_FALSE(crosspad::transportClick());
 }

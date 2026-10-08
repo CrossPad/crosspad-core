@@ -34,35 +34,70 @@ class SequencerTransport final : public ITransportTarget {
 public:
     explicit SequencerTransport(SequencerController& seq) : seq_(seq) {}
 
+    /// The seq view of an Arrange track: PLAY and REC play the arrangement
+    /// with the track's scene laid on it, as SYNC does, whatever SYNC says --
+    /// a part is recorded against the song it belongs to, not in silence. The
+    /// Sequencer opened on its own clears it.
+    void setFollowSong(bool on) { followSong_ = on; }
+    bool followsSong() const { return followSong_; }
+
+    /* The table in UX 2000 section 3.1, one command per row. A command the
+     * state has no row for does nothing -- caps() greys it on the bar. */
+
+    /// From a stop: play on from where the last stop left the pattern.
     void play() override
     {
+        if (state() != TransportState::Stopped) return;
         if (!startWithSong(SyncTake::None)) seq_.playback();
     }
 
-    /// The song too, when it is the one running the sequencer.
+    /// Stops in place, cancels an armed take, and the song too when it is the
+    /// one running the sequencer. Stopped already, it goes back to bar one.
     void stop() override
     {
+        if (state() == TransportState::Stopped) { seq_.rewind(); return; }
         ISongEngine* se = getPlatformServices().songEngine;
         if (se && se->playing() && songSync()) se->stop();
         seq_.stop();
     }
 
-    /// A second REC closes the take without stopping the loop, which is what
-    /// you want once the part is played in.
+    /// Arms a take from a stop (counted in with PRE on), punches in while
+    /// playing or overdubbing, punches out while recording, and cancels a
+    /// take still waiting for its first beat.
     void record() override
     {
-        if (seq_.isRecording())                      { seq_.playback(); return; }
-        if (!startWithSong(SyncTake::Record))          seq_.record();
+        switch (state()) {
+            case TransportState::Stopped:
+                if (!startWithSong(SyncTake::Record)) seq_.record();
+                return;
+            case TransportState::Waiting:     stop();          return;
+            case TransportState::Recording:   seq_.playback(); return;
+            case TransportState::Playing:
+            case TransportState::Overdubbing: seq_.record();   return;
+        }
     }
 
+    /// Layers onto the running loop, and a second DUB stops layering.
     void overdub() override
     {
-        if (!startWithSong(SyncTake::Overdub)) seq_.overdub();
+        switch (state()) {
+            case TransportState::Playing:
+            case TransportState::Recording:   seq_.overdub();  return;
+            case TransportState::Overdubbing: seq_.playback(); return;
+            case TransportState::Stopped:
+            case TransportState::Waiting:                      return;
+        }
     }
 
     TransportState state() const override {
         switch (seq_.getState()) {
             case SequencerState::Idle:
+                /* Following, the song primes or counts in before it starts
+                 * the sequencer: that is armed, not stopped. */
+                if (followSong_) {
+                    ISongEngine* se = getPlatformServices().songEngine;
+                    if (se && se->playing()) return TransportState::Waiting;
+                }
                 return TransportState::Stopped;
             /* Armed and counting: a sync point, the count-in, or the first
              * note the player has not hit yet. The bar brackets PLAY and
@@ -86,9 +121,18 @@ public:
         return TransportState::Playing;
     }
 
+    /// Armed, only STOP or REC (both cancel); stopped, no DUB -- there is
+    /// no loop running to layer onto.
     uint8_t caps() const override {
-        return kTransportCanPlay | kTransportCanStop |
-               kTransportCanRecord | kTransportCanOverdub;
+        switch (state()) {
+            case TransportState::Waiting:
+                return kTransportCanStop | kTransportCanRecord;
+            case TransportState::Stopped:
+                return kTransportCanPlay | kTransportCanStop | kTransportCanRecord;
+            default:
+                return kTransportCanPlay | kTransportCanStop |
+                       kTransportCanRecord | kTransportCanOverdub;
+        }
     }
 
     const char* name() const override { return "PATTERN"; }
@@ -101,6 +145,22 @@ public:
      * sequencer has no other meter. */
     TransportPos position() const override {
         TransportPos p;
+        /* Following, where the song is: the part is placed on its bars. */
+        if (followSong_) {
+            ISongEngine* se = getPlatformServices().songEngine;
+            if (se && se->playing()) {
+                double bars = se->positionBars();
+                if (bars < 0.0) bars = 0.0;
+                const uint32_t whole = (uint32_t)bars;
+                const double beats = (bars - (double)whole) * 4.0;
+                const uint32_t beat = (uint32_t)beats;
+                p.bar  = (uint16_t)(whole + 1u);
+                p.beat = (uint8_t)(beat + 1u);
+                p.cent = (uint8_t)((beats - (double)beat) * 100.0);
+                if (p.cent > 99) p.cent = 99;
+                return p;
+            }
+        }
         /* The *scene's* bars, not getSeqLength(): that is the controller's
          * global maximum (the platform sets it to MAX_SEQ_LENGTH at init),
          * and dividing the progress by it put a one-bar scene at bar 8 --
@@ -123,14 +183,19 @@ public:
     }
 
 private:
-    /// SYNC on and a song to play: the transport starts the song, and the
-    /// song starts the sequencer with it (Arrange's SYNC is the same switch).
-    static bool songSync()
+    /// SYNC on (or following an Arrange track) and a song to play: the
+    /// transport starts the song, and the song starts the sequencer with it
+    /// (Arrange's SYNC is the same switch).
+    bool songSync() const
     {
         ISongEngine* se = getPlatformServices().songEngine;
         if (!se) return false;
-        std::lock_guard<std::recursive_mutex> l(se->songMutex());
-        return se->song().syncSeq && se->song().playEnd() > 0;
+        bool sync = followSong_;
+        {
+            std::lock_guard<std::recursive_mutex> l(se->songMutex());
+            sync = sync || se->song().syncSeq;
+        }
+        return sync && se->playEndBars() > 0;
     }
 
     /// From a stop, in sync: the song from its top, the sequencer doing @p take.
@@ -147,6 +212,7 @@ private:
     }
 
     SequencerController& seq_;
+    bool followSong_ = false;
 };
 
 /**

@@ -86,7 +86,10 @@ public:
     /// @param velocity 1-127 playback velocity; defaults to full scale so
     ///        callers that have no velocity (preview, kit stop-all) are
     ///        unaffected. Ignored when isOn = false.
-    virtual bool postSamplePlayback(uint8_t note, uint8_t wavIdx, bool isOn, EventSource source = EventSource::SamplePlayback, uint8_t velocity = 127) = 0;
+    /// @param transpose, key  see SamplePlaybackData; a plain pad hit leaves
+    ///        them at 0 and the pad's own key.
+    virtual bool postSamplePlayback(uint8_t note, uint8_t wavIdx, bool isOn, EventSource source = EventSource::SamplePlayback, uint8_t velocity = 127,
+                                    int8_t transpose = 0, uint8_t key = kSamplePlaybackOwnKey) = 0;
 
     /// Board motion the sensor itself recognised. Apps subscribe to
     /// EventType::MotionGesture instead of talking to any IMU driver.

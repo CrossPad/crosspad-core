@@ -183,6 +183,9 @@ public:
     bool    getSceneEvent(uint8_t s, uint16_t i, float& at, uint8_t& pad, uint8_t& vel) const {
         return engine_ ? engine_->sceneEvent(s, i, at, pad, vel) : false;
     }
+    float   getSceneEventLength(uint8_t s, uint16_t i) const {
+        return engine_ ? engine_->sceneEventLength(s, i) : 0.0f;
+    }
     bool    doubleScene(uint8_t s) { return engine_ ? engine_->doubleScene(s) : false; }
     bool    halveScene(uint8_t s)  { return engine_ ? engine_->halveScene(s) : false; }
     void    setErasing(bool on)    { if (engine_) engine_->setErasing(on); }
@@ -222,8 +225,14 @@ public:
 
     // ---------- transport ----------
 
+    /// Plays from where the last stop left the clock.
     void playback() { if (engine_) engine_->playback(); }
-    void record()   { if (engine_) { engine_->record(); setClickActive(true); } }
+    /// Back to bar one, stopped. What a second STOP does.
+    void rewind()   { if (engine_) engine_->resetClick(); }
+    /* The click is the player's switch (the top bar's metronome, the
+     * Sequencer's M): no transport command turns it on or off behind it. A
+     * count-in counts whatever it is set to. */
+    void record()   { if (engine_) engine_->record(); }
     void overdub()  { if (engine_) engine_->overdub(); }
 
     void reset() {
@@ -231,19 +240,16 @@ public:
             engine_->resetClick();
             engine_->reset();
         }
-        setClickActive(false);
     }
 
     void stop() {
         if (engine_) engine_->stop();
-        setClickActive(false);
     }
 
     void eraseSeq(int8_t idx = -1) {
         if (!engine_) return;
         if (idx < 0 || idx > Limits::MAX_SEQ_INDEX) {
             engine_->clearAll(0, 127);
-            setClickActive(false);
         } else {
             engine_->clearSeq(idx, 127);
         }

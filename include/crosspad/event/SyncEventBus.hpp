@@ -35,7 +35,8 @@ public:
     bool postTempoChanged(float bpm, EventSource source = EventSource::SequencerCallback) override;
     bool postLiveModeChanged(bool enabled, EventSource source = EventSource::System) override;
     bool postGuiUpdateRequired(EventSource source = EventSource::Gui) override;
-    bool postSamplePlayback(uint8_t note, uint8_t wavIdx, bool isOn, EventSource source = EventSource::SamplePlayback, uint8_t velocity = 127) override;
+    bool postSamplePlayback(uint8_t note, uint8_t wavIdx, bool isOn, EventSource source = EventSource::SamplePlayback, uint8_t velocity = 127,
+                            int8_t transpose = 0, uint8_t key = kSamplePlaybackOwnKey) override;
     bool postMotionGesture(MotionGesture gesture, uint8_t orientation = 0, EventSource source = EventSource::Imu) override;
 
     bool sendNoteOn(uint8_t channel, uint8_t note, uint8_t velocity, EventSource source = EventSource::System) override;

@@ -192,10 +192,10 @@ uint8_t SamplerEngine::voicesActive() const
     return n;
 }
 
-void SamplerEngine::noteOn(uint8_t pad, uint8_t velocity)
+void SamplerEngine::noteOn(uint8_t pad, uint8_t velocity, int8_t transpose, uint8_t key)
 {
     const uint32_t t0 = now_ ? now_() : 0;
-    noteOnBody(pad, velocity);
+    noteOnBody(pad, velocity, transpose, key == kOwnKey ? pad : key);
     if (now_) {
         const uint32_t dt = now_() - t0;
         uint32_t m = cNoteOnMaxUs_.load(std::memory_order_relaxed);
@@ -203,7 +203,7 @@ void SamplerEngine::noteOn(uint8_t pad, uint8_t velocity)
     }
 }
 
-void SamplerEngine::noteOnBody(uint8_t pad, uint8_t velocity)
+void SamplerEngine::noteOnBody(uint8_t pad, uint8_t velocity, int8_t transpose, uint8_t key)
 {
     if (pad >= kPads) return;
     if (mutating_.load(std::memory_order_acquire)) return;
@@ -249,7 +249,9 @@ void SamplerEngine::noteOnBody(uint8_t pad, uint8_t velocity)
     for (auto& v : voices_) {
         if (v.state.load(std::memory_order_acquire) != static_cast<uint8_t>(VoiceState::Playing)) continue;
         const bool sameChoke = kp.choke != 0 && v.choke == kp.choke;
-        const bool samePad   = params_.monoPerPad && v.pad == pad;
+        /* By the hit, not the pad: one pad's sample struck from two pads at
+         * two pitches is two notes. A plain hit's key is its pad. */
+        const bool samePad   = params_.monoPerPad && v.key == key;
         if (sameChoke || samePad) startFade(v);
     }
 
@@ -300,7 +302,7 @@ void SamplerEngine::noteOnBody(uint8_t pad, uint8_t velocity)
      * engine this replaces could do neither, and the firmware wrote
      * transposed copies of the files to the card instead. */
     const double rate  = static_cast<double>(slot->desc.sampleRate) / static_cast<double>(sampleRate_);
-    const double ratio = rate * static_cast<double>(semitoneRatio(kp.semitones));
+    const double ratio = rate * static_cast<double>(semitoneRatio(kp.semitones + transpose));
     v.inc = static_cast<uint64_t>(ratio * static_cast<double>(kOne));
     if (v.inc == 0) v.inc = 1;
 
@@ -309,6 +311,7 @@ void SamplerEngine::noteOnBody(uint8_t pad, uint8_t velocity)
     v.last  = last;
     v.loop  = (kp.mode == PadMode::Loop);
     v.pad   = pad;
+    v.key   = key;
     v.layer = layer;
     v.choke = kp.choke;
 
@@ -343,16 +346,17 @@ void SamplerEngine::noteOnBody(uint8_t pad, uint8_t velocity)
     while (act > pk && !cVoicesPeak_.compare_exchange_weak(pk, act, std::memory_order_relaxed)) { }
 }
 
-void SamplerEngine::noteOff(uint8_t pad)
+void SamplerEngine::noteOff(uint8_t pad, uint8_t key)
 {
     if (pad >= kPads) return;
+    if (key == kOwnKey) key = pad;
     const SamplerKit* k = kit_.load(std::memory_order_acquire);
     /* Only Hold mode listens to a release. A one-shot plays to its end and a
      * loop keeps going -- that is what the kit's playbackMode means. */
     if (k && k->pad[pad].mode != PadMode::Hold) return;
     for (auto& v : voices_) {
         if (v.state.load(std::memory_order_acquire) != static_cast<uint8_t>(VoiceState::Playing)) continue;
-        if (v.pad == pad) v.releasing.store(true, std::memory_order_release);
+        if (v.pad == pad && v.key == key) v.releasing.store(true, std::memory_order_release);
     }
 }
 

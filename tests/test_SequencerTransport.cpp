@@ -58,15 +58,26 @@ TEST_CASE("sequencer transport: running splits by mode", "[transport]")
     REQUIRE(mapped(SequencerState::Running, SequencerMode::OverdubWait) == TransportState::Overdubbing);
 }
 
-TEST_CASE("sequencer transport: offers all four commands", "[transport]")
+TEST_CASE("sequencer transport: the keys it offers follow the state", "[transport]")
 {
+    using namespace crosspad;
     SequencerController seq;
     SequencerTransport t(seq);
-    REQUIRE((t.caps() & crosspad::kTransportCanPlay) != 0);
-    REQUIRE((t.caps() & crosspad::kTransportCanStop) != 0);
-    REQUIRE((t.caps() & crosspad::kTransportCanRecord) != 0);
-    REQUIRE((t.caps() & crosspad::kTransportCanOverdub) != 0);
     REQUIRE(std::string(t.name()) == "PATTERN");
+
+    /* Stopped: nothing runs to layer onto, so no DUB. STOP stays -- a second
+     * one rewinds. */
+    REQUIRE(t.caps() == (kTransportCanPlay | kTransportCanStop | kTransportCanRecord));
+
+    /* Armed: only the two keys that cancel. */
+    seq.setState(SequencerState::PreBeat);
+    seq.setMode(SequencerMode::Record);
+    REQUIRE(t.caps() == (kTransportCanStop | kTransportCanRecord));
+
+    seq.setState(SequencerState::Running);
+    seq.setMode(SequencerMode::Playback);
+    REQUIRE(t.caps() == (kTransportCanPlay | kTransportCanStop |
+                         kTransportCanRecord | kTransportCanOverdub));
 }
 
 TEST_CASE("sequencer transport: isRecording and the bar agree", "[transport]")
@@ -101,7 +112,7 @@ class EngineStub : public crosspad::ISequencerEngine {
 public:
     float progressValue = 0.0f;
     float bpmValue = 120.0f;
-    int   plays = 0, stops = 0, records = 0, overdubs = 0;
+    int   plays = 0, stops = 0, records = 0, overdubs = 0, rewinds = 0;
 
     void setLength(uint8_t) override {}
     void setQuantization(crosspad::Quantization) override {}
@@ -119,7 +130,7 @@ public:
     void clearSeq(uint8_t, uint8_t) override {}
     void setClickAudible(bool) override {}
     void setClickBpm(float bpm) override { bpmValue = bpm; }
-    void resetClick() override {}
+    void resetClick() override { ++rewinds; }
     float getClickBpm() const override { return bpmValue; }
     int getClickPos() const override { return 0; }
 
@@ -225,16 +236,94 @@ TEST_CASE("sequencer transport: tempo is the engine's, and commands reach it", "
 
     crosspad::transportClaim(&r.transport);
     crosspad::transportPlay();
+    /* The stub runs nothing; the controller is told what the engine would
+     * have said, so the next command meets the state it would on a board. */
+    r.seq.setState(SequencerState::Running);
+    r.seq.setMode(SequencerMode::Playback);
     crosspad::transportOverdub();
     crosspad::transportStop();
     crosspad::transportRelease(&r.transport);
 
     REQUIRE(r.engine.plays == 1);
     REQUIRE(r.engine.overdubs == 1);
-    /* Two: the command, and the claim's release of the previous holder is not
-     * one of them -- but SequencerController::stop() is called by transportStop
-     * alone here. */
     REQUIRE(r.engine.stops == 1);
+}
+
+/* ── UX 2000 section 3.1, row by row ─────────────────────────────────────── */
+
+namespace {
+void put(Rig& r, SequencerState st, SequencerMode m)
+{
+    r.seq.setState(st);
+    r.seq.setMode(m);
+}
+} // namespace
+
+TEST_CASE("sequencer transport: stopped -- STOP rewinds, DUB does nothing", "[transport]")
+{
+    Rig r(4);
+    const int before = r.engine.rewinds;   // init() resets the click once
+    r.transport.stop();
+    REQUIRE(r.engine.rewinds == before + 1);
+    REQUIRE(r.engine.stops == 0);
+    r.transport.overdub();
+    REQUIRE(r.engine.overdubs == 0);
+    r.transport.record();
+    REQUIRE(r.engine.records == 1);
+}
+
+TEST_CASE("sequencer transport: waiting -- REC and STOP cancel, PLAY and DUB do nothing", "[transport]")
+{
+    Rig r(4);
+    put(r, SequencerState::PreBeat, SequencerMode::Record);
+    r.transport.play();
+    r.transport.overdub();
+    REQUIRE(r.engine.plays == 0);
+    REQUIRE(r.engine.overdubs == 0);
+    r.transport.record();
+    REQUIRE(r.engine.stops == 1);
+    REQUIRE(r.engine.records == 0);
+
+    put(r, SequencerState::WaitNote, SequencerMode::Record);
+    const int before = r.engine.rewinds;
+    r.transport.stop();
+    REQUIRE(r.engine.stops == 2);
+    REQUIRE(r.engine.rewinds == before);
+}
+
+TEST_CASE("sequencer transport: playing -- REC punches in, DUB layers, PLAY does nothing", "[transport]")
+{
+    Rig r(4);
+    put(r, SequencerState::Running, SequencerMode::Playback);
+    r.transport.play();
+    REQUIRE(r.engine.plays == 0);
+    r.transport.record();
+    REQUIRE(r.engine.records == 1);
+    r.transport.overdub();
+    REQUIRE(r.engine.overdubs == 1);
+}
+
+TEST_CASE("sequencer transport: recording -- DUB layers, PLAY does nothing", "[transport]")
+{
+    Rig r(4);
+    put(r, SequencerState::Running, SequencerMode::Record);
+    r.transport.play();
+    REQUIRE(r.engine.plays == 0);
+    r.transport.overdub();
+    REQUIRE(r.engine.overdubs == 1);
+}
+
+TEST_CASE("sequencer transport: overdubbing -- REC records, DUB plays, PLAY does nothing", "[transport]")
+{
+    Rig r(4);
+    put(r, SequencerState::Running, SequencerMode::Overdub);
+    r.transport.play();
+    REQUIRE(r.engine.plays == 0);
+    r.transport.record();
+    REQUIRE(r.engine.records == 1);
+    r.transport.overdub();
+    REQUIRE(r.engine.plays == 1);
+    REQUIRE(r.engine.overdubs == 0);
 }
 
 /* ── The four rules that moved here from the Sequencer screen ─────────────
@@ -246,6 +335,7 @@ TEST_CASE("sequencer transport: tempo is the engine's, and commands reach it", "
  */
 
 #include "crosspad/song/ISongEngine.hpp"
+#include "crosspad/transport/SongTransport.hpp"
 
 namespace {
 
@@ -355,7 +445,9 @@ TEST_CASE("sequencer transport: stopping in sync stops the song too", "[transpor
     SongStub song;
     SongScope scope(&song);
     arm_sync(song, true);
-    r.transport.play();            // the song is running now
+    r.transport.play();            // the song is running now, and starts the pattern
+    r.seq.setState(SequencerState::Running);
+    r.seq.setMode(SequencerMode::Playback);
 
     r.transport.stop();
     REQUIRE(song.stops == 1);
@@ -370,6 +462,8 @@ TEST_CASE("sequencer transport: SYNC off keeps the song out of it", "[transport]
     arm_sync(song, false);
 
     r.transport.play();
+    r.seq.setState(SequencerState::Running);
+    r.seq.setMode(SequencerMode::Playback);
     r.transport.stop();
     REQUIRE(song.withTake == 0);
     REQUIRE(song.countedIn == 0);
@@ -406,4 +500,35 @@ TEST_CASE("sequencer transport: the readout divides by the scene, not the maximu
     const auto p = r.transport.position();
     REQUIRE(p.bar == 1);
     REQUIRE(p.beat == 4);
+}
+
+TEST_CASE("sequencer transport: an Arrange track's seq view plays the song, SYNC or not", "[transport]")
+{
+    Rig r(4);
+    SongStub song;
+    SongScope scope(&song);
+    arm_sync(song, false);           // SYNC off
+    r.transport.setFollowSong(true);
+
+    r.transport.record();
+    REQUIRE(song.withTake + song.countedIn == 1);
+    REQUIRE(song.lastTake == crosspad::SyncTake::Record);
+    REQUIRE(r.engine.records == 0);  // the song starts the take, on its bar one
+
+    /* Primed but not yet started: armed, not stopped. */
+    REQUIRE(r.transport.state() == TransportState::Waiting);
+}
+
+TEST_CASE("transport: a claim does not stop a holder that is already stopped", "[transport]")
+{
+    Rig r(4);
+    const int before = r.engine.rewinds;
+    crosspad::transportClaim(&r.transport);
+    SongStub song;
+    SongScope scope(&song);
+    crosspad::SongTransport other;
+    crosspad::transportClaim(&other);   // the pattern was stopped: no stop, so no rewind
+    REQUIRE(r.engine.rewinds == before);
+    REQUIRE(r.engine.stops == 0);
+    crosspad::transportRelease(&other);
 }

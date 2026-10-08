@@ -187,6 +187,7 @@ struct Placed {
     const LiveSetClipFile* file = nullptr;
     double start = 0.0;    ///< on the song
     double played = 0.0;   ///< how much of the clip sounds
+    double skip = 0.0;     ///< where in the file it starts: a cut's second half
     double length = 0.0;   ///< the whole file at the song's tempo
 };
 
@@ -202,12 +203,12 @@ constexpr const char* kClip = R"(<AudioClip Id="{id}" Time="{start}">
 	<CurrentStart Value="{start}" />
 	<CurrentEnd Value="{end}" />
 	<Loop>
-		<LoopStart Value="0" />
+		<LoopStart Value="{skip}" />
 		<LoopEnd Value="{full}" />
 		<StartRelative Value="0" />
 		<LoopOn Value="false" />
-		<OutMarker Value="{played}" />
-		<HiddenLoopStart Value="0" />
+		<OutMarker Value="{out}" />
+		<HiddenLoopStart Value="{skip}" />
 		<HiddenLoopEnd Value="{full}" />
 	</Loop>
 	<Name Value="{name}" />
@@ -338,7 +339,8 @@ void clipXml(std::string& o, const std::string& ind, int id, const Placed& c, in
         {"start", num(c.start)},
         {"end", num(c.start + c.played)},
         {"full", num(c.length)},
-        {"played", num(c.played)},
+        {"skip", num(c.skip)},
+        {"out", num(c.skip + c.played)},
         {"name", escape(dot == kNpos ? f.file : f.file.substr(0, dot))},
         {"color", std::to_string(color)},
         {"bpb", std::to_string(bpb)},
@@ -369,6 +371,8 @@ std::vector<Placed> place(const AudioSong& song, int track, const std::vector<Li
                           double bpm, std::set<std::string>& unreadable, LiveSetReport& report)
 {
     std::vector<Placed> out;
+    /* A seq track's blocks are its scene, not files: Live gets the audio. */
+    if (song.tracks[track].kind == TrackKind::Seq) return out;
     const auto& cs = song.tracks[track].clips;
     const double bpb = song.beatsPerBar;
     const uint32_t cut = std::max(song.playEnd(), song.hasRegion() ? song.loopEnd : 0u);
@@ -400,7 +404,10 @@ std::vector<Placed> place(const AudioSong& song, int track, const std::vector<Li
         p.length = (double)f->frames / f->sampleRate * bpm / 60.0;
         const double whole = std::round(p.length);
         if (whole >= 1.0 && std::fabs(p.length - whole) <= whole * kSameLength) p.length = whole;
-        p.played = std::min((end - c.bar) * bpb, p.length);
+        p.skip = (double)c.offset / f->sampleRate * bpm / 60.0;
+        double rest = std::max(0.0, p.length - p.skip);
+        if (c.frames) rest = std::min(rest, (double)c.frames / f->sampleRate * bpm / 60.0);
+        p.played = std::min((end - c.bar) * bpb, rest);
         out.push_back(p);
     }
     return out;

@@ -27,6 +27,9 @@ struct ArrangeFocus {
     bool    seq   = false;        ///< a seq track (sequencer) rather than audio (recorder)
     SeqSource source = SeqSource::Kit;   ///< what a seq track plays through
     uint8_t scene = 0;            ///< the scene a seq track plays
+    /// The seq view's BOUNCE: Arrange opens on "Bounce T<n> to audio?" for
+    /// this track, the dialog over the arrangement it changes.
+    bool    bounce = false;
 
     bool held() const { return track >= 0 && track < AudioSong::kTracks; }
     void clear() { *this = ArrangeFocus{}; }

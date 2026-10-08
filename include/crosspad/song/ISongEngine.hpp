@@ -166,6 +166,10 @@ public:
     /// pads to a clip in the open project, placed after the last block of
     /// @p track. Poll bounceStatus().
     virtual bool bounceScene(uint8_t scene, uint8_t track) = 0;
+    /// Arrange's BOUNCE: the seq track @p track, its scene looped over the
+    /// whole song (playEndBars()), into one clip on that same track from bar
+    /// one. The caller turns the track into audio once it is Done.
+    virtual bool bounceSeqTrack(uint8_t track) { (void)track; return false; }
     virtual BounceStatus bounceStatus() = 0;
     virtual void cancelBounce() = 0;
 
@@ -216,6 +220,13 @@ public:
 
     // ── Playback ──────────────────────────────────────────────────────────
     /// Requests too: playing() turns true once the platform has the clips open.
+    /// Bars the song plays (and loops) over: AudioSong::playEnd(), and at
+    /// least one pass of a seq track's scene -- a song that is only a seq
+    /// track is that long, not empty.
+    virtual uint32_t playEndBars() {
+        std::lock_guard<std::recursive_mutex> l(songMutex());
+        return song().playEnd();
+    }
     virtual bool   play(uint32_t fromBar) = 0;
     /// play(), and with the song's syncSeq on the sequencer starts with it
     /// doing @p take. A platform without it plays the song alone.

@@ -9,6 +9,7 @@
 #include <atomic>
 #include <cstdint>
 #include <mutex>
+#include <vector>
 
 namespace crosspad {
 
@@ -76,6 +77,11 @@ public:
     /// Stamp a hit with the clock position it happened at. Cheap and wait-free;
     /// safe to call when nothing is recording (it is dropped in poll()).
     void noteIn(uint8_t pad, uint8_t velocity);
+    /// Stamp the pad's release the same way: a note recorded with its press
+    /// gets how long it was held, and plays back held that long -- what a
+    /// chord, or a sample on HOLD, needs. A release with no recorded press
+    /// open is dropped.
+    void noteOut(uint8_t pad);
 
     // ── Driven from a timer or the audio task ─────────────────────────────
 
@@ -140,6 +146,21 @@ public:
     void overdub() override;
     void stop() override;
     void reset() override;
+
+    // ── Laid on a song's timeline ─────────────────────────────────────────
+
+    /// Where under a song the scene sounds: song samples [a, b), and the
+    /// scene sample it is at on @c a.
+    struct SongSpan { uint32_t a = 0, b = 0, scene = 0; };
+    /// Play the scene only under @p spans of the song it is laid on, instead
+    /// of looping it on the click: a seq track cut into blocks (AudioSong).
+    /// The song's position is counted here, from the playbackAt() position
+    /// (playback(): from zero) on the same clock, and wraps at @p wrapFrom
+    /// to @p wrapTo the way the song does; @p wrapFrom 0 runs off the end
+    /// into silence. The click, a take and the loop bookkeeping stay on the
+    /// scene's own loop -- a take records where the clock is, as without.
+    void setSongMap(const std::vector<SongSpan>& spans, uint32_t wrapFrom, uint32_t wrapTo);
+    void clearSongMap();
 
     void clearAll(uint8_t startPad, uint8_t endPad) override;
     void clearSeq(uint8_t seqIdx, uint8_t endPad) override;
@@ -209,6 +230,14 @@ public:
     uint8_t songPass() const override { return songPass_.load(std::memory_order_relaxed); }
     void    songLocate(uint8_t i) override;
 
+    /// How long event @p i is held, as a share of its scene; 0 for a hit.
+    float sceneEventLength(uint8_t seq, uint16_t i) const override;
+    /// The same in samples, for tests.
+    uint32_t eventLength(uint8_t seq, uint16_t i) const {
+        std::lock_guard<std::recursive_mutex> lock(editMutex_);
+        return seq < kNumSequences && i < counts_[seq] ? events_[seq][i].len : 0;
+    }
+
     /// One recorded event, for storage, tests and any UI that draws the pattern.
     bool eventAt(uint8_t seq, uint16_t i, uint32_t& pos, uint8_t& pad, uint8_t& vel) const {
         std::lock_guard<std::recursive_mutex> lock(editMutex_);
@@ -227,11 +256,13 @@ public:
     /// the previous kit's bar counts behind, which is not "empty".
     void resetScenes();
 
-    /// Add an event straight into a scene, position in ticks. For loading.
-    /// Not RT-safe against a running poll(); load while stopped.
-    bool addEventTicks(uint8_t seq, uint32_t ticks, uint8_t pad, uint8_t vel);
+    /// Add an event straight into a scene, position and length in ticks. For
+    /// loading. Not RT-safe against a running poll(); load while stopped.
+    bool addEventTicks(uint8_t seq, uint32_t ticks, uint8_t pad, uint8_t vel, uint32_t lenTicks = 0);
     /// One event with its position in ticks, for saving.
     bool eventAtTicks(uint8_t seq, uint16_t i, uint32_t& ticks, uint8_t& pad, uint8_t& vel) const;
+    /// How long event @p i is held, in ticks; 0 for a hit.
+    uint32_t eventLengthTicks(uint8_t seq, uint16_t i) const;
     /// True when something changed that the card does not have yet. The store
     /// clears it once the write lands. Atomic because the flag is set on the
     /// poll thread and read on whichever thread owns the card.
@@ -248,11 +279,18 @@ private:
     /// a hit quantised a few samples backwards lands inside the window about to
     /// fire and sounds twice -- once from the pad, once from its own recording.
     /// Cleared at the wrap, where the loop legitimately comes round to it.
-    struct Event { uint32_t pos; uint8_t pad; uint8_t vel; uint8_t fresh; };
+    /// `len`: samples the pad was held when it was recorded, and is held for
+    /// when it plays; 0 is a hit -- released on the next poll, as everything
+    /// recorded before lengths were.
+    struct Event { uint32_t pos; uint8_t pad; uint8_t vel; uint8_t fresh; uint32_t len; };
     /// `early`: count-in samples still to play when the hit was made, 0 once
     /// the loop runs. The clock holds position 0 through a count-in, so this
-    /// is the only record of how far before beat one a hit was.
+    /// is the only record of how far before beat one a hit was. `vel` 0 is a
+    /// release (noteOut()).
     struct Hit   { uint32_t pos; uint32_t early; uint8_t pad; uint8_t vel; };
+    /// A recorded press still held: where the finger went down on the clock,
+    /// and where its event was stored, to find it again at the release.
+    struct Open  { uint32_t start; uint32_t pos; uint8_t seq; bool on; };
 
     /// Rounds to the nearest grid line, wrapping a hit that rounds up past the
     /// loop end back to zero -- a hit a hair early on beat one belongs at the
@@ -281,7 +319,20 @@ private:
     /// half a grid step, which is where it would have rounded anyway.
     uint32_t downbeatGrace() const;
     void     drainInput(uint32_t loop);
+    /// Push a hit or a release into the input ring; wait-free.
+    void     stamp(uint8_t pad, uint8_t velocity);
+    /// A release: the open note on @p h's pad gets its length.
+    void     closeNote(const Hit& h, uint32_t loop);
+    /// Every note still held when the take stops ends where the clock is.
+    void     closeOpenNotes();
+    /// Count the held notes down by @p samples and let go of the ones done.
+    void     releaseHeld(uint32_t samples);
     void     fireWindow(uint32_t from, uint32_t to);
+    /// The song map's turn: @p samples more of the song, fired through it.
+    void     fireSong(uint32_t samples, uint32_t loop);
+    /// A Record take replaces as it goes: what was there before, under the
+    /// part of the loop the head is passing, is taken out before it sounds.
+    void     eraseWindow(uint32_t from, uint32_t to);
     /// poll() under editMutex_; its presses are collected, not played.
     void     pollLocked();
     /// A press or release for the sink: played at once, or -- inside poll()
@@ -355,13 +406,25 @@ private:
     /// A block asked for while running, taken at the next loop end; -1 none.
     std::atomic<int16_t>  songJump_{-1};
 
+    /* setSongMap(): the spans, where the song is, and where it wraps. */
+    std::vector<SongSpan> map_;
+    bool     mapOn_ = false;
+    uint32_t mapPos_ = 0;
+    uint32_t mapWrapFrom_ = 0;
+    uint32_t mapWrapTo_ = 0;
+
     SequencerController* controller_ = nullptr;
     uint32_t lastPos_ = 0;
     uint32_t preBeatPos_ = 0;   // where the loop starts once a count-in hands over
     /// Pads fired on the previous poll, released at the start of the next one.
     /// One poll of gate -- shorter than any human tap, long enough that the
-    /// press and the release are not the same instant.
+    /// press and the release are not the same instant. A hit's, not a note's.
     uint16_t pendingRelease_ = 0;
+    /// Pads a note with a length holds down, and the samples each has left.
+    uint16_t held_ = 0;
+    uint32_t relLeft_[16] = {};
+    /// Presses recorded and not yet released, one per pad.
+    Open     open_[16] = {};
 };
 
 } // namespace crosspad

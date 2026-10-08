@@ -577,3 +577,197 @@ TEST_CASE("sequence file: open replaces every scene, and leaves them if it canno
     REQUIRE(r.seq.eventCount(0) == 2);
     removeAll(path);
 }
+
+/* ── A take that is cancelled keeps the scene; a Record take replaces as it
+ *    goes and layers from its second pass (UX 2000 section 3.1) ─────────── */
+
+TEST_CASE("sequencer: REC cancelled in its count-in leaves the scene as it was", "[seq][take]") {
+    Rig r;
+    r.seq.setSceneBars(0, 1);
+    REQUIRE(r.seq.addEventTicks(0, 0, 1, 100));
+    REQUIRE(r.seq.addEventTicks(0, kTicksPerBeat * 2, 2, 100));
+    r.seq.setCountIn(true);
+    r.seq.record();
+    REQUIRE(r.seq.eventCount(0) == 2);
+    r.run(kBeat);
+    r.seq.stop();
+    REQUIRE(r.seq.eventCount(0) == 2);
+}
+
+TEST_CASE("sequencer: a Record pass takes out what it passes, then overdubs", "[seq][take]") {
+    Rig r;
+    r.seq.setSceneBars(0, 1);
+    REQUIRE(r.seq.addEventTicks(0, kTicksPerBeat, 1, 100));        // beat 2
+    REQUIRE(r.seq.addEventTicks(0, kTicksPerBeat * 3, 2, 100));    // beat 4
+    r.seq.setCountIn(false);
+    r.seq.record();
+    r.run(kBeat * 2 + kBlock);            // past beat 2, short of beat 4
+    REQUIRE(r.seq.eventCount(0) == 1);    // beat 2 gone, beat 4 still there
+    REQUIRE(r.fired.empty());             // and the replaced note never sounded
+    r.run(kBeat * 2);                     // round the loop
+    REQUIRE(r.seq.eventCount(0) == 0);
+    REQUIRE(r.seq.mode() == SequencerMode::Overdub);
+}
+
+TEST_CASE("sequencer: PLAY after a STOP plays on from where it stopped", "[seq][take]") {
+    Rig r;
+    r.seq.setSceneBars(0, 1);
+    r.seq.playback();
+    r.run(kBeat * 2 + kBlock);
+    r.seq.stop();
+    const uint32_t held = r.clock.positionSamples();
+    REQUIRE(held >= kBeat * 2);
+    r.seq.playback();
+    r.run(kBlock);
+    REQUIRE(r.clock.positionSamples() >= held);
+    r.seq.stop();
+    r.seq.resetClick();
+    r.run(kBlock);
+    REQUIRE(r.clock.positionSamples() == 0);
+}
+
+// ── laid on a song cut into blocks ─────────────────────────────────────────
+
+TEST_CASE("sequencer: a song map plays the scene only under its blocks", "[seq][songmap]") {
+    Rig r;
+    r.seq.setSceneBars(0, 1);
+    REQUIRE(r.seq.addEventTicks(0, 0, 1, 100));
+    REQUIRE(r.seq.addEventTicks(0, kTicksPerBeat, 2, 100));
+    const uint32_t bar = r.loop(1);
+    r.seq.playbackAt(0);
+    r.seq.setSongMap({{0, bar, 0}, {2 * bar, 3 * bar, 0}}, 0, 0);
+    r.run(3 * bar);
+    REQUIRE(r.fired == std::vector<uint8_t>{1, 2, 1, 2});   // bar two is a gap
+}
+
+TEST_CASE("sequencer: a block plays the scene from its own bar of it", "[seq][songmap]") {
+    Rig r;
+    r.seq.setSceneBars(0, 1);
+    REQUIRE(r.seq.addEventTicks(0, 0, 1, 100));
+    REQUIRE(r.seq.addEventTicks(0, kTicksPerBeat, 2, 100));
+    const uint32_t bar = r.loop(1);
+    r.seq.playbackAt(0);
+    r.seq.setSongMap({{0, bar, kBeat}}, 0, 0);   // starts a beat into the scene
+    r.run(bar);
+    REQUIRE(r.fired == std::vector<uint8_t>{2, 1});
+}
+
+TEST_CASE("sequencer: a song map wraps where the song does", "[seq][songmap]") {
+    Rig r;
+    r.seq.setSceneBars(0, 1);
+    REQUIRE(r.seq.addEventTicks(0, 0, 1, 100));
+    const uint32_t bar = r.loop(1);
+    /* Started in bar two of a song that loops bars 1..2 (0-based): two
+     * passes of it are two hits, and bar zero's block is never heard. */
+    r.seq.playbackAt(bar);
+    r.seq.setSongMap({{0, bar, 0}, {bar, 2 * bar, 0}}, 2 * bar, bar);
+    r.run(2 * bar);
+    REQUIRE(r.fired.size() == 2);
+    r.seq.clearSongMap();
+    r.seq.stop();
+}
+
+// ── note lengths ───────────────────────────────────────────────────────────
+
+namespace {
+/// Every press and release the sink sees, with the clock position it came at.
+struct Gate {
+    struct Ev { uint8_t pad; bool on; uint32_t at; };
+    std::vector<Ev> evs;
+    uint32_t now = 0;
+};
+} // namespace
+
+TEST_CASE("sequencer: a held note is recorded with its length and played held", "[seq][length]") {
+    Rig r;
+    Gate g;
+    r.seq.setSink([](void* ctx, uint8_t pad, uint8_t, bool on) {
+        auto* gt = static_cast<Gate*>(ctx);
+        gt->evs.push_back({pad, on, gt->now});
+    }, &g);
+    r.seq.setCountIn(false);
+    r.seq.setQuantization(Quantization::Off);
+    r.seq.setSceneBars(0, 1);
+    r.seq.record();
+    r.run(kBlock);
+    r.seq.noteIn(3, 100);
+    r.run(kBeat * 2);                 // held two beats
+    r.seq.noteOut(3);
+    r.run(kBlock);
+    REQUIRE(r.seq.eventCount(0) == 1);
+    const uint32_t len = r.seq.eventLength(0, 0);
+    REQUIRE(len >= kBeat * 2 - kBlock);
+    REQUIRE(len <= kBeat * 2 + kBlock);
+    REQUIRE(r.seq.eventLengthTicks(0, 0) == 2 * kTicksPerBeat);
+
+    /* Played: pressed, and released two beats later -- not a poll later. */
+    r.seq.stop();
+    g.evs.clear();
+    r.seq.playbackAt(0);
+    uint32_t t = 0;
+    while (t < r.loop(1)) { g.now = t; r.run(kBlock); t += kBlock; }
+    uint32_t onAt = 0, offAt = 0;
+    bool on = false, off = false;
+    for (const auto& e : g.evs) {
+        if (e.pad != 3) continue;
+        if (e.on && !on) { on = true; onAt = e.at; }
+        else if (!e.on && on && !off) { off = true; offAt = e.at; }
+    }
+    REQUIRE(on);
+    REQUIRE(off);
+    REQUIRE(offAt - onAt >= kBeat * 2 - 2 * kBlock);
+    REQUIRE(offAt - onAt <= kBeat * 2 + 2 * kBlock);
+    r.seq.stop();
+}
+
+TEST_CASE("sequencer: a hit without a release stays a hit", "[seq][length]") {
+    Rig r;
+    r.seq.setSceneBars(0, 1);
+    REQUIRE(r.seq.addEventTicks(0, 0, 1, 100));
+    REQUIRE(r.seq.eventLength(0, 0) == 0);
+    REQUIRE(r.seq.addEventTicks(0, kTicksPerBeat, 2, 100, kTicksPerBeat / 2));
+    REQUIRE(r.seq.eventLength(0, 1) == kBeat / 2);
+    REQUIRE(r.seq.eventLengthTicks(0, 1) == kTicksPerBeat / 2);
+}
+
+TEST_CASE("sequencer: stopping a take ends a note still held", "[seq][length]") {
+    Rig r;
+    r.seq.setCountIn(false);
+    r.seq.setQuantization(Quantization::Off);
+    r.seq.setSceneBars(0, 1);
+    r.seq.record();
+    r.run(kBlock);
+    r.seq.noteIn(5, 100);
+    r.run(kBeat);
+    r.seq.stop();
+    REQUIRE(r.seq.eventCount(0) == 1);
+    REQUIRE(r.seq.eventLength(0, 0) > 0);
+    r.seq.noteOut(5);                 // after the stop: nothing open, nothing changes
+    r.seq.poll();
+    REQUIRE(r.seq.eventCount(0) == 1);
+}
+
+TEST_CASE("sequencer: a tempo change keeps a note's length in beats", "[seq][length]") {
+    Rig r;
+    r.seq.setSceneBars(0, 1);
+    REQUIRE(r.seq.addEventTicks(0, 0, 1, 100, kTicksPerBeat));
+    r.seq.setClickBpm(60.0f);
+    REQUIRE(r.seq.eventLengthTicks(0, 0) == kTicksPerBeat);
+    REQUIRE(r.seq.eventLength(0, 0) == kBeat * 2);
+}
+
+TEST_CASE("sequencer: note lengths travel in the sequence file, hits stay triples", "[seq][length]") {
+    const char* path = "cp_seq_len.json";
+    Rig a;
+    a.seq.setSceneBars(0, 1);
+    REQUIRE(a.seq.addEventTicks(0, 0, 1, 100));
+    REQUIRE(a.seq.addEventTicks(0, kTicksPerBeat, 2, 90, 3 * kTicksPerBeat / 2));
+    REQUIRE(SequenceStore::save(a.seq, path));
+
+    Rig b;
+    REQUIRE(SequenceStore::load(b.seq, path));
+    std::remove(path);
+    REQUIRE(b.seq.eventCount(0) == 2);
+    REQUIRE(b.seq.eventLengthTicks(0, 0) == 0);
+    REQUIRE(b.seq.eventLengthTicks(0, 1) == 3 * kTicksPerBeat / 2);
+}

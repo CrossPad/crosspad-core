@@ -695,3 +695,48 @@ TEST_CASE("SamplerEngine keeps the streaming voices inside their own budget",
     /* And the kit still holds long samples, so the ceiling has not moved. */
     REQUIRE(rig.engine.meter().limit == 4);
 }
+
+TEST_CASE("SamplerEngine transposes one note, not the pad", "[samplerengine][levels]") {
+    Rig rig;
+    rig.build();
+    rig.src.add("note.wav", 4800, 1);
+    rig.assign(0, "note.wav", 8000);
+    rig.publish();
+
+    rig.engine.noteOn(0, 127, 12, 16);         // an octave up for this hit only
+    rig.run(38);                               // 4864 source frames: past the end
+    REQUIRE_FALSE(rig.engine.padSounding(0));
+
+    rig.engine.noteOn(0, 127);                 // the pad itself is where it was
+    rig.run(38);
+    REQUIRE(rig.engine.padSounding(0));
+}
+
+TEST_CASE("SamplerEngine keeps one pad struck from several keys as a chord", "[samplerengine][levels]") {
+    Rig rig;
+    rig.build();
+    rig.src.add("long.wav", 40000, 1);
+    rig.assign(0, "long.wav", 1024, PadMode::Hold);
+    rig.publish();
+
+    /* Three pads of 16 levels playing pad 0 at three pitches. */
+    rig.engine.noteOn(0, 100, 0, 16);
+    rig.engine.noteOn(0, 100, 4, 20);
+    rig.engine.noteOn(0, 100, 7, 23);
+    rig.run(20);
+    REQUIRE(rig.engine.voicesActive() == 3);
+
+    /* The same key again retriggers its own note only. */
+    rig.engine.noteOn(0, 100, 4, 20);
+    rig.run(20);
+    REQUIRE(rig.engine.voicesActive() == 3);
+
+    /* A release lets go of its own note only. */
+    rig.engine.noteOff(0, 20);
+    rig.run(40);
+    REQUIRE(rig.engine.voicesActive() == 2);
+    rig.engine.noteOff(0, 16);
+    rig.engine.noteOff(0, 23);
+    rig.run(40);
+    REQUIRE_FALSE(rig.engine.padSounding(0));
+}

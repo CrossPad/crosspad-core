@@ -25,50 +25,81 @@ namespace crosspad {
 
 class SongTransport final : public ITransportTarget {
 public:
-    /// Where PLAY starts, when no loop region says otherwise: the bar the
-    /// screen is working on. Arrange sets it from its selection, so the key
-    /// in the bar starts where its own PLAY button used to -- that rule was
-    /// the button's and would have been lost with it.
-    void setStartBar(uint32_t bar) { startBar_ = bar; }
+    /// Locate: where the next PLAY starts. Arrange sets it from its
+    /// selection, so choosing a block is choosing where the song plays from.
+    void setStartBar(uint32_t bar) { heldBar_ = bar; }
+    /// Where the next PLAY starts, 0-based: the playhead while stopped.
+    uint32_t startBar() const { return heldBar_; }
 
+    /// From a stop, from the held bar -- where the last stop or a locate left
+    /// it -- or from the loop region's start while looping one.
     void play() override
     {
         ISongEngine* se = engine();
-        if (!se) return;
-        uint32_t from = startBar_;
+        if (!se || se->playing()) return;
+        uint32_t from = heldBar_;
         {
             std::lock_guard<std::recursive_mutex> l(se->songMutex());
             const AudioSong& song = se->song();
-            /* Looping a region: from its start, the place being worked on. */
             if (song.loop && song.hasRegion()) from = song.loopStart;
         }
         se->play(from);
     }
 
+    /// Stops and holds the bar it stopped in; stopped already, back to bar one.
     void stop() override
     {
-        if (ISongEngine* se = engine()) se->stop();
+        ISongEngine* se = engine();
+        if (!se) return;
+        if (!se->playing()) { heldBar_ = 0; return; }
+        double bars = se->positionBars();
+        heldBar_ = bars > 0.0 ? (uint32_t)bars : 0;
+        se->stop();
     }
 
+    /// A counted-in start is armed (amber on the bar) until its beat one.
     TransportState state() const override
     {
         ISongEngine* se = engine();
-        return (se && se->playing()) ? TransportState::Playing : TransportState::Stopped;
+        if (!se || !se->playing()) return TransportState::Stopped;
+        return se->countInBeatsLeft() ? TransportState::Waiting : TransportState::Playing;
     }
 
     /// A song is arranged, not recorded into: REC and DUB grey out rather
     /// than offering something the engine cannot do. Takes are the
     /// sequencer's, and bouncing one in is the Sequencer's BOUNCE.
-    uint8_t caps() const override { return kTransportCanPlay | kTransportCanStop; }
+    uint8_t caps() const override
+    {
+        switch (state()) {
+            case TransportState::Waiting: return kTransportCanStop;
+            case TransportState::Stopped: return kTransportCanPlay | kTransportCanStop | kTransportCanLocate;
+            default:                      return kTransportCanPlay | kTransportCanStop;
+        }
+    }
 
-    const char* name() const override { return "SONG"; }
+    /// The bar's position turned while stopped: a bar a detent, never before
+    /// the song's bar one.
+    void locate(int bars) override
+    {
+        const int64_t to = (int64_t)heldBar_ + bars;
+        heldBar_ = (uint32_t)(to < 0 ? 0 : (to > kMaxBar ? kMaxBar : to));
+    }
 
+    /// "ARR": the block song of the Song screen is "SONG" (UX 2000 3.2).
+    const char* name() const override { return "ARR"; }
+
+    /// The song's tempo, which playing it puts on the clock; a song with no
+    /// tempo yet runs at the instrument's (transportTempo()).
     float bpm() const override
     {
         ISongEngine* se = engine();
         if (!se) return 0.0f;
-        std::lock_guard<std::recursive_mutex> l(se->songMutex());
-        return se->song().bpm;
+        float b = 0.0f;
+        {
+            std::lock_guard<std::recursive_mutex> l(se->songMutex());
+            b = se->song().bpm;
+        }
+        return b > 0.0f ? b : transportTempo();
     }
 
     /// The engine counts in bars, fractionally; the bar's readout wants a
@@ -79,7 +110,8 @@ public:
         TransportPos p;
         ISongEngine* se = engine();
         if (!se) return p;
-        double bars = se->positionBars();
+        /* Stopped, where the next PLAY starts. */
+        double bars = se->playing() ? se->positionBars() : (double)heldBar_;
         if (bars < 0.0) bars = 0.0;
         const uint32_t whole = (uint32_t)bars;
         const double frac = bars - (double)whole;
@@ -94,8 +126,10 @@ public:
 
 private:
     static ISongEngine* engine() { return getPlatformServices().songEngine; }
+    /// Arrange's last bar (kMaxLength), 0-based.
+    static constexpr int64_t kMaxBar = 998;
 
-    uint32_t startBar_ = 0;
+    uint32_t heldBar_ = 0;
 };
 
 } // namespace crosspad

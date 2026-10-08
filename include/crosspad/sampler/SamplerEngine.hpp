@@ -211,8 +211,15 @@ public:
     void setPadMixGains(uint8_t pad, float gain, float balance);
 
     // ── Notes, from the event thread ──────────────────────────────────────
-    void noteOn(uint8_t pad, uint8_t velocity);
-    void noteOff(uint8_t pad);
+    /// Play @p pad. @p transpose: semitones on top of the pad's own pitch, for
+    /// this note only. @p key: which hit this is -- the retrigger and the
+    /// release go by it, so 16 levels of pitch (every pad playing one pad's
+    /// sample) keeps a chord instead of each note cutting the one before.
+    /// kOwnKey: the pad itself.
+    static constexpr uint8_t kOwnKey = 0xFF;
+    void noteOn(uint8_t pad, uint8_t velocity, int8_t transpose = 0, uint8_t key = kOwnKey);
+    /// Release the notes of @p pad struck as @p key (kOwnKey: the pad's own).
+    void noteOff(uint8_t pad, uint8_t key = kOwnKey);
     void allNotesOff();
 
     /**
@@ -276,6 +283,7 @@ private:
         float env = 0.0f, envStep = 0.0f, envTarget = 1.0f;
 
         uint8_t  pad = 0, layer = 0, choke = 0;
+        uint8_t  key = 0;        ///< the hit it belongs to: the pad, or what noteOn() was given
         uint32_t age = 0;        ///< order of starting, for the steal
         uint32_t quiet = 0;      ///< consecutive frames below silenceLevel
         /* What the streaming thread needs to open this voice's ring, left for
@@ -291,7 +299,7 @@ private:
         bool wantStream = false;
     };
 
-    void   noteOnBody(uint8_t pad, uint8_t velocity);
+    void   noteOnBody(uint8_t pad, uint8_t velocity, int8_t transpose, uint8_t key);
     Voice* claimVoice();
     void   stealOldest();
     /// The oldest voice that is reading the card. Used when the streaming

@@ -7,14 +7,25 @@
 
 namespace crosspad {
 
-/// One block on an audio track: a WAV from the project's clips/ folder,
-/// placed on a bar. It plays once, from its first sample, for as long as the
-/// file is -- @c bars is the length it was made to (a bounce knows it), and is
-/// what the timeline draws and what "after the last block" is counted from.
+/// One block on a track, placed on a bar.
+///
+/// On an audio track it is a WAV from the project's clips/ folder. It plays
+/// once, from @c offset, for as long as the file is or for @c frames -- @c bars
+/// is the length it was made to (a bounce knows it), and is what the timeline
+/// draws and what "after the last block" is counted from. A cut is the one
+/// thing that sets @c offset and @c frames: its second half plays on from the
+/// cut, its first stops there.
+///
+/// On a seq track it is a stretch of the track's scene: no file, the scene
+/// from its bar @c from, looped, for @c bars bars. That is what lets a region
+/// copy or a cut move the notes by bars the way it moves the audio.
 struct SongClip {
-    std::string file;        ///< name inside <project>/clips/
+    std::string file;        ///< name inside <project>/clips/; empty on a seq track
     uint32_t    bar  = 0;    ///< 0-based start bar
     uint16_t    bars = 1;    ///< length on the grid
+    uint32_t    offset = 0;  ///< audio: frames into the file the block starts at
+    uint32_t    frames = 0;  ///< audio: frames it plays from @c offset; 0 = to the file's end
+    uint16_t    from = 0;    ///< seq: the scene bar the block starts on
 };
 
 /// A launcher set: the project's clips arranged in a grid to be played live,
@@ -52,6 +63,14 @@ struct ClipSet {
 /// has never had one starts with.
 ClipSet clipSetFromFiles(const std::vector<std::string>& files, const std::string& name);
 
+/// A block copied out of a range of bars: its track, where it starts counted
+/// from the range's first bar, and the part of it that sounded there.
+struct RangeClip {
+    int      track = 0;
+    uint32_t rel   = 0;
+    SongClip clip;
+};
+
 /// What AudioSong::load() found. Unreadable (corrupt, or saved by newer
 /// firmware) is kept apart from New so nobody saves an empty song over it.
 enum class SongLoad : uint8_t { New, Loaded, Unreadable };
@@ -60,7 +79,9 @@ enum class SongLoad : uint8_t { New, Loaded, Unreadable };
 ///
 /// @c Audio is clips of WAV from the project's clips/ folder. @c Seq is the
 /// pattern sequencer's scene, played live with the song -- no file, so it can
-/// still be changed note by note while the arrangement grows. One track at a
+/// still be changed note by note while the arrangement grows. With no blocks
+/// it plays the scene over the whole song; with blocks (seqBlocksExplicit(),
+/// then cut and copied by bars) only under them. One track at a
 /// time may be a seq (@c kMaxSeqTracks), and a bounce turns it into audio,
 /// which is how that slot is freed for the next idea.
 enum class TrackKind : uint8_t { Audio = 0, Seq = 1 };
@@ -77,6 +98,9 @@ struct SongTrack {
     TrackKind kind = TrackKind::Audio;
     SeqSource source = SeqSource::Kit;   ///< only read when kind == Seq
     uint8_t   scene = 0;                 ///< the sequencer scene a Seq track plays
+    /// A Seq track that plays only under its blocks (seqBlocksExplicit()).
+    /// Without, it has none and plays its scene over the whole song.
+    bool      seqBlocks = false;
     /// A track the player has made. All four exist in this struct from the
     /// start; this is what tells an empty track waiting for a recording from
     /// one nobody has asked for, which is what "2 / 4 tracks" counts and what
@@ -183,6 +207,42 @@ public:
     bool bounceSeqTrack(int track, const SongClip* clip = nullptr);
     /// Give @p track back: its clips go, and Arrange stops counting it.
     void removeTrack(int track);
+
+    // ── editing by bars ────────────────────────────────────────────────────
+    //
+    // A block sounds from its bar to its end or to the next block's bar,
+    // whichever comes first (SongEngine's flatten()); these work on what
+    // sounds. @p spBar -- samples a bar, samplesPerBar() at the engine's rate
+    // (ISongEngine::framesPerBar()) -- turns bars into an audio block's
+    // offset and length.
+
+    /// Cut the block of @p track that sounds across @p bar in two there: the
+    /// first keeps what is before the cut, the second -- a new block on
+    /// @p bar -- plays on from it. Returns the second's index, or -1 when no
+    /// block sounds across @p bar (a block's own first bar is not inside it).
+    int cutClip(int track, uint32_t bar, uint32_t spBar);
+    /// Make room at @p at: every block sounding across it is cut there, and
+    /// every block from it on moves @p by bars later, as does the set length.
+    /// Nothing after the point is written over.
+    void insertBars(uint32_t at, uint32_t by, uint32_t spBar);
+    /// What sounds in [@p from, @p to) on every track, by bars: a block
+    /// reaching in from before is copied from @p from, one reaching past is
+    /// copied up to @p to. Seq blocks as much as audio ones.
+    std::vector<RangeClip> copyRange(uint32_t from, uint32_t to, uint32_t spBar) const;
+    /// @p clips back in, the range's first bar on @p at. Over what is there:
+    /// insertBars() first to keep it. A block whose track is no longer of
+    /// its kind is left out.
+    void pasteRange(const std::vector<RangeClip>& clips, uint32_t at);
+    /// A seq track without seqBlocks plays its scene over the whole song;
+    /// this gives it that as one block of @p bars from bar 0 and sets
+    /// seqBlocks, so it can be cut and copied. True when a track changed.
+    bool seqBlocksExplicit(uint32_t bars);
+
+private:
+    uint32_t soundingEnd(int track, int index) const;
+    /// @p c from @p skip bars into it, for @p bars bars.
+    SongClip part(int track, const SongClip& c, uint32_t skip, uint32_t bars, uint32_t spBar) const;
+    void dropSeqBlocks(int track);
 };
 
 } // namespace crosspad

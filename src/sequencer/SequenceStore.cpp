@@ -46,6 +46,10 @@ bool SequenceStore::save(const PatternSequencer& seq, const std::string& path)
             e.add(ticks);
             e.add(pad);
             e.add(vel);
+            /* The length only where there is one: a hit stays a triple, and
+             * firmware from before lengths reads the first three and plays it
+             * as a hit. */
+            if (const uint32_t len = seq.eventLengthTicks(s, i)) e.add(len);
         }
     }
 
@@ -146,12 +150,14 @@ SequenceLoad SequenceStore::open(PatternSequencer& seq, const std::string& path)
         for (JsonArrayConst e : o["events"].as<JsonArrayConst>()) {
             if (e.size() < 3) continue;
             uint32_t ticks = e[0].as<uint32_t>();
+            uint32_t len = e.size() > 3 ? e[3].as<uint32_t>() : 0;
             /* A file written with a different resolution still lands on the
              * right beat; only its sub-tick detail is lost. */
             if (ppq > 0 && ppq != (int)PatternSequencer::kPpq) {
                 ticks = (uint32_t)(((uint64_t)ticks * PatternSequencer::kPpq) / (uint32_t)ppq);
+                len = (uint32_t)(((uint64_t)len * PatternSequencer::kPpq) / (uint32_t)ppq);
             }
-            seq.addEventTicks(s, ticks, e[1].as<uint8_t>(), e[2].as<uint8_t>());
+            seq.addEventTicks(s, ticks, e[1].as<uint8_t>(), e[2].as<uint8_t>(), len);
         }
         ++s;
     }
