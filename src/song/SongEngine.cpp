@@ -668,6 +668,30 @@ struct SongEngine::Impl {
         return false;
     }
     uint32_t peaksGeneration() const { return peaksGen_.load(); }
+
+    /// Why a playing song can be silent: the published gains the worker
+    /// gates on, how many segments flatten() gave each track, where the
+    /// write head is against the end, and what the ring holds.
+    const char* debugLine() {
+        uint32_t end = 0, la = 0, lb = 0;
+        int seg[kTracks] = {};
+        {
+            std::lock_guard<std::mutex> l(snapMutex_);
+            end = snap_.end; la = snap_.loopA; lb = snap_.loopB;
+            for (int t = 0; t < kTracks; ++t) seg[t] = (int)snap_.tracks[t].size();
+        }
+        std::snprintf(dbg_, sizeof(dbg_),
+                      "g=%.2f/%.2f/%.2f/%.2f seg=%d/%d/%d/%d end=%u loop=%u-%u "
+                      "wp=%u ringfill=%u play=%d job=%d live=%d",
+                      (double)gain_[0].load(), (double)gain_[1].load(),
+                      (double)gain_[2].load(), (double)gain_[3].load(),
+                      seg[0], seg[1], seg[2], seg[3],
+                      (unsigned)end, (unsigned)la, (unsigned)lb,
+                      (unsigned)writePos_, (unsigned)ring_.used(),
+                      (int)play_.load(), (int)job_.load(), (int)liveOn_.load());
+        return dbg_;
+    }
+    char dbg_[200] = {};
     uint32_t framesPerBar() {
         std::lock_guard<std::recursive_mutex> l(songMutex_);
         return song_.samplesPerBar(sampleRate_);
@@ -1767,6 +1791,21 @@ private:
             bpm = song_.bpm;
         }
         {
+            /* The faders and mutes, published before the worker reads them.
+             * fillRings() skips a track whose gain is <= 0 and gain_ starts
+             * at zero, so a project that has had no commit since it was
+             * opened filled the ring with silence: the position advanced, the
+             * ring never underran and no file was ever opened, which is
+             * exactly what the Arranger looked like -- a playhead moving over
+             * a song nobody could hear. The live transport already did this
+             * (see liveStart) and said why; this path did not. */
+            std::lock_guard<std::recursive_mutex> l(songMutex_);
+            for (int t = 0; t < kTracks; ++t) {
+                const auto& tr = song_.tracks[t];
+                gain_[t].store(tr.muted ? 0.0f : tr.volume);
+            }
+        }
+        {
             std::lock_guard<std::mutex> l(snapMutex_);
             if (!snap_.end && !snap_.loopB) return;
             const uint32_t from = std::min(fromBar * snap_.samplesPerBar,
@@ -2261,6 +2300,7 @@ void SongEngine::onSampleRateChange(uint32_t sr) { impl_->onSampleRateChange(sr)
 void SongEngine::mix(float* out, uint32_t frames) { impl_->mix(out, frames); }
 void SongEngine::rtCapture(const float* padsBus, uint32_t frames) { impl_->rtCapture(padsBus, frames); }
 void SongEngine::releaseRings() { impl_->releaseRings(); }
+const char* SongEngine::debugLine() const { return impl_->debugLine(); }
 bool SongEngine::liveStart() { return impl_->liveStart(); }
 bool SongEngine::liveLaunch(uint8_t track, const std::string& file, uint16_t bars)
 { return impl_->liveLaunch(track, file, bars); }

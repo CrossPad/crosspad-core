@@ -34,6 +34,7 @@ public:
     /// Stop playback, cancel any bounce and give both rings back; returns
     /// once they are. Never from the worker.
     void releaseRings();
+    const char* debugLine() const override;
 
     bool requestProjects() override;
     std::vector<std::string> projects() override;

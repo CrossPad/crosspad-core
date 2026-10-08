@@ -56,10 +56,33 @@ ClipSet clipSetFromFiles(const std::vector<std::string>& files, const std::strin
 /// firmware) is kept apart from New so nobody saves an empty song over it.
 enum class SongLoad : uint8_t { New, Loaded, Unreadable };
 
+/// What a track holds.
+///
+/// @c Audio is clips of WAV from the project's clips/ folder. @c Seq is the
+/// pattern sequencer's scene, played live with the song -- no file, so it can
+/// still be changed note by note while the arrangement grows. One track at a
+/// time may be a seq (@c kMaxSeqTracks), and a bounce turns it into audio,
+/// which is how that slot is freed for the next idea.
+enum class TrackKind : uint8_t { Audio = 0, Seq = 1 };
+
+/// What a seq track's notes play through: the Sampler's kit (sixteen pads,
+/// one sample each) or Pitch Play (one sample across the pads). EDIT in the
+/// seq view opens that app, so a track carries which one it belongs to.
+enum class SeqSource : uint8_t { Kit = 0, Pitch = 1 };
+
 struct SongTrack {
     std::vector<SongClip> clips;   ///< kept sorted by bar
     float volume = 1.0f;
     bool  muted  = false;
+    TrackKind kind = TrackKind::Audio;
+    SeqSource source = SeqSource::Kit;   ///< only read when kind == Seq
+    uint8_t   scene = 0;                 ///< the sequencer scene a Seq track plays
+    /// A track the player has made. All four exist in this struct from the
+    /// start; this is what tells an empty track waiting for a recording from
+    /// one nobody has asked for, which is what "2 / 4 tracks" counts and what
+    /// decides whether Arrange offers another. A song written before tracks
+    /// had kinds loads with this set wherever it found clips.
+    bool      inUse = false;
 };
 
 /// An audio song: four tracks of clips on a bar grid, at one tempo.
@@ -130,6 +153,36 @@ public:
 
     /// Samples in one bar at the song's tempo, at @p sampleRate.
     uint32_t samplesPerBar(uint32_t sampleRate) const;
+
+    // ── tracks a player makes ──────────────────────────────────────────────
+    /// Tracks that may hold a seq at once. The sequencer plays one scene, so
+    /// a second seq track would have nothing of its own to play.
+    static constexpr int kMaxSeqTracks = 1;
+
+    /// Tracks in use: what Arrange counts, and what decides whether it still
+    /// offers "+ ADD TRACK".
+    int usedTracks() const;
+    /// Tracks that hold a seq -- 0 or 1.
+    int seqTracks() const;
+    bool seqSlotFree() const { return seqTracks() < kMaxSeqTracks; }
+    /// The lowest track nobody has made yet, or -1 when all four are in use.
+    int freeTrack() const;
+
+    /// Make @p track an empty audio track, in use and waiting for a clip.
+    /// Returns false for a track already in use.
+    bool addAudioTrack(int track);
+    /// Make @p track a seq on @p source playing @p scene. Returns false when
+    /// the track is in use or the one seq slot is taken.
+    bool addSeqTrack(int track, SeqSource source, uint8_t scene);
+    /// Turn a seq track into an audio track: what BOUNCE does once the WAV is
+    /// written. @p clip is the block the bounce made and becomes the track's
+    /// only content; pass nullptr when whoever wrote the WAV has already
+    /// placed its block on this track, as ISongEngine::bounceScene() does.
+    /// Returns false unless @p track holds a seq. The seq slot is free
+    /// afterwards.
+    bool bounceSeqTrack(int track, const SongClip* clip = nullptr);
+    /// Give @p track back: its clips go, and Arrange stops counting it.
+    void removeTrack(int track);
 };
 
 } // namespace crosspad

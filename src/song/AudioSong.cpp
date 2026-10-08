@@ -6,6 +6,7 @@
 
 #include <algorithm>
 #include <cstdio>
+#include <utility>
 
 namespace crosspad {
 
@@ -134,6 +135,13 @@ SongLoad AudioSong::load(const std::string& projectDir)
         if (t >= kTracks) break;
         tracks[t].volume = tr["volume"] | 1.0f;
         tracks[t].muted  = tr["muted"]  | false;
+        tracks[t].kind   = (tr["kind"] | 0) == 1 ? TrackKind::Seq : TrackKind::Audio;
+        tracks[t].source = (tr["src"]  | 0) == 1 ? SeqSource::Pitch : SeqSource::Kit;
+        tracks[t].scene  = (uint8_t)(tr["scene"] | 0u);
+        /* A song saved before tracks had kinds has no "used" key: the clips
+         * say which tracks somebody made. Written out from then on, so a
+         * track emptied by hand stays a track. */
+        tracks[t].inUse  = tr["used"] | false;
         for (JsonObjectConst c : tr["clips"].as<JsonArrayConst>()) {
             SongClip clip;
             clip.file = c["file"] | "";
@@ -142,7 +150,17 @@ SongLoad AudioSong::load(const std::string& projectDir)
             if (!clip.file.empty() && clip.bars) tracks[t].clips.push_back(clip);
         }
         sortTrack(t);
+        if (!tr["used"].is<bool>())
+            tracks[t].inUse = !tracks[t].clips.empty() || tracks[t].kind == TrackKind::Seq;
         ++t;
+    }
+    /* Two seq tracks cannot both play: the sequencer has one scene running.
+     * A file that claims them (hand-edited, or written by firmware that
+     * allowed more) keeps the first and the rest become plain audio tracks --
+     * their clips, if any, still play. */
+    for (int i = 0, seq = 0; i < kTracks; ++i) {
+        if (tracks[i].kind != TrackKind::Seq) continue;
+        if (++seq > kMaxSeqTracks) tracks[i].kind = TrackKind::Audio;
     }
     /* A row shorter or longer than the grid is padded or cut rather than
      * refused: a set edited by hand should not cost somebody their song. */
@@ -183,6 +201,12 @@ bool AudioSong::save() const
         JsonObject o = trs.add<JsonObject>();
         o["volume"] = t.volume;
         o["muted"]  = t.muted;
+        o["used"]   = t.inUse;
+        if (t.kind == TrackKind::Seq) {
+            o["kind"]  = 1;
+            o["src"]   = t.source == SeqSource::Pitch ? 1 : 0;
+            o["scene"] = t.scene;
+        }
         JsonArray cs = o["clips"].to<JsonArray>();
         for (const auto& c : t.clips) {
             JsonObject co = cs.add<JsonObject>();
@@ -273,6 +297,75 @@ uint32_t AudioSong::samplesPerBar(uint32_t sampleRate) const
      * way drifts a few samples per bar against the clips laid on it. */
     const float b = bpm > 0.0f ? bpm : kDefaultBpm;
     return (uint32_t)((float)sampleRate * 60.0f / b) * beatsPerBar;
+}
+
+// ── tracks a player makes ──────────────────────────────────────────────────
+
+int AudioSong::usedTracks() const
+{
+    int n = 0;
+    for (const auto& t : tracks) n += t.inUse ? 1 : 0;
+    return n;
+}
+
+int AudioSong::seqTracks() const
+{
+    int n = 0;
+    for (const auto& t : tracks) n += (t.inUse && t.kind == TrackKind::Seq) ? 1 : 0;
+    return n;
+}
+
+int AudioSong::freeTrack() const
+{
+    for (int t = 0; t < kTracks; ++t) if (!tracks[t].inUse) return t;
+    return -1;
+}
+
+bool AudioSong::addAudioTrack(int track)
+{
+    if (track < 0 || track >= kTracks || tracks[track].inUse) return false;
+    tracks[track] = SongTrack{};
+    tracks[track].inUse = true;
+    return true;
+}
+
+bool AudioSong::addSeqTrack(int track, SeqSource source, uint8_t scene)
+{
+    if (track < 0 || track >= kTracks || tracks[track].inUse) return false;
+    if (!seqSlotFree()) return false;
+    tracks[track] = SongTrack{};
+    tracks[track].inUse  = true;
+    tracks[track].kind   = TrackKind::Seq;
+    tracks[track].source = source;
+    tracks[track].scene  = scene;
+    return true;
+}
+
+bool AudioSong::bounceSeqTrack(int track, const SongClip* clip)
+{
+    if (track < 0 || track >= kTracks) return false;
+    if (!tracks[track].inUse || tracks[track].kind != TrackKind::Seq) return false;
+    /* The notes became one file: the track holds that and nothing else, so
+     * what it plays after the bounce is what was heard before it. The source
+     * is left as it was -- it says which app wrote this, and a track bounced
+     * by mistake is one DEL and one new seq track away from where it was. */
+    tracks[track].kind = TrackKind::Audio;
+    if (clip) {
+        tracks[track].clips.clear();
+        if (!clip->file.empty() && clip->bars) tracks[track].clips.push_back(*clip);
+    }
+    return true;
+}
+
+void AudioSong::removeTrack(int track)
+{
+    if (track < 0 || track >= kTracks || !tracks[track].inUse) return;
+    /* The ones below move up. Arrange draws the tracks in use as a list with
+     * "+ ADD TRACK" under the last of them, and a hole in the middle of that
+     * list has no meaning on screen -- track 2 of three, missing, would read
+     * as a track that lost its audio. */
+    for (int t = track; t + 1 < kTracks; ++t) tracks[t] = std::move(tracks[t + 1]);
+    tracks[kTracks - 1] = SongTrack{};
 }
 
 } // namespace crosspad

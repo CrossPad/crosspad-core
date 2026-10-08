@@ -245,6 +245,14 @@ public:
     virtual uint32_t underruns() const = 0;
     /// Clip opens the card refused since play(); each is a track gone quiet.
     virtual uint32_t openFailures() const = 0;
+
+    /// One line of the engine's own internals, for a host to read when the
+    /// position advances and nothing is heard. Everything the outside can
+    /// already see -- the clips on the card, song.json, the mixer channel --
+    /// can be right while the worker still fills the ring with silence, and
+    /// there is no other way to tell which of its gates closed. Empty by
+    /// default; the string lives in the engine.
+    virtual const char* debugLine() const { return ""; }
 };
 
 } // namespace crosspad
