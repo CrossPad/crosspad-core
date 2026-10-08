@@ -8,6 +8,7 @@ class WirelessSettings {
 public:
     bool enableWiFi;
     bool enableBLE;
+    bool enableRemote;  ///< WiFi remote management (MQTT through crosspad.app); holds WiFi, so BLE is off while it runs
     bool enableOSC;
     bool enableOSCServer;
     bool enableUDP;
@@ -25,6 +26,7 @@ public:
     WirelessSettings() {
         enableWiFi = false;
         enableBLE = false;
+        enableRemote = true;
         enableOSC = false;
         enableOSCServer = true;
         enableUDP = true;
@@ -35,6 +37,7 @@ public:
     void toJson(JsonObject& json) const {
         json["enableWiFi"] = enableWiFi;
         json["enableBLE"] = enableBLE;
+        json["enableRemote"] = enableRemote;
         json["enableOSC"] = enableOSC;
         json["enableOSCServer"] = enableOSCServer;
         json["enableUDP"] = enableUDP;
@@ -48,6 +51,8 @@ public:
     void fromJson(const JsonObject& json) {
         enableWiFi = json["enableWiFi"];
         enableBLE = json["enableBLE"];
+        if (json["enableRemote"].is<bool>())
+            enableRemote = json["enableRemote"].as<bool>();
         enableOSC = json["enableOSC"];
         enableOSCServer = json["enableOSCServer"];
         enableUDP = json["enableUDP"];
