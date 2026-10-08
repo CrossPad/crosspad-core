@@ -28,6 +28,11 @@ static constexpr int CROSSPAD_MAX_PADS = 16;
 /// about each. A setting, not a build choice -- both ship.
 enum class LauncherStyle : uint8_t { Grid, List };
 
+/// How light a touch the screen answers to. Low is what the panel always ran
+/// at and stays the default; Medium and High take a lighter touch. The
+/// platform maps each level to its controller's threshold.
+enum class TouchSensitivity : uint8_t { Low, Medium, High };
+
 class CrosspadSettings {
 public:
     static CrosspadSettings* getInstance() {
@@ -60,6 +65,7 @@ public:
     uint8_t RGBbrightness;
     bool quickSettingsEnabled; // status-bar drawer (header dropdown + arrow) enabled
     LauncherStyle launcherStyle;
+    TouchSensitivity touchSensitivity;
     bool AudioEngineEnabled;
     /// Preferred USB device profile applied at boot: true = USB Audio (UAC2),
     /// false = CDC+MIDI. Switching re-enumerates the device. Audio is the
@@ -108,6 +114,7 @@ private:
         RGBbrightness = 100;
         quickSettingsEnabled = true;
         launcherStyle = LauncherStyle::Grid;
+        touchSensitivity = TouchSensitivity::Low;
         AudioEngineEnabled = true;
         usbAudioEnabled = true;    // UAC2 by default; console/OTA need the CDC profile
         usbSerialGuard = true;     // a host must be allowed on the device before it gets CDC

@@ -75,6 +75,7 @@ TEST_CASE("SettingsIo: full settings round-trip", "[settings][io]") {
     src.usbSerialGuard = false;
     src.Kit = 4;
     src.launcherStyle = LauncherStyle::List;
+    src.touchSensitivity = TouchSensitivity::High;
 
     SettingsIoResult wrote = settingsExportAll(src, file.c_str());
     REQUIRE(wrote.ok);
@@ -88,6 +89,7 @@ TEST_CASE("SettingsIo: full settings round-trip", "[settings][io]") {
 
     REQUIRE(dst.keypad.enableKeypad == false);
     REQUIRE(dst.launcherStyle == LauncherStyle::List);
+    REQUIRE(dst.touchSensitivity == TouchSensitivity::High);
     REQUIRE(dst.keypad.noteOffOnRelease == true);
     REQUIRE(dst.keypad.upperRowFunctions == true);
     REQUIRE(dst.stmRouting.Midi2ESP == true);

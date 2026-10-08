@@ -6,6 +6,17 @@ carries the same number) and consumers gate on it with
 `crosspad/RequireVersion.hpp`. This file starts at 1.45.0; earlier releases
 are described in their `chore: X.Y.Z` commits.
 
+## 1.47.0 — 2026-10-08
+
+### Added
+
+- `TouchSensitivity` (Low / Medium / High) and
+  `CrosspadSettings::touchSensitivity`, NVS `cfg_display/touch_sens`
+  (default Low = the threshold the panel always ran at, out-of-range
+  values clamp), carried by the settings
+  backup as `touchSensitivity`. The platform maps a level to its touch
+  controller's threshold.
+
 ## 1.46.1 — 2026-10-07
 
 Review fixes (fix/steve-review: 802e51a, 3ed896d).
