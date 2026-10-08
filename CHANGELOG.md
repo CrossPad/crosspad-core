@@ -6,6 +6,14 @@ carries the same number) and consumers gate on it with
 `crosspad/RequireVersion.hpp`. This file starts at 1.45.0; earlier releases
 are described in their `chore: X.Y.Z` commits.
 
+## 1.48.0 — 2026-10-08
+
+Linking a board to a crosspad.app account (from 341857b on feat/cloud-builder,
+without the custom tier): `crosspad/fw/FwAccount.hpp` -- `fwAccountUrlAllowed`
+(the device token goes only under the compile-time account base, byte for
+byte), pairing code and device token shapes, and the `pair/start` /
+`pair/token` reply parsers. Tests: `tests/test_fw_account.cpp`.
+
 ## 1.47.0 — 2026-10-08
 
 ### Added
