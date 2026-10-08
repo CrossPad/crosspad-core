@@ -133,6 +133,7 @@ SettingsIoResult settingsExportAll(const CrosspadSettings& s, const char* path) 
     out["RGBbrightness"] = s.RGBbrightness;
     out["quickSettingsEnabled"] = s.quickSettingsEnabled;
     out["launcherStyle"] = (uint8_t)s.launcherStyle;
+    out["touchSensitivity"] = (uint8_t)s.touchSensitivity;
     out["AudioEngineEnabled"] = s.AudioEngineEnabled;
     out["usbAudioEnabled"] = s.usbAudioEnabled;
     out["usbSerialGuard"] = s.usbSerialGuard;
@@ -181,6 +182,8 @@ SettingsIoResult settingsImportAll(CrosspadSettings& s, const char* path) {
     tmp->quickSettingsEnabled = in["quickSettingsEnabled"] | tmp->quickSettingsEnabled;
     tmp->launcherStyle = (LauncherStyle)jsonInt(in["launcherStyle"], (int)tmp->launcherStyle,
                                                 (int)LauncherStyle::Grid, (int)LauncherStyle::List);
+    tmp->touchSensitivity = (TouchSensitivity)jsonInt(in["touchSensitivity"], (int)tmp->touchSensitivity,
+                                                      (int)TouchSensitivity::Low, (int)TouchSensitivity::High);
     tmp->AudioEngineEnabled = in["AudioEngineEnabled"] | tmp->AudioEngineEnabled;
     tmp->usbAudioEnabled = in["usbAudioEnabled"] | tmp->usbAudioEnabled;
     tmp->usbSerialGuard = in["usbSerialGuard"] | tmp->usbSerialGuard;

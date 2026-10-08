@@ -105,3 +105,26 @@ TEST_CASE("CrosspadSettings: launcher style round-trips and defaults to the grid
     REQUIRE(settings->launcherStyle == LauncherStyle::List);
     settings->launcherStyle = LauncherStyle::Grid;
 }
+
+TEST_CASE("CrosspadSettings: touch sensitivity round-trips, defaults to low, clamps", "[settings]") {
+    auto* settings = CrosspadSettings::getInstance();
+
+    test::MemoryKVStore empty;
+    empty.init();
+    settings->touchSensitivity = TouchSensitivity::High;
+    settings->loadFrom(empty);
+    REQUIRE(settings->touchSensitivity == TouchSensitivity::Low);
+
+    test::MemoryKVStore store;
+    store.init();
+    settings->touchSensitivity = TouchSensitivity::Medium;
+    settings->saveTo(store);
+    settings->touchSensitivity = TouchSensitivity::Low;
+    settings->loadFrom(store);
+    REQUIRE(settings->touchSensitivity == TouchSensitivity::Medium);
+
+    store.saveU8("cfg_display", "touch_sens", 9);
+    settings->loadFrom(store);
+    REQUIRE(settings->touchSensitivity == TouchSensitivity::High);
+    settings->touchSensitivity = TouchSensitivity::Low;
+}
