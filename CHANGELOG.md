@@ -8,7 +8,7 @@ are described in their `chore: X.Y.Z` commits.
 
 ## 1.48.0 — 2026-10-08
 - `crosspad/net/RemoteFrame.hpp`: `parseRemoteRequest()`, `formatRemoteReply()` — the `<id> <line>` frame of the WiFi remote (MQTT `cp/{serial}/req|rsp`), limits `kRemoteCommandMax` 512 / `kRemoteReplyMax` 4096. Tests: `tests/test_remote_frame.cpp`.
-- `WirelessSettings::enableRemote` (see Task 2).
+- `WirelessSettings::enableRemote` — WiFi remote management (default on; NVS cfg_wireless/remote, JSON enableRemote)
 
 ## 1.47.0 — 2026-10-08
 
