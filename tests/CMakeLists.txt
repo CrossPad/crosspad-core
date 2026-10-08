@@ -109,6 +109,9 @@ set(CORE_SOURCES
     ${CORE_DIR}/src/fw/FwCatalog.cpp
     ${CORE_DIR}/src/fw/FwManifest.cpp
     ${CORE_DIR}/src/fw/FwLibraryGc.cpp
+    ${CORE_DIR}/src/fw/FwStore.cpp
+    ${CORE_DIR}/src/fw/FwAccount.cpp
+    ${CORE_DIR}/src/fw/FwCardActions.cpp
 
     # Loop recorder
     ${CORE_DIR}/src/sequencer/PatternSequencer.cpp

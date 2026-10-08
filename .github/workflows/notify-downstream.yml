@@ -8,6 +8,10 @@ on:
     branches: [main]
   workflow_dispatch:
 
+# Read-only token: the dispatch itself goes with DOWNSTREAM_PAT.
+permissions:
+  contents: read
+
 jobs:
   dispatch:
     # Only run for tags, merged PRs (not closed-without-merge), or manual dispatch
@@ -15,7 +19,13 @@ jobs:
       github.event_name == 'push' ||
       github.event_name == 'workflow_dispatch' ||
       (github.event_name == 'pull_request' && github.event.pull_request.merged == true)
-    runs-on: ubuntu-latest
+    # GitHub's runner, whatever CI_RUNNER says, and no container: a few
+    # seconds of API calls that need no tools, with a PAT that reaches other
+    # repositories -- not for the bench, where every job's container gets
+    # the host's Docker socket. Only while GitHub's runners cannot start jobs
+    # (Actions billing) set the repository variable CI_SECRETS_RUNNER to
+    # `self-hosted`, and unset it again after.
+    runs-on: ${{ vars.CI_SECRETS_RUNNER || 'ubuntu-latest' }}
 
     strategy:
       fail-fast: false
@@ -42,7 +52,7 @@ jobs:
           echo "ref=$REF" >> $GITHUB_OUTPUT
 
       - name: Dispatch to ${{ matrix.downstream.repo }}
-        uses: peter-evans/repository-dispatch@v3
+        uses: peter-evans/repository-dispatch@ff45666b9427631e3450c54a1bcbee4d9ff4d7c0   # v3.0.0
         with:
           token: ${{ secrets.DOWNSTREAM_PAT }}
           repository: ${{ matrix.downstream.repo }}

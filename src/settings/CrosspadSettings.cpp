@@ -29,6 +29,10 @@ void CrosspadSettings::loadFrom(IKeyValueStore& store) {
     launcherStyle = (LauncherStyle)readU8In(store, "cfg_display", "launcher",
                                             (uint8_t)LauncherStyle::Grid,
                                             (uint8_t)LauncherStyle::Grid, (uint8_t)LauncherStyle::List);
+    touchSensitivity = (TouchSensitivity)readU8In(store, "cfg_display", "touch_sens",
+                                                  (uint8_t)TouchSensitivity::Low,
+                                                  (uint8_t)TouchSensitivity::Low,
+                                                  (uint8_t)TouchSensitivity::High);
 
     // Recorder
     /* The fallback, not the constructor's: this load() is what a boot sees. */
@@ -184,6 +188,7 @@ void CrosspadSettings::saveTo(IKeyValueStore& store) {
     store.saveU8("cfg_display", "perf_stats", perfStatsFlags);
     store.saveBool("cfg_display", "drawer_en", quickSettingsEnabled);
     store.saveU8("cfg_display", "launcher", (uint8_t)launcherStyle);
+    store.saveU8("cfg_display", "touch_sens", (uint8_t)touchSensitivity);
 
     // Recorder
     store.saveBool("cfg_rec", "auto_trim", recorderAutoTrim);

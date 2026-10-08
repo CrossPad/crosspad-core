@@ -27,9 +27,6 @@ public:
     // Progress bar (OTA)
     void startProgress(RgbColor color = RgbColor(208, 240, 9));
     void setProgress(float progress); // 0.0 - 1.0
-    /// The bar's colour from the next frame on: a fade, without starting the
-    /// bar over (startProgress() blanks the pads first).
-    void setProgressColor(RgbColor color);
 
     // A still frame, one colour per pad (index = pad), held until the next
     // frame, another animation or stop(): for a caller that draws its own

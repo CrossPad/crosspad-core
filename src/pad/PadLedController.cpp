@@ -39,7 +39,11 @@ void PadLedController::update() {
     // (random output clicks), so per-note-event refreshes must not reach the
     // strip directly. The unlocked dirty read is benign — a missed flush is
     // caught on the next tick.
-    if (!coalesceRefresh_ || !ledsDirty_ || !ledStrip_) return;
+    if (!coalesceRefresh_ || !ledStrip_) return;
+    // The playing states the render recorded since the last tick: painted
+    // here, under the lock the render must never wait for.
+    if (repaint_.exchange(false, std::memory_order_acq_rel)) updateLEDs();
+    if (!ledsDirty_) return;
     ledStrip_->lock();
     if (ledsDirty_) {
         ledsDirty_ = false;
@@ -163,9 +167,15 @@ void PadLedController::notifyNotePlay(uint8_t padIdx, bool isPlaying) {
 
     padStates_[padIdx].isPlaying = isPlaying;
 
-    if (!padStates_[padIdx].isPressed) {
-        updateLEDs();
+    if (padStates_[padIdx].isPressed) return;
+    // The engine reports voices from its render: no strip lock there (the
+    // worker holds it for a whole RMT frame, ~0.75 ms), the next update()
+    // paints. Coalesced, that tick is when the frame would go out anyway.
+    if (coalesceRefresh_) {
+        repaint_.store(true, std::memory_order_release);
+        return;
     }
+    updateLEDs();
 }
 
 // ── Color management ────────────────────────────────────────────────────
