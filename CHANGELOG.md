@@ -6,6 +6,15 @@ carries the same number) and consumers gate on it with
 `crosspad/RequireVersion.hpp`. This file starts at 1.45.0; earlier releases
 are described in their `chore: X.Y.Z` commits.
 
+## 1.48.1 — 2026-10-08
+
+### Fixed
+
+- `KitJsonParser`: kits made on crosspad.app carry a per-pad `"mode"`
+  (tap / hold / toggle / cycle) instead of `playbackMode` / `cycle`; the
+  parser dropped it and every pad played one-shot. An explicit
+  `playbackMode` or `cycle` still wins.
+
 ## 1.48.0 — 2026-10-08
 
 Linking a board to a crosspad.app account (from 341857b on feat/cloud-builder,

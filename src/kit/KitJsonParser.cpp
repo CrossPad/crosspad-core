@@ -118,6 +118,13 @@ bool kit_parse_pads(KitInfo& kit, JsonDocument& doc)
         pad.pan           = padObj["pan"]           | 0;
         pad.playbackMode  = padObj["playbackMode"]  | (uint8_t)0;
         pad.cycle         = padObj["cycle"]         | false;
+        // crosspad.app exports "mode" (tap|hold|toggle|cycle) instead of the two keys above
+        const char* mode  = padObj["mode"];
+        if (mode && padObj["playbackMode"].isNull() && padObj["cycle"].isNull()) {
+            if      (strcmp(mode, "hold") == 0)   pad.playbackMode = 1;
+            else if (strcmp(mode, "toggle") == 0) pad.playbackMode = 2;
+            else if (strcmp(mode, "cycle") == 0)  pad.cycle = true;
+        }
         pad.pitch         = padObj["pitch"]         | 0;
         pad.hp            = padObj["hp"]            | 0;
         pad.lp            = padObj["lp"]            | 0;

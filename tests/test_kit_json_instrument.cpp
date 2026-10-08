@@ -279,3 +279,27 @@ TEST_CASE("kit json: a pad's pitch and filters survive a round trip, and 0 is no
     CHECK(back.pads[4].hp == 0);
     CHECK(json.find("\"hp\":0") == std::string::npos);
 }
+
+TEST_CASE("kit json: crosspad.app's \"mode\" maps onto playbackMode and cycle", "[kit]") {
+    const KitInfo kit = parse(R"({ "name": "APP", "pads": [
+        { "mode": "tap" }, { "mode": "hold" }, { "mode": "toggle" }, { "mode": "cycle" },
+        { "mode": "cycle", "cycle": false }, { "mode": "hold", "playbackMode": 2 }
+    ] })");
+    CHECK(kit.pads[0].playbackMode == 0);
+    CHECK_FALSE(kit.pads[0].cycle);
+    CHECK(kit.pads[1].playbackMode == 1);
+    CHECK(kit.pads[2].playbackMode == 2);
+    CHECK(kit.pads[3].playbackMode == 0);
+    CHECK(kit.pads[3].cycle);
+    CHECK_FALSE(kit.pads[4].cycle);             // an explicit key beats "mode"
+    CHECK(kit.pads[5].playbackMode == 2);
+}
+
+TEST_CASE("kit json: a saved crosspad.app kit is written in the firmware's keys", "[kit]") {
+    const KitInfo kit = parse(R"({ "name": "APP", "pads": [ { "mode": "hold" }, { "mode": "cycle" } ] })");
+    const std::string json = serialize(kit);
+    CHECK(json.find("\"mode\"") == std::string::npos);
+    const KitInfo back = parse(json.c_str());
+    CHECK(back.pads[0].playbackMode == 1);
+    CHECK(back.pads[1].cycle);
+}
