@@ -251,9 +251,46 @@ public:
     bool padSounding(uint8_t pad) const;
     bool anySounding() const;
 
+    // ── Audition: one file outside the kit ────────────────────────────────
+    /**
+     * @brief Where an audition reads from.
+     *
+     * Its own source, not the kit's store: a file picked in a browser is not
+     * a sample of the kit, and it must not take a slot or a row of the kit's
+     * tables. Loader thread, before the first previewStart().
+     */
+    void setPreviewSource(ISampleSource* src) { pSrc_ = src; }
+
+    /**
+     * @brief Play @p path once, [first, last) of it (last 0: to the end).
+     *
+     * Note thread. Only a request: the streaming thread reads the header,
+     * takes the voice's ring from the pool and fills it, and the voice sounds
+     * once the first block is in -- nothing here touches the card or the pool.
+     * The whole file streams (there is no head), at the file's own rate, at
+     * @p gain (linear) and @p balance (-1..+1). An audition already sounding
+     * fades out first; a newer request replaces one not started yet.
+     *
+     * Rendered by mixPreview(), not mix(): the platform puts it on a channel
+     * of its own, so it is never in the kit's output or a bounce of it.
+     *
+     * One caller thread (the request is a sequence-locked record). False when
+     * nothing is bound, the path does not fit, or the loader has the engine.
+     */
+    bool previewStart(const char* path, uint32_t first = 0, uint32_t last = 0,
+                      float gain = 1.0f, float balance = 0.0f);
+    /// Fade the audition out, and drop one that has not started. Note thread.
+    void previewStop();
+    /// From the request until the voice has ended and its ring is back in the
+    /// pool: what a teardown waits for before the pool's pages go.
+    bool previewBusy() const;
+    /// Add the audition to @p out. Render thread; RT-safe like mix().
+    void mixPreview(float* out, uint32_t frames);
+
     // ── Streaming, from the BG thread ─────────────────────────────────────
     /// Refill what the sounding voices will want next, and give back the
-    /// blocks of the ones that have ended. Never called on the render thread.
+    /// blocks of the ones that have ended -- the audition's too. Never called
+    /// on the render thread.
     void serviceIo();
 
     Counters counters() const;
@@ -313,8 +350,52 @@ private:
     void   endVoice(Voice& v);
     bool   renderVoice(Voice& v, float* out, uint32_t frames);
 
+    /// The audition's half of serviceIo(); one pass at a time (pSvc_).
+    void servicePreview();
+    void startPreview(uint32_t gen);
+    void closePreview();
+
     BlockPool*   pool_  = nullptr;
     SampleStore* store_ = nullptr;
+
+    /* ── The audition ─────────────────────────────────────────────────────
+     *
+     * Idle -> (streaming thread: header read, ring open) Priming
+     *      -> (streaming thread: first block in) Playing
+     *      -> (render: the end, or the fade) Finished
+     *      -> (streaming thread: ring back) Idle
+     * A Priming voice that is stopped goes straight back to Idle on the
+     * streaming thread: the render never looked at it.
+     *
+     * The request is a record the note thread writes under a sequence count
+     * and the streaming thread copies only when the count was even and did
+     * not move -- a torn copy is skipped and tried on the next pass, so
+     * neither side ever waits for the other. Requests and stops are
+     * generations: the voice in flight ends when a stop names its generation
+     * or a newer request exists. */
+    enum class PreviewState : uint8_t { Idle = 0, Priming, Playing, Finished };
+    struct PreviewReq {
+        char     path[SampleStore::kMaxPath] = {};
+        uint32_t first = 0, last = 0;
+        float    gain = 1.0f, balance = 0.0f;
+    };
+    ISampleSource*        pSrc_ = nullptr;
+    PreviewReq            pReq_;                    ///< note thread, under pSeq_
+    std::atomic<uint32_t> pSeq_{0};
+    std::atomic<uint32_t> pReqGen_{0};              ///< requests made
+    std::atomic<uint32_t> pStopGen_{0};             ///< the request generation a stop named
+    std::atomic<uint32_t> pDoneGen_{0};             ///< requests the streaming thread has taken
+    uint32_t              pCurGen_ = 0;             ///< streaming thread: the one in flight
+    std::atomic<uint8_t>  pState_{static_cast<uint8_t>(PreviewState::Idle)};
+    std::atomic<bool>     pFade_{false};
+    std::atomic<bool>     pSvc_{false};             ///< a streaming pass is in the audition
+    std::atomic<uint32_t> pPlayFrame_{0};
+    char         pPath_[SampleStore::kMaxPath] = {};   ///< the window reads through this
+    SampleCursor pCursor_;
+    StreamWindow pWindow_;
+    uint64_t     pPhase_ = 0, pInc_ = 0;
+    uint32_t     pLast_ = 0, pPrimeTo_ = 0;
+    float        pGainL_ = 0.0f, pGainR_ = 0.0f, pEnv_ = 0.0f, pEnvStep_ = 1.0f;
 
     std::atomic<const SamplerKit*> kit_{nullptr};
     std::atomic<bool> mutating_{false};

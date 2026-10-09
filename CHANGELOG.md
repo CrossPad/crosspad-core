@@ -12,6 +12,17 @@ Merge of the native sampler engine (1.49–1.52 on its branch) and WiFi remote
 (RemoteFrame, enableRemote). Both lines were numbered on their own branches;
 this is the first number above every one either of them used.
 
+### Added (audition, 2026-10-09)
+
+- `SamplerEngine` plays one file outside the kit as an audition:
+  `setPreviewSource()`, `previewStart(path, first, last, gain, balance)`,
+  `previewStop()`, `previewBusy()`, and `mixPreview()` to render it on a
+  channel of its own. The streaming thread (`serviceIo()`) reads the header,
+  takes the voice's ring from the pool and feeds it; the note thread only
+  writes a sequence-locked request. A card that falls behind is a gap, not
+  the end. What the prebuilt streamer's spare voice did for the file browser
+  and the start-up sound. Tests: `tests/test_SamplerPreview.cpp`.
+
 ### Changed (image size, 2026-10-09)
 
 - The set-up, take and report functions of the files a board builds `-O2`
