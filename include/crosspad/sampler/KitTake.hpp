@@ -153,6 +153,65 @@ private:
 };
 
 /**
+ * @brief The take's hand-over: the newest copy, the gate, and a state.
+ *
+ * The requester offer()s a copy (the one it replaces comes back to be freed)
+ * and starts a worker when told to. The worker loops
+ * `while (next()) { T* t = take(); if (!t) continue; ...; done(outcome); }`.
+ *
+ * state() is **derived**, not stored by both sides: busy for as long as the
+ * gate is running -- from the requester's post() to the worker's last next()
+ * -- and the last outcome after that. Storing it by hand went wrong twice: a
+ * worker that skipped the store because a retake was pending, then found that
+ * retake already folded into the pass it had just made, left "taking" for
+ * good; and a requester that stored "taking" before its post() could be
+ * overwritten by a worker finishing the previous kit.
+ */
+template <class T>
+class LatestWork {
+public:
+    enum : uint8_t { kIdle = 0, kBusy = 1, kReady = 2, kFailed = 3 };
+
+    /// Requester. @p displaced: an older copy no worker took (the caller's to
+    /// free). True: no worker is running, start one.
+    bool offer(T* item, T*& displaced)
+    {
+        displaced = pending_.exchange(item, std::memory_order_acq_rel);
+        return gate_.post();
+    }
+    /// Requester, when the worker offer() asked for could not be started: the
+    /// copy comes back and the state says failed.
+    T* startFailed()
+    {
+        outcome_.store(kFailed, std::memory_order_release);
+        T* left = pending_.exchange(nullptr, std::memory_order_acq_rel);
+        gate_.failed();
+        return left;
+    }
+
+    /// Worker: one more pass? False: none owed, and the worker leaves.
+    bool next() { return gate_.next(); }
+    /// Worker: the newest copy, or null when it was taken by the pass before.
+    T* take() { return pending_.exchange(nullptr, std::memory_order_acq_rel); }
+    /// Worker: how its pass ended, before it asks next().
+    void done(uint8_t outcome) { outcome_.store(outcome, std::memory_order_release); }
+
+    /// Anyone else changing what the worker last reported (a release).
+    void settle(uint8_t outcome) { outcome_.store(outcome, std::memory_order_release); }
+
+    uint8_t state() const
+    {
+        return gate_.running() ? uint8_t(kBusy) : outcome_.load(std::memory_order_acquire);
+    }
+    bool busy() const { return gate_.running(); }
+
+private:
+    std::atomic<T*>      pending_{nullptr};
+    WorkerGate           gate_;
+    std::atomic<uint8_t> outcome_{kIdle};
+};
+
+/**
  * @brief How much of the native engine's arena a borrower must leave it.
  *
  * The pool still to grow to its ceiling, page by page (a SMPL_POLY streaming

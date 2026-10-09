@@ -30,6 +30,10 @@ this is the first number above every one either of them used.
   `WorkerGate`, start-or-queue for that worker with no request lost to a
   worker on its way out; `arenaLendKeep()`/`arenaMayLend()`, the arena loan
   judged on the largest free block. Tests: `tests/test_KitTake.cpp`.
+- `LatestWork<T>` (`KitTake.hpp`): the take's hand-over -- newest copy,
+  `WorkerGate`, and a state derived from the gate (busy from the request to
+  the worker's last pass, then the last outcome), so a retake folded into the
+  pass before it can no longer leave the state "taking" for good.
 - `ScopeTap`'s count is 32-bit (`written()` returns `uint32_t`): a 64-bit
   atomic is not lock-free on the board and the tap is written by the render.
 

@@ -190,3 +190,84 @@ TEST_CASE("The arena lends only what its largest block can spare", "[kittake][ar
     CHECK(arenaLendKeep(24 * 64 * kB, 24 * 64 * kB, 256 * kB, 2) == 512 * kB);
     CHECK(arenaLendKeep(24 * 64 * kB, 30 * 64 * kB, 256 * kB, 2) == 512 * kB);
 }
+
+// ── The hand-over around the gate: newest wins, and a state that never sticks ─
+
+TEST_CASE("A retake folded into the pass before it does not leave the state busy", "[kittake]") {
+    /* Merge re-review N1: the worker's next() takes A's request; B's copy
+     * replaces A's and B posts again; the worker takes B's copy (A's is gone),
+     * finishes, and the extra pass B's post owes finds nothing. The state used
+     * to be stored only when nothing was pending, so it stayed "taking" for
+     * good while the engine held the right kit. */
+    LatestWork<int> q;
+    int a = 1, b = 2;
+    int* displaced = nullptr;
+    REQUIRE(q.offer(&a, displaced));               // start the worker
+    CHECK(displaced == nullptr);
+    CHECK(q.state() == LatestWork<int>::kBusy);
+    REQUIRE(q.next());                             // A's request
+    CHECK_FALSE(q.offer(&b, displaced));           // B lands before the worker takes the copy
+    CHECK(displaced == &a);                        // B frees A's copy
+    int* got = q.take();
+    REQUIRE(got == &b);                            // the worker takes B's
+    q.done(LatestWork<int>::kReady);
+    CHECK(q.state() == LatestWork<int>::kBusy);    // B's pass is still owed
+    REQUIRE(q.next());
+    CHECK(q.take() == nullptr);                    // ...and finds nothing
+    CHECK_FALSE(q.next());                         // the worker leaves
+    CHECK(q.state() == LatestWork<int>::kReady);   // not stuck at busy
+}
+
+TEST_CASE("The state is busy from the request on, never a stale ready", "[kittake]") {
+    LatestWork<int> q;
+    int a = 1;
+    int* displaced = nullptr;
+    q.done(LatestWork<int>::kReady);               // a kit taken earlier
+    CHECK(q.state() == LatestWork<int>::kReady);
+    REQUIRE(q.offer(&a, displaced));
+    CHECK(q.state() == LatestWork<int>::kBusy);    // at once, before any worker runs
+    REQUIRE(q.next());
+    CHECK(q.take() == &a);
+    q.done(LatestWork<int>::kFailed);
+    CHECK_FALSE(q.next());
+    CHECK(q.state() == LatestWork<int>::kFailed);
+    q.settle(LatestWork<int>::kIdle);              // released by someone else
+    CHECK(q.state() == LatestWork<int>::kIdle);
+}
+
+TEST_CASE("A worker that could not be started gives the copy back and says failed", "[kittake]") {
+    LatestWork<int> q;
+    int a = 1;
+    int* displaced = nullptr;
+    REQUIRE(q.offer(&a, displaced));
+    CHECK(q.startFailed() == &a);
+    CHECK(q.state() == LatestWork<int>::kFailed);
+    REQUIRE(q.offer(&a, displaced));               // the next request starts one again
+}
+
+TEST_CASE("After any burst of requests the last one is served and the state settles", "[kittake]") {
+    for (int round = 0; round < 100; ++round) {
+        LatestWork<uint32_t> q;
+        std::vector<uint32_t> items(400);
+        std::atomic<uint32_t> served{0};
+        std::vector<std::thread> workers;
+        auto worker = [&] {
+            while (q.next()) {
+                uint32_t* it = q.take();
+                if (!it) continue;
+                served.store(*it, std::memory_order_release);
+                std::this_thread::yield();
+                q.done(LatestWork<uint32_t>::kReady);
+            }
+        };
+        for (uint32_t i = 0; i < items.size(); ++i) {
+            items[i] = i + 1;
+            uint32_t* displaced = nullptr;
+            if (q.offer(&items[i], displaced)) workers.emplace_back(worker);
+            if ((i & 7) == 0) std::this_thread::yield();
+        }
+        for (auto& t : workers) t.join();
+        REQUIRE(served.load() == items.size());
+        REQUIRE(q.state() == LatestWork<uint32_t>::kReady);
+    }
+}
