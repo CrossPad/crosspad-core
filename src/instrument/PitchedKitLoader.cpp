@@ -56,6 +56,19 @@ unsigned asUnsigned(uint64_t v) {
 /// bank plus a block whatever the file's length.
 constexpr uint32_t kReadChunkFrames = 4096;
 
+/// The env's memory generation now (0 without a source).
+uint32_t generationNow(const PitchedLoadEnv& env) {
+    return env.generation ? env.generation() : 0;
+}
+
+/// Free a transient block taken in generation @p gen -- unless the memory was
+/// wiped since, in which case the block went with it (SampleBank's rule).
+void freeTransient(const PitchedLoadEnv& env, void* p, uint32_t gen) {
+    if (!p) return;
+    if (generationNow(env) != gen) return;
+    env.free(p);
+}
+
 /**
  * @brief Read @p reader through a rate conversion straight into @p out.
  *
@@ -70,6 +83,7 @@ uint32_t streamResampleZone(const PitchedLoadEnv& env, IFft& fft, WavPcmReader& 
     FftResamplerStream stream;
     if (!stream.begin(fft, inRate, env.engineRate, env.alloc, env.free)) return 0;
 
+    const uint32_t chunkGen = generationNow(env);
     int16_t* chunk = static_cast<int16_t*>(
         env.alloc(static_cast<size_t>(kReadChunkFrames) * sizeof(int16_t)));
     if (!chunk) return 0;
@@ -86,7 +100,7 @@ uint32_t streamResampleZone(const PitchedLoadEnv& env, IFft& fft, WavPcmReader& 
         written += stream.flush(out + written, outFrames - written);
     }
     ok = stream.ok();
-    env.free(chunk);
+    freeTransient(env, chunk, chunkGen);
     stream.end();
     return written;
 }
@@ -117,7 +131,7 @@ bool pitchedBuildBank(const KitInfo& kit, const PitchedLoadEnv& env, IFft& fft,
         return false;
     }
 
-    SampleBank* bank = new (std::nothrow) SampleBank(env.alloc, env.free);
+    SampleBank* bank = new (std::nothrow) SampleBank(env.alloc, env.free, env.generation);
     if (!bank) {
         fail(err, errLen, "no bank");
         return false;
@@ -185,7 +199,11 @@ bool pitchedBuildBank(const KitInfo& kit, const PitchedLoadEnv& env, IFft& fft,
 
         int16_t* pcm = bank->allocPcm(frames);
         if (!pcm) {
-            fail(err, errLen, "zone %u: no memory (%u B)", (unsigned)i, asUnsigned(zoneBytes));
+            if (bank->stale()) {
+                fail(err, errLen, "zone %u: memory reset during the build", (unsigned)i);
+            } else {
+                fail(err, errLen, "zone %u: no memory (%u B)", (unsigned)i, asUnsigned(zoneBytes));
+            }
             delete bank;
             return false;
         }
@@ -265,6 +283,7 @@ bool pitchedBuildBank(const KitInfo& kit, const PitchedLoadEnv& env, IFft& fft,
             // The working memory comes from the caller's allocator, like the
             // zones: on a device the general heap is what the UI lives on.
             float* scratch = nullptr;
+            const uint32_t scratchGen = generationNow(env);
             if (env.alloc) {
                 scratch = static_cast<float*>(env.alloc(sizeof(float) * kPitchScratchFloats));
                 if (!scratch) {
@@ -275,7 +294,7 @@ bool pitchedBuildBank(const KitInfo& kit, const PitchedLoadEnv& env, IFft& fft,
             }
             PitchResult pr;
             const bool detected = detectPitch(fft, pcm, frames, zoneRate, pr, scratch);
-            if (scratch && env.free) env.free(scratch);
+            freeTransient(env, scratch, scratchGen);
             if (!detected) {
                 fail(err, errLen, "zone %u: pitch detection failed", (unsigned)i);
                 delete bank;
@@ -300,6 +319,14 @@ bool pitchedBuildBank(const KitInfo& kit, const PitchedLoadEnv& env, IFft& fft,
         z.loopStart = loopStart;
         z.loopEnd   = loopEnd;
 
+        // The zone's PCM was read into memory that may have been wiped while
+        // it was read: a bank that saw that holds nothing it can play, and
+        // its destructor forgets rather than frees (SampleBank).
+        if (bank->stale()) {
+            fail(err, errLen, "zone %u: memory reset during the build", (unsigned)i);
+            delete bank;
+            return false;
+        }
         if (!bank->addZone(z)) {
             fail(err, errLen, "zone %u: addZone rejected", (unsigned)i);
             delete bank;

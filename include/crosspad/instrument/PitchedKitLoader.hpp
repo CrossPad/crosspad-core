@@ -71,6 +71,12 @@ struct PitchedLoadEnv {
     /// most kNormalizeMaxGain, so a zone of near-silence is not raised into
     /// noise). Off, a zone plays at the level it was recorded.
     bool normalize = false;
+    /// The allocator's memory generation (SampleBank's MemoryGenerationFn):
+    /// the bank is stamped with it, and a build that sees it change -- the
+    /// memory under the zones already read was wiped -- fails ("memory reset
+    /// during the build") and frees nothing from before the wipe. Null: alloc's
+    /// memory is never wiped wholesale.
+    MemoryGenerationFn generation = nullptr;
 };
 
 /// Where PitchedLoadEnv::normalize puts a zone's peak: -1 dBFS.
