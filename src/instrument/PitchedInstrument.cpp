@@ -5,6 +5,15 @@
 #include <algorithm>
 #include <cmath>
 
+/* Set-up, a kit's take and the reports run on a worker or a verb, never in the
+ * render; the board builds this file for speed (-O2) for the render's sake.
+ * GCC's `cold` builds these for size and changes nothing about what they do. */
+#if defined(__GNUC__)
+#define CROSSPAD_COLD __attribute__((cold))
+#else
+#define CROSSPAD_COLD
+#endif
+
 namespace crosspad {
 
 namespace {
@@ -88,7 +97,7 @@ void PitchedInstrument::gateExit() {
     gated_.store(false, std::memory_order_seq_cst);
 }
 
-SampleBank* PitchedInstrument::installBank(SampleBank* bank, const InstrumentParams& p,
+CROSSPAD_COLD SampleBank* PitchedInstrument::installBank(SampleBank* bank, const InstrumentParams& p,
                                            const KitInfo* padMixFrom, uint32_t maxSpins,
                                            void (*yield)(), bool* safeToFree) {
     // The gate is the whole safety argument for freeing the returned bank.
@@ -117,7 +126,7 @@ SampleBank* PitchedInstrument::installBank(SampleBank* bank, const InstrumentPar
     return old;
 }
 
-bool PitchedInstrument::editZone(uint8_t zoneIdx, float rootMidi, uint32_t loopStart,
+CROSSPAD_COLD bool PitchedInstrument::editZone(uint8_t zoneIdx, float rootMidi, uint32_t loopStart,
                                  uint32_t loopEnd, uint32_t maxSpins, void (*yield)()) {
     // Everything is checked before anything moves: a rejected edit must leave
     // the zone exactly as the renderer already knows it.
@@ -138,18 +147,18 @@ bool PitchedInstrument::editZone(uint8_t zoneIdx, float rootMidi, uint32_t loopS
     return ok;
 }
 
-void PitchedInstrument::setBank(SampleBank* bank) {
+CROSSPAD_COLD void PitchedInstrument::setBank(SampleBank* bank) {
     // Voices hold Zone pointers into the old bank; silence them before the
     // swap. reset() keeps Voice::zone as it is on purpose -- see its comment.
     for (uint8_t i = 0; i < kMaxVoices; ++i) voices_[i].reset();
     bank_.store(bank, std::memory_order_release);
 }
 
-void PitchedInstrument::setVoiceCap(uint8_t cap) {
+CROSSPAD_COLD void PitchedInstrument::setVoiceCap(uint8_t cap) {
     voiceCap_.store(static_cast<uint8_t>(clampInt(cap, 1, kMaxSounding)), std::memory_order_relaxed);
 }
 
-void PitchedInstrument::setParams(const InstrumentParams& p) {
+CROSSPAD_COLD void PitchedInstrument::setParams(const InstrumentParams& p) {
     uint8_t mv = p.maxVoices;
     if (mv == 0) mv = 1;
     if (mv > kMaxSounding) mv = kMaxSounding;
@@ -358,7 +367,7 @@ void PitchedInstrument::allNotesOff() {
     for (uint8_t i = 0; i < kMaxVoices; ++i) voices_[i].reset();
 }
 
-void PitchedInstrument::onPrepare(uint32_t maxFrames, uint32_t sampleRate) {
+CROSSPAD_COLD void PitchedInstrument::onPrepare(uint32_t maxFrames, uint32_t sampleRate) {
     maxFrames_ = maxFrames;
     if (sampleRate > 0) sampleRate_ = sampleRate;
     scratch_.assign(maxFrames, 0.0f);

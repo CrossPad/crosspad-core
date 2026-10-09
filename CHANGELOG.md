@@ -12,6 +12,13 @@ Merge of the native sampler engine (1.49–1.52 on its branch) and WiFi remote
 (RemoteFrame, enableRemote). Both lines were numbered on their own branches;
 this is the first number above every one either of them used.
 
+### Changed (image size, 2026-10-09)
+
+- The set-up, take and report functions of the files a board builds `-O2`
+  for their render (`SamplerEngine`, `BlockPool`, `PitchedInstrument`) are
+  marked `CROSSPAD_COLD` (GCC `cold`: built for size, behaviour unchanged).
+  The render, note and refill paths are untouched.
+
 ### Added (WiFi remote, feat/remote-frame — numbered 1.48.0 on its branch)
 
 - `crosspad/net/RemoteFrame.hpp`: `parseRemoteRequest()`, `formatRemoteReply()` — the `<id> <line>` frame of the WiFi remote (MQTT `cp/{serial}/req|rsp`), limits `kRemoteCommandMax` 512 / `kRemoteReplyMax` 4096. Tests: `tests/test_remote_frame.cpp`.

@@ -4,6 +4,15 @@
 #include <cmath>
 #include <cstddef>
 
+/* Set-up, a kit's take and the reports run on a worker or a verb, never in the
+ * render; the board builds this file for speed (-O2) for the render's sake.
+ * GCC's `cold` builds these for size and changes nothing about what they do. */
+#if defined(__GNUC__)
+#define CROSSPAD_COLD __attribute__((cold))
+#else
+#define CROSSPAD_COLD
+#endif
+
 namespace crosspad {
 
 namespace {
@@ -18,27 +27,27 @@ float semitoneRatio(int semitones)
 
 SamplerEngine::SamplerEngine() = default;
 
-void SamplerEngine::bind(BlockPool* pool, SampleStore* store)
+CROSSPAD_COLD void SamplerEngine::bind(BlockPool* pool, SampleStore* store)
 {
     pool_ = pool;
     store_ = store;
 }
 
-void SamplerEngine::setParams(const Params& p)
+CROSSPAD_COLD void SamplerEngine::setParams(const Params& p)
 {
     params_ = p;
     if (params_.maxVoices > kMaxSounding) params_.maxVoices = kMaxSounding;
     if (params_.maxVoices == 0) params_.maxVoices = 1;
 }
 
-void SamplerEngine::setNoteCallbacks(NoteCb on, NoteCb off, void* ctx)
+CROSSPAD_COLD void SamplerEngine::setNoteCallbacks(NoteCb on, NoteCb off, void* ctx)
 {
     onNote_ = on;
     offNote_ = off;
     cbCtx_ = ctx;
 }
 
-void SamplerEngine::onPrepare(uint32_t /*maxFrames*/, uint32_t sampleRate)
+CROSSPAD_COLD void SamplerEngine::onPrepare(uint32_t /*maxFrames*/, uint32_t sampleRate)
 {
     /* Called again whenever a channel is added or the engine is set up anew,
      * so it may not assume it is the first time. Nothing here is sized by the
@@ -56,7 +65,7 @@ void SamplerEngine::endMutation()
     mutating_.store(false, std::memory_order_release);
 }
 
-void SamplerEngine::setKit(const SamplerKit* k)
+CROSSPAD_COLD void SamplerEngine::setKit(const SamplerKit* k)
 {
     kit_.store(k, std::memory_order_release);
 }
@@ -157,7 +166,7 @@ uint8_t SamplerEngine::streamingVoices() const
     return n;
 }
 
-SamplerEngine::Meter SamplerEngine::meter() const
+CROSSPAD_COLD SamplerEngine::Meter SamplerEngine::meter() const
 {
     Meter m;
     for (const auto& v : voices_) {
@@ -536,7 +545,7 @@ void SamplerEngine::serviceIo()
     }
 }
 
-SamplerEngine::Counters SamplerEngine::counters() const
+CROSSPAD_COLD SamplerEngine::Counters SamplerEngine::counters() const
 {
     Counters c;
     c.notesStarted  = cNotes_.load(std::memory_order_relaxed);
@@ -550,7 +559,7 @@ SamplerEngine::Counters SamplerEngine::counters() const
     return c;
 }
 
-void SamplerEngine::resetCounters()
+CROSSPAD_COLD void SamplerEngine::resetCounters()
 {
     cNotes_ = 0; cDropped_ = 0; cSteals_ = 0;
     cStreamRefused_ = 0; cUnderruns_ = 0; cVoicesPeak_ = 0; cSilenced_ = 0;
