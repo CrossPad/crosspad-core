@@ -12,6 +12,27 @@ Merge of the native sampler engine (1.49–1.52 on its branch) and WiFi remote
 (RemoteFrame, enableRemote). Both lines were numbered on their own branches;
 this is the first number above every one either of them used.
 
+### Fixed (merge review, 2026-10-09)
+
+- `SamplerEngine::serviceIo()` let two callers walk the voices at once (the
+  streaming task and a teardown's wait); only the audition's half was
+  guarded. One pass at a time now: it returns `bool`, false for the pass
+  that was turned away (source-compatible for callers that ignore it).
+  `ioIdle()` says no pass is in the voices or the audition.
+- `SamplerEngine::abandonVoices()`: a teardown whose render is parked (the
+  USB audio profile) had voices that never ended and windows that stayed
+  open on freed heads. It closes every voice's ring once (Finished ones
+  too), frees the voices and clears the pad bits; refused while a pass is in
+  the voices. Tests: `tests/test_SamplerTeardown.cpp`.
+- `crosspad/sampler/KitTake.hpp`: `TakeSpec`/`TakePadSpec`, a plain-data copy
+  of what a native take or a pad rebuild reads from a kit, made on the thread
+  that asks (no I/O) so the worker never reads a `KitInfo` the UI may free;
+  `WorkerGate`, start-or-queue for that worker with no request lost to a
+  worker on its way out; `arenaLendKeep()`/`arenaMayLend()`, the arena loan
+  judged on the largest free block. Tests: `tests/test_KitTake.cpp`.
+- `ScopeTap`'s count is 32-bit (`written()` returns `uint32_t`): a 64-bit
+  atomic is not lock-free on the board and the tap is written by the render.
+
 ### Added (audition, 2026-10-09)
 
 - `SamplerEngine` plays one file outside the kit as an audition:

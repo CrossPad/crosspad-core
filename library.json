@@ -73,7 +73,8 @@
             "+<sampler/SampleStore.cpp>",
             "+<sampler/StreamWindow.cpp>",
             "+<sampler/SamplerKit.cpp>",
-            "+<sampler/SamplerEngine.cpp>"
+            "+<sampler/SamplerEngine.cpp>",
+            "+<sampler/KitTake.cpp>"
         ]
     }
 }

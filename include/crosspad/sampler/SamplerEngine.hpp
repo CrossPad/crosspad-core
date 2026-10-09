@@ -307,10 +307,44 @@ public:
     void mixPreview(float* out, uint32_t frames);
 
     // ── Streaming, from the BG thread ─────────────────────────────────────
-    /// Refill what the sounding voices will want next, and give back the
-    /// blocks of the ones that have ended -- the audition's too. Never called
-    /// on the render thread.
-    void serviceIo();
+    /**
+     * @brief Refill what the sounding voices will want next, and give back
+     * the blocks of the ones that have ended -- the audition's too.
+     *
+     * Never called on the render thread. It has more than one caller -- the
+     * streaming task, and a teardown that services while it waits for the
+     * voices to end -- and the voices' windows are not something two of them
+     * may fill or close at once: one pass at a time walks the voices, and a
+     * second one that comes in meanwhile does nothing to them.
+     *
+     * @return false when it was that second pass (another thread was in the
+     *         voices); true when this call walked them. A teardown loops on
+     *         it until it gets a pass of its own.
+     */
+    bool serviceIo();
+
+    /// No streaming pass is in the voices or the audition right now. What a
+    /// teardown waits for before the pool's pages go.
+    bool ioIdle() const;
+
+    /**
+     * @brief Give back every voice's ring and free every voice, now.
+     *
+     * For a teardown whose voices will not end by themselves: a fade, a
+     * release and a sample's end are the render's to play, and a render that
+     * is parked (the USB audio profile, AudioTasks_SetSuspended) or that the
+     * port has stopped calling never plays them -- the voices stay Playing
+     * with their windows open and their cursors on heads about to be freed.
+     *
+     * Only when the render is known not to be inside mix(): after the barrier
+     * a teardown already waits out. Inside a mutation, so no note claims a
+     * voice meanwhile. Every block comes back once: Finished voices' rings
+     * too, which the next pass would otherwise give back a second time.
+     *
+     * @return false, having done nothing, while a streaming pass is in the
+     *         voices: try again once it has run.
+     */
+    bool abandonVoices();
 
     Counters counters() const;
     void     resetCounters();
@@ -409,6 +443,7 @@ private:
     std::atomic<uint8_t>  pState_{static_cast<uint8_t>(PreviewState::Idle)};
     std::atomic<bool>     pFade_{false};
     std::atomic<bool>     pSvc_{false};             ///< a streaming pass is in the audition
+    std::atomic<bool>     vSvc_{false};             ///< a streaming pass is in the voices
     std::atomic<uint32_t> pPlayFrame_{0};
     char         pPath_[SampleStore::kMaxPath] = {};   ///< the window reads through this
     SampleCursor pCursor_;

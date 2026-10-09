@@ -124,6 +124,7 @@ set(CORE_SOURCES
     ${CORE_DIR}/src/sampler/StreamWindow.cpp
     ${CORE_DIR}/src/sampler/SamplerKit.cpp
     ${CORE_DIR}/src/sampler/SamplerEngine.cpp
+    ${CORE_DIR}/src/sampler/KitTake.cpp
     ${CORE_DIR}/src/transport/Transport.cpp
 )
 

@@ -747,10 +747,16 @@ void SamplerEngine::servicePreview()
     pSvc_.store(false, std::memory_order_release);
 }
 
-void SamplerEngine::serviceIo()
+bool SamplerEngine::serviceIo()
 {
     servicePreview();
-    if (!pool_ || !store_) return;
+    if (!pool_ || !store_) return true;
+    /* One pass in the voices at a time. Two of them -- audio_bg and a
+     * teardown's wait -- would each fill the same window, and one could close
+     * a ring the other is reading the card into. The second simply leaves the
+     * voices to the first and says so; the streaming task's next pass is a
+     * millisecond away, and a teardown tries again. */
+    if (vSvc_.exchange(true, std::memory_order_acquire)) return false;
     ISampleSource* src = store_->source();
     for (auto& v : voices_) {
         const uint8_t st = v.state.load(std::memory_order_acquire);
@@ -781,6 +787,39 @@ void SamplerEngine::serviceIo()
         if (!v.window.isOpen()) continue;
         v.window.service(*src, v.playFrame.load(std::memory_order_acquire));
     }
+    vSvc_.store(false, std::memory_order_release);
+    return true;
+}
+
+bool SamplerEngine::ioIdle() const
+{
+    return !vSvc_.load(std::memory_order_acquire) && !pSvc_.load(std::memory_order_acquire);
+}
+
+CROSSPAD_COLD bool SamplerEngine::abandonVoices()
+{
+    /* The voices' pass is ours for the length of this, so no streaming pass
+     * fills a window this closes; one that holds it now is waited for by the
+     * caller, not here -- it may be below us on the same core. */
+    if (vSvc_.exchange(true, std::memory_order_acquire)) return false;
+    for (auto& v : voices_) {
+        if (v.state.load(std::memory_order_acquire) == static_cast<uint8_t>(VoiceState::Free)) continue;
+        /* Playing (the render never ended it) or Finished (ended, ring not
+         * yet back): either way its blocks go back here, once -- Free is what
+         * stops the next pass handing a Finished voice's ring back again. */
+        if (pool_) v.window.close(*pool_);
+        v.cursor.clear();
+        v.wantStream = false;
+        v.slot = nullptr;
+        v.fading.store(false, std::memory_order_relaxed);
+        v.releasing.store(false, std::memory_order_relaxed);
+        v.state.store(static_cast<uint8_t>(VoiceState::Free), std::memory_order_release);
+    }
+    /* No render ran endVoice() for these, so their pads still read as
+     * sounding -- and a teardown waiting on anySounding() would wait for good. */
+    for (auto& p : padVoices_) p.store(0, std::memory_order_release);
+    vSvc_.store(false, std::memory_order_release);
+    return true;
 }
 
 CROSSPAD_COLD SamplerEngine::Counters SamplerEngine::counters() const
