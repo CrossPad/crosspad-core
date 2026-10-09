@@ -292,6 +292,9 @@ public:
     /// From the request until the voice has ended and its ring is back in the
     /// pool: what a teardown waits for before the pool's pages go.
     bool previewBusy() const;
+    /// Where the audition is, for a status line: 0 idle, 1 priming (ring
+    /// opening, first block not in), 2 playing, 3 finished (ring not back yet).
+    uint8_t previewState() const { return pState_.load(std::memory_order_acquire); }
     /**
      * @brief End the audition from this side, ring and all, now.
      *

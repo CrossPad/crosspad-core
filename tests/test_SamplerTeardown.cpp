@@ -220,11 +220,13 @@ TEST_CASE("Voices left with the render parked are abandoned and the pool comes b
     for (int i = 0; i < 50; ++i) rig.engine.serviceIo();
     REQUIRE(rig.engine.anySounding());            // stuck, which is the finding
     REQUIRE(rig.engine.previewBusy());
+    CHECK(rig.engine.previewState() == 2);        // Playing, for good: the fade is the render's
 
     REQUIRE(rig.engine.abandonVoices());
     REQUIRE(rig.engine.previewAbandon());
     CHECK_FALSE(rig.engine.anySounding());
     CHECK_FALSE(rig.engine.previewBusy());
+    CHECK(rig.engine.previewState() == 0);
     CHECK(rig.engine.ioIdle());
     CHECK(rig.pool.stats().blocksUsed == 0);
     rig.engine.setKit(nullptr);
