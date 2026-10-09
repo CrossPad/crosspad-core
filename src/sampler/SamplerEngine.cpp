@@ -572,15 +572,21 @@ void SamplerEngine::mixPreview(float* out, uint32_t frames)
             /* Not delivered yet is a gap, not the end: an audition is the
              * whole file off the card, and a card busy with a kit load falls
              * behind it now and then. It holds its place and goes on when
-             * the ring catches up. Only the file's end ends it. */
-            if ((pPhase_ >> 32) + 2 < static_cast<uint64_t>(pLast_)) break;
-            pState_.store(static_cast<uint8_t>(PreviewState::Finished), std::memory_order_release);
+             * the ring catches up -- for kPreviewGapMaxMs; a card that was
+             * pulled never catches up. A voice asked to fade has nothing to
+             * fade in a gap, so it ends there and then. */
+            if (!fading && (pPhase_ >> 32) + 2 < static_cast<uint64_t>(pLast_)) {
+                pGap_ += frames - i;
+                if (pGap_ < kPreviewGapMaxMs * (sampleRate_ / 1000)) break;
+            }
+            finishPreview();
             return;
         }
+        pGap_ = 0;
         if (fading) {
             pEnv_ -= fadeStep;
             if (pEnv_ <= 0.0f) {
-                pState_.store(static_cast<uint8_t>(PreviewState::Finished), std::memory_order_release);
+                finishPreview();
                 return;
             }
         } else if (pEnv_ < 1.0f) {
@@ -592,11 +598,34 @@ void SamplerEngine::mixPreview(float* out, uint32_t frames)
         out[i * 2 + 1] += r * pGainR_ * e;
         pPhase_ += pInc_;
         if (pPhase_ >= lastQ) {
-            pState_.store(static_cast<uint8_t>(PreviewState::Finished), std::memory_order_release);
+            finishPreview();
             return;
         }
     }
     pPlayFrame_.store(static_cast<uint32_t>(pPhase_ >> 32), std::memory_order_release);
+}
+
+void SamplerEngine::finishPreview()
+{
+    /* Playing -> Finished only: a voice a teardown has abandoned meanwhile is
+     * not the render's to mark any more. */
+    uint8_t expect = static_cast<uint8_t>(PreviewState::Playing);
+    pState_.compare_exchange_strong(expect, static_cast<uint8_t>(PreviewState::Finished),
+                                    std::memory_order_acq_rel, std::memory_order_relaxed);
+}
+
+CROSSPAD_COLD bool SamplerEngine::previewAbandon()
+{
+    /* Not while a streaming pass is in the audition: the caller tries again
+     * after letting it run, rather than spinning here against a thread that
+     * may be below it on the same core. */
+    if (pSvc_.exchange(true, std::memory_order_acquire)) return false;
+    if (pState_.load(std::memory_order_acquire) != static_cast<uint8_t>(PreviewState::Idle)) {
+        closePreview();
+    }
+    pDoneGen_.store(pReqGen_.load(std::memory_order_acquire), std::memory_order_release);
+    pSvc_.store(false, std::memory_order_release);
+    return true;
 }
 
 void SamplerEngine::closePreview()
@@ -649,6 +678,8 @@ CROSSPAD_COLD void SamplerEngine::startPreview(uint32_t gen)
     const float attackFrames = params_.attackMs * 0.001f * static_cast<float>(sampleRate_);
     pEnvStep_ = attackFrames > 1.0f ? (1.0f / attackFrames) : 1.0f;
     pFade_.store(false, std::memory_order_relaxed);
+    pGap_ = 0;
+    pPrimePasses_ = 0;
     pPlayFrame_.store(first, std::memory_order_relaxed);
     /* Sounds once a block is in, or the whole of a region shorter than one. */
     const uint32_t oneBlock = streamStart + pWindow_.blockFrames();
@@ -676,8 +707,9 @@ void SamplerEngine::servicePreview()
     }
     if (st == static_cast<uint8_t>(PreviewState::Priming) ||
         st == static_cast<uint8_t>(PreviewState::Playing)) {
-        /* Stopped, or a newer one is waiting: this one goes. */
-        if (stop == pCurGen_ || req != pCurGen_) {
+        /* Stopped, a newer one is waiting, or the loader is retiring the
+         * pool this ring is in: this one goes. */
+        if (stop == pCurGen_ || req != pCurGen_ || mutating_.load(std::memory_order_acquire)) {
             if (st == static_cast<uint8_t>(PreviewState::Priming)) {
                 closePreview();
                 st = static_cast<uint8_t>(PreviewState::Idle);
@@ -688,8 +720,10 @@ void SamplerEngine::servicePreview()
     }
     if (st == static_cast<uint8_t>(PreviewState::Idle)) {
         if (req != pDoneGen_.load(std::memory_order_acquire)) {
-            if (req == stop) {
-                pDoneGen_.store(req, std::memory_order_release);   // stopped before it started
+            if (req == stop || mutating_.load(std::memory_order_acquire)) {
+                /* Stopped before it started, or asked for under a kit that
+                 * is being retired: dropped, not kept for afterwards. */
+                pDoneGen_.store(req, std::memory_order_release);
             } else {
                 startPreview(req);
                 st = pState_.load(std::memory_order_acquire);
@@ -699,8 +733,15 @@ void SamplerEngine::servicePreview()
     if ((st == static_cast<uint8_t>(PreviewState::Priming) ||
          st == static_cast<uint8_t>(PreviewState::Playing)) && pWindow_.isOpen()) {
         pWindow_.service(*pSrc_, pPlayFrame_.load(std::memory_order_acquire));
-        if (st == static_cast<uint8_t>(PreviewState::Priming) && pWindow_.validUpTo() >= pPrimeTo_) {
-            pState_.store(static_cast<uint8_t>(PreviewState::Playing), std::memory_order_release);
+        if (st == static_cast<uint8_t>(PreviewState::Priming)) {
+            if (pWindow_.validUpTo() >= pPrimeTo_) {
+                pState_.store(static_cast<uint8_t>(PreviewState::Playing), std::memory_order_release);
+            } else if (++pPrimePasses_ > kPreviewPrimeMaxPasses) {
+                /* The card never gave the first block: given up, as a voice
+                 * refused its ring is. */
+                cStreamRefused_.fetch_add(1, std::memory_order_relaxed);
+                closePreview();
+            }
         }
     }
     pSvc_.store(false, std::memory_order_release);

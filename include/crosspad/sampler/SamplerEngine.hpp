@@ -252,6 +252,14 @@ public:
     bool anySounding() const;
 
     // ── Audition: one file outside the kit ────────────────────────────────
+    /// Streaming passes an audition may wait for its first block before it
+    /// is given up (~2 s at the board's 1 kHz pass): a card that never
+    /// answers must not leave it "busy" for good.
+    static constexpr uint32_t kPreviewPrimeMaxPasses = 2000;
+    /// Longest gap (the card behind the voice) an audition sits through
+    /// before it ends instead.
+    static constexpr uint32_t kPreviewGapMaxMs = 2000;
+
     /**
      * @brief Where an audition reads from.
      *
@@ -284,6 +292,17 @@ public:
     /// From the request until the voice has ended and its ring is back in the
     /// pool: what a teardown waits for before the pool's pages go.
     bool previewBusy() const;
+    /**
+     * @brief End the audition from this side, ring and all, now.
+     *
+     * For a teardown whose wait for the fade ran out: the fade is the
+     * render's to play, and a render that is parked never plays it. Only
+     * when the render is known not to be inside mixPreview() -- after the
+     * barrier a teardown already waits out. Drops a request not started.
+     * False, having done nothing, while a streaming pass is in the audition:
+     * try again once it has run.
+     */
+    bool previewAbandon();
     /// Add the audition to @p out. Render thread; RT-safe like mix().
     void mixPreview(float* out, uint32_t frames);
 
@@ -354,6 +373,7 @@ private:
     void servicePreview();
     void startPreview(uint32_t gen);
     void closePreview();
+    void finishPreview();
 
     BlockPool*   pool_  = nullptr;
     SampleStore* store_ = nullptr;
@@ -396,6 +416,8 @@ private:
     uint64_t     pPhase_ = 0, pInc_ = 0;
     uint32_t     pLast_ = 0, pPrimeTo_ = 0;
     float        pGainL_ = 0.0f, pGainR_ = 0.0f, pEnv_ = 0.0f, pEnvStep_ = 1.0f;
+    uint32_t     pGap_ = 0;            ///< render: frames waited on the card in a row
+    uint32_t     pPrimePasses_ = 0;    ///< streaming thread: passes without the first block
 
     std::atomic<const SamplerKit*> kit_{nullptr};
     std::atomic<bool> mutating_{false};

@@ -278,3 +278,180 @@ TEST_CASE("Audition needs a source and a path that fits", "[samplerengine][previ
     const std::string tooLong(SampleStore::kMaxPath, 'x');
     REQUIRE_FALSE(rig.engine.previewStart(tooLong.c_str()));
 }
+
+TEST_CASE("Audition the render never ends can be abandoned", "[samplerengine][preview]") {
+    Rig rig;
+    rig.src.add("/sdcard/a.wav", 100000, 1, 8000);
+
+    REQUIRE(rig.engine.previewStart("/sdcard/a.wav"));
+    REQUIRE(rig.run(4) > 0.0f);
+    rig.engine.previewStop();
+    /* The render is parked (the USB audio profile does that): the fade that
+     * would end it never runs. */
+    for (int i = 0; i < 10; ++i) rig.engine.serviceIo();
+    REQUIRE(rig.engine.previewBusy());
+    REQUIRE(rig.engine.previewAbandon());
+    REQUIRE_FALSE(rig.engine.previewBusy());
+    REQUIRE(rig.pool.stats().blocksUsed == 0);
+    REQUIRE(rig.run(4) == 0.0f);
+
+    /* And the next one plays as usual. */
+    REQUIRE(rig.engine.previewStart("/sdcard/a.wav"));
+    REQUIRE(rig.run(6) > 0.0f);
+}
+
+// ── Failure paths: every one of them must leave the audition idle, its ring
+//    back in the pool, and the next audition (and the pads) working. ──────
+
+namespace {
+/// A source whose header is whatever the test says, for files no real
+/// reader would hand over: three channels, zero frames, no rate.
+class OddSource : public ISampleSource {
+public:
+    SampleDesc desc;
+    bool describe(const char*, SampleDesc& o) override { o = desc; return true; }
+    uint32_t read(const char*, uint32_t, uint32_t, int16_t*) override { return 0; }
+};
+} // namespace
+
+TEST_CASE("Audition of a header no engine can play is dropped", "[samplerengine][preview][fail]") {
+    Rig rig;
+    OddSource odd;
+    rig.engine.setPreviewSource(&odd);
+    const SampleDesc bad[] = {
+        {1000, 44100, 3, 16},   // three channels
+        {0,    44100, 2, 16},   // no frames
+        {1000, 0,     2, 16},   // no rate
+    };
+    for (const SampleDesc& d : bad) {
+        odd.desc = d;
+        REQUIRE(rig.engine.previewStart("/sdcard/odd.wav"));
+        rig.run(3);
+        REQUIRE_FALSE(rig.engine.previewBusy());
+        REQUIRE(rig.pool.stats().blocksUsed == 0);
+    }
+    rig.engine.setPreviewSource(&rig.src);
+    rig.src.add("/sdcard/a.wav", 20000, 1, 8000);
+    REQUIRE(rig.engine.previewStart("/sdcard/a.wav"));
+    REQUIRE(rig.run(4) > 0.0f);
+}
+
+TEST_CASE("Audition whose file never delivers a frame gives up", "[samplerengine][preview][fail]") {
+    Rig rig;
+    rig.src.add("/sdcard/a.wav", 20000, 1, 8000);
+    rig.src.stall = true;                      // the card is gone from the start
+    REQUIRE(rig.engine.previewStart("/sdcard/a.wav"));
+    for (uint32_t i = 0; i < SamplerEngine::kPreviewPrimeMaxPasses + 2; ++i) rig.engine.serviceIo();
+    REQUIRE_FALSE(rig.engine.previewBusy());   // not Priming for ever
+    REQUIRE(rig.pool.stats().blocksUsed == 0);
+    rig.src.stall = false;
+    REQUIRE(rig.engine.previewStart("/sdcard/a.wav"));
+    REQUIRE(rig.run(4) > 0.0f);
+}
+
+TEST_CASE("Audition whose card goes away mid-file ends after a bound", "[samplerengine][preview][fail]") {
+    Rig rig;
+    rig.src.add("/sdcard/a.wav", 1000000, 1, 8000);
+    REQUIRE(rig.engine.previewStart("/sdcard/a.wav"));
+    REQUIRE(rig.run(4) > 0.0f);
+    rig.src.stall = true;                      // and never comes back
+    /* 2 s of gap at 64 frames a block, and the ring's lookahead before it. */
+    const uint32_t blocks = SamplerEngine::kPreviewGapMaxMs * 44100 / 1000 / 64 + 200;
+    rig.run(blocks);
+    REQUIRE_FALSE(rig.engine.previewBusy());
+    REQUIRE(rig.pool.stats().blocksUsed == 0);
+}
+
+TEST_CASE("Audition stopped in a gap ends at once", "[samplerengine][preview][fail]") {
+    Rig rig;
+    rig.src.add("/sdcard/a.wav", 1000000, 1, 8000);
+    REQUIRE(rig.engine.previewStart("/sdcard/a.wav"));
+    REQUIRE(rig.run(4) > 0.0f);
+    rig.src.stall = true;
+    rig.run(80);                               // the ring has run dry: a gap
+    REQUIRE(rig.engine.previewBusy());
+    /* The fade is the render's, and a voice with no frame to fade never
+     * reached the end of it: the stop must not wait on the card. */
+    rig.engine.previewStop();
+    rig.run(3);
+    REQUIRE_FALSE(rig.engine.previewBusy());
+    REQUIRE(rig.pool.stats().blocksUsed == 0);
+}
+
+TEST_CASE("Audition replaced in a gap gives way to the next one", "[samplerengine][preview][fail]") {
+    Rig rig;
+    rig.src.add("/sdcard/a.wav", 1000000, 1, 8000);
+    rig.src.add("/sdcard/b.wav", 100000, 1, 2000);
+    REQUIRE(rig.engine.previewStart("/sdcard/a.wav"));
+    rig.run(4);
+    rig.src.stall = true;
+    rig.run(80);
+    REQUIRE(rig.engine.previewStart("/sdcard/b.wav"));
+    rig.run(3);                                // a ends at once
+    rig.src.stall = false;
+    rig.run(6);
+    REQUIRE(std::fabs(rig.lastL - kLevel(2000) * 0.70710678f) < 1e-3f);
+}
+
+TEST_CASE("Audition stopped while it is still priming never sounds", "[samplerengine][preview][fail]") {
+    Rig rig;
+    rig.src.add("/sdcard/a.wav", 20000, 1, 8000);
+    rig.src.stall = true;
+    REQUIRE(rig.engine.previewStart("/sdcard/a.wav"));
+    rig.run(2);                                // ring open, nothing in it
+    REQUIRE(rig.engine.previewBusy());
+    REQUIRE(rig.pool.stats().blocksUsed > 0);
+    rig.engine.previewStop();
+    rig.src.stall = false;
+    REQUIRE(rig.run(4) == 0.0f);
+    REQUIRE_FALSE(rig.engine.previewBusy());
+    REQUIRE(rig.pool.stats().blocksUsed == 0);
+}
+
+TEST_CASE("Audition: a second one while the first is priming takes its place", "[samplerengine][preview][fail]") {
+    Rig rig;
+    rig.src.add("/sdcard/a.wav", 20000, 1, 8000);
+    rig.src.add("/sdcard/b.wav", 20000, 1, 2000);
+    rig.src.stall = true;
+    REQUIRE(rig.engine.previewStart("/sdcard/a.wav"));
+    rig.run(2);                                // a is priming
+    REQUIRE(rig.engine.previewStart("/sdcard/b.wav"));
+    rig.src.stall = false;
+    rig.run(6);
+    REQUIRE(std::fabs(rig.lastL - kLevel(2000) * 0.70710678f) < 1e-3f);
+    REQUIRE(rig.pool.stats().blocksUsed <= crosspad::StreamWindow::kDefaultBlocks);
+}
+
+TEST_CASE("Audition asked for before the loader took the engine is dropped", "[samplerengine][preview][fail]") {
+    Rig rig;
+    rig.src.add("/sdcard/a.wav", 20000, 1, 8000);
+    REQUIRE(rig.engine.previewStart("/sdcard/a.wav"));
+    rig.engine.beginMutation();                // a kit swap starts before audio_bg saw it
+    rig.run(3);
+    REQUIRE(rig.pool.stats().blocksUsed == 0); // no ring opened in a pool on its way out
+    REQUIRE_FALSE(rig.engine.previewBusy());
+    rig.engine.endMutation();
+    REQUIRE(rig.run(3) == 0.0f);               // and it does not come back afterwards
+    REQUIRE(rig.engine.previewStart("/sdcard/a.wav"));
+    REQUIRE(rig.run(4) > 0.0f);
+}
+
+TEST_CASE("Audition and pads: a failed audition leaves the kit playing", "[samplerengine][preview][fail]") {
+    Rig rig;
+    rig.kitSrc.add("kick.wav", 500, 1, 8000);
+    crosspad::SamplerKit kit;
+    const uint16_t slot = rig.store.load("kick.wav", 1024);
+    REQUIRE(slot != SampleStore::kNoSlot);
+    kit.pad[0].layers[0].slot = slot;
+    kit.pad[0].layerCount = 1;
+    kit.pad[0].gain = 1.0f;
+    rig.engine.setKit(&kit);
+
+    REQUIRE(rig.engine.previewStart("/sdcard/missing.wav"));
+    rig.run(2);
+    rig.engine.noteOn(0, 127);
+    float kitPeak = 0.0f;
+    rig.run(2, &kitPeak);
+    REQUIRE(kitPeak > 0.0f);
+    REQUIRE_FALSE(rig.engine.previewBusy());
+}

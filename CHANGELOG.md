@@ -20,8 +20,13 @@ this is the first number above every one either of them used.
   channel of its own. The streaming thread (`serviceIo()`) reads the header,
   takes the voice's ring from the pool and feeds it; the note thread only
   writes a sequence-locked request. A card that falls behind is a gap, not
-  the end. What the prebuilt streamer's spare voice did for the file browser
-  and the start-up sound. Tests: `tests/test_SamplerPreview.cpp`.
+  the end -- for `kPreviewGapMaxMs` (2 s); a first block that never comes
+  is given up after `kPreviewPrimeMaxPasses`; a stop in a gap, a header no
+  engine plays, an empty pool and a kit swap (`beginMutation()`) all leave
+  it idle with its ring back. `previewAbandon()` for a teardown whose render
+  is parked. What the prebuilt streamer's spare voice did for the file
+  browser and the start-up sound. Tests: `tests/test_SamplerPreview.cpp`
+  (22, nine of them failure paths).
 
 ### Changed (image size, 2026-10-09)
 
