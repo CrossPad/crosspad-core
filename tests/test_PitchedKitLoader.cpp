@@ -428,3 +428,81 @@ TEST_CASE("pitchedBuildBank: a null resolver falls back to the kit path helper",
     REQUIRE(bank->zoneCount() == 2);
     delete bank;
 }
+
+namespace {
+int g_yields = 0;
+void countYield() { ++g_yields; }
+} // namespace
+
+TEST_CASE("pitchedBuildBank: a zone longer than the zone limit is cut, and says why",
+          "[instrument][loader]") {
+    KitDir dir;
+    PortableFft fft;
+    test::writeSineWav(g_root + "/take.wav", 220.0, 44100, 3.0);
+    const KitInfo kit = oneZoneKit("take.wav", 57.0f);
+
+    PitchedLoadEnv env = makeEnv();
+    env.maxZoneFrames = 44100;                       // one second
+    SampleBank* bank = nullptr;
+    char err[128] = {0};
+    PitchedLoadReport report;
+    REQUIRE(pitchedBuildBank(kit, env, fft, bank, err, sizeof(err), &report));
+    REQUIRE(bank->zone(0).length == 44100u);
+    REQUIRE(report.truncatedZones == 1u);
+    INFO("warning = " << report.warning);
+    REQUIRE(std::string(report.warning).find("3.0 s cut to 1.0 s (zone limit)") != std::string::npos);
+    delete bank;
+}
+
+TEST_CASE("pitchedBuildBank: yields between blocks, converting or not", "[instrument][loader]") {
+    KitDir dir;
+    PortableFft fft;
+    test::writeSineWav(g_root + "/long44.wav", 220.0, 44100, 2.0);
+    test::writeSineWav(g_root + "/long48.wav", 220.0, 48000, 2.0);
+
+    for (const char* file : {"long44.wav", "long48.wav"}) {
+        PitchedLoadEnv env = makeEnv();
+        env.yield = countYield;
+        g_yields = 0;
+        SampleBank* bank = nullptr;
+        char err[128] = {0};
+        INFO("file = " << file);
+        REQUIRE(pitchedBuildBank(oneZoneKit(file, 57.0f), env, fft, bank, err, sizeof(err)));
+        REQUIRE(g_yields >= 10);                     // 2 s in blocks of 4096 frames
+        delete bank;
+    }
+}
+
+TEST_CASE("pitchedBuildBank: without rate conversion a zone keeps its own rate", "[instrument][loader]") {
+    KitDir dir;
+    PortableFft fft;
+    PitchedLoadEnv env = makeEnv();
+    env.convertRate = false;                          // engine 44.1 kHz, a4.wav 48 kHz
+    SampleBank* bank = nullptr;
+    char err[128] = {0};
+    REQUIRE(pitchedBuildBank(oneZoneKit("a4.wav", -1.0f), env, fft, bank, err, sizeof(err)));
+    INFO("err = " << err);
+    REQUIRE(bank->zone(0).length == 24000u);          // 0.5 s as written, not 22050
+    REQUIRE(bank->zone(0).rate == Catch::Approx(48000.0 / 44100.0));
+    // Detected at the file's rate: 440 Hz is A4 whatever the engine runs at.
+    REQUIRE(bank->zone(0).rootMidi == Catch::Approx(69.0).margin(0.1));
+    REQUIRE_FALSE(logContains("Hz ->"));             // nothing was converted
+    delete bank;
+}
+
+TEST_CASE("pitchedBuildBank: normalize brings a zone's peak to -1 dBFS", "[instrument][loader]") {
+    KitDir dir;
+    PortableFft fft;
+    PitchedLoadEnv env = makeEnv();
+    SampleBank* bank = nullptr;
+    char err[128] = {0};
+    REQUIRE(pitchedBuildBank(oneZoneKit("a3.wav", 57.0f), env, fft, bank, err, sizeof(err)));
+    REQUIRE(bank->zone(0).gain == 1.0f);              // off: as recorded
+    delete bank;
+
+    env.normalize = true;                             // the fixture peaks at 20000
+    bank = nullptr;
+    REQUIRE(pitchedBuildBank(oneZoneKit("a3.wav", 57.0f), env, fft, bank, err, sizeof(err)));
+    REQUIRE(bank->zone(0).gain == Catch::Approx(kNormalizePeak * 32767.0 / 20000.0).epsilon(0.01));
+    delete bank;
+}

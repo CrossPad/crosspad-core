@@ -284,7 +284,7 @@ void PitchedInstrument::noteOn(uint8_t midiNote, uint8_t velocity, uint8_t pad) 
     Voice& v = voices_[slot];
 
     const double semis = static_cast<double>(midiNote) - z->rootMidi;
-    const double ratio = std::pow(2.0, semis / 12.0);
+    const double ratio = std::pow(2.0, semis / 12.0) * static_cast<double>(z->rate);
     v.zone = z;
     v.phase = static_cast<uint64_t>(z->loopStart) * kOne;
     v.inc = static_cast<uint64_t>(ratio * static_cast<double>(kOne) + 0.5);
@@ -299,7 +299,8 @@ void PitchedInstrument::noteOn(uint8_t midiNote, uint8_t velocity, uint8_t pad) 
     const int pan = (pad < kPads) ? padPan_[pad].load(std::memory_order_relaxed)
                                   : kUngriddedPan;
     v.gain = (static_cast<float>(velocity) / kVelocityFullScale)
-           * (static_cast<float>(vol) / static_cast<float>(kPadVolumeMax));
+           * (static_cast<float>(vol) / static_cast<float>(kPadVolumeMax))
+           * z->gain;
 
     // Equal-power pan: the pan range maps onto a quarter turn, so -100 is hard
     // left, +100 hard right and centre is -3 dB on both.

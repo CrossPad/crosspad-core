@@ -25,11 +25,21 @@ struct Zone {
     float rootMidi = 69.0f;   ///< MIDI note the recording sounds at
     uint32_t loopStart = 0;
     uint32_t loopEnd = 0;     ///< 0 (or <= loopStart) means one-shot
+    /// The PCM's rate over the engine's. A zone kept at its file's rate
+    /// (PitchedLoadEnv::convertRate off) steps this much slower or faster, so
+    /// its root still sounds at rootMidi.
+    float rate = 1.0f;
+    /// Applied to every voice of the zone (PitchedLoadEnv::normalize): a
+    /// take recorded quietly plays as loud as one recorded hot.
+    float gain = 1.0f;
 };
 
 class SampleBank {
 public:
-    static constexpr uint8_t kMaxZones = 4;
+    /// A multisample's worth: the auto-sampler takes one zone every two or
+    /// three semitones over four octaves. A zone is ~20 B here; the PCM is
+    /// what the bank budget limits.
+    static constexpr uint8_t kMaxZones = 24;
 
     /**
      * @brief Shortest loop a zone may declare, in samples.

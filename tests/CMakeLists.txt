@@ -117,6 +117,14 @@ set(CORE_SOURCES
     # Loop recorder
     ${CORE_DIR}/src/sequencer/PatternSequencer.cpp
     ${CORE_DIR}/src/sequencer/SequenceStore.cpp
+
+    # Streaming sampler engine
+    ${CORE_DIR}/src/sampler/BlockPool.cpp
+    ${CORE_DIR}/src/sampler/SampleStore.cpp
+    ${CORE_DIR}/src/sampler/StreamWindow.cpp
+    ${CORE_DIR}/src/sampler/SamplerKit.cpp
+    ${CORE_DIR}/src/sampler/SamplerEngine.cpp
+    ${CORE_DIR}/src/transport/Transport.cpp
 )
 
 # ── Test sources ──

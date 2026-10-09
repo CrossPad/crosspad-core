@@ -5,7 +5,7 @@
 using namespace crosspad;
 
 TEST_CASE("MusicTheory: scale data", "[music]") {
-    REQUIRE(MusicTheory::scaleCount() == 9);
+    REQUIRE(MusicTheory::scaleCount() == 11);
 
     SECTION("scale names are non-null") {
         for (uint8_t i = 0; i < MusicTheory::scaleCount(); i++) {
@@ -23,7 +23,7 @@ TEST_CASE("MusicTheory: scale data", "[music]") {
 
 TEST_CASE("MusicTheory: chord data", "[music]") {
     // 14 base chords (indices 0-13, including Diatonic and Types)
-    REQUIRE(MusicTheory::chordDefCount() == 14);
+    REQUIRE(MusicTheory::chordDefCount() == 22);   // twenty chords, then Diatonic and Types
 }
 
 TEST_CASE("MusicTheory: note names", "[music]") {

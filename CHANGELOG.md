@@ -17,6 +17,36 @@ this is the first number above every one either of them used.
 - `crosspad/net/RemoteFrame.hpp`: `parseRemoteRequest()`, `formatRemoteReply()` — the `<id> <line>` frame of the WiFi remote (MQTT `cp/{serial}/req|rsp`), limits `kRemoteCommandMax` 512 / `kRemoteReplyMax` 4096. Tests: `tests/test_remote_frame.cpp`.
 - `WirelessSettings::enableRemote` — WiFi remote management (default on; NVS cfg_wireless/remote, JSON enableRemote)
 
+### Added (native sampler engine, feat/native-sampler-engine — 1.49–1.52 on its branch, 1.40–1.48 before that)
+
+- `crosspad/sampler/*`: a streaming sampler engine of our own -- `BlockPool`,
+  `SampleStore`, `StreamWindow`, `SamplerKit`, `SamplerEngine` (voices, kit,
+  card streaming budget, per-note transpose and hit key).
+- Instrument host (`IInstrumentHost`, `InstrumentPlayState`,
+  `InstrumentPadLogic`), the looper (`LooperEngine`, `LooperAccess`),
+  `OutputEq`, more scales (Lydian, Phrygian), ninth chords and progressions.
+- Song: clip sets, a live transport, four tracks with a seq track, edit by
+  bars, seq blocks laid on the song map, one transport tempo.
+- `IEventBus::postSamplePlayback` takes a transpose and a key.
+
+### Merge notes
+
+- `PatternSequencer` note lengths were written twice: main's (bc0789a,
+  `noteRelease`) and the engine branch's (80f1a25, `noteOut`, plus the song
+  map and Record-replaces). The engine branch's sequencer is kept;
+  `noteRelease()` stays as an alias of `noteOut()`, and main's refinements are
+  carried over: lengths measured on `MetronomeNode::elapsedSamples` (a hold
+  over the loop end is not short, longer than the loop is the loop),
+  `sceneEventLength` of a pad still down grows while it is held, a held
+  note's release is counted from where it sounds, and the poll's press
+  buffer is in the object, sized for a release per note.
+- `EspEventBus::postSamplePlayback`: the engine's own voice reports
+  (`EventSource::SamplePlayback`) are still not posted (main, 054d14e).
+- `SongEngine`: the ring is the engine branch's 16384 frames with a 4096
+  prime; a bounce's first piece still fills the WAV header's 4 kB (main);
+  merge leaves out muted, silent and seq tracks; `requestImport` checks its
+  target track before it claims the edit.
+
 ## 1.48.1 — 2026-10-08
 
 ### Fixed

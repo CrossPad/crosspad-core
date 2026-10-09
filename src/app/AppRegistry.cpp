@@ -8,7 +8,13 @@ void AppRegistry::registerApp(const AppEntry& entry) {
     if (appCount < MAX_APPS) {
         apps[appCount] = entry;
         appCount++;
+        return;
     }
+    /* Said out loud. Dropping this silently is how Power OFF disappeared
+     * from a board that had grown to sixteen apps. */
+    ++dropped_;
+    printf("AppRegistry: no room for '%s' (%u registered, max %u)\n",
+           entry.name ? entry.name : "?", (unsigned)appCount, (unsigned)MAX_APPS);
 }
 
 const AppEntry* AppRegistry::findApp(const char* name) const {

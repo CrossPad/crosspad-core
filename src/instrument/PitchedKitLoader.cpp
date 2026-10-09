@@ -5,6 +5,7 @@
 #include "crosspad/dsp/PitchDetector.hpp"
 #include "crosspad/instrument/WavPcm.hpp"
 
+#include <algorithm>
 #include <cstdarg>
 #include <cstdio>
 #include <cstring>
@@ -79,6 +80,7 @@ uint32_t streamResampleZone(const PitchedLoadEnv& env, IFft& fft, WavPcmReader& 
         if (n == 0) break;
         written += stream.push(chunk, n, out + written, outFrames - written);
         if (!stream.ok()) break;
+        if (env.yield) env.yield();
     }
     if (stream.ok() && written < outFrames) {
         written += stream.flush(out + written, outFrames - written);
@@ -138,10 +140,12 @@ bool pitchedBuildBank(const KitInfo& kit, const PitchedLoadEnv& env, IFft& fft,
         }
         const WavInfo info = reader.info();
 
-        const bool needResample = (info.sampleRate != env.engineRate);
+        const bool needResample = env.convertRate && info.sampleRate != env.engineRate;
         const uint32_t fullFrames = needResample
             ? resampledLength(info.frames, info.sampleRate, env.engineRate)
             : info.frames;
+        // The rate the zone's PCM ends up at: the engine's, or its own.
+        const uint32_t zoneRate = needResample ? env.engineRate : info.sampleRate;
         if (fullFrames == 0) {
             fail(err, errLen, "zone %u: empty", (unsigned)i);
             delete bank;
@@ -154,6 +158,14 @@ bool pitchedBuildBank(const KitInfo& kit, const PitchedLoadEnv& env, IFft& fft,
         // like a zone that fits.
         uint32_t frames = fullFrames;
         bool truncated = false;
+        const char* cutBy = "bank budget";
+        const uint32_t maxFrames = static_cast<uint32_t>(
+            static_cast<uint64_t>(env.maxZoneFrames) * zoneRate / env.engineRate);
+        if (env.maxZoneFrames != 0 && frames > maxFrames) {
+            frames = maxFrames;
+            truncated = true;
+            cutBy = "zone limit";
+        }
         if (env.maxBankBytes != 0) {
             const uint64_t roomBytes = (used < env.maxBankBytes) ? (env.maxBankBytes - used) : 0;
             const uint64_t roomFrames = roomBytes / sizeof(int16_t);
@@ -166,6 +178,7 @@ bool pitchedBuildBank(const KitInfo& kit, const PitchedLoadEnv& env, IFft& fft,
             if (roomFrames < frames) {
                 frames = static_cast<uint32_t>(roomFrames);
                 truncated = true;
+                cutBy = "bank budget";
             }
         }
         const uint64_t zoneBytes = static_cast<uint64_t>(frames) * sizeof(int16_t);
@@ -180,9 +193,10 @@ bool pitchedBuildBank(const KitInfo& kit, const PitchedLoadEnv& env, IFft& fft,
         uint32_t got = 0;
         if (!needResample) {
             while (got < frames) {
-                const uint32_t n = reader.readMono16(pcm + got, frames - got);
+                const uint32_t n = reader.readMono16(pcm + got, std::min(frames - got, kReadChunkFrames));
                 if (n == 0) break;
                 got += n;
+                if (env.yield) env.yield();
             }
         } else {
             bool ok = false;
@@ -210,12 +224,12 @@ bool pitchedBuildBank(const KitInfo& kit, const PitchedLoadEnv& env, IFft& fft,
         reader.close();
 
         if (truncated) {
-            const double rate = static_cast<double>(env.engineRate);
+            const double rate = static_cast<double>(zoneRate);
             const double fullSec = fullFrames / rate;
             const double keptSec = frames / rate;
             char note[sizeof(PitchedLoadReport::warning)] = {};
-            snprintf(note, sizeof(note), "zone %u '%s': %.1f s cut to %.1f s (bank budget)",
-                     (unsigned)i, spec.sample.c_str(), fullSec, keptSec);
+            snprintf(note, sizeof(note), "zone %u '%s': %.1f s cut to %.1f s (%s)",
+                     (unsigned)i, spec.sample.c_str(), fullSec, keptSec, cutBy);
             logLine(env, "%s", note);
             if (report) {
                 ++report->truncatedZones;
@@ -230,6 +244,18 @@ bool pitchedBuildBank(const KitInfo& kit, const PitchedLoadEnv& env, IFft& fft,
         Zone z;
         z.pcm    = pcm;
         z.length = frames;
+        z.rate   = static_cast<float>(zoneRate) / static_cast<float>(env.engineRate);
+        if (env.normalize) {
+            int32_t peak = 0;
+            for (uint32_t f = 0; f < frames; ++f) {
+                const int32_t a = pcm[f] < 0 ? -static_cast<int32_t>(pcm[f]) : pcm[f];
+                if (a > peak) peak = a;
+            }
+            z.gain = peak > 0 ? std::min(kNormalizeMaxGain, kNormalizePeak * 32767.0f / static_cast<float>(peak))
+                              : 1.0f;
+            logLine(env, "zone %u '%s': peak %.3f, gain %.2f", (unsigned)i, spec.sample.c_str(),
+                    (double)peak / 32767.0, (double)z.gain);
+        }
 
         if (spec.root >= 0.0f) {
             z.rootMidi = spec.root;
@@ -248,7 +274,7 @@ bool pitchedBuildBank(const KitInfo& kit, const PitchedLoadEnv& env, IFft& fft,
                 }
             }
             PitchResult pr;
-            const bool detected = detectPitch(fft, pcm, frames, env.engineRate, pr, scratch);
+            const bool detected = detectPitch(fft, pcm, frames, zoneRate, pr, scratch);
             if (scratch && env.free) env.free(scratch);
             if (!detected) {
                 fail(err, errLen, "zone %u: pitch detection failed", (unsigned)i);

@@ -573,6 +573,7 @@ void placeClip(Rig& r, const std::string& file, int16_t value, uint8_t track, ui
     c.bar = bar;
     c.bars = bars;
     s.addClip(track, c);
+    s.tracks[track].inUse = true;
 }
 
 bool editDone(Rig& r) {
@@ -832,8 +833,11 @@ TEST_CASE("song engine: an import never writes over a clip of the same name", "[
     REQUIRE(editDone(r));
     CHECK(readWavData((r.clipsDir("Demo") / "take.wav").string()).front() == 70);
     std::lock_guard<std::recursive_mutex> l(r.engine->songMutex());
-    REQUIRE(r.engine->song().tracks[3].clips.size() == 1);
-    CHECK(r.engine->song().tracks[3].clips[0].file == "take_2.wav");
+    /* Track 4 was asked for, but nobody has made 2-4: a track is made from
+     * the lowest free one, so it lands on 2. */
+    REQUIRE(r.engine->song().tracks[1].clips.size() == 1);
+    CHECK(r.engine->song().tracks[1].inUse);
+    CHECK(r.engine->song().tracks[1].clips[0].file == "take_2.wav");
     CHECK_FALSE(r.engine->requestImport(src, 0, 0, 4, 0, 0));      // no track 5
 }
 
@@ -1030,4 +1034,28 @@ TEST_CASE("song engine: a waveform waits while the song plays", "[song][peaks]")
     r.engine->stop();
     REQUIRE(waitFor([&] { return r.engine->clipPeaks("c.wav", cp); }));
     CHECK(r.engine->peaksGeneration() != gen);
+}
+
+TEST_CASE("song engine: audio never lands on the seq track", "[song]") {
+    Rig r;
+    REQUIRE(r.open("Demo"));
+    {
+        std::lock_guard<std::recursive_mutex> l(r.engine->songMutex());
+        REQUIRE(r.engine->song().addSeqTrack(0, SeqSource::Kit, 0));
+    }
+    const std::string src = (r.dir / "take.wav").string();
+    writeRamp(src, kRate);
+    CHECK_FALSE(r.engine->requestImport(src, 0, 0, 0, 0, 0));
+    CHECK_FALSE(r.engine->bounceScene(0, 0));
+}
+
+TEST_CASE("song engine: a song that is only a seq track is one pass of its scene long", "[song]") {
+    Rig r;
+    REQUIRE(r.open("Demo"));
+    CHECK(r.engine->playEndBars() == 0);
+    {
+        std::lock_guard<std::recursive_mutex> l(r.engine->songMutex());
+        REQUIRE(r.engine->song().addSeqTrack(0, SeqSource::Kit, 0));
+    }
+    CHECK(r.engine->playEndBars() >= 1);
 }
