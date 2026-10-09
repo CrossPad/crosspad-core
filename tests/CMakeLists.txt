@@ -111,6 +111,7 @@ set(CORE_SOURCES
     ${CORE_DIR}/src/fw/FwLibraryGc.cpp
     ${CORE_DIR}/src/fw/FwStore.cpp
     ${CORE_DIR}/src/fw/FwAccount.cpp
+    ${CORE_DIR}/src/net/RemoteFrame.cpp
     ${CORE_DIR}/src/fw/FwCardActions.cpp
 
     # Loop recorder

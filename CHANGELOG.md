@@ -6,6 +6,17 @@ carries the same number) and consumers gate on it with
 `crosspad/RequireVersion.hpp`. This file starts at 1.45.0; earlier releases
 are described in their `chore: X.Y.Z` commits.
 
+## 1.53.0 — 2026-10-09
+
+Merge of the native sampler engine (1.49–1.52 on its branch) and WiFi remote
+(RemoteFrame, enableRemote). Both lines were numbered on their own branches;
+this is the first number above every one either of them used.
+
+### Added (WiFi remote, feat/remote-frame — numbered 1.48.0 on its branch)
+
+- `crosspad/net/RemoteFrame.hpp`: `parseRemoteRequest()`, `formatRemoteReply()` — the `<id> <line>` frame of the WiFi remote (MQTT `cp/{serial}/req|rsp`), limits `kRemoteCommandMax` 512 / `kRemoteReplyMax` 4096. Tests: `tests/test_remote_frame.cpp`.
+- `WirelessSettings::enableRemote` — WiFi remote management (default on; NVS cfg_wireless/remote, JSON enableRemote)
+
 ## 1.48.1 — 2026-10-08
 
 ### Fixed

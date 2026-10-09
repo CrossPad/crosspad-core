@@ -128,3 +128,23 @@ TEST_CASE("CrosspadSettings: touch sensitivity round-trips, defaults to low, cla
     REQUIRE(settings->touchSensitivity == TouchSensitivity::High);
     settings->touchSensitivity = TouchSensitivity::Low;
 }
+
+TEST_CASE("CrosspadSettings: enableRemote persists in NVS, missing key means on", "[settings][remote]") {
+    auto* settings = CrosspadSettings::getInstance();
+
+    test::MemoryKVStore empty;
+    empty.init();
+    settings->wireless.enableRemote = false;
+    settings->loadFrom(empty);
+    REQUIRE(settings->wireless.enableRemote == true);   // a board that never saved it
+
+    test::MemoryKVStore store;
+    store.init();
+    settings->wireless.enableRemote = false;
+    settings->saveTo(store);
+    settings->wireless.enableRemote = true;
+    settings->loadFrom(store);
+    REQUIRE(settings->wireless.enableRemote == false);
+
+    settings->wireless.enableRemote = true;   // leave the singleton as found
+}
