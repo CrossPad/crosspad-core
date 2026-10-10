@@ -87,23 +87,23 @@ TEST_CASE("CrosspadSettings: out-of-range NVS values are clamped on load", "[set
     settings->masterFX.inVolume = 50;
 }
 
-TEST_CASE("CrosspadSettings: launcher style round-trips and defaults to the grid", "[settings]") {
+TEST_CASE("CrosspadSettings: launcher style round-trips and defaults to the list", "[settings]") {
     auto* settings = CrosspadSettings::getInstance();
 
     test::MemoryKVStore empty;
     empty.init();
-    settings->launcherStyle = LauncherStyle::List;
+    settings->launcherStyle = LauncherStyle::Grid;
     settings->loadFrom(empty);
-    REQUIRE(settings->launcherStyle == LauncherStyle::Grid);
+    REQUIRE(settings->launcherStyle == LauncherStyle::List);
 
     test::MemoryKVStore store;
     store.init();
-    settings->launcherStyle = LauncherStyle::List;
+    settings->launcherStyle = LauncherStyle::Grid;
     settings->saveTo(store);
-    settings->launcherStyle = LauncherStyle::Grid;
+    settings->launcherStyle = LauncherStyle::List;
     settings->loadFrom(store);
-    REQUIRE(settings->launcherStyle == LauncherStyle::List);
-    settings->launcherStyle = LauncherStyle::Grid;
+    REQUIRE(settings->launcherStyle == LauncherStyle::Grid);
+    settings->launcherStyle = LauncherStyle::List;
 }
 
 TEST_CASE("CrosspadSettings: touch sensitivity round-trips, defaults to low, clamps", "[settings]") {

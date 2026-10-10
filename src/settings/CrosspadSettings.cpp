@@ -27,7 +27,7 @@ void CrosspadSettings::loadFrom(IKeyValueStore& store) {
     perfStatsFlags    = store.readU8("cfg_display", "perf_stats", 0);
     quickSettingsEnabled = store.readBool("cfg_display", "drawer_en", true);
     launcherStyle = (LauncherStyle)readU8In(store, "cfg_display", "launcher",
-                                            (uint8_t)LauncherStyle::Grid,
+                                            (uint8_t)LauncherStyle::List,
                                             (uint8_t)LauncherStyle::Grid, (uint8_t)LauncherStyle::List);
     touchSensitivity = (TouchSensitivity)readU8In(store, "cfg_display", "touch_sens",
                                                   (uint8_t)TouchSensitivity::Low,
