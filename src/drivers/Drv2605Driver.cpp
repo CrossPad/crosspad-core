@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: MIT
+// SPDX-License-Identifier: GPL-3.0-or-later
 /**
  * @file Drv2605Driver.cpp
  * @brief Portable DRV2605 haptic motor driver — ported from platform-specific copies.

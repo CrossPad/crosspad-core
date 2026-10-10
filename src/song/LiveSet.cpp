@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: MIT
+// SPDX-License-Identifier: GPL-3.0-or-later
 //
 // An AudioSong as an Ableton Live 12 Set. Live's own empty set is the
 // template (data/live12_set.xml.gz): its one AudioTrack is cloned per song

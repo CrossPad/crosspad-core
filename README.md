@@ -181,3 +181,7 @@ git submodule add <url> crosspad-core
 ```
 
 Platform-specific adapters (clock, LED, MIDI, audio, etc.) are implemented in each platform repo.
+
+## License
+
+GPL-3.0-or-later — see [LICENSE](LICENSE).

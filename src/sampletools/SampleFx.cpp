@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: MIT
+// SPDX-License-Identifier: GPL-3.0-or-later
 #include "crosspad/sampletools/SampleFx.hpp"
 
 #include "crosspad/dsp/DspMath.hpp"

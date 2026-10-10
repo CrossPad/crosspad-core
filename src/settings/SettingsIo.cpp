@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: MIT
+// SPDX-License-Identifier: GPL-3.0-or-later
 #include "crosspad/settings/SettingsIo.hpp"
 
 #include <ArduinoJson.h>

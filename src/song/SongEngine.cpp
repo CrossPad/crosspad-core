@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: MIT
+// SPDX-License-Identifier: GPL-3.0-or-later
 //
 // The audio song engine: projects in the platform's songs root, bouncing a
 // sequencer scene to a WAV, and streaming four tracks of clips back into the
