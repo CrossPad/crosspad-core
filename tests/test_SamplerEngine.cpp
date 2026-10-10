@@ -44,6 +44,15 @@ public:
         files_[path] = std::move(f);
     }
 
+    /// Zero frames [from, to) of @p path -- a rest, or a silent tail. Before
+    /// the store loads it, so the head has it too.
+    void silence(const std::string& path, uint32_t from, uint32_t to) {
+        File& f = files_[path];
+        for (size_t i = static_cast<size_t>(from) * f.ch; i < static_cast<size_t>(to) * f.ch && i < f.pcm.size(); ++i) {
+            f.pcm[i] = 0;
+        }
+    }
+
     bool describe(const char* path, SampleDesc& o) override {
         auto it = files_.find(path);
         if (it == files_.end()) return false;
@@ -449,6 +458,57 @@ TEST_CASE("SamplerEngine stops a one-shot once it has gone inaudible", "[sampler
     REQUIRE(rig.engine.counters().notesStarted == 1);
 }
 
+TEST_CASE("SamplerEngine plays a one-shot on through a rest inside it", "[samplerengine]") {
+    // A phrase, not a hit: sound, a rest, sound again, then the tail. Waiting
+    // 200 ms took a 221 ms rest for the end of the file and cut the phrase
+    // there (DREAMSCAPE pad 4, 09.10.2026).
+    Rig rig;
+    rig.build();
+    rig.src.add("phrase.wav", 40000, 1);
+    rig.src.silence("phrase.wav", 2000, 15230);      // a 300 ms rest
+    rig.src.silence("phrase.wav", 18000, 40000);     // the tail
+    rig.assign(0, "phrase.wav", 40000);
+    rig.publish();                     // the default wait
+
+    rig.engine.noteOn(0, 127);
+    rig.run(240);                      // 15360 frames: through the rest
+    REQUIRE(rig.engine.padSounding(0));
+    REQUIRE(rig.run(40) > 0.1f);       // to 17920: the sound after it
+    REQUIRE(rig.engine.counters().silenced == 0);
+}
+
+TEST_CASE("SamplerEngine stops the next hit where the first found the sound ends", "[samplerengine]") {
+    // Streamed: only the head is resident, so where the sound ends is not
+    // known until a voice has played past it.
+    Rig rig;
+    rig.build();
+    rig.src.add("hit.wav", 20000, 1);
+    rig.src.silence("hit.wav", 3000, 20000);
+    rig.assign(0, "hit.wav", 1024);
+    rig.publish();
+    const uint16_t slot = rig.kit.pad[0].layers[0].slot;
+    REQUIRE(rig.store.audibleEnd(slot) == 0);
+
+    SamplerEngine::Params pr;
+    pr.silenceMs = 20.0f;              // 882 frames
+    rig.engine.setParams(pr);
+
+    rig.engine.noteOn(0, 127);
+    rig.run(80);                       // 5120 frames: past 3000 + 882
+    REQUIRE_FALSE(rig.engine.padSounding(0));
+    REQUIRE(rig.engine.counters().silenced == 1);
+    REQUIRE(rig.store.audibleEnd(slot) == 3000);
+
+    // Softly this time: the end is the file's, not this hit's level.
+    rig.engine.noteOn(0, 20);
+    rig.run(48);                       // 3072 frames: just past the sound
+    REQUIRE_FALSE(rig.engine.padSounding(0));
+    REQUIRE(rig.engine.counters().silenced == 1);   // ended at the end, not by waiting
+
+    rig.store.unload();
+    REQUIRE(rig.store.audibleEnd(slot) == 0);
+}
+
 TEST_CASE("SamplerEngine lets a loop run through its quiet part", "[samplerengine]") {
     Rig rig;
     rig.build();
@@ -739,4 +799,17 @@ TEST_CASE("SamplerEngine keeps one pad struck from several keys as a chord", "[s
     rig.engine.noteOff(0, 23);
     rig.run(40);
     REQUIRE_FALSE(rig.engine.padSounding(0));
+}
+
+TEST_CASE("SamplerKit pans as the mixer: unity at the centre", "[samplerengine]") {
+    float l = 0, r = 0;
+    SamplerKit::panGains(0.0f, l, r);
+    REQUIRE(l == 1.0f);
+    REQUIRE(r == 1.0f);
+    SamplerKit::panGains(1.0f, l, r);
+    REQUIRE(l == 0.0f);
+    REQUIRE(r == 1.0f);
+    SamplerKit::panGains(-0.5f, l, r);
+    REQUIRE(l == 1.0f);
+    REQUIRE(r == 0.5f);
 }

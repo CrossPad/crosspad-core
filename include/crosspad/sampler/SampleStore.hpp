@@ -165,6 +165,24 @@ public:
     uint16_t slotCount() const { return count_; }
     Stats stats() const;
 
+    /**
+     * @brief Where the sound in slot @p i ends: one past its last frame above
+     *        the engine's silence level, or 0 while nobody has found out.
+     *
+     * Learned by playing it (SamplerEngine), because a head is all the store
+     * reads and the end of a streamed file is not known until a voice gets
+     * there. Forgotten with the slot.
+     */
+    uint32_t audibleEnd(uint16_t i) const
+    {
+        return i < kMaxSlots ? audibleEnd_[i].load(std::memory_order_relaxed) : 0;
+    }
+    /// Render thread: the first voice to find the end says so.
+    void learnAudibleEnd(uint16_t i, uint32_t frames)
+    {
+        if (i < kMaxSlots) audibleEnd_[i].store(frames, std::memory_order_relaxed);
+    }
+
     /// The source, for the streaming thread's own reads.
     ISampleSource* source() const { return src_; }
 
@@ -175,6 +193,7 @@ private:
     void*              ctx_   = nullptr;
 
     Slot     slots_[kMaxSlots];
+    std::atomic<uint32_t> audibleEnd_[kMaxSlots] = {};
     uint16_t count_ = 0;
     size_t   headBytes_ = 0;
     uint32_t readFailures_ = 0;

@@ -262,6 +262,10 @@ void SamplerEngine::noteOnBody(uint8_t pad, uint8_t velocity, int8_t transpose, 
     uint32_t first = kl.start < total ? kl.start : 0;
     uint32_t last  = (kl.end == 0 || kl.end > total) ? total : kl.end;
     if (first >= last) { first = 0; last = total; }
+    /* A one-shot ends where its sound does, once a voice has found where that
+     * is -- and a hit whose sound fits in the head then streams nothing. */
+    const uint32_t heard = store_->audibleEnd(kl.slot);
+    if (kp.mode != PadMode::Loop && heard > first && heard < last) last = heard;
     const bool willStream = !slot->complete && last > slot->headFrames;
 
     /* Two ceilings, and the one that binds depends on the note.
@@ -327,6 +331,8 @@ void SamplerEngine::noteOnBody(uint8_t pad, uint8_t velocity, int8_t transpose, 
     v.envStep = attackFrames > 1.0f ? (1.0f / attackFrames) : 1.0f;
 
     v.quiet = 0;
+    v.loudEnd = 0;
+    v.slotIdx = kl.slot;
     v.announced = false;
     v.fading.store(false, std::memory_order_relaxed);
     v.releasing.store(false, std::memory_order_relaxed);
@@ -403,6 +409,12 @@ void SamplerEngine::endVoice(Voice& v)
     v.state.store(static_cast<uint8_t>(VoiceState::Finished), std::memory_order_release);
 }
 
+void SamplerEngine::learnEnd(const Voice& v)
+{
+    if (v.loudEnd == 0 || store_->audibleEnd(v.slotIdx) != 0) return;
+    store_->learnAudibleEnd(v.slotIdx, v.loudEnd);
+}
+
 bool SamplerEngine::renderVoice(Voice& v, float* out, uint32_t frames)
 {
     const float fadeFrames = kStealFadeMs * 0.001f * static_cast<float>(sampleRate_);
@@ -420,6 +432,8 @@ bool SamplerEngine::renderVoice(Voice& v, float* out, uint32_t frames)
         (!v.loop && !releasing && params_.silenceMs > 0.0f)
             ? static_cast<uint32_t>(params_.silenceMs * 0.001f * static_cast<float>(sampleRate_))
             : 0;
+
+    const float loudLevel = params_.silenceLevel * 32768.0f;   // in the file's own units
 
     const uint64_t lastQ = static_cast<uint64_t>(v.last) * kOne;
     const uint64_t firstQ = static_cast<uint64_t>(v.first) * kOne;
@@ -454,31 +468,29 @@ bool SamplerEngine::renderVoice(Voice& v, float* out, uint32_t frames)
         }
 
         const float e = v.env * (1.0f / 32768.0f);
-        const float ol = l * v.gainL * e;
-        const float orr = r * v.gainR * e;
-        out[i * 2 + 0] += ol;
-        out[i * 2 + 1] += orr;
+        out[i * 2 + 0] += l * v.gainL * e;
+        out[i * 2 + 1] += r * v.gainR * e;
 
-        /* A one-shot that has gone inaudible is stopped rather than played
-         * and streamed to the end of its file. Counted on what actually
-         * reaches the bus, after the gain and the envelope, so a pad turned
-         * down does not keep a voice alive on a signal nobody can hear. */
-        if (quietLimit) {
-            const float a = (ol < 0 ? -ol : ol) > (orr < 0 ? -orr : orr)
-                                ? (ol < 0 ? -ol : ol) : (orr < 0 ? -orr : orr);
-            if (a < params_.silenceLevel) {
-                if (++v.quiet >= quietLimit) {
-                    cSilenced_.fetch_add(1, std::memory_order_relaxed);
-                    return false;
-                }
-            } else {
-                v.quiet = 0;
-            }
+        /* Where the file's sound ends, on the file itself rather than on what
+         * the gain makes of it: that is what the next hit is trimmed to, at
+         * any velocity. A one-shot quiet for quietLimit is taken to be past
+         * it and stopped rather than streamed to the end of its file. */
+        const float a = (l < 0 ? -l : l) > (r < 0 ? -r : r) ? (l < 0 ? -l : l) : (r < 0 ? -r : r);
+        if (a >= loudLevel) {
+            v.loudEnd = static_cast<uint32_t>(v.phase >> 32) + 1;
+            v.quiet = 0;
+        } else if (quietLimit && ++v.quiet >= quietLimit) {
+            learnEnd(v);
+            cSilenced_.fetch_add(1, std::memory_order_relaxed);
+            return false;
         }
 
         v.phase += v.inc;
         if (v.phase >= lastQ) {
-            if (!v.loop) return false;
+            if (!v.loop) {
+                if (v.last == v.slot->desc.frames) learnEnd(v);
+                return false;
+            }
             v.phase = firstQ + (v.phase - firstQ) % spanQ;
         }
     }

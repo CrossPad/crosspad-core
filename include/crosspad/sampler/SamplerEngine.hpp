@@ -94,10 +94,19 @@ public:
          * voices alive at twenty hits a second, where the audible part of a
          * hit is over in half a second.
          *
+         * Silence is judged on the file, not on what the pad's gain makes of
+         * it, and where it was found is kept (SampleStore::audibleEnd()): the
+         * next hit of that sample stops exactly there and never streams the
+         * tail at all. So the wait only matters for a sample's first hit, and
+         * it is long -- at 200 ms it took a rest inside a phrase for the end
+         * of the file and cut the phrase off there (DREAMSCAPE pad 4: a
+         * 221 ms rest at 1.05 s, 1.8 s of the sample never played,
+         * 09.10.2026).
+         *
          * Only one-shots. A loop is meant to carry on, and a held note is the
          * player's to release. 0 disables it.
          */
-        float   silenceMs = 200.0f;
+        float   silenceMs = 1500.0f;
         /**
          * @brief Voices that may be **streaming** at once.
          *
@@ -286,6 +295,8 @@ private:
         uint8_t  key = 0;        ///< the hit it belongs to: the pad, or what noteOn() was given
         uint32_t age = 0;        ///< order of starting, for the steal
         uint32_t quiet = 0;      ///< consecutive frames below silenceLevel
+        uint32_t loudEnd = 0;    ///< one past the last frame above it, 0 = none yet
+        uint16_t slotIdx = SampleStore::kNoSlot;   ///< where to say so
         /* What the streaming thread needs to open this voice's ring, left for
          * it by noteOn() rather than done there. */
         const SampleStore::Slot* slot = nullptr;
@@ -310,6 +321,8 @@ private:
     /// `wantStream` flag alone is not this question.
     static bool streamsOrWillStream(const Voice& v);
     void   startFade(Voice& v);
+    /// A one-shot has run past its sound: tell the store where it ended.
+    void   learnEnd(const Voice& v);
     void   endVoice(Voice& v);
     bool   renderVoice(Voice& v, float* out, uint32_t frames);
 

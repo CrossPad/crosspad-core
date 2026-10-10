@@ -91,7 +91,7 @@ struct SamplerKit {
         return (pan - 64) / 63.0f;
     }
 
-    /// Equal-power, so a pad swept across the image keeps its loudness.
+    /// Balance, as the mixer: unity at the centre, a side only taken down.
     static void panGains(float balance, float& l, float& r);
 };
 
