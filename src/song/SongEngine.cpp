@@ -900,6 +900,7 @@ struct SongEngine::Impl {
     }
 
     uint32_t framesPlayed() const { return played_.load(std::memory_order_acquire); }
+    uint32_t positionFrames() const { return pos_.load(std::memory_order_relaxed); }
 
     uint32_t underruns() const { return underruns_.load(); }
     uint32_t openFailures() const { return openFailures_.load(); }
@@ -2597,6 +2598,7 @@ void SongEngine::stop() { impl_->stop(); }
 bool SongEngine::playing() const { return impl_->playing(); }
 double SongEngine::positionBars() const { return impl_->positionBars(); }
 uint32_t SongEngine::framesPlayed() const { return impl_->framesPlayed(); }
+uint32_t SongEngine::positionFrames() const { return impl_->positionFrames(); }
 uint32_t SongEngine::underruns() const { return impl_->underruns(); }
 uint32_t SongEngine::openFailures() const { return impl_->openFailures(); }
 

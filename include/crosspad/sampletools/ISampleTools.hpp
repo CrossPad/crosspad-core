@@ -118,7 +118,10 @@ public:
     /// from @p fromBar. Frame 0 of the take is what came in with the song's
     /// first frame, the delay through the codecs taken off, so the take sits
     /// on the song's bars from @p fromBar on; nothing before it is kept.
-    /// stopRecording() stops the song with the take.
+    /// A song already playing -- started from the transport bar -- is not
+    /// started again: the take goes in at the next bar line it reaches, and
+    /// RecStatus::fromBar says which bar that was. stopRecording() stops the
+    /// song with the take.
     virtual bool     startRecordingWithSong(uint32_t fromBar) { (void)fromBar; return false; }
     /// The same after @p countInBeats of count-in (ISongEngine::playCountedIn):
     /// frame 0 is still the song's first, on the beat after the last click.

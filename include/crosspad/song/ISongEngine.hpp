@@ -252,6 +252,10 @@ public:
     /// render to ask every block -- the first block it is not 0 in is the
     /// block the song started in, which is what a take lines up with.
     virtual uint32_t framesPlayed() const { return 0; }
+    /// Where playback is, in frames from the song's start: the next frame the
+    /// render plays, round a loop as it goes. Lock-free, for a render that
+    /// lines a take up with a song already playing (its next bar line).
+    virtual uint32_t positionFrames() const { return 0; }
     /// Blocks of silence played because the card fell behind, since play().
     virtual uint32_t underruns() const = 0;
     /// Clip opens the card refused since play(); each is a track gone quiet.

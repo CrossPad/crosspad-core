@@ -77,6 +77,7 @@ public:
     bool playing() const override;
     double positionBars() const override;
     uint32_t framesPlayed() const override;
+    uint32_t positionFrames() const override;
     uint32_t underruns() const override;
     uint32_t openFailures() const override;
 

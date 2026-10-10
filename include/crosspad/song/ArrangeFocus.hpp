@@ -30,6 +30,9 @@ struct ArrangeFocus {
     /// The seq view's BOUNCE: Arrange opens on "Bounce T<n> to audio?" for
     /// this track, the dialog over the arrangement it changes.
     bool    bounce = false;
+    /// Where Arrange's playhead stood, 0-based: an audio track's take, with
+    /// the song, starts on this bar.
+    uint32_t bar = 0;
 
     bool held() const { return track >= 0 && track < AudioSong::kTracks; }
     void clear() { *this = ArrangeFocus{}; }
