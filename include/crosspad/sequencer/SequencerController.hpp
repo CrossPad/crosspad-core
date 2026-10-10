@@ -225,8 +225,14 @@ public:
 
     // ---------- transport ----------
 
+    /// Plays from where the last stop left the clock.
     void playback() { if (engine_) engine_->playback(); }
-    void record()   { if (engine_) { engine_->record(); setClickActive(true); } }
+    /// Back to bar one, stopped. What a second STOP does.
+    void rewind()   { if (engine_) engine_->resetClick(); }
+    /* The click is the player's switch (the top bar's metronome, the
+     * Sequencer's M): no transport command turns it on or off behind it. A
+     * count-in counts whatever it is set to. */
+    void record()   { if (engine_) engine_->record(); }
     void overdub()  { if (engine_) engine_->overdub(); }
 
     void reset() {
@@ -234,19 +240,16 @@ public:
             engine_->resetClick();
             engine_->reset();
         }
-        setClickActive(false);
     }
 
     void stop() {
         if (engine_) engine_->stop();
-        setClickActive(false);
     }
 
     void eraseSeq(int8_t idx = -1) {
         if (!engine_) return;
         if (idx < 0 || idx > Limits::MAX_SEQ_INDEX) {
             engine_->clearAll(0, 127);
-            setClickActive(false);
         } else {
             engine_->clearSeq(idx, 127);
         }

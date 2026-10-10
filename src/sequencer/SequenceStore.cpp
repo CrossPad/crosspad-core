@@ -41,14 +41,15 @@ bool SequenceStore::save(const PatternSequencer& seq, const std::string& path)
             uint32_t ticks = 0; uint8_t pad = 0, vel = 0;
             if (!seq.eventAtTicks(s, i, ticks, pad, vel)) continue;
             /* A triple rather than named fields: a full scene is 192 of these
-             * and the card is slow enough that the shape matters. A held note
-             * adds its length as a fourth; a tap stays a triple. */
+             * and the card is slow enough that the shape matters. */
             JsonArray e = evs.add<JsonArray>();
             e.add(ticks);
             e.add(pad);
             e.add(vel);
-            const uint32_t len = seq.eventLengthTicks(s, i);
-            if (len) e.add(len);
+            /* The length only where there is one: a hit stays a triple, and
+             * firmware from before lengths reads the first three and plays it
+             * as a hit. */
+            if (const uint32_t len = seq.eventLengthTicks(s, i)) e.add(len);
         }
     }
 
@@ -149,13 +150,12 @@ SequenceLoad SequenceStore::open(PatternSequencer& seq, const std::string& path)
         for (JsonArrayConst e : o["events"].as<JsonArrayConst>()) {
             if (e.size() < 3) continue;
             uint32_t ticks = e[0].as<uint32_t>();
-            /* No fourth element: a tap, or a file from before lengths. */
             uint32_t len = e.size() > 3 ? e[3].as<uint32_t>() : 0;
             /* A file written with a different resolution still lands on the
              * right beat; only its sub-tick detail is lost. */
             if (ppq > 0 && ppq != (int)PatternSequencer::kPpq) {
                 ticks = (uint32_t)(((uint64_t)ticks * PatternSequencer::kPpq) / (uint32_t)ppq);
-                len   = (uint32_t)(((uint64_t)len   * PatternSequencer::kPpq) / (uint32_t)ppq);
+                len = (uint32_t)(((uint64_t)len * PatternSequencer::kPpq) / (uint32_t)ppq);
             }
             seq.addEventTicks(s, ticks, e[1].as<uint8_t>(), e[2].as<uint8_t>(), len);
         }

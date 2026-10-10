@@ -173,7 +173,8 @@ bool EspEventBus::postGuiUpdateRequired(EventSource source) {
     return postEvent(EventType::GuiUpdateRequired, &source, sizeof(source));
 }
 
-bool EspEventBus::postSamplePlayback(uint8_t note, uint8_t wavIdx, bool isOn, EventSource source, uint8_t velocity) {
+bool EspEventBus::postSamplePlayback(uint8_t note, uint8_t wavIdx, bool isOn, EventSource source, uint8_t velocity,
+                                     int8_t transpose, uint8_t key) {
     /* The engine's report that a voice started or ended (EventSource::
      * SamplePlayback) is not sent on this bus. It comes from the audio
      * render, which may not wait for this queue's task (priority 4, no
@@ -185,7 +186,8 @@ bool EspEventBus::postSamplePlayback(uint8_t note, uint8_t wavIdx, bool isOn, Ev
      * dropped and leave a pad lit. A request to play (App, MIDI) is posted
      * and waits: losing it would lose a note. */
     if (source == EventSource::SamplePlayback) return true;
-    SamplePlaybackData data = { .note = note, .wavIdx = wavIdx, .isOn = isOn, .velocity = velocity, .source = source };
+    SamplePlaybackData data = { .note = note, .wavIdx = wavIdx, .isOn = isOn, .velocity = velocity, .source = source,
+                                .transpose = transpose, .key = key };
     ESP_LOGD(TAG, "Post SamplePlayback: note=%d wav=%d on=%s vel=%d src=%s",
              note, wavIdx, isOn ? "true" : "false", velocity, getSourceName(source));
     return postEvent(EventType::SamplePlayback, &data, sizeof(data));

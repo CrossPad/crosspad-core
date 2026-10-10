@@ -60,7 +60,15 @@ struct SamplePlaybackData {
     bool isOn;          ///< true = note on, false = note off
     uint8_t velocity;   ///< 1-127 playback velocity (ignored when isOn = false)
     EventSource source;
+    /// Semitones on top of the pad's own pitch, for this note only: 16 levels
+    /// of pitch play one pad's sample from every pad.
+    int8_t transpose = 0;
+    /// Which hit this is, for the release and the per-pad retrigger, when it
+    /// is not the pad itself: two pads playing one sample at two pitches are
+    /// two notes, not one note cut short. kSamplePlaybackOwnKey: the pad.
+    uint8_t key = 0xFF;
 };
+constexpr uint8_t kSamplePlaybackOwnKey = 0xFF;
 
 struct LiveModeChangedData {
     bool enabled;

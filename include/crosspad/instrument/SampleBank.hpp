@@ -12,6 +12,17 @@
  *
  * Not thread-safe. Build a bank on the loader thread, then publish the pointer
  * to the audio thread through an atomic; never mutate a published bank.
+ *
+ * **Memory generations.** On the device the PCM comes out of the engine arena,
+ * which is wiped wholesale -- re-registered, every block in it gone at once --
+ * whenever the engines hand it over. A block from before such a wipe is not
+ * one the heap knows any more, and freeing it is an assert inside the heap
+ * ("CORRUPT HEAP: Bad head", kit_churn 2026-10-09). Given a generation source
+ * (a counter the platform bumps on every wipe), the bank remembers the
+ * generation it was built in; once that has passed it carves nothing more and
+ * its destructor *forgets* its blocks instead of freeing them. The wipe
+ * already took them. This is a second line of defence: the platform's first is
+ * never to wipe the arena while a bank is installed.
  */
 
 #include <cstddef>
@@ -25,11 +36,25 @@ struct Zone {
     float rootMidi = 69.0f;   ///< MIDI note the recording sounds at
     uint32_t loopStart = 0;
     uint32_t loopEnd = 0;     ///< 0 (or <= loopStart) means one-shot
+    /// The PCM's rate over the engine's. A zone kept at its file's rate
+    /// (PitchedLoadEnv::convertRate off) steps this much slower or faster, so
+    /// its root still sounds at rootMidi.
+    float rate = 1.0f;
+    /// Applied to every voice of the zone (PitchedLoadEnv::normalize): a
+    /// take recorded quietly plays as loud as one recorded hot.
+    float gain = 1.0f;
 };
+
+/// The allocator's memory generation: a counter that changes whenever every
+/// block the allocator handed out is wiped at once. Null: no such wipes.
+using MemoryGenerationFn = uint32_t (*)();
 
 class SampleBank {
 public:
-    static constexpr uint8_t kMaxZones = 4;
+    /// A multisample's worth: the auto-sampler takes one zone every two or
+    /// three semitones over four octaves. A zone is ~20 B here; the PCM is
+    /// what the bank budget limits.
+    static constexpr uint8_t kMaxZones = 24;
 
     /**
      * @brief Shortest loop a zone may declare, in samples.
@@ -42,13 +67,18 @@ public:
      */
     static constexpr uint32_t kMinLoopSamples = 4;
 
-    SampleBank(void* (*alloc)(size_t), void (*free)(void*));
+    /// @p generation, when given, is read now and stamps the bank (see the
+    /// file comment); null keeps every block freeable for the bank's life.
+    SampleBank(void* (*alloc)(size_t), void (*free)(void*),
+               MemoryGenerationFn generation = nullptr);
+    /// Frees every block -- or, on a stale() bank, forgets them.
     ~SampleBank();
 
     SampleBank(const SampleBank&) = delete;
     SampleBank& operator=(const SampleBank&) = delete;
 
-    /// Allocate PCM for one zone. nullptr when full, empty, or out of memory.
+    /// Allocate PCM for one zone. nullptr when full, empty, out of memory, or
+    /// stale() (the blocks already carved are gone; a bank is one generation).
     int16_t* allocPcm(uint32_t length);
 
     /**
@@ -95,9 +125,18 @@ public:
     /// Bytes of PCM currently owned.
     size_t bytes() const { return bytes_; }
 
+    /// The memory generation the bank was built in (0 without a source).
+    uint32_t generation() const { return generation_; }
+
+    /// True when the memory under the bank has been wiped since it was built:
+    /// its PCM is no longer its own, and it must not be freed or played.
+    bool stale() const { return genFn_ != nullptr && genFn_() != generation_; }
+
 private:
     void* (*alloc_)(size_t);
     void (*free_)(void*);
+    MemoryGenerationFn genFn_ = nullptr;
+    uint32_t generation_ = 0;
 
     int16_t* blocks_[kMaxZones] = {};
     uint8_t blockCount_ = 0;

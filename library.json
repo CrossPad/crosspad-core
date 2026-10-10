@@ -1,6 +1,6 @@
 {
     "name": "crosspad-core",
-    "version": "1.48.1",
+    "version": "1.53.0",
     "description": "CrossPad portable core library",
     "keywords": ["crosspad", "midi", "sampler", "embedded"],
     "frameworks": ["arduino", "espidf"],
@@ -29,6 +29,7 @@
             "+<music/MusicTheory.cpp>",
             "+<midi/MidiInputHandler.cpp>",
             "+<net/WifiNetworkList.cpp>",
+            "+<net/RemoteFrame.cpp>",
             "+<platform/CrosspadPlatformInit.cpp>",
             "+<platform/PlatformCapabilities.cpp>",
             "+<platform/PlatformServices.cpp>",
@@ -49,8 +50,13 @@
             "+<instrument/SampleBank.cpp>",
             "+<instrument/PitchedInstrument.cpp>",
             "+<instrument/PitchedKitLoader.cpp>",
+            "+<instrument/InstrumentPlayState.cpp>",
+            "+<instrument/InstrumentPadLogic.cpp>",
             "+<audio/WavWriter.cpp>",
+            "+<audio/OutputEq.cpp>",
             "+<song/AudioSong.cpp>",
+            "+<looper/LooperEngine.cpp>",
+            "+<looper/LooperAccess.cpp>",
             "+<song/LiveSet.cpp>",
             "+<song/SongEngine.cpp>",
             "+<sampletools/SliceMath.cpp>",
@@ -62,7 +68,13 @@
             "+<fw/FwManifest.cpp>",
             "+<fw/FwLibraryGc.cpp>",
             "+<fw/FwStore.cpp>",
-            "+<fw/FwCardActions.cpp>"
+            "+<fw/FwCardActions.cpp>",
+            "+<sampler/BlockPool.cpp>",
+            "+<sampler/SampleStore.cpp>",
+            "+<sampler/StreamWindow.cpp>",
+            "+<sampler/SamplerKit.cpp>",
+            "+<sampler/SamplerEngine.cpp>",
+            "+<sampler/KitTake.cpp>"
         ]
     }
 }

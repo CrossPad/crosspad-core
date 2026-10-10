@@ -6,6 +6,109 @@ carries the same number) and consumers gate on it with
 `crosspad/RequireVersion.hpp`. This file starts at 1.45.0; earlier releases
 are described in their `chore: X.Y.Z` commits.
 
+## 1.53.0 — 2026-10-09
+
+Merge of the native sampler engine (1.49–1.52 on its branch) and WiFi remote
+(RemoteFrame, enableRemote). Both lines were numbered on their own branches;
+this is the first number above every one either of them used.
+
+### Fixed (pitched crash, 2026-10-09)
+
+- Memory generations for the pitched bank: `SampleBank` takes an optional
+  `MemoryGenerationFn` (a counter its owner bumps on every wholesale wipe of
+  the allocator's memory -- the device's engine arena reset), stamps itself
+  with it, and once it is `stale()` carves nothing more and its destructor
+  *forgets* its blocks instead of freeing them into the heap that replaced
+  them ("CORRUPT HEAP: Bad head", kit_churn on hardware). `generation()`,
+  `stale()` are new. `PitchedLoadEnv::generation` stamps the bank; a build
+  that sees the generation change fails with "memory reset during the build"
+  and frees no transient block from before the wipe. Source-compatible (the
+  parameter and the field default to null). Tests: `[generation]` in
+  `tests/test_SampleBank.cpp` and `tests/test_PitchedKitLoader.cpp`.
+
+### Fixed (merge review, 2026-10-09)
+
+- `SamplerEngine::serviceIo()` let two callers walk the voices at once (the
+  streaming task and a teardown's wait); only the audition's half was
+  guarded. One pass at a time now: it returns `bool`, false for the pass
+  that was turned away (source-compatible for callers that ignore it).
+  `ioIdle()` says no pass is in the voices or the audition.
+- `SamplerEngine::abandonVoices()`: a teardown whose render is parked (the
+  USB audio profile) had voices that never ended and windows that stayed
+  open on freed heads. It closes every voice's ring once (Finished ones
+  too), frees the voices and clears the pad bits; refused while a pass is in
+  the voices. Tests: `tests/test_SamplerTeardown.cpp`.
+- `crosspad/sampler/KitTake.hpp`: `TakeSpec`/`TakePadSpec`, a plain-data copy
+  of what a native take or a pad rebuild reads from a kit, made on the thread
+  that asks (no I/O) so the worker never reads a `KitInfo` the UI may free;
+  `WorkerGate`, start-or-queue for that worker with no request lost to a
+  worker on its way out; `arenaLendKeep()`/`arenaMayLend()`, the arena loan
+  judged on the largest free block. Tests: `tests/test_KitTake.cpp`.
+- `LatestWork<T>` (`KitTake.hpp`): the take's hand-over -- newest copy,
+  `WorkerGate`, and a state derived from the gate (busy from the request to
+  the worker's last pass, then the last outcome), so a retake folded into the
+  pass before it can no longer leave the state "taking" for good.
+- `ScopeTap`'s count is 32-bit (`written()` returns `uint32_t`): a 64-bit
+  atomic is not lock-free on the board and the tap is written by the render.
+
+### Added (audition, 2026-10-09)
+
+- `SamplerEngine` plays one file outside the kit as an audition:
+  `setPreviewSource()`, `previewStart(path, first, last, gain, balance)`,
+  `previewStop()`, `previewBusy()`, and `mixPreview()` to render it on a
+  channel of its own. The streaming thread (`serviceIo()`) reads the header,
+  takes the voice's ring from the pool and feeds it; the note thread only
+  writes a sequence-locked request. A card that falls behind is a gap, not
+  the end -- for `kPreviewGapMaxMs` (2 s); a first block that never comes
+  is given up after `kPreviewPrimeMaxPasses`; a stop in a gap, a header no
+  engine plays, an empty pool and a kit swap (`beginMutation()`) all leave
+  it idle with its ring back. `previewAbandon()` for a teardown whose render
+  is parked. What the prebuilt streamer's spare voice did for the file
+  browser and the start-up sound. Tests: `tests/test_SamplerPreview.cpp`
+  (22, nine of them failure paths).
+
+### Changed (image size, 2026-10-09)
+
+- The set-up, take and report functions of the files a board builds `-O2`
+  for their render (`SamplerEngine`, `BlockPool`, `PitchedInstrument`) are
+  marked `CROSSPAD_COLD` (GCC `cold`: built for size, behaviour unchanged).
+  The render, note and refill paths are untouched.
+
+### Added (WiFi remote, feat/remote-frame — numbered 1.48.0 on its branch)
+
+- `crosspad/net/RemoteFrame.hpp`: `parseRemoteRequest()`, `formatRemoteReply()` — the `<id> <line>` frame of the WiFi remote (MQTT `cp/{serial}/req|rsp`), limits `kRemoteCommandMax` 512 / `kRemoteReplyMax` 4096. Tests: `tests/test_remote_frame.cpp`.
+- `WirelessSettings::enableRemote` — WiFi remote management (default on; NVS cfg_wireless/remote, JSON enableRemote)
+
+### Added (native sampler engine, feat/native-sampler-engine — 1.49–1.52 on its branch, 1.40–1.48 before that)
+
+- `crosspad/sampler/*`: a streaming sampler engine of our own -- `BlockPool`,
+  `SampleStore`, `StreamWindow`, `SamplerKit`, `SamplerEngine` (voices, kit,
+  card streaming budget, per-note transpose and hit key).
+- Instrument host (`IInstrumentHost`, `InstrumentPlayState`,
+  `InstrumentPadLogic`), the looper (`LooperEngine`, `LooperAccess`),
+  `OutputEq`, more scales (Lydian, Phrygian), ninth chords and progressions.
+- Song: clip sets, a live transport, four tracks with a seq track, edit by
+  bars, seq blocks laid on the song map, one transport tempo.
+- `IEventBus::postSamplePlayback` takes a transpose and a key.
+
+### Merge notes
+
+- `PatternSequencer` note lengths were written twice: main's (bc0789a,
+  `noteRelease`) and the engine branch's (80f1a25, `noteOut`, plus the song
+  map and Record-replaces). The engine branch's sequencer is kept;
+  `noteRelease()` stays as an alias of `noteOut()`, and main's refinements are
+  carried over: lengths measured on `MetronomeNode::elapsedSamples` (a hold
+  over the loop end is not short, longer than the loop is the loop),
+  `sceneEventLength` of a pad still down grows while it is held, a held
+  note's release is counted from where it sounds, and the poll's press
+  buffer is in the object, sized for a release per note.
+- `EspEventBus::postSamplePlayback`: the engine's own voice reports
+  (`EventSource::SamplePlayback`) are still not posted (main, 054d14e).
+- `SongEngine`: the ring is the engine branch's 16384 frames with a 4096
+  prime; a bounce's first piece still fills the WAV header's 4 kB (main);
+  merge leaves out muted, silent and seq tracks; `requestImport` checks its
+  target track before it claims the edit.
+
 ## 1.48.1 — 2026-10-08
 
 ### Fixed

@@ -171,13 +171,17 @@ TEST_CASE("kit json: a sampler kit serializes without engine or instrument",
 }
 
 TEST_CASE("kit json: zones past the bank limit are dropped", "[kit][instrument]") {
-    KitInfo kit = parse(R"({"engine":"pitched","instrument":{"zones":[
-        {"sample":"1.wav"},{"sample":"2.wav"},{"sample":"3.wav"},
-        {"sample":"4.wav"},{"sample":"5.wav"}]},"pads":[]})");
+    std::string zones;
+    for (int i = 1; i <= crosspad::kInstrumentMaxZones + 1; ++i) {
+        if (i > 1) zones += ",";
+        zones += "{\"sample\":\"" + std::to_string(i) + ".wav\"}";
+    }
+    const std::string json = R"({"engine":"pitched","instrument":{"zones":[)" + zones + R"(]},"pads":[]})";
+    KitInfo kit = parse(json.c_str());
 
     REQUIRE(kit.instrument.zones.size() == crosspad::kInstrumentMaxZones);
-    REQUIRE(kit.instrument.zones.back().sample == "4.wav");
-    REQUIRE(kit.total_samples == 4);
+    REQUIRE(kit.instrument.zones.back().sample == std::to_string(crosspad::kInstrumentMaxZones) + ".wav");
+    REQUIRE(kit.total_samples == crosspad::kInstrumentMaxZones);
 }
 
 TEST_CASE("kit json: a zone without a sample is skipped", "[kit][instrument]") {

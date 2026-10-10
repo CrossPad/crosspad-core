@@ -401,3 +401,14 @@ TEST_CASE("SettingsIo: missing and corrupt files fail cleanly", "[settings][io]"
 
     REQUIRE(dst.LCDbrightness == before);
 }
+
+TEST_CASE("SettingsIo: remote management round-trips and defaults on", "[settings][io][remote]") {
+    TempFile file("cp_io_remote.json");
+    CrosspadSettings src = snapshot();
+    REQUIRE(src.wireless.enableRemote == true);
+    src.wireless.enableRemote = false;
+    REQUIRE(settingsExportAll(src, file.c_str()).ok);
+    CrosspadSettings dst = snapshot();
+    REQUIRE(settingsImportAll(dst, file.c_str()).ok);
+    REQUIRE(dst.wireless.enableRemote == false);
+}

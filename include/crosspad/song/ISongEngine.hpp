@@ -180,11 +180,67 @@ public:
     /// pads to a clip in the open project, placed after the last block of
     /// @p track. Poll bounceStatus().
     virtual bool bounceScene(uint8_t scene, uint8_t track) = 0;
+    /// Arrange's BOUNCE: the seq track @p track, its scene looped over the
+    /// whole song (playEndBars()), into one clip on that same track from bar
+    /// one. The caller turns the track into audio once it is Done.
+    virtual bool bounceSeqTrack(uint8_t track) { (void)track; return false; }
     virtual BounceStatus bounceStatus() = 0;
     virtual void cancelBounce() = 0;
 
+    // ── Live clips (the clip launcher) ────────────────────────────────────
+    /// One track of the launcher as it stands. @c file loops now; @c pending
+    /// was launched and starts on the next quant line, which is why both are
+    /// shown: a lit cell and a blinking one.
+    struct LiveTrack {
+        std::string file;            ///< clip looping now; empty = silent
+        std::string pending;         ///< launched, waiting for the line
+        uint16_t    bars = 0;        ///< the loop, on the song's grid
+        uint32_t    loopFrames = 0;
+        uint32_t    phase = 0;       ///< frames into the loop
+        bool        stopping = false;///< a stop is waiting for the line
+    };
+
+    /// The launcher's whole state, read from a UI timer.
+    struct LiveState {
+        bool      on = false;                   ///< the live transport runs
+        LiveTrack tracks[AudioSong::kTracks];
+        double    bars = 0.0;                   ///< where the grid is
+        uint8_t   quantBars = 1;
+        uint32_t  framesPerBar = 0;
+    };
+
+    /// Start the live transport: a free-running bar grid at the open song's
+    /// tempo, with nothing playing until a clip is launched. The arrangement
+    /// is not touched -- live and the timeline are two ways of playing one
+    /// project, never both at once.
+    virtual bool liveStart() { return false; }
+    /// Launch @p file (a clip of the open project, @p bars long on the grid)
+    /// on @p track, from the next quant line on, looping until something
+    /// replaces it. Launches made between two lines all take effect on the
+    /// same sample, which is what makes a row land together. Starts the live
+    /// transport when it is not running.
+    virtual bool liveLaunch(uint8_t track, const std::string& file, uint16_t bars)
+    {
+        (void)track; (void)file; (void)bars;
+        return false;
+    }
+    /// Stop @p track on the next line; kTracks or more: every track. The
+    /// transport keeps running, so the grid stays where it is.
+    virtual bool liveStop(uint8_t track) { (void)track; return false; }
+    /// Bars a launch waits for: 1, 2 or 4 (0 is taken as 1).
+    virtual void liveQuant(uint8_t bars) { (void)bars; }
+    /// False on a platform with no live transport.
+    virtual bool liveState(LiveState& out) { (void)out; return false; }
+
     // ── Playback ──────────────────────────────────────────────────────────
     /// Requests too: playing() turns true once the platform has the clips open.
+    /// Bars the song plays (and loops) over: AudioSong::playEnd(), and at
+    /// least one pass of a seq track's scene -- a song that is only a seq
+    /// track is that long, not empty.
+    virtual uint32_t playEndBars() {
+        std::lock_guard<std::recursive_mutex> l(songMutex());
+        return song().playEnd();
+    }
     virtual bool   play(uint32_t fromBar) = 0;
     /// play(), and with the song's syncSeq on the sequencer starts with it
     /// doing @p take. A platform without it plays the song alone.
@@ -214,6 +270,14 @@ public:
     virtual uint32_t underruns() const = 0;
     /// Clip opens the card refused since play(); each is a track gone quiet.
     virtual uint32_t openFailures() const = 0;
+
+    /// One line of the engine's own internals, for a host to read when the
+    /// position advances and nothing is heard. Everything the outside can
+    /// already see -- the clips on the card, song.json, the mixer channel --
+    /// can be right while the worker still fills the ring with silence, and
+    /// there is no other way to tell which of its gates closed. Empty by
+    /// default; the string lives in the engine.
+    virtual const char* debugLine() const { return ""; }
 };
 
 } // namespace crosspad

@@ -35,6 +35,10 @@ public:
     /// Get the number of registered apps
     size_t getAppCount() const { return appCount; }
 
+    /// Registrations that did not fit. Anything but zero is a bug in the
+    /// making: the app is simply not on the board.
+    size_t getDroppedCount() const { return dropped_; }
+
     /// Find an app by name (returns nullptr if not found)
     const AppEntry* findApp(const char* name) const;
 
@@ -47,9 +51,15 @@ public:
 private:
     AppRegistry() = default;
 
-    static constexpr size_t MAX_APPS = 16;
+    /* Twenty-four, because sixteen was reached. The apps that ship are
+     * sixteen on their own now, and the launcher registers its own entries
+     * (Power OFF) after them -- which registerApp() dropped without a word,
+     * so the board simply had no way to be turned off. An AppEntry is a
+     * handful of pointers; eight more cost less than that bug did. */
+    static constexpr size_t MAX_APPS = 24;
     AppEntry apps[MAX_APPS];
     size_t appCount = 0;
+    size_t dropped_ = 0;
 };
 
 } // namespace crosspad

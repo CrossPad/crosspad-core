@@ -32,10 +32,14 @@ public:
     virtual uint8_t countInLeft() const { return 0; }
 
     // --- Swing ---
-    /// How late every second subdivision sounds, as a percentage of one. 0 is
-    /// straight; 50 % puts the off-beat two thirds of the way through the pair,
-    /// which is the triplet feel. An engine without swing ignores it and
-    /// reports it off.
+    /// How hard every second subdivision is pushed late, 0..100.
+    ///
+    /// One scale, because a player should not have to hold two in their head.
+    /// It is the sampler's 50..75 % range stretched over 0..100: a hardware
+    /// swing of 50 % (straight) is 0 here, 66 % (the triplet feel, the
+    /// off-beat two thirds of the way through the pair) is 67, and 75 % -- as
+    /// far as those machines go -- is 100. In samples the off-beat moves by
+    /// subdivision x intensity / 200.
     ///
     /// Playback only: the pattern keeps its straight positions and the feel is
     /// applied on the way out, so turning swing down leaves what was recorded
@@ -90,12 +94,8 @@ public:
     virtual bool     sceneEvent(uint8_t seq, uint16_t i, float& at, uint8_t& pad, uint8_t& vel) const {
         (void)seq; (void)i; (void)at; (void)pad; (void)vel; return false;
     }
-    /// How long event @p i is held, as a fraction of the scene's loop; 0 for a
-    /// tap, which a UI draws at its narrowest. A note whose pad is still down
-    /// in a take answers how long it has been held so far.
-    virtual float    sceneEventLength(uint8_t seq, uint16_t i) const {
-        (void)seq; (void)i; return 0.0f;
-    }
+    /// How long event @p i is held, as 0..1 of the scene's loop; 0 for a hit.
+    virtual float    sceneEventLength(uint8_t seq, uint16_t i) const { (void)seq; (void)i; return 0.0f; }
     /// Twice the bars, the second half a copy of the first; false when it
     /// would not fit.
     virtual bool     doubleScene(uint8_t seq) { (void)seq; return false; }
