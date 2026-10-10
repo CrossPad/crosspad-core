@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: MIT
+// SPDX-License-Identifier: GPL-3.0-or-later
 #include <catch2/catch_test_macros.hpp>
 #include "crosspad/dsp/FftResampler.hpp"
 #include "crosspad/dsp/PitchDetector.hpp"

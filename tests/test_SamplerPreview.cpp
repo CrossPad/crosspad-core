@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: MIT
+// SPDX-License-Identifier: GPL-3.0-or-later
 //
 // The audition voice: one file outside the kit, streamed whole from the card
 // through the engine's own pool, rendered on its own output (mixPreview), and

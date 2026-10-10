@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: MIT
+// SPDX-License-Identifier: GPL-3.0-or-later
 //
 // Tearing the engine down while other threads still reach into it: the
 // streaming pass that has more than one caller (audio_bg, and a teardown

@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: MIT
+// SPDX-License-Identifier: GPL-3.0-or-later
 //
 // The native take's copy of a kit, the gate that starts its worker, and the
 // arena-loan rule -- the parts of the board's take that need no board.
