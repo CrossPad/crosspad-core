@@ -114,7 +114,7 @@ private:
         perfStatsFlags = 0;
         RGBbrightness = 100;
         quickSettingsEnabled = true;
-        launcherStyle = LauncherStyle::Grid;
+        launcherStyle = LauncherStyle::List;
         touchSensitivity = TouchSensitivity::Low;
         AudioEngineEnabled = true;
         usbAudioEnabled = true;    // UAC2 by default; console/OTA need the CDC profile

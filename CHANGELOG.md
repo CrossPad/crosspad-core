@@ -36,6 +36,7 @@ commits).
 - `PadAnimator::stop()` without a token (use `stopAll()`).
 
 ### Changed
+- `CrosspadSettings::launcherStyle` defaults to `LauncherStyle::List` (was Grid), in the constructor and in `load()`.
 
 - `dsp::mac()`, `macPanned()`, `scaleStereo()`, `peakStereo()`,
   `clampPeakStereo()`, `biquadStereo()` and `floatToInt16()` keep their

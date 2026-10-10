@@ -76,7 +76,7 @@ TEST_CASE("SettingsIo: full settings round-trip", "[settings][io]") {
     src.usbAudioEnabled = true;
     src.usbSerialGuard = false;
     src.Kit = 4;
-    src.launcherStyle = LauncherStyle::List;
+    src.launcherStyle = LauncherStyle::Grid;
     src.touchSensitivity = TouchSensitivity::High;
 
     SettingsIoResult wrote = settingsExportAll(src, file.c_str());
@@ -90,7 +90,7 @@ TEST_CASE("SettingsIo: full settings round-trip", "[settings][io]") {
     REQUIRE(read.version == kSettingsFileVersion);
 
     REQUIRE(dst.keypad.enableKeypad == false);
-    REQUIRE(dst.launcherStyle == LauncherStyle::List);
+    REQUIRE(dst.launcherStyle == LauncherStyle::Grid);
     REQUIRE(dst.touchSensitivity == TouchSensitivity::High);
     REQUIRE(dst.keypad.noteOffOnRelease == true);
     REQUIRE(dst.keypad.upperRowFunctions == true);
