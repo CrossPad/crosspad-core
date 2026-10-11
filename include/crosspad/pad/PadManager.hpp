@@ -47,8 +47,11 @@ public:
     /// @p source says who pressed: a finger (PadManager, the default) or the
     /// loop recorder playing a take back (SequencerCallback). It travels with
     /// the bus events, and pad logic reads it with pressSource().
+    /// @p performance: for the recorder's presses, how the hit sounded when it
+    /// was recorded -- pad logic reads it with pressPerformance().
     void handlePadPress(uint8_t padIdx, uint8_t velocity = 127,
-                        EventSource source = EventSource::PadManager);
+                        EventSource source = EventSource::PadManager,
+                        PadPerformance performance = {});
     void handlePadRelease(uint8_t padIdx, EventSource source = EventSource::PadManager);
     /// Called with every press a player makes -- whatever app's pad logic is
     /// active, never for the loop recorder's playback (SequencerCallback) --
@@ -63,6 +66,18 @@ public:
         return padIdx < 16 ? pressSource_[padIdx].load(std::memory_order_acquire)
                            : EventSource::PadManager;
     }
+    /// How the last press of @p padIdx was to sound, as handlePadPress() was
+    /// told: what the loop recorder kept with a hit, for its own presses. A
+    /// finger's press is plain here -- pad logic resolves those itself.
+    PadPerformance pressPerformance(uint8_t padIdx) const {
+        return padIdx < 16
+            ? PadPerformance::unpack(pressPerformance_[padIdx].load(std::memory_order_acquire))
+            : PadPerformance{};
+    }
+    /// What a press of @p padIdx would sound as under the active pad logic
+    /// (IPadLogicHandler::performance()); @p velocity becomes what it would
+    /// sound at. For the loop recorder, at the moment a hit comes in.
+    PadPerformance performanceFor(uint8_t padIdx, uint8_t& velocity) const;
     void handlePadPressure(uint8_t padIdx, uint8_t pressure);
     // Like handlePadPressure but always drives the LED brightness by padIdx,
     // bypassing the note↔pad lookups (getPadForMidiNote can return 255 under
@@ -197,6 +212,7 @@ private:
     bool padPlayStates_[16] = {false};
     uint8_t padVelocity_[16] = {0};
     std::atomic<EventSource> pressSource_[16] = {};
+    std::atomic<uint8_t>     pressPerformance_[16] = {};   ///< PadPerformance::pack()
     uint8_t padPressure_[16] = {0};
     int8_t padPan_[16] = {0};
     uint8_t padNotes_[16] = {0};

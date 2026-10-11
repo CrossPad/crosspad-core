@@ -46,6 +46,7 @@ class ISongEngine;
 class ISampleTools;
 class IInputGain;
 class IPadMix;
+class IPadPerformance;
 class PitchedInstrument;
 class IInstrumentHost;
 class Stm32MessageHandler;
@@ -92,6 +93,9 @@ struct PlatformServices {
     /// Per-pad level and pan of whichever engine plays the pads now; the
     /// engine that takes over the pads registers itself here.
     IPadMix*          padMix          = nullptr;
+    /// The pads' 16 levels, for an app other than the one that has them (the
+    /// Sequencer records a part in it). Null where nothing offers one.
+    IPadPerformance*  padPerformance  = nullptr;
     IBleMidi*         bleMidi         = nullptr;  // defaults to NullBleMidi
 
     /// The varispeed sample engine, when the platform runs one. Portable apps

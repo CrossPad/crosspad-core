@@ -1,5 +1,6 @@
 #pragma once
 #include <cstdint>
+#include "crosspad/pad/PadPerformance.hpp"
 
 namespace crosspad {
 
@@ -37,6 +38,14 @@ public:
     /// notes has no use for it.
     virtual void onPadPan(PadManager& padManager, uint8_t padIdx, int8_t pan) {
         (void)padManager; (void)padIdx; (void)pan;
+    }
+
+    /// What a press of @p padIdx would sound as now, for the loop recorder to
+    /// keep with the hit; @p velocity becomes the one that would sound. A
+    /// handler with no performance mode keeps the default: plain, as struck.
+    virtual PadPerformance performance(uint8_t padIdx, uint8_t& velocity) const {
+        (void)padIdx; (void)velocity;
+        return {};
     }
 };
 

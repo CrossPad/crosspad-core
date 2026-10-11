@@ -55,7 +55,17 @@ void PadManager::allNotesOff() {
 
 // ── Physical pad interaction ────────────────────────────────────────────
 
-void PadManager::handlePadPress(uint8_t padIdx, uint8_t velocity, EventSource source) {
+PadPerformance PadManager::performanceFor(uint8_t padIdx, uint8_t& velocity) const {
+    std::shared_ptr<IPadLogicHandler> handler;
+    {
+        std::lock_guard<std::mutex> lock(logicMutex_);
+        handler = activePadLogic_;
+    }
+    return handler ? handler->performance(padIdx, velocity) : PadPerformance{};
+}
+
+void PadManager::handlePadPress(uint8_t padIdx, uint8_t velocity, EventSource source,
+                                PadPerformance performance) {
     if (padIdx >= 16) return;
     if (inputSuppressed_) return;
     if (inputTap_ && source != EventSource::SequencerCallback) inputTap_(inputTapCtx_, padIdx, velocity);
@@ -73,6 +83,7 @@ void PadManager::handlePadPress(uint8_t padIdx, uint8_t velocity, EventSource so
         padStates_[padIdx] = true;
         padVelocity_[padIdx] = velocity;
     }
+    pressPerformance_[padIdx].store(performance.pack(), std::memory_order_release);
     pressSource_[padIdx].store(source, std::memory_order_release);
 
     // Check if there's an active pad logic handler

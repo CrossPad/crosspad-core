@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MIT
 #pragma once
 
+#include "crosspad/pad/PadPerformance.hpp"
 #include "crosspad/sequencer/ISequencerEngine.hpp"
 #include "crosspad/sequencer/MetronomeNode.hpp"
 #include "crosspad/sequencer/SequencerController.hpp"
@@ -48,6 +49,14 @@ public:
     /// as held, which lights its LED for good and leaves every reader of
     /// "is this pad pressed" answering yes forever.
     using NoteSink = void (*)(void* ctx, uint8_t pad, uint8_t velocity, bool on);
+    /// The same, with how each press is to sound (PadPerformance): a hit
+    /// recorded under 16 levels plays its source pad, at its level, whatever
+    /// mode the pads are in by then. A release carries a plain one.
+    using PerformedSink = void (*)(void* ctx, uint8_t pad, uint8_t velocity, bool on,
+                                   PadPerformance performance);
+    /// What a hit coming in would sound as (PadManager::performanceFor());
+    /// @p velocity becomes the one that would sound.
+    using PerformanceSource = PadPerformance (*)(void* ctx, uint8_t pad, uint8_t& velocity);
 
     /// Scene slots. Not MAX_SEQ_INDEX + 1 any more: that constant is the
     /// controller's own bookkeeping for solo and sequence navigation, while
@@ -70,7 +79,11 @@ public:
     /// half of the contract the interface already assumes: the engine reports
     /// where it got to, the controller holds it.
     void setController(SequencerController* c) { controller_ = c; }
-    void setSink(NoteSink fn, void* ctx) { sink_ = fn; sinkCtx_ = ctx; }
+    void setSink(NoteSink fn, void* ctx) { sink_ = fn; performedSink_ = nullptr; sinkCtx_ = ctx; }
+    void setSink(PerformedSink fn, void* ctx) { performedSink_ = fn; sink_ = nullptr; sinkCtx_ = ctx; }
+    /// Asked at every hit: a take keeps what the hit sounded as, not only
+    /// which pad it was. Without one every hit is plain.
+    void setPerformanceSource(PerformanceSource fn, void* ctx) { perfSource_ = fn; perfCtx_ = ctx; }
 
     // ── Input, called from the pad thread ─────────────────────────────────
 
@@ -258,7 +271,11 @@ public:
 
     /// Add an event straight into a scene, position and length in ticks. For
     /// loading. Not RT-safe against a running poll(); load while stopped.
-    bool addEventTicks(uint8_t seq, uint32_t ticks, uint8_t pad, uint8_t vel, uint32_t lenTicks = 0);
+    bool addEventTicks(uint8_t seq, uint32_t ticks, uint8_t pad, uint8_t vel, uint32_t lenTicks = 0,
+                       PadPerformance performance = {});
+    /// How event @p i sounded when it was recorded; plain for a hit made with
+    /// no performance mode.
+    PadPerformance eventPerformance(uint8_t seq, uint16_t i) const;
     /// One event with its position in ticks, for saving.
     bool eventAtTicks(uint8_t seq, uint16_t i, uint32_t& ticks, uint8_t& pad, uint8_t& vel) const;
     /// How long event @p i is held, in ticks; 0 for a hit.
@@ -282,12 +299,14 @@ private:
     /// `len`: samples the pad was held when it was recorded, and is held for
     /// when it plays; 0 is a hit -- released on the next poll, as everything
     /// recorded before lengths were.
-    struct Event { uint32_t pos; uint8_t pad; uint8_t vel; uint8_t fresh; uint32_t len; };
+    /// `perf`: what the hit sounded as (PadPerformance::pack()), 0 for plain.
+    /// `pad` stays the pad struck, so a 16 levels part keeps a lane per level.
+    struct Event { uint32_t pos; uint8_t pad; uint8_t vel; uint8_t fresh; uint8_t perf; uint32_t len; };
     /// `early`: count-in samples still to play when the hit was made, 0 once
     /// the loop runs. The clock holds position 0 through a count-in, so this
     /// is the only record of how far before beat one a hit was. `vel` 0 is a
     /// release (noteOut()).
-    struct Hit   { uint32_t pos; uint32_t early; uint8_t pad; uint8_t vel; };
+    struct Hit   { uint32_t pos; uint32_t early; uint8_t pad; uint8_t vel; uint8_t perf; };
     /// A recorded press still held: where the finger went down on the clock,
     /// and where its event was stored, to find it again at the release.
     struct Open  { uint32_t start; uint32_t pos; uint8_t seq; bool on; };
@@ -320,7 +339,7 @@ private:
     uint32_t downbeatGrace() const;
     void     drainInput(uint32_t loop);
     /// Push a hit or a release into the input ring; wait-free.
-    void     stamp(uint8_t pad, uint8_t velocity);
+    void     stamp(uint8_t pad, uint8_t velocity, uint8_t perf = 0);
     /// A release: the open note on @p h's pad gets its length.
     void     closeNote(const Hit& h, uint32_t loop);
     /// Every note still held when the take stops ends where the clock is.
@@ -339,8 +358,10 @@ private:
     /// -- collected and played once the lock is let go. The sink runs pad
     /// logic that can wait on the sample player; holding the lock through it
     /// held every UI read of the pattern for as long.
-    void     emit(uint8_t pad, uint8_t vel, bool on);
-    void     addEvent(uint8_t seq, uint32_t pos, uint8_t pad, uint8_t vel);
+    void     emit(uint8_t pad, uint8_t vel, bool on, uint8_t perf = 0);
+    /// Play one collected press through whichever sink is set.
+    void     sinkPress(uint8_t pad, uint8_t vel, bool on, uint8_t perf);
+    void     addEvent(uint8_t seq, uint32_t pos, uint8_t pad, uint8_t vel, uint8_t perf);
     /// Drop every event of @p pad from @p seq.
     void     erasePad(uint8_t seq, uint8_t pad);
     /// setSceneBars() without taking the lock, for callers that hold it.
@@ -366,7 +387,10 @@ private:
 
     MetronomeNode* clock_   = nullptr;
     NoteSink       sink_    = nullptr;
+    PerformedSink  performedSink_ = nullptr;
     void*          sinkCtx_ = nullptr;
+    PerformanceSource perfSource_ = nullptr;
+    void*          perfCtx_ = nullptr;
 
     Event    events_[kNumSequences][kMaxEvents] = {};
     uint16_t counts_[kNumSequences] = {};
@@ -391,7 +415,7 @@ private:
     std::atomic<bool> dirty_{false};
     std::atomic<bool> erasing_{false};
     mutable std::recursive_mutex editMutex_;
-    struct Press { uint8_t pad; uint8_t vel; bool on; };
+    struct Press { uint8_t pad; uint8_t vel; bool on; uint8_t perf; };
     /// A poll fires at most a whole scene and releases every pad.
     static constexpr uint16_t kMaxPresses = kMaxEvents + 16;
     Press*   presses_    = nullptr;   // set only while poll() collects

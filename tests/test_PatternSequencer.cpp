@@ -771,3 +771,94 @@ TEST_CASE("sequencer: note lengths travel in the sequence file, hits stay triple
     REQUIRE(b.seq.eventLengthTicks(0, 0) == 0);
     REQUIRE(b.seq.eventLengthTicks(0, 1) == 3 * kTicksPerBeat / 2);
 }
+
+TEST_CASE("sequencer: a 16 levels take keeps what each hit sounded as", "[seq][levels]") {
+    /* What the pad logic says a hit is when it comes in -- here 16 levels of
+     * pitch on pad 4, with Full level -- is kept with the hit and handed back
+     * on playback, whatever the pads would make of it by then. */
+    struct Perf {
+        static PadPerformance of(void*, uint8_t, uint8_t& vel) {
+            vel = 127;
+            PadPerformance p;
+            p.levels = PadLevels::Pitch;
+            p.source = 4;
+            return p;
+        }
+    };
+    struct Heard { uint8_t pad; uint8_t vel; PadPerformance perf; };
+    std::vector<Heard> heard;
+
+    Rig r;
+    r.seq.setPerformanceSource(&Perf::of, nullptr);
+    r.seq.setSink([](void* ctx, uint8_t pad, uint8_t vel, bool on, PadPerformance perf) {
+        if (on) static_cast<std::vector<Heard>*>(ctx)->push_back({pad, vel, perf});
+    }, &heard);
+    r.seq.setCountIn(false);
+    r.seq.setSceneBars(0, 1);
+    r.seq.record();
+    r.run(kBlock);
+    r.seq.noteIn(7, 40);                  // pad 7 is the source, a fifth up
+    r.run(kBlock);
+    r.seq.noteOut(7);
+    r.run(kBlock);
+    REQUIRE(r.seq.eventCount(0) == 1);
+    uint32_t pos = 0; uint8_t pad = 0, vel = 0;
+    REQUIRE(r.seq.eventAt(0, 0, pos, pad, vel));
+    REQUIRE(pad == 7);                    // the lane is the level that was hit
+    REQUIRE(vel == 127);                  // at the velocity that sounded
+    REQUIRE(r.seq.eventPerformance(0, 0).levels == PadLevels::Pitch);
+    REQUIRE(r.seq.eventPerformance(0, 0).source == 4);
+
+    /* Played back with the source gone: what was recorded, not what the pads
+     * would make of pad 7 now. */
+    r.seq.setPerformanceSource(nullptr, nullptr);
+    r.seq.stop();
+    heard.clear();
+    r.seq.playbackAt(0);
+    r.run(r.loop(1));
+    r.seq.stop();
+    REQUIRE_FALSE(heard.empty());
+    REQUIRE(heard[0].pad == 7);
+    REQUIRE(heard[0].vel == 127);
+    REQUIRE(heard[0].perf.levels == PadLevels::Pitch);
+    REQUIRE(heard[0].perf.source == 4);
+}
+
+TEST_CASE("sequence file: a hit's performance travels with it", "[seq][store][levels]") {
+    const char* path = "cp_seq_levels.json";
+    PadPerformance pitch;
+    pitch.levels = PadLevels::Pitch;
+    pitch.source = 9;
+    PadPerformance velo;
+    velo.levels = PadLevels::Velocity;
+    velo.source = 2;
+
+    Rig a;
+    a.seq.setSceneBars(0, 1);
+    REQUIRE(a.seq.addEventTicks(0, 0, 3, 100));                         // plain hit
+    REQUIRE(a.seq.addEventTicks(0, kTicksPerBeat, 5, 90, 0, pitch));    // a hit at a level
+    REQUIRE(a.seq.addEventTicks(0, kTicksPerBeat * 2, 6, 47, kTicksPerBeat, velo));
+    REQUIRE(SequenceStore::save(a.seq, path));
+
+    Rig b;
+    REQUIRE(SequenceStore::load(b.seq, path));
+    std::remove(path);
+    REQUIRE(b.seq.eventCount(0) == 3);
+    REQUIRE(b.seq.eventPerformance(0, 0).plain());
+    REQUIRE(b.seq.eventPerformance(0, 1).levels == PadLevels::Pitch);
+    REQUIRE(b.seq.eventPerformance(0, 1).source == 9);
+    REQUIRE(b.seq.eventLengthTicks(0, 1) == 0);                         // still a hit
+    REQUIRE(b.seq.eventPerformance(0, 2).levels == PadLevels::Velocity);
+    REQUIRE(b.seq.eventPerformance(0, 2).source == 2);
+    REQUIRE(b.seq.eventLengthTicks(0, 2) == kTicksPerBeat);
+}
+
+TEST_CASE("PadPerformance packs into one byte and back", "[seq][levels]") {
+    PadPerformance p;
+    REQUIRE(p.pack() == 0);
+    p.levels = PadLevels::Pitch;
+    p.source = 15;
+    REQUIRE(PadPerformance::unpack(p.pack()).levels == PadLevels::Pitch);
+    REQUIRE(PadPerformance::unpack(p.pack()).source == 15);
+    REQUIRE(PadPerformance::unpack(0x70).plain());     // a mode it does not know
+}
