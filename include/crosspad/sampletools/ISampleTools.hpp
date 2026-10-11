@@ -165,6 +165,17 @@ public:
         (void)file; (void)out; (void)fx;
         return false;
     }
+    /// @p file scaled so its loudest sample reaches @p peak (of full scale,
+    /// 0..1] into @p out, written beside it and swapped in as a rendered copy
+    /// is; an @p out already there is kept. Never turned down: a file within
+    /// 0.1 dB of @p peak, or above it, is its own answer and nothing is
+    /// written. jobResult() is the file the pad should play -- @p out or
+    /// @p file -- or why it failed.
+    virtual bool requestNormalized(const std::string& file, const std::string& out, float peak)
+    {
+        (void)file; (void)out; (void)peak;
+        return false;
+    }
     virtual ToolJob     job() const = 0;
     virtual std::string jobResult() = 0;
     virtual uint8_t     jobProgress() const = 0;   ///< percent
