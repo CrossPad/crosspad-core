@@ -65,7 +65,7 @@ include/crosspad/
 
 ### Platform interfaces
 
-The main interfaces a platform implements (`ls include/crosspad/*/I*.hpp` lists them all):
+The main interfaces a platform implements (`grep -l 'virtual .* = 0' include/crosspad/*/I*.hpp` lists the rest):
 
 | Interface | Purpose |
 |-----------|---------|
@@ -78,9 +78,13 @@ The main interfaces a platform implements (`ls include/crosspad/*/I*.hpp` lists 
 | `ISynthEngine` | Polyphonic synth (note on/off, ADSR, filters, effects) |
 | `IKeyValueStore` | Persistent key-value storage with namespaces |
 | `IStm32Transport` | Byte-level STM32 co-processor communication |
+| `IStm32RegisterBus` | Register-level I2C access to the STM32 (v2 boards) |
 | `ISettingsUI` | Platform callback for settings save/exit/info |
 | `IVibration` | Haptic feedback motor control |
 | `IImu` | Accelerometer / IMU readings |
+| `IHttpClient` | HTTP client (`Capability::Http`) |
+| `ISongEnginePlatform` | Platform hooks for the song engine (worker thread, ring memory, project location, bounce bus) |
+| `IInstrumentHost` | Lends the pitched sample engine to an app that plays an instrument |
 
 Apps implement `IPadLogicHandler` for their own pad behaviour.
 
