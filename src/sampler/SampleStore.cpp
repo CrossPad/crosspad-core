@@ -65,6 +65,17 @@ void SampleStore::unload()
     headBytes_ = 0;
 }
 
+void SampleStore::unloadSlot(uint16_t i)
+{
+    if (i >= kMaxSlots || !slots_[i].used) return;
+    Slot& s = slots_[i];
+    if (free_ && s.head) free_(const_cast<int16_t*>(s.head), ctx_);
+    headBytes_ -= s.headBytes;
+    --count_;
+    s = Slot{};
+    audibleEnd_[i].store(0, std::memory_order_relaxed);
+}
+
 void SampleStore::forget()
 {
     for (auto& s : slots_) s = Slot{};
@@ -123,6 +134,7 @@ uint16_t SampleStore::load(const char* path, uint32_t headFrames)
     s.desc = desc;
     s.head = head;
     s.headFrames = got;
+    s.headBytes = static_cast<uint32_t>(bytes);
     s.complete = (got >= desc.frames);
     s.used = true;
     audibleEnd_[slot].store(0, std::memory_order_relaxed);

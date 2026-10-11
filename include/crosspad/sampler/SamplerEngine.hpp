@@ -260,6 +260,21 @@ public:
     bool padSounding(uint8_t pad) const;
     bool anySounding() const;
 
+    /**
+     * @brief Whether anything may still read slot @p slot of the store.
+     *
+     * A kit swapped under a performance points each pad at its new samples
+     * while the old ones may still be sounding; a voice keeps reading the
+     * head it started on until it ends. So an old head goes back only once
+     * this is false: no pad of the published kit names the slot, no voice
+     * holds it (the streaming thread has freed every one that did), and no
+     * note is inside noteOn() -- one that is may have read a pad from before
+     * the swap, and its voice is not visible yet.
+     *
+     * Loader thread, after the pads that named the slot have been rewritten.
+     */
+    bool slotInUse(uint16_t slot) const;
+
     // ── Streaming, from the BG thread ─────────────────────────────────────
     /// Refill what the sounding voices will want next, and give back the
     /// blocks of the ones that have ended. Never called on the render thread.
@@ -342,6 +357,8 @@ private:
 
     NowFn  now_ = nullptr;
     std::atomic<uint32_t> cNoteOnMaxUs_{0};
+    /// Notes inside noteOn() right now; see slotInUse().
+    std::atomic<uint32_t> notesInFlight_{0};
     NoteCb onNote_ = nullptr, offNote_ = nullptr;
     void*  cbCtx_  = nullptr;
 

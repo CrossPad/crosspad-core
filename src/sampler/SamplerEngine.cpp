@@ -194,6 +194,11 @@ uint8_t SamplerEngine::voicesActive() const
 
 void SamplerEngine::noteOn(uint8_t pad, uint8_t velocity, int8_t transpose, uint8_t key)
 {
+    /* Counted before the kit is read and released after the voice is
+     * published, both sequentially consistent: a loader that rewrote a pad
+     * and then finds no note in flight knows every later note reads the new
+     * pad (slotInUse()). */
+    notesInFlight_.fetch_add(1, std::memory_order_seq_cst);
     const uint32_t t0 = now_ ? now_() : 0;
     noteOnBody(pad, velocity, transpose, key == kOwnKey ? pad : key);
     if (now_) {
@@ -201,6 +206,7 @@ void SamplerEngine::noteOn(uint8_t pad, uint8_t velocity, int8_t transpose, uint
         uint32_t m = cNoteOnMaxUs_.load(std::memory_order_relaxed);
         while (dt > m && !cNoteOnMaxUs_.compare_exchange_weak(m, dt, std::memory_order_relaxed)) { }
     }
+    notesInFlight_.fetch_sub(1, std::memory_order_seq_cst);
 }
 
 void SamplerEngine::noteOnBody(uint8_t pad, uint8_t velocity, int8_t transpose, uint8_t key)
@@ -393,6 +399,33 @@ bool SamplerEngine::anySounding() const
 {
     for (const auto& p : padVoices_) {
         if (p.load(std::memory_order_acquire) != 0) return true;
+    }
+    return false;
+}
+
+bool SamplerEngine::slotInUse(uint16_t slot) const
+{
+    /* The caller's rewrite of the pads is ordered before the count is read,
+     * against noteOn()'s increment before it reads one: either the note sees
+     * the new pad, or this sees the note. */
+    std::atomic_thread_fence(std::memory_order_seq_cst);
+    if (notesInFlight_.load(std::memory_order_seq_cst) != 0) return true;
+
+    if (const SamplerKit* k = kit_.load(std::memory_order_acquire)) {
+        for (const auto& kp : k->pad) {
+            for (uint8_t i = 0; i < kp.layerCount && i < KitPad::kMaxLayers; ++i) {
+                if (kp.layers[i].slot == slot) return true;
+            }
+        }
+    }
+    /* Finished counts: the render has let go, but until the streaming thread
+     * frees the voice its window may still be in the middle of a refill that
+     * reads the slot's path. */
+    for (const auto& v : voices_) {
+        const uint8_t st = v.state.load(std::memory_order_acquire);
+        if (st == static_cast<uint8_t>(VoiceState::Free)) continue;
+        if (st == static_cast<uint8_t>(VoiceState::Claiming)) return true;
+        if (v.slotIdx == slot) return true;
     }
     return false;
 }

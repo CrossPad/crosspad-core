@@ -813,3 +813,81 @@ TEST_CASE("SamplerKit pans as the mixer: unity at the centre", "[samplerengine]"
     REQUIRE(l == 1.0f);
     REQUIRE(r == 0.5f);
 }
+
+TEST_CASE("SampleStore::unloadSlot gives back one head and keeps the rest", "[samplestore][swap]") {
+    /* A kit swapped under a performance retires the outgoing kit's samples
+     * one at a time; the incoming kit's heads, loaded beside them, stay. */
+    struct Alloc {
+        static void* a(size_t n, void*) { return std::malloc(n); }
+        static void  f(void* p, void*)  { ++frees(); std::free(p); }
+        static int&  frees() { static int n = 0; return n; }
+    };
+    Alloc::frees() = 0;
+
+    MemSource src;
+    src.add("a.wav", 8000, 1);
+    src.add("b.wav", 8000, 2);
+
+    SampleStore store;
+    store.bind(&src, &Alloc::a, &Alloc::f, nullptr);
+    const uint16_t a = store.load("a.wav", 1024);
+    const uint16_t b = store.load("b.wav", 1024);
+    REQUIRE(a != SampleStore::kNoSlot);
+    REQUIRE(b != SampleStore::kNoSlot);
+    const size_t both = store.stats().headBytes;
+
+    store.unloadSlot(a);
+    REQUIRE(Alloc::frees() == 1);
+    REQUIRE(store.slot(a) == nullptr);
+    REQUIRE(store.slot(b) != nullptr);
+    REQUIRE(store.slotCount() == 1);
+    REQUIRE(store.stats().headBytes == both - 1024 * sizeof(int16_t));
+
+    store.unloadSlot(a);                       // already gone: nothing happens
+    REQUIRE(Alloc::frees() == 1);
+
+    REQUIRE(store.load("a.wav", 1024) == a);   // the slot is free for the next sample
+    store.unload();
+    REQUIRE(Alloc::frees() == 3);
+}
+
+TEST_CASE("SamplerEngine swaps a pad under the voice it is playing", "[samplerengine][swap]") {
+    /* A kit changed while the player keeps playing. The pad is pointed at its
+     * new sample at once; the voice already sounding plays the old one to
+     * its own end; the old head may go back only after that. */
+    Rig rig;
+    rig.build();
+    rig.src.add("old.wav", 800, 1);            // both resident whole
+    rig.src.add("new.wav", 500, 1);
+    rig.assign(0, "old.wav", 1024);
+    rig.publish();
+    const uint16_t oldSlot = rig.kit.pad[0].layers[0].slot;
+
+    rig.engine.noteOn(0, 127);
+    rig.run(2);                                // 128 frames in
+    REQUIRE(rig.engine.padSounding(0));
+
+    const uint16_t newSlot = rig.store.load("new.wav", 1024);
+    REQUIRE(newSlot != SampleStore::kNoSlot);
+    rig.kit.pad[0].layers[0].slot = newSlot;   // the swap: one pad entry
+    REQUIRE(rig.engine.slotInUse(oldSlot));    // its voice still reads it
+    REQUIRE(rig.engine.slotInUse(newSlot));    // the kit names it
+
+    /* 576 frames: past the new sample's 500, short of the old one's 800 --
+     * so a voice still sounding is the old sample, uninterrupted. */
+    rig.run(7);
+    REQUIRE(rig.engine.padSounding(0));
+    REQUIRE(rig.engine.slotInUse(oldSlot));
+
+    rig.run(6);                                // past 800: it ended, and was freed
+    REQUIRE_FALSE(rig.engine.padSounding(0));
+    REQUIRE_FALSE(rig.engine.slotInUse(oldSlot));
+    rig.store.unloadSlot(oldSlot);
+
+    /* The next hit is the new sample: 500 frames, so gone after eight blocks. */
+    rig.engine.noteOn(0, 127);
+    REQUIRE(rig.run(1) > 0.0f);
+    rig.run(7);
+    REQUIRE_FALSE(rig.engine.padSounding(0));
+    REQUIRE(rig.engine.counters().underruns == 0);
+}

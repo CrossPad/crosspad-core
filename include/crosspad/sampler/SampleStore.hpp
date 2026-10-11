@@ -103,6 +103,7 @@ public:
         SampleDesc desc;
         const int16_t* head = nullptr;   ///< headFrames * desc.channels samples
         uint32_t   headFrames = 0;
+        uint32_t   headBytes = 0;        ///< what the head took from the allocator
         bool       complete = false;     ///< the head is the whole sample
         bool       used = false;
     };
@@ -126,6 +127,17 @@ public:
 
     /// Give back every head. Only legal with no voice reading one.
     void unload();
+
+    /**
+     * @brief Give back one slot's head, and the slot with it.
+     *
+     * What a kit swap does with a sample the outgoing kit played and the
+     * incoming one does not, while the rest of the kit goes on playing --
+     * unload() would take the incoming kit's heads with it. Only legal once
+     * nothing can read the slot any more; SamplerEngine::slotInUse() says
+     * when.
+     */
+    void unloadSlot(uint16_t i);
 
     /**
      * @brief Drop every head **without freeing it**.
