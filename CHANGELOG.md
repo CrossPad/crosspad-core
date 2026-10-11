@@ -6,6 +6,18 @@ carries the same number) and consumers gate on it with
 `crosspad/RequireVersion.hpp`. This file starts at 1.45.0; earlier releases
 are described in their `chore: X.Y.Z` commits.
 
+## 1.54.1 — 2026-10-12
+
+### Fixed
+
+- A rev 1.x encoder (5-byte `CMD_ENCODER_COUNTER`, raw LPTIM count) stepped
+  every second click: its steps came from A/B lines made up from the count
+  on the assumption of 4 counts a click resting at 1 mod 4. Measured on
+  PCB 1.9 it is 2 counts a click, and the count runs 0..60 (the STM passes
+  `TIM_CHANNEL_ALL`, 0x3C, as the LPTIM period), so every wrap moved the
+  detents to the other parity. The count is now unwrapped and a step taken
+  where the knob lands in a detent; a wobble in one is no step.
+
 ## 1.54.0 — 2026-10-11
 
 ### Added

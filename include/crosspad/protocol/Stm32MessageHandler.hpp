@@ -118,7 +118,7 @@ public:
 
     struct Stm32InputState {
         int8_t  encoderTop = 0;     // the STM's detent index 0..15, from its count -- which slips; steps: takeEncoderSteps()
-        uint8_t encoderPhase = 0;   // sub-detent: [1:0]=CNT mod4, [2]=A, [3]=B, [4]=settled gate
+        uint8_t encoderPhase = 0;   // sub-detent: [1:0]=CNT mod4, [2]=A, [3]=B, [4]=settled gate (rev 1.x: [1:0] only)
         int8_t  encoderLeft = 0;
         bool encoderPressed = false;
         bool powerBtnPressed = false;
@@ -141,7 +141,21 @@ public:
     int encoderDetent() const { return encoderDetent_.load(); }
 
 private:
+    /// A rev 1.x STM's LPTIM counts per encoder click.
+    static constexpr int kLegacyCountsPerDetent = 2;
+    /// Its count's top: the STM starts the LPTIM with TIM_CHANNEL_ALL (0x3C)
+    /// where the HAL takes the period, so it runs 0..60 and wraps.
+    static constexpr int kLegacyCountMax = 60;
+
+    /// Steps from a rev 1.x STM's raw count, + where it rises.
+    int legacyEncoderSteps(uint8_t cnt);
+
     EncoderDetents encoderDetents_;
+    int  legacyRaw_ = -1;             ///< the last raw count, -1 before the first
+    int  legacyPos_ = 0;              ///< the count unwrapped
+    int  legacyDetentParity_ = 0;     ///< the parity of legacyPos_ in a detent
+    bool legacyHaveDetent_ = false;
+    int  legacyDetent_ = 0;           ///< legacyPos_ of the detent the knob was last in
     std::atomic<int> encoderSteps_{0};
     std::atomic<int> encoderDetent_{0};
     PadManager* padManager_ = nullptr;
