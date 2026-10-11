@@ -20,6 +20,16 @@ are described in their `chore: X.Y.Z` commits.
   PCB 1.9 STM built before that command existed, `[F0 7D 13 api F7]` (the
   PCB number in the command byte), which read as a short status frame.
 
+### Fixed
+
+- A rev 1.x encoder (5-byte `CMD_ENCODER_COUNTER`, raw LPTIM count) stepped
+  every second click: its steps came from A/B lines made up from the count
+  on the assumption of 4 counts a click resting at 1 mod 4. Measured on
+  PCB 1.9 it is 2 counts a click, and the count runs 0..60 (the STM passes
+  `TIM_CHANNEL_ALL`, 0x3C, as the LPTIM period), so every wrap moved the
+  detents to the other parity. The count is now unwrapped and a step taken
+  where the knob lands in a detent; a wobble in one is no step.
+
 ## 1.53.0 — 2026-10-09
 
 Merge of the native sampler engine (1.49–1.52 on its branch) and WiFi remote

@@ -92,3 +92,38 @@ TEST_CASE("an older STM's version reply, the PCB in the command byte", "[stm][ve
     REQUIRE(pcb == 19);
     REQUIRE(api == 0x10);
 }
+
+TEST_CASE("a rev 1.x encoder count steps once per click, two counts each", "[stm][encoder]") {
+    PadManager pads;
+    CrosspadStatus status;
+    Stm32MessageHandler h;
+    h.init(pads, status);
+    auto count = [&](uint8_t cnt) {
+        const uint8_t f[] = {CROSSPAD_SYSEX_START, CROSSPAD_SYSEX_MANUFACTURER,
+                             CROSSPAD_CMD_ENCODER_COUNTER, cnt, CROSSPAD_SYSEX_END};
+        h.handleMessage(f, sizeof(f));
+    };
+
+    // Measured on PCB 1.9: each click moves the count by 2, the count runs
+    // 0..60. The first report is one count out of the detent at 57.
+    count(56);
+    count(55);                     // the first detent seen: no step yet
+    count(54); count(53);
+    REQUIRE(h.takeEncoderSteps() == -1);
+    count(51); count(49);          // a fast turn: the even counts unreported
+    REQUIRE(h.takeEncoderSteps() == -2);
+
+    count(50); count(49);          // a wobble in the detent
+    count(48); count(49);
+    REQUIRE(h.takeEncoderSteps() == 0);
+
+    count(55); count(59); count(60); count(0);   // up through the wrap: 60 -> 0 is one count
+    REQUIRE(h.takeEncoderSteps() == 6);
+    count(1);                      // even raw counts are detents now
+    REQUIRE(h.takeEncoderSteps() == 0);
+    count(2);
+    REQUIRE(h.takeEncoderSteps() == 1);
+    count(1); count(0); count(60);                // and back down through it
+    REQUIRE(h.takeEncoderSteps() == -1);
+    REQUIRE(h.encoderDetent() == 3);
+}
