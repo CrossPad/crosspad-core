@@ -64,6 +64,13 @@ void Stm32MessageHandler::handleMessage(const uint8_t* data, unsigned size) {
         break;
 
     case CROSSPAD_CMD_STATUS_REGISTER:
+        // A rev 1.x STM built before CMD_VERSION_REPLY answers the version
+        // request with [F0 7D pcb api F7]: the PCB number where the command
+        // byte belongs. PCB 1.9 is 0x13, and a real status frame is 7 bytes.
+        if (size == 5) {
+            if (versionReplyCb_) versionReplyCb_(data[2], data[3]);
+            break;
+        }
         if (size < 6) break;
         status_->stm32.SetStm32Status(data[3], data[4]);
         break;
@@ -108,8 +115,9 @@ void Stm32MessageHandler::handleMessage(const uint8_t* data, unsigned size) {
         break;
 
     case CROSSPAD_CMD_VERSION_REPLY:
-        // [pcb_rev, api_ver] — informational, no consumer yet.
+        // [pcb_rev, api_ver]
         if (size < 6) break;
+        if (versionReplyCb_) versionReplyCb_(data[3], data[4]);
         break;
 
     case CROSSPAD_CMD_DFU_REQUEST:
@@ -159,15 +167,15 @@ void Stm32MessageHandler::parseDigitalButtons(const uint8_t* data, unsigned size
         }
     }
 
-    // Presses do NOT call handlePadPress(): this path carries no velocity
-    // byte, and a fixed 127 would clobber what the MIDI note-on pipe already
-    // wrote. Releases do go through handlePadRelease(), which cleans up the
-    // LED and EventBus state and sends the NoteOff.
+    // Without a platform callback, presses do NOT call handlePadPress(): this
+    // path carries no velocity byte. Releases go through handlePadRelease(),
+    // which cleans up the LED and EventBus state and sends the NoteOff.
     for (int i = 0; i < 16; i++) {
-        if (keyPresses_[i] != oldPresses[i]) {
-            if (!keyPresses_[i]) {
-                padManager_->handlePadRelease(i);
-            }
+        if (keyPresses_[i] == oldPresses[i]) continue;
+        if (padEdgeCb_) {
+            padEdgeCb_(static_cast<uint8_t>(i), keyPresses_[i]);
+        } else if (!keyPresses_[i]) {
+            padManager_->handlePadRelease(i);
         }
     }
 }

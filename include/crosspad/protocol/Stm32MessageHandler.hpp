@@ -45,6 +45,16 @@ public:
     /// The platform answers on the same MIDI port with 0x02/0x03 reply chunks.
     using CompanionCallback = std::function<void(const uint8_t* args, unsigned len)>;
 
+    /// Callback for a pad edge in CMD_BUTTONS_DIGITAL: @p pressed true on a
+    /// press, false on a release. Only a UART-only STM (rev 1.x) sends these
+    /// frames, and they are its only pad events -- no note-on, no velocity --
+    /// so the platform plays them the way it plays an STM note-on.
+    using PadEdgeCallback = std::function<void(uint8_t pad, bool pressed)>;
+
+    /// Callback for CROSSPAD_CMD_VERSION_REPLY: what a UART-only STM (rev 1.x)
+    /// reports where a rev 2 STM has registers -- its PCB and protocol version.
+    using VersionReplyCallback = std::function<void(uint8_t pcbRev, uint8_t apiVersion)>;
+
     Stm32MessageHandler() = default;
 
     /**
@@ -78,6 +88,17 @@ public:
      * @brief Set callback for companion control over SysEx (platform-specific)
      */
     void setCompanionCallback(CompanionCallback cb) { companionCb_ = std::move(cb); }
+
+    /**
+     * @brief Set callback for pad edges in digital button frames (platform-specific).
+     * Unset, a release goes to PadManager::handlePadRelease() and a press is dropped.
+     */
+    void setPadEdgeCallback(PadEdgeCallback cb) { padEdgeCb_ = std::move(cb); }
+
+    /**
+     * @brief Set callback for the STM's version reply (platform-specific)
+     */
+    void setVersionReplyCallback(VersionReplyCallback cb) { versionReplyCb_ = std::move(cb); }
 
     /**
      * @brief Handle a raw SysEx message from STM32
@@ -130,6 +151,8 @@ private:
     AudioRouteCallback audioRouteCb_;
     DawCallback dawCb_;
     CompanionCallback companionCb_;
+    PadEdgeCallback padEdgeCb_;
+    VersionReplyCallback versionReplyCb_;
     bool keyPresses_[16] = {};
 };
 

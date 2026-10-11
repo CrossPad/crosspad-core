@@ -6,6 +6,20 @@ carries the same number) and consumers gate on it with
 `crosspad/RequireVersion.hpp`. This file starts at 1.45.0; earlier releases
 are described in their `chore: X.Y.Z` commits.
 
+## 1.54.0 — 2026-10-11
+
+### Added
+
+- `Stm32MessageHandler::setPadEdgeCallback()`: pad presses and releases from
+  `CMD_BUTTONS_DIGITAL` go to the platform. A rev 1.x board's UART-only STM
+  sends no note-on, so these frames are its only pad events; unset, the
+  handler keeps dropping presses and releasing through `PadManager`.
+- `Stm32MessageHandler::setVersionReplyCallback()`: `CMD_VERSION_REPLY`
+  (`[pcb_rev, api_version]`, the rev 1.x STM's answer to a version request)
+  reaches the platform instead of being dropped. So does the reply of a
+  PCB 1.9 STM built before that command existed, `[F0 7D 13 api F7]` (the
+  PCB number in the command byte), which read as a short status frame.
+
 ## 1.53.0 — 2026-10-09
 
 Merge of the native sampler engine (1.49–1.52 on its branch) and WiFi remote
