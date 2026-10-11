@@ -23,8 +23,13 @@ static constexpr uint8_t kInstrumentMaxZones = 24;
 struct InstrumentZoneSpec {
     std::string sample;
     float       root      = -1.0f;   ///< < 0 → detect the root pitch at load time
+    /// Where a note begins -- the attack -- before it reaches the loop.
+    uint32_t    start     = 0;
     uint32_t    loopStart = 0;
     uint32_t    loopEnd   = 0;       ///< 0 → one-shot
+    /// Frames before loopEnd crossfaded into the frames before loopStart, so
+    /// the wrap has no seam. 0 = a plain loop. See Zone::loopXfade.
+    uint32_t    loopXfade = 0;
 };
 
 /// The "instrument" block of a pitched kit.json.

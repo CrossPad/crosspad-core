@@ -23,8 +23,28 @@ struct Zone {
     int16_t* pcm = nullptr;
     uint32_t length = 0;      ///< frames of mono PCM
     float rootMidi = 69.0f;   ///< MIDI note the recording sounds at
+    /// Where a note begins. Its own point, not the loop start: a held note is
+    /// its attack once and then the loop, and a loop placed after the attack
+    /// would otherwise cut the attack off. Stored by startFor().
+    uint32_t start = 0;
     uint32_t loopStart = 0;
     uint32_t loopEnd = 0;     ///< 0 (or <= loopStart) means one-shot
+    /**
+     * @brief Frames before loopEnd that are crossfaded with the frames before
+     *        loopStart, so the wrap has no seam.
+     *
+     * A plain loop jumps from pcm[loopEnd - 1] to pcm[loopStart], and unless
+     * the two happen to meet that is a click every loop -- and a held note
+     * built from one sample is nothing but loops. Here the last loopXfade
+     * frames of the loop fade out while the same stretch *before* loopStart
+     * fades in, so at the wrap the voice is already playing what comes right
+     * before loopStart and steps into it. Done in the render, not baked into
+     * the PCM, so a loop edited while the bank plays needs no rebuild.
+     *
+     * Never more than the loop is long nor than there is before its start:
+     * addZone() and editZone() store loopXfadeFor() of what they are given.
+     */
+    uint32_t loopXfade = 0;
     /// The PCM's rate over the engine's. A zone kept at its file's rate
     /// (PitchedLoadEnv::convertRate off) steps this much slower or faster, so
     /// its root still sounds at rootMidi.
@@ -82,6 +102,18 @@ public:
      */
     static bool loopValid(uint32_t length, uint32_t loopStart, uint32_t loopEnd);
 
+    /// The crossfade a loop can actually have: @p xfade, cut to the loop's
+    /// length and to what precedes its start. 0 for a one-shot.
+    static uint32_t loopXfadeFor(uint32_t loopStart, uint32_t loopEnd, uint32_t xfade);
+
+    /// Keep the zone's crossfade, or its start, in editZone().
+    static constexpr uint32_t kKeepXfade = 0xFFFFFFFFu;
+    static constexpr uint32_t kKeepStart = 0xFFFFFFFFu;
+
+    /// Where a note can begin: inside the PCM, and for a loop not past its
+    /// end -- a start there would never reach the loop -- else the loop start.
+    static uint32_t startFor(uint32_t length, uint32_t loopStart, uint32_t loopEnd, uint32_t start);
+
     /**
      * @brief Change a registered zone's root and loop, keeping its PCM.
      *
@@ -90,10 +122,14 @@ public:
      * published to the audio thread, so this belongs inside
      * PitchedInstrument::editZone()'s gate, not on its own.
      *
+     * @param loopXfade frames of crossfade, or kKeepXfade for what the zone
+     *        has; either way cut to loopXfadeFor() the new loop.
+     * @param start where a note begins, or kKeepStart; either way startFor().
      * @return false for an unknown zone or a loop loopValid() rejects; the
      *         zone is then untouched.
      */
-    bool editZone(uint8_t i, float rootMidi, uint32_t loopStart, uint32_t loopEnd);
+    bool editZone(uint8_t i, float rootMidi, uint32_t loopStart, uint32_t loopEnd,
+                  uint32_t loopXfade = kKeepXfade, uint32_t start = kKeepStart);
 
     uint8_t zoneCount() const { return zoneCount_; }
     const Zone& zone(uint8_t i) const;

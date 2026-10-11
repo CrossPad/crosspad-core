@@ -193,10 +193,14 @@ public:
      * @param maxSpins,yield as in gateEnter(). Nothing is freed here, so a
      *        renderer that never answers is not fatal — the notes are already
      *        silenced.
+     * @param loopXfade,start as in SampleBank::editZone(); left out, the
+     *        zone keeps its own.
      * @return false when anything above was rejected.
      */
     bool editZone(uint8_t zoneIdx, float rootMidi, uint32_t loopStart, uint32_t loopEnd,
-                  uint32_t maxSpins, void (*yield)());
+                  uint32_t maxSpins, void (*yield)(),
+                  uint32_t loopXfade = SampleBank::kKeepXfade,
+                  uint32_t start = SampleBank::kKeepStart);
 
     void noteOn(uint8_t midiNote, uint8_t velocity, uint8_t pad);
     void noteOff(uint8_t midiNote);

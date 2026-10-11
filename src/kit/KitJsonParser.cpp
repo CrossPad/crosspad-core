@@ -48,6 +48,11 @@ bool kit_parse_instrument(KitInfo& kit, JsonDocument& doc)
 
             zone.loopStart = z["loop_start"] | (uint32_t)0;
             zone.loopEnd   = z["loop_end"]   | (uint32_t)0;
+            zone.loopXfade = z["loop_xfade"] | (uint32_t)0;
+            /* A note used to begin at the loop start, attack or not; a file
+             * written before "start" existed keeps sounding that way. */
+            const uint32_t legacyStart = zone.loopEnd > zone.loopStart ? zone.loopStart : 0;
+            zone.start = z["start"] | legacyStart;
 
             spec.zones.push_back(zone);
         }
@@ -186,6 +191,8 @@ bool kit_serialize(const KitInfo& kit, JsonDocument& doc)
             else               zo["root"] = z.root;
             zo["loop_start"] = z.loopStart;
             zo["loop_end"]   = z.loopEnd;
+            if (z.loopXfade) zo["loop_xfade"] = z.loopXfade;
+            zo["start"]      = z.start;
         }
 
         if (spec.padNotesSet) {

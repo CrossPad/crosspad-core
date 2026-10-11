@@ -289,16 +289,22 @@ bool pitchedBuildBank(const KitInfo& kit, const PitchedLoadEnv& env, IFft& fft,
         // Loop points are in source-file samples; rate conversion moves them.
         uint32_t loopStart = spec.loopStart;
         uint32_t loopEnd   = spec.loopEnd;
+        uint32_t loopXfade = spec.loopXfade;
+        uint32_t start     = spec.start;
         if (needResample && info.frames > 0) {
             const double r = static_cast<double>(fullFrames) / static_cast<double>(info.frames);
             loopStart = static_cast<uint32_t>(loopStart * r);
             loopEnd   = static_cast<uint32_t>(loopEnd * r);
+            loopXfade = static_cast<uint32_t>(loopXfade * r);
+            start     = static_cast<uint32_t>(start * r);
         }
         // A truncated zone loses its loop end with the audio it named.
         if (loopEnd > frames) loopEnd = frames;
         if (loopEnd <= loopStart) { loopStart = 0; loopEnd = 0; }
         z.loopStart = loopStart;
         z.loopEnd   = loopEnd;
+        z.loopXfade = loopXfade;
+        z.start     = start;
 
         if (!bank->addZone(z)) {
             fail(err, errLen, "zone %u: addZone rejected", (unsigned)i);

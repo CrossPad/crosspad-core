@@ -283,3 +283,25 @@ TEST_CASE("kit json: a pad's pitch and filters survive a round trip, and 0 is no
     CHECK(back.pads[4].hp == 0);
     CHECK(json.find("\"hp\":0") == std::string::npos);
 }
+
+TEST_CASE("kit json: a zone keeps its start and loop crossfade", "[kit][instrument]") {
+    KitInfo kit = parse(R"({"engine":"pitched","instrument":{"zones":[
+        {"sample":"a.wav","root":60,"start":40,"loop_start":100,"loop_end":900,"loop_xfade":80},
+        {"sample":"b.wav","root":62,"loop_start":100,"loop_end":900},
+        {"sample":"c.wav","root":64,"loop_start":100,"loop_end":0}
+        ]},"pads":[]})");
+
+    REQUIRE(kit.instrument.zones[0].start == 40);
+    REQUIRE(kit.instrument.zones[0].loopXfade == 80);
+    // Written before "start" existed: a looped note began at its loop start,
+    // and still does; a one-shot began at 0.
+    REQUIRE(kit.instrument.zones[1].start == 100);
+    REQUIRE(kit.instrument.zones[1].loopXfade == 0);
+    REQUIRE(kit.instrument.zones[2].start == 0);
+
+    KitInfo back = parse(serialize(kit).c_str(), false);
+    REQUIRE(back.instrument.zones[0].start == 40);
+    REQUIRE(back.instrument.zones[0].loopXfade == 80);
+    REQUIRE(back.instrument.zones[1].start == 100);
+    REQUIRE(back.instrument.zones[2].start == 0);
+}
