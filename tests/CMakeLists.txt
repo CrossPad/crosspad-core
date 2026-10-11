@@ -83,6 +83,7 @@ set(CORE_SOURCES
     ${CORE_DIR}/src/dsp/PitchDetector.cpp
     ${CORE_DIR}/src/dsp/FftResampler.cpp
     ${CORE_DIR}/src/dsp/ScopeTrigger.cpp
+    ${CORE_DIR}/src/dsp/TimeStretch.cpp
 
     # Pitched instrument engine
     ${CORE_DIR}/src/instrument/WavPcm.cpp

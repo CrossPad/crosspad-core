@@ -52,6 +52,13 @@ public:
     SongOpState editState() const override;
     bool requestMerge(uint8_t trackMask, uint32_t fromBar, uint32_t toBar) override;
     uint8_t editProgress() const override;
+    uint32_t stretchWaiting() const override;
+    void trackLevels(int track, float& left, float& right) override;
+    uint8_t stretchProgress() const override;
+    bool undo() override;
+    bool redo() override;
+    uint32_t undoSteps() const override;
+    uint32_t redoSteps() const override;
     bool requestExportLiveSet() override;
     std::vector<std::string> editReport() override;
     bool clipPeaks(const std::string& file, ClipPeaks& out) override;
@@ -80,6 +87,14 @@ public:
     uint32_t positionFrames() const override;
     uint32_t underruns() const override;
     uint32_t openFailures() const override;
+    bool recordSeq(uint32_t fromBar, SyncTake take, uint8_t beats) override;
+    bool seqPunch(SyncTake take) override;
+    SyncTake seqTake() const override;
+    bool seqPunchable() const override;
+    bool openSeqEdit(uint8_t track, uint32_t bar, uint8_t scene) override;
+    void syncSeqEdit() override;
+    void closeSeqEdit() override;
+    int32_t seqEditBar() const override;
 
 private:
     struct Impl;

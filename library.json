@@ -56,6 +56,7 @@
       "+<dsp/PitchDetector.cpp>",
       "+<dsp/FftResampler.cpp>",
       "+<dsp/ScopeTrigger.cpp>",
+      "+<dsp/TimeStretch.cpp>",
       "+<instrument/WavPcm.cpp>",
       "+<instrument/SampleBank.cpp>",
       "+<instrument/PitchedInstrument.cpp>",

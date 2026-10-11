@@ -151,12 +151,18 @@ void PatternSequencer::drainInput(uint32_t loop)
     auto open = [this](uint8_t pad, uint32_t pos, uint32_t start) {
         if (pad < 16) open_[pad] = Open{start, pos, activeSeq_, true};
     };
+    /* A take onto the song keeps the hits where the song is, not in a scene. */
+    const bool toSong = songTaking_.load(std::memory_order_relaxed) &&
+                        (state_ == SequencerState::Running || state_ == SequencerState::PreBeat);
     while (tail != head) {
         const Hit& h = ring_[tail];
         /* A release ends the note its press opened, whatever the transport
          * is doing by now: a punch-out between the two still keeps the note. */
         if (!h.vel) {
             closeNote(h, loop);
+            if (songTaking_.load(std::memory_order_relaxed)) takeSongRelease(h, loop);
+        } else if (toSong) {
+            if (!h.early || h.early <= grace) takeSongHit(h, loop);
         /* Erase held: the hit names a pad to take out, it is not a note. */
         } else if (erasing) {
             erasePad(activeSeq_, h.pad);
@@ -202,7 +208,7 @@ uint32_t PatternSequencer::swingLate(uint32_t unit) const
     return (uint32_t)((uint64_t)unit * swing_.load(std::memory_order_relaxed) / 200u);
 }
 
-uint32_t PatternSequencer::swung(uint32_t pos) const
+uint32_t PatternSequencer::swung(uint32_t pos, uint32_t loop) const
 {
     const uint32_t unit = swingSamples();
     if (unit < 2) return pos;
@@ -210,7 +216,6 @@ uint32_t PatternSequencer::swung(uint32_t pos) const
      * where it was, which is what makes it a feel and not a shift. */
     if (!((pos / unit) & 1u)) return pos;
     const uint32_t late = swingLate(unit);
-    const uint32_t loop = clock_ ? clock_->loopSamples() : 0;
     uint32_t at = pos + late;
     /* A hit at the very end pushed past it comes round, where the next pass's
      * window picks it up -- it does not vanish for one lap. */
@@ -239,22 +244,38 @@ void PatternSequencer::fireWindow(uint32_t from, uint32_t to)
          * and the swing is applied on the way out. */
         const uint32_t at = swung(e.pos);
         if (at < from || at >= to) continue;
-        const uint16_t bit = e.pad < 16 ? (uint16_t)(1u << e.pad) : 0;
-        /* A pad a note still holds lets go before it is struck again. */
-        if (held_ & bit) {
-            emit(e.pad, 0, false);
-            held_ &= (uint16_t)~bit;
-        }
-        emit(e.pad, e.vel, true, e.perf);
-        if (!bit) continue;
-        if (e.len) {
-            /* Held for as long as it was played: a chord, a sample on HOLD. */
-            held_ |= bit;
-            relLeft_[e.pad] = e.len;
-            pendingRelease_ &= (uint16_t)~bit;
-        } else {
-            pendingRelease_ |= bit;
-        }
+        strike(e.pad, e.vel, e.perf, e.len);
+    }
+}
+
+void PatternSequencer::strike(uint8_t pad, uint8_t vel, uint8_t perf, uint32_t len)
+{
+    const uint16_t bit = pad < 16 ? (uint16_t)(1u << pad) : 0;
+    /* A pad a note still holds lets go before it is struck again. */
+    if (held_ & bit) {
+        emit(pad, 0, false);
+        held_ &= (uint16_t)~bit;
+    }
+    emit(pad, vel, true, perf);
+    if (!bit) return;
+    if (len) {
+        /* Held for as long as it was played: a chord, a sample on HOLD. */
+        held_ |= bit;
+        relLeft_[pad] = len;
+        pendingRelease_ &= (uint16_t)~bit;
+    } else {
+        pendingRelease_ |= bit;
+    }
+}
+
+void PatternSequencer::fireNotes(const std::vector<SongNote>& notes, uint32_t loop,
+                                 uint32_t from, uint32_t to)
+{
+    if ((!sink_ && !performedSink_) || from >= to) return;
+    for (const SongNote& n : notes) {
+        const uint32_t at = swung(n.pos, loop);
+        if (at < from || at >= to) continue;
+        strike(n.pad, n.vel, n.perf, n.len);
     }
 }
 
@@ -419,28 +440,143 @@ void PatternSequencer::fireSong(uint32_t samples, uint32_t loop)
 {
     if (!loop) return;
     uint32_t pos = mapPos_;
+    const bool muted = mapMuted_.load(std::memory_order_relaxed);
     while (samples) {
         /* Up to the song's wrap, then on from where it wraps to. */
         const bool wraps = mapWrapFrom_ > pos;
         const uint32_t step = wraps ? std::min(samples, mapWrapFrom_ - pos) : samples;
         const uint32_t end = pos + step;
         for (const SongSpan& s : map_) {
+            if (muted) break;
             const uint32_t x = std::max(pos, s.a), y = std::min(end, s.b);
             if (x >= y) continue;
-            uint32_t at = (x - s.a + s.scene) % loop;
+            /* A block's own notes go round their own length; the scene's
+             * round the scene, which is the clock's loop. */
+            const uint32_t len = s.notes ? s.loop : loop;
+            if (!len) continue;
+            uint32_t at = (x - s.a + s.scene) % len;
             uint32_t left = y - x;
             while (left) {
-                const uint32_t run = std::min(left, loop - at);
-                fireWindow(at, at + run);
+                const uint32_t run = std::min(left, len - at);
+                if (s.notes) fireNotes(*s.notes, len, at, at + run);
+                else         fireWindow(at, at + run);
                 left -= run;
                 at = 0;
             }
         }
         pos = end;
         samples -= step;
-        if (wraps && pos >= mapWrapFrom_) pos = mapWrapTo_;
+        if (wraps && pos >= mapWrapFrom_) {
+            /* A take going round a loop region: what is held ends at the
+             * region's end, and the next lap is a pass of its own. */
+            if (songTaking_.load(std::memory_order_relaxed)) {
+                closeSongHeld(mapWrapFrom_);
+                takeLap_.fetch_add(1, std::memory_order_release);
+            }
+            pos = mapWrapTo_;
+        }
     }
     mapPos_ = pos;
+}
+
+uint32_t PatternSequencer::songMapPosition() const
+{
+    return mapPos_.load(std::memory_order_relaxed);
+}
+
+// ── A take onto the song ───────────────────────────────────────────────────
+
+bool PatternSequencer::beginSongTake(size_t capacity)
+{
+    std::vector<SongTakeNote> room;
+    room.reserve(capacity);
+    if (room.capacity() < capacity) return false;
+    std::lock_guard<std::recursive_mutex> lock(editMutex_);
+    take_.swap(room);
+    take_.clear();
+    takeCap_ = capacity;
+    for (auto& o : takeOpen_) o.on = false;
+    takeLap_.store(0, std::memory_order_relaxed);
+    songTaking_.store(true, std::memory_order_release);
+    return true;
+}
+
+void PatternSequencer::takeSongNotes(std::vector<SongTakeNote>& out, bool closeHeld)
+{
+    std::lock_guard<std::recursive_mutex> lock(editMutex_);
+    if (closeHeld) closeSongHeld(mapPos_.load(std::memory_order_relaxed));
+    out.insert(out.end(), take_.begin(), take_.end());
+    take_.clear();
+}
+
+void PatternSequencer::endSongTake()
+{
+    std::vector<SongTakeNote> gone;
+    {
+        std::lock_guard<std::recursive_mutex> lock(editMutex_);
+        songTaking_.store(false, std::memory_order_release);
+        take_.swap(gone);
+        takeCap_ = 0;
+        for (auto& o : takeOpen_) o.on = false;
+    }
+}
+
+uint32_t PatternSequencer::songPosOf(const Hit& h, uint32_t loop, uint16_t& lap) const
+{
+    /* The map stands where the song was at the last poll, and the clock where
+     * lastPos_ says: the hit is that far past both. */
+    const uint32_t last = loop ? lastPos_ % loop : lastPos_;
+    const uint32_t past = loop ? (h.pos + loop - last) % loop : h.pos - last;
+    uint32_t pos = mapPos_.load(std::memory_order_relaxed);
+    lap = takeLap_.load(std::memory_order_relaxed);
+    /* Stamped just before the last poll read the clock and drained just
+     * after it: a hair behind, not a whole loop ahead. */
+    if (loop && past > loop / 2) return pos > loop - past ? pos - (loop - past) : 0;
+    pos += past;
+    if (mapWrapFrom_ && pos >= mapWrapFrom_) {
+        pos = mapWrapTo_ + (pos - mapWrapFrom_);
+        ++lap;
+    }
+    return pos;
+}
+
+void PatternSequencer::takeSongHit(const Hit& h, uint32_t loop)
+{
+    if (h.pad >= 16) return;
+    uint16_t lap = 0;
+    /* A hair early for the take's beat one is that beat, as in a scene; it
+     * is struck where the song starts. */
+    const uint32_t raw = h.early ? mapPos_.load(std::memory_order_relaxed) : songPosOf(h, loop, lap);
+    if (h.early) lap = takeLap_.load(std::memory_order_relaxed);
+    /* The song's grid, not the scene's loop: nothing wraps a take. */
+    const uint32_t at = quantise(h.early ? raw : unswung(raw), 0);
+    TakeOpen& o = takeOpen_[h.pad];
+    /* Struck again before its release came through: the first is a hit. */
+    if (o.on && take_.size() < takeCap_) take_.push_back({o.pos, 0, h.pad, o.vel, o.perf, o.lap});
+    o = TakeOpen{at, raw, h.vel, h.perf, lap, true};
+}
+
+void PatternSequencer::takeSongRelease(const Hit& h, uint32_t loop)
+{
+    if (h.pad >= 16 || !takeOpen_[h.pad].on) return;
+    TakeOpen& o = takeOpen_[h.pad];
+    o.on = false;
+    uint16_t lap = 0;
+    const uint32_t now = songPosOf(h, loop, lap);
+    /* A release in another lap was ended at the wrap already. */
+    const uint32_t len = (lap == o.lap && now > o.start) ? now - o.start : 0;
+    if (take_.size() < takeCap_) take_.push_back({o.pos, len, h.pad, o.vel, o.perf, o.lap});
+}
+
+void PatternSequencer::closeSongHeld(uint32_t at)
+{
+    for (uint8_t pad = 0; pad < 16; ++pad) {
+        TakeOpen& o = takeOpen_[pad];
+        if (!o.on) continue;
+        o.on = false;
+        const uint32_t len = at > o.start ? at - o.start : 0;
+        if (take_.size() < takeCap_) take_.push_back({o.pos, len, pad, o.vel, o.perf, o.lap});
+    }
 }
 
 // ── Scenes ─────────────────────────────────────────────────────────────────

@@ -703,6 +703,96 @@ TEST_CASE("sequencer: a song map wraps where the song does", "[seq][songmap]") {
     r.seq.stop();
 }
 
+TEST_CASE("sequencer: a block with notes of its own plays them, not the scene", "[seq][songmap]") {
+    Rig r;
+    r.seq.setSceneBars(0, 1);
+    REQUIRE(r.seq.addEventTicks(0, 0, 1, 100));          // the scene: pad 1 on beat one
+    const uint32_t bar = r.loop(1);
+    auto own = std::make_shared<std::vector<PatternSequencer::SongNote>>();
+    own->push_back({0, 0, 5, 100, 0});
+    own->push_back({kBeat, 0, 6, 100, 0});
+    PatternSequencer::SongSpan block;
+    block.a = bar;
+    block.b = 3 * bar;
+    block.notes = own;
+    block.loop = bar;                                     // one bar of notes, played round
+    r.seq.playbackAt(0);
+    r.seq.setSongMap({{0, bar, 0}, block}, 0, 0);
+    r.run(3 * bar);
+    REQUIRE(r.fired == std::vector<uint8_t>{1, 5, 6, 5, 6});
+}
+
+TEST_CASE("sequencer: a muted song map plays nothing and keeps its place", "[seq][songmap]") {
+    Rig r;
+    r.seq.setSceneBars(0, 1);
+    REQUIRE(r.seq.addEventTicks(0, 0, 1, 100));
+    const uint32_t bar = r.loop(1);
+    r.seq.playbackAt(0);
+    r.seq.setSongMap({{0, 2 * bar, 0}}, 0, 0);
+    r.seq.setSongMapMuted(true);
+    r.run(bar);
+    REQUIRE(r.fired.empty());
+    CHECK(r.seq.songMapPosition() == bar);
+    r.seq.setSongMapMuted(false);
+    r.run(bar);
+    REQUIRE(r.fired == std::vector<uint8_t>{1});
+}
+
+TEST_CASE("sequencer: a take onto the song keeps a hit where the song is", "[seq][songtake]") {
+    Rig r;
+    r.seq.setCountIn(false);
+    const uint32_t bar = r.loop(1);
+    r.seq.playbackAt(5 * bar);                            // the song's bar six; the scene loops four
+    r.seq.setSongMap({}, 0, 0);
+    REQUIRE(r.seq.beginSongTake(16));
+    r.run(kBeat + 100);                                   // a hair after beat two
+    r.seq.noteIn(3, 100);
+    r.run(kBeat / 2);
+    r.seq.noteOut(3);
+    r.run(kBlock);
+    std::vector<PatternSequencer::SongTakeNote> got;
+    r.seq.takeSongNotes(got, true);
+    REQUIRE(got.size() == 1);
+    CHECK(got[0].pos == 5 * bar + kBeat);                 // on the song's grid
+    CHECK(got[0].pad == 3);
+    CHECK(got[0].vel == 100);
+    CHECK(got[0].len >= kBeat / 2 - kBlock);
+    CHECK(got[0].len <= kBeat / 2 + kBlock);
+    CHECK(got[0].lap == 0);
+    /* Nothing of it went into a scene. */
+    CHECK(r.seq.eventCount(0) == 0);
+    r.seq.endSongTake();
+    r.seq.stop();
+}
+
+TEST_CASE("sequencer: a take round a region counts its laps and ends a held note at the wrap", "[seq][songtake]") {
+    Rig r;
+    r.seq.setCountIn(false);
+    const uint32_t bar = r.loop(1);
+    r.seq.playbackAt(0);
+    r.seq.setSongMap({}, bar, 0);                         // the song goes round its bar one
+    REQUIRE(r.seq.beginSongTake(16));
+    r.run(bar - kBeat);
+    r.seq.noteIn(2, 90);                                  // beat four, held over the wrap
+    r.run(kBeat * 2);
+    CHECK(r.seq.songTakeLaps() == 1);
+    r.seq.noteOut(2);
+    r.seq.noteIn(4, 80);                                  // lap two, beat two
+    r.run(kBlock);
+    std::vector<PatternSequencer::SongTakeNote> got;
+    r.seq.takeSongNotes(got, true);
+    REQUIRE(got.size() == 2);
+    CHECK(got[0].pad == 2);
+    CHECK(got[0].lap == 0);
+    CHECK(got[0].pos == bar - kBeat);
+    CHECK(got[0].len == kBeat);                           // to the region's end, no further
+    CHECK(got[1].pad == 4);
+    CHECK(got[1].lap == 1);
+    CHECK(got[1].pos == kBeat);
+    r.seq.endSongTake();
+    r.seq.stop();
+}
+
 // ── note lengths ───────────────────────────────────────────────────────────
 
 namespace {
