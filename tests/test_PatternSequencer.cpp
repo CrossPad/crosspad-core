@@ -626,6 +626,25 @@ TEST_CASE("sequencer: PLAY after a STOP plays on from where it stopped", "[seq][
     REQUIRE(r.clock.positionSamples() == 0);
 }
 
+TEST_CASE("sequencer: out of a take nothing due is skipped", "[seq][take]") {
+    Rig r;
+    r.seq.setSceneBars(0, 1);
+    REQUIRE(r.seq.addEventTicks(0, kTicksPerBeat, 2, 100));
+    r.seq.setCountIn(false);
+    r.seq.playback();
+    r.seq.overdub();
+    r.run(kBeat - kBlock);
+    /* The clock passes the note's beat with no poll in between -- the poll
+     * thread is late -- and PLAY punches out right then. */
+    std::vector<float> out(kBlock * 2);
+    r.clock.mix(out.data(), kBlock);
+    r.clock.mix(out.data(), kBlock);
+    r.seq.playback();
+    r.seq.poll();
+    REQUIRE(r.fired == std::vector<uint8_t>{2});
+    r.seq.stop();
+}
+
 // ── laid on a song cut into blocks ─────────────────────────────────────────
 
 TEST_CASE("sequencer: a song map plays the scene only under its blocks", "[seq][songmap]") {
@@ -638,6 +657,23 @@ TEST_CASE("sequencer: a song map plays the scene only under its blocks", "[seq][
     r.seq.setSongMap({{0, bar, 0}, {2 * bar, 3 * bar, 0}}, 0, 0);
     r.run(3 * bar);
     REQUIRE(r.fired == std::vector<uint8_t>{1, 2, 1, 2});   // bar two is a gap
+}
+
+TEST_CASE("sequencer: out of an overdub the song map keeps its place", "[seq][songmap]") {
+    Rig r;
+    r.seq.setSceneBars(0, 1);
+    REQUIRE(r.seq.addEventTicks(0, 0, 1, 100));
+    REQUIRE(r.seq.addEventTicks(0, kTicksPerBeat, 2, 100));
+    r.seq.setCountIn(false);
+    const uint32_t bar = r.loop(1);
+    r.seq.playbackAt(0);
+    r.seq.setSongMap({{0, bar, 0}, {2 * bar, 3 * bar, 0}}, 0, 0);
+    r.seq.overdub();
+    r.run(bar + bar / 2);                     // half-way into the gap
+    r.seq.playback();                         // PLAY: out of the layering
+    r.run(bar + bar / 2);
+    /* Taken back to the song's bar one, the gap played bar zero's block. */
+    REQUIRE(r.fired == std::vector<uint8_t>{1, 2, 1, 2});
 }
 
 TEST_CASE("sequencer: a block plays the scene from its own bar of it", "[seq][songmap]") {

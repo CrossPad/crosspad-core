@@ -749,9 +749,18 @@ void PatternSequencer::playback()
 {
     if (!clock_) return;
     std::lock_guard<std::recursive_mutex> lock(editMutex_);
+    /* Already running -- out of a take: REC or DUB pressed again, or PLAY over
+     * an overdub. Only the mode changes. The window the next poll fires and
+     * where the song map stands carry on as they were: taken back to now and
+     * to the song's bar one, a note due in the last few milliseconds was
+     * skipped and a seq track's blocks jumped to the top of the song. */
+    if (clock_->running()) {
+        setTransport(SequencerMode::Playback, SequencerState::Running);
+        return;
+    }
     /* From where it stopped: the clock holds its position through a stop,
      * and resetClick() is what takes it back to bar one. */
-    if (!clock_->running()) clock_->startAt(clock_->positionSamples());
+    clock_->startAt(clock_->positionSamples());
     lastPos_ = clock_->positionSamples();
     mapPos_ = 0;
     setTransport(SequencerMode::Playback, SequencerState::Running);
@@ -786,8 +795,13 @@ void PatternSequencer::startTake(SequencerMode m)
         setTransport(m, SequencerState::PreBeat);
         return;
     }
-    if (!clock_->running()) clock_->startAt(held);
-    lastPos_ = clock_->positionSamples();
+    /* Into a running loop the window the next poll fires carries on, as in
+     * playback(): set to now, a note due since the last poll was skipped at
+     * the very press that punched in. */
+    if (!clock_->running()) {
+        clock_->startAt(held);
+        lastPos_ = clock_->positionSamples();
+    }
     setTransport(m, SequencerState::Running);
 }
 

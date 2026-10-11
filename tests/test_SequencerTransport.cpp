@@ -303,26 +303,28 @@ TEST_CASE("sequencer transport: playing -- REC punches in, DUB layers, PLAY does
     REQUIRE(r.engine.overdubs == 1);
 }
 
-TEST_CASE("sequencer transport: recording -- DUB layers, PLAY does nothing", "[transport]")
+TEST_CASE("sequencer transport: recording -- DUB layers, PLAY plays on", "[transport]")
 {
     Rig r(4);
     put(r, SequencerState::Running, SequencerMode::Record);
     r.transport.play();
-    REQUIRE(r.engine.plays == 0);
+    REQUIRE(r.engine.plays == 1);       // punched out, the loop on
+    put(r, SequencerState::Running, SequencerMode::Record);
     r.transport.overdub();
     REQUIRE(r.engine.overdubs == 1);
 }
 
-TEST_CASE("sequencer transport: overdubbing -- REC records, DUB plays, PLAY does nothing", "[transport]")
+TEST_CASE("sequencer transport: overdubbing -- REC records, DUB plays, PLAY plays on", "[transport]")
 {
     Rig r(4);
     put(r, SequencerState::Running, SequencerMode::Overdub);
     r.transport.play();
-    REQUIRE(r.engine.plays == 0);
+    REQUIRE(r.engine.plays == 1);       // out of the layering, the loop on
+    put(r, SequencerState::Running, SequencerMode::Overdub);
     r.transport.record();
     REQUIRE(r.engine.records == 1);
     r.transport.overdub();
-    REQUIRE(r.engine.plays == 1);
+    REQUIRE(r.engine.plays == 2);
     REQUIRE(r.engine.overdubs == 0);
 }
 
