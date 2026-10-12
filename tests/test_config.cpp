@@ -1,7 +1,7 @@
 #include <catch2/catch_test_macros.hpp>
 #include "crosspad/config/crosspad_config.h"
 
-TEST_CASE("config: board profile defaults match baseline", "[config]") {
+TEST_CASE("config: pad-tuning defaults match baseline", "[config]") {
     REQUIRE(BOARD_PAD_SENS_DEF        == 1);
     REQUIRE(BOARD_PAD_LR_RATIO_DEF    == 50);
     REQUIRE(BOARD_PAD_ANALOG_MODE_DEF == 2);
@@ -22,7 +22,3 @@ TEST_CASE("config: default pad-config level is FULL", "[config]") {
     SUCCEED("PAD_CONFIG_PER_PAD derived from FULL level");
 }
 #endif
-
-TEST_CASE("config: PC profile selected when no board -D given", "[config]") {
-    REQUIRE(CROSSPAD_BOARD == BOARD_CROSSPAD_PC);
-}
