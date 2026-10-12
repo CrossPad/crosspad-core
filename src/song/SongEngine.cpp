@@ -27,22 +27,11 @@
 #include "crosspad/instrument/WavPcm.hpp"
 #include "crosspad/kit/IKitManager.hpp"
 #include "crosspad/kit/KitInfo.hpp"
+#include "crosspad/platform/IFileSystem.hpp"
 #include "crosspad/platform/PlatformServices.hpp"
 #include "crosspad/sequencer/MetronomeNode.hpp"
 #include "crosspad/sequencer/PatternSequencer.hpp"
 #include "crosspad/song/LiveSet.hpp"
-
-#ifdef _WIN32
-#include <chrono>
-#include <fcntl.h>
-#include <filesystem>
-#include <io.h>
-#else
-#include <dirent.h>
-#include <fcntl.h>
-#include <sys/stat.h>
-#include <unistd.h>
-#endif
 
 #include <algorithm>
 #include <atomic>
@@ -127,111 +116,35 @@ bool valid_name(const std::string& n)
            n.find_first_of("/\\") == std::string::npos;
 }
 
-/// The few file operations the engine needs: POSIX where there is POSIX (the
-/// board, Linux, macOS), the CRT and std::filesystem on Windows. Paths are
-/// UTF-8.
+/// The few file operations the engine needs, on the platform's file system.
 namespace fsx {
-#ifdef _WIN32
-std::filesystem::path native(const std::string& p) { return std::filesystem::u8path(p); }
-int  openRead(const std::string& p) { return ::_wopen(native(p).c_str(), _O_RDONLY | _O_BINARY); }
-long readSome(int fd, void* dst, size_t n) { return ::_read(fd, dst, (unsigned)n); }
-bool seek(int fd, uint32_t at) { return ::_lseeki64(fd, at, SEEK_SET) >= 0; }
-void close(int fd) { ::_close(fd); }
-bool exists(const std::string& p) { std::error_code ec; return std::filesystem::exists(native(p), ec); }
+IFileSystem& fs() { return getFileSystem(); }
+int  openRead(const std::string& p) { return fs().openRead(p.c_str()); }
+long readSome(int fd, void* dst, size_t n) { return fs().read(fd, dst, n); }
+bool seek(int fd, uint32_t at) { return fs().seek(fd, at); }
+void close(int fd) { fs().close(fd); }
+bool exists(const std::string& p) { return fs().exists(p.c_str()); }
 /// @p p's size, and when it was last written in unix seconds.
 bool fileInfo(const std::string& p, uint64_t& bytes, int64_t& modified)
 {
-    std::error_code ec;
-    bytes = std::filesystem::file_size(native(p), ec);
-    if (ec) return false;
-    const auto t = std::filesystem::last_write_time(native(p), ec);
-    if (ec) return false;
-    const auto sys = t - std::filesystem::file_time_type::clock::now() + std::chrono::system_clock::now();
-    modified = std::chrono::duration_cast<std::chrono::seconds>(sys.time_since_epoch()).count();
+    FileStat st;
+    if (fs().stat(p.c_str(), &st) != FsStat::Found) return false;
+    bytes = st.size;
+    modified = st.modified;
     return true;
 }
-bool rename(const std::string& from, const std::string& to)
-{
-    std::error_code ec;
-    std::filesystem::rename(native(from), native(to), ec);
-    return !ec;
-}
-/// @p dir and everything in it.
-template <typename Y> bool removeTree(const std::string& dir, Y)
-{
-    std::error_code ec;
-    std::filesystem::remove_all(native(dir), ec);
-    return !ec;
-}
-bool makeDir(const std::string& p)
-{
-    std::error_code ec;
-    if (std::filesystem::is_directory(native(p), ec)) return true;
-    return std::filesystem::create_directory(native(p), ec);
-}
+bool rename(const std::string& from, const std::string& to) { return fs().rename(from.c_str(), to.c_str()); }
+bool makeDir(const std::string& p) { return fs().makeDir(p.c_str()); }
 /// @p each(name, isDir) for every entry of @p dir.
 template <typename F> void listDir(const std::string& dir, F each)
 {
-    std::error_code ec;
-    for (const auto& e : std::filesystem::directory_iterator(native(dir), ec)) {
-        const auto u8 = e.path().filename().u8string();
-        std::error_code dec;
-        each(std::string(u8.begin(), u8.end()), e.is_directory(dec));
-    }
+    fs().forEach(dir, [&](const char* name, bool isDir) { each(std::string(name), isDir); });
 }
-#else
-int  openRead(const std::string& p) { return ::open(p.c_str(), O_RDONLY); }
-long readSome(int fd, void* dst, size_t n) { return (long)::read(fd, dst, n); }
-bool seek(int fd, uint32_t at) { return ::lseek(fd, (off_t)at, SEEK_SET) >= 0; }
-void close(int fd) { ::close(fd); }
-bool exists(const std::string& p) { struct stat st; return stat(p.c_str(), &st) == 0; }
-/// @p p's size, and when it was last written in unix seconds.
-bool fileInfo(const std::string& p, uint64_t& bytes, int64_t& modified)
-{
-    struct stat st;
-    if (stat(p.c_str(), &st) != 0) return false;
-    bytes = (uint64_t)st.st_size;
-    modified = (int64_t)st.st_mtime;
-    return true;
-}
-bool rename(const std::string& from, const std::string& to) { return std::rename(from.c_str(), to.c_str()) == 0; }
-bool makeDir(const std::string& p)
-{
-    struct stat st;
-    if (stat(p.c_str(), &st) == 0) return S_ISDIR(st.st_mode);
-    return mkdir(p.c_str(), 0775) == 0;
-}
-/// @p each(name, isDir) for every entry of @p dir.
-template <typename F> void listDir(const std::string& dir, F each)
-{
-    DIR* d = opendir(dir.c_str());
-    if (!d) return;
-    while (dirent* e = readdir(d)) {
-        const std::string path = dir + "/" + e->d_name;
-        struct stat st;
-        each(std::string(e->d_name), stat(path.c_str(), &st) == 0 && S_ISDIR(st.st_mode));
-    }
-    closedir(d);
-}
-/// @p dir and everything in it, @p yield() after each file. The names are
-/// read before anything goes: removing while a directory is open for
-/// reading is not something every filesystem survives.
+/// @p dir and everything in it, @p yield() after each entry.
 template <typename Y> bool removeTree(const std::string& dir, Y yield)
 {
-    std::vector<std::pair<std::string, bool>> entries;
-    listDir(dir, [&](const std::string& name, bool isDir) {
-        if (name != "." && name != "..") entries.emplace_back(name, isDir);
-    });
-    bool ok = true;
-    for (const auto& e : entries) {
-        const std::string path = dir + "/" + e.first;
-        if (e.second) ok = removeTree(path, yield) && ok;
-        else          ok = ::unlink(path.c_str()) == 0 && ok;
-        yield();
-    }
-    return ::rmdir(dir.c_str()) == 0 && ok;
+    return fs().removeTree(dir, [](void* y) { (*static_cast<Y*>(y))(); }, &yield);
 }
-#endif
 } // namespace fsx
 
 /// Stereo int16 frames, one writer and one reader, counters that only grow

@@ -1,6 +1,8 @@
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/matchers/catch_matchers_floating_point.hpp>
 
+#include "fake_file_system.hpp"
+
 #include "crosspad/audio/WavWriter.hpp"
 #include "crosspad/sequencer/MetronomeNode.hpp"
 #include "crosspad/sequencer/PatternSequencer.hpp"
@@ -930,6 +932,20 @@ TEST_CASE("song engine: a repitched track keeps its bars and plays at the new sp
     CHECK(pcm.size() == (size_t)2 * spb * 2);
     CHECK(pcm[1000 * 2] == 1000);
     CHECK(pcm[(2 * spb - 1000) * 2 + 1] == 1000);
+}
+
+TEST_CASE("song engine: the projects are the folders under the songs root, sorted", "[song][fs]") {
+    test::FakeFileSystem fake;
+    test::UseFileSystem use(fake);
+    Rig r;
+    fake.addDir(r.platform.root);
+    fake.addDir(r.platform.root + "/Zeta");
+    fake.addFile(r.platform.root + "/notes.txt");
+    fake.addDir(r.platform.root + "/.peaks");
+    fake.addDir(r.platform.root + "/Alpha");
+    REQUIRE(r.engine->requestProjects());
+    REQUIRE(waitFor([&] { return r.engine->projects().size() == 2; }));
+    CHECK(r.engine->projects() == std::vector<std::string>{"Alpha", "Zeta"});
 }
 
 TEST_CASE("song engine: rename moves the folder and is remembered", "[song]") {

@@ -1,12 +1,11 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "crosspad/sequencer/SequenceStore.hpp"
+#include "crosspad/platform/IFileSystem.hpp"
 #include "../util/JsonStdio.hpp"
 
 #include <ArduinoJson.h>
 
-#include <cerrno>
 #include <cstdio>
-#include <sys/stat.h>
 
 namespace crosspad {
 
@@ -107,8 +106,7 @@ SequenceLoad SequenceStore::open(PatternSequencer& seq, const std::string& path)
             /* Only "no such file" is absent. A file that will not open -- on
              * the board, every FAT handle taken at boot -- is still somebody's
              * grooves, and must not read as "no scenes". */
-            struct stat st;
-            if (::stat(p.c_str(), &st) != 0 && errno == ENOENT) continue;
+            if (getFileSystem().stat(p.c_str(), nullptr) == FsStat::Missing) continue;
             any = true;
             continue;
         }

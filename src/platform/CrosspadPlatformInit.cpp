@@ -81,6 +81,7 @@ void crosspad_platform_reset() {
     s_initialized = false;
     auto& svc = getPlatformServices();
     svc = PlatformServices{};
+    svc.setFileSystem(nullptr);
     setPlatformCapabilities(Capability::None);
 }
 

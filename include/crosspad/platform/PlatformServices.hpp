@@ -32,6 +32,7 @@ class IKeyValueStore;
 class IVibration;
 class IImu;
 class IHttpClient;
+class IFileSystem;
 class ISettingsUI;
 class IKitManager;
 class IBleMidi;
@@ -84,6 +85,7 @@ struct PlatformServices {
     IVibration*       vibration       = nullptr;  // defaults to NullVibration
     IImu*             imu             = nullptr;  // defaults to NullImu
     IHttpClient*      httpClient      = nullptr;  // defaults to NullHttpClient
+    IFileSystem*      fileSystem      = nullptr;  // defaults to PosixFileSystem
     ISettingsUI*      settingsUI      = nullptr;
     IKitManager*      kitManager      = nullptr;
     SequencerController* sequencer   = nullptr;
@@ -145,6 +147,9 @@ struct PlatformServices {
 
     /// Set HTTP client + toggle Capability::Http.
     void setHttpClient(IHttpClient* http);
+
+    /// Set the file system; nullptr puts the portable POSIX one back.
+    void setFileSystem(IFileSystem* fs);
 
     /// Publish the pitched sample engine. No capability flag: the engine is a
     /// concrete object a port owns, not an interface a port may or may not have.

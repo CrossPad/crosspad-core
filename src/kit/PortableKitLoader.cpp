@@ -2,18 +2,12 @@
 #include <crosspad/kit/PortableKitLoader.hpp>
 #include <new>
 #include <crosspad/kit/KitPathUtils.hpp>
+#include <crosspad/platform/IFileSystem.hpp>
 #include "KitJsonParser.hpp"
 #include "../util/JsonStdio.hpp"
 
 #include <ArduinoJson.h>
 
-#ifdef _WIN32
-#include <filesystem>
-#else
-#include <sys/stat.h>
-#include <dirent.h>
-#include <unistd.h>
-#endif
 #include <cerrno>
 #include <cstdio>
 #include <memory>
@@ -23,94 +17,21 @@ namespace crosspad {
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
 
-#ifdef _WIN32
-// Windows has no dirent.h (the PC simulator built with MSVC).
 static bool pathExists(const std::string& path) {
-    std::error_code ec;
-    return std::filesystem::exists(std::filesystem::u8path(path), ec);
+    return getFileSystem().exists(path.c_str());
 }
 
 static bool isDir(const std::string& path) {
-    std::error_code ec;
-    return std::filesystem::is_directory(std::filesystem::u8path(path), ec);
+    return getFileSystem().isDir(path.c_str());
 }
 
-static bool makeDir(const std::string& path) {
-    std::error_code ec;
-    return std::filesystem::create_directory(std::filesystem::u8path(path), ec);
+/// The folders in a directory, hidden ones ('.') left out. Read whole before
+/// the caller recurses, so a deep tree holds one directory open.
+static bool listSubdirs(const std::string& path, std::vector<std::string>& out) {
+    return getFileSystem().forEach(path, [&](const char* name, bool dir) {
+        if (dir && name[0] != '.') out.emplace_back(name);
+    });
 }
-
-/// Entry names in a directory, hidden ones ('.') left out.
-static bool listNames(const std::string& path, std::vector<std::string>& out) {
-    std::error_code ec;
-    std::filesystem::directory_iterator it(std::filesystem::u8path(path), ec);
-    if (ec) return false;
-    for (const auto& ent : it) {
-        std::string name = ent.path().filename().u8string();
-        if (!name.empty() && name[0] != '.') out.push_back(std::move(name));
-    }
-    return true;
-}
-
-/// A file, or a folder with everything under it.
-static bool removeTree(const std::string& path) {
-    std::error_code ec;
-    std::filesystem::remove_all(std::filesystem::u8path(path), ec);
-    return !ec;
-}
-#else
-static bool pathExists(const std::string& path) {
-    struct stat st;
-    return stat(path.c_str(), &st) == 0;
-}
-
-static bool isDir(const std::string& path) {
-    struct stat st;
-    return stat(path.c_str(), &st) == 0 && S_ISDIR(st.st_mode);
-}
-
-static bool makeDir(const std::string& path) {
-    return mkdir(path.c_str(), 0755) == 0;
-}
-
-/// Entry names in a directory, hidden ones ('.') left out. The directory is
-/// closed before the caller recurses, so a deep tree holds one handle.
-static bool listNames(const std::string& path, std::vector<std::string>& out) {
-    DIR* dir = opendir(path.c_str());
-    if (!dir) return false;
-    struct dirent* ent;
-    while ((ent = readdir(dir)) != nullptr) {
-        if (ent->d_name[0] != '.') out.emplace_back(ent->d_name);
-    }
-    closedir(dir);
-    return true;
-}
-
-/// A file, or a folder with everything under it.
-///
-/// Its own listing, not listNames(): that one leaves out every name beginning
-/// with a dot, and a kit keeps the copies rendered for its pads in ".fx" --
-/// skipped, they stay behind and the folder will not come off. The directory is
-/// read into a vector and closed before anything under it is unlinked, because
-/// removing entries from an open DIR is not something FATFS promises.
-static bool removeTree(const std::string& path) {
-    if (!isDir(path)) return std::remove(path.c_str()) == 0;
-    std::vector<std::string> names;
-    if (DIR* dir = opendir(path.c_str())) {
-        struct dirent* ent;
-        while ((ent = readdir(dir)) != nullptr) {
-            const std::string n = ent->d_name;
-            if (n != "." && n != "..") names.push_back(n);
-        }
-        closedir(dir);
-    } else {
-        return false;
-    }
-    bool ok = true;
-    for (const std::string& n : names) ok = removeTree(path + "/" + n) && ok;
-    return rmdir(path.c_str()) == 0 && ok;
-}
-#endif
 
 static std::string parentDir(const std::string& path) {
     auto pos = path.rfind('/');
@@ -121,7 +42,7 @@ static std::string parentDir(const std::string& path) {
 static bool mkdirRecursive(const std::string& path) {
     if (path.empty() || isDir(path)) return true;
     mkdirRecursive(parentDir(path));
-    return makeDir(path) || isDir(path);
+    return getFileSystem().makeDir(path.c_str());
 }
 
 // ── IKitManager (persistence) ───────────────────────────────────────────────
@@ -221,7 +142,8 @@ bool PortableKitLoader::removeKit(int id) {
         if (kits_[i].path.compare(0, under.size(), under) == 0) return false;
     }
 
-    if (!removeTree(toFsPath(dir))) return false;
+    /* Everything under it, ".fx" -- the copies rendered for its pads -- too. */
+    if (!getFileSystem().removeTree(toFsPath(dir))) return false;
     kits_[id] = KitInfo{};     // blanked, not erased: every id and pointer holds
     return true;
 }
@@ -362,14 +284,12 @@ const std::vector<KitInfo>& PortableKitLoader::kits() const {
 bool PortableKitLoader::discoverKitsRecursive(const std::string& dirPath,
                                                std::vector<KitInfo>& out) {
     std::vector<std::string> names;
-    if (!listNames(dirPath, names)) return false;
+    if (!listSubdirs(dirPath, names)) return false;
 
     bool found = false;
 
     for (const std::string& name : names) {
         std::string entryPath = dirPath + "/" + name;
-
-        if (!isDir(entryPath)) continue;
 
         std::string kitJsonPath = entryPath + "/kit.json";
         std::string altJsonPath = entryPath + "/" + name + ".json";
