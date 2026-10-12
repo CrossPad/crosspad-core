@@ -82,6 +82,8 @@ struct FakePlatform final : ISongEnginePlatform {
     std::string liveSetTemplate() override { return gunzip(std::string(CROSSPAD_CORE_DIR) + "/data/live12_set.xml.gz"); }
     void beginPadsCapture() override { ++captureBegun; }
     void endPadsCapture() override { ++captureEnded; }
+    std::atomic<float> seqGain[2] = {{1.0f}, {1.0f}};   // kit, pitch
+    void setSeqGain(SeqSource s, float g) override { seqGain[s == SeqSource::Pitch ? 1 : 0] = g; }
     void log(bool, const char*) override {}
 };
 
@@ -1434,4 +1436,81 @@ TEST_CASE("song engine: a block as long as its notes follows the seq view's x2",
     CHECK(c.bars == 4);
     CHECK(c.notes->bars == 4);
     CHECK(c.notes->notes.size() == 2);
+}
+
+
+// ── the seq track through Arrange's mixer ─────────────────────────────────
+
+TEST_CASE("song engine: a seq track's fader is on its engine while the song plays, and off at stop", "[song][seqmix]") {
+    Rig r;
+    REQUIRE(r.open("Demo"));
+    {
+        std::lock_guard<std::recursive_mutex> l(r.engine->songMutex());
+        auto& s = r.engine->song();
+        s.bpm = 120.0f;
+        s.length = 2;
+        REQUIRE(s.addSeqTrack(0, SeqSource::Pitch, 0));
+        s.tracks[0].volume = 0.5f;
+    }
+    r.engine->commit();
+    CHECK(r.platform.seqGain[1] == 1.0f);                  // stopped: the Mixer's level
+    std::vector<float> out(kBlock * 2), bus(kBlock * 2, 0.0f);
+    REQUIRE(r.engine->play(0));
+    REQUIRE(waitFor([&] { r.block(out, bus); return r.engine->framesPlayed() > 0; }, 20000));
+    CHECK(r.platform.seqGain[1] == 0.5f);
+    CHECK(r.platform.seqGain[0] == 1.0f);                  // the kit is not this track's
+    {
+        std::lock_guard<std::recursive_mutex> l(r.engine->songMutex());
+        r.engine->song().tracks[0].volume = 0.25f;         // a fader turned while it plays
+    }
+    r.engine->commit();
+    CHECK(r.platform.seqGain[1] == 0.25f);
+    r.engine->stop();
+    REQUIRE(waitFor([&] { return !r.engine->playing(); }));
+    CHECK(r.platform.seqGain[1] == 1.0f);
+}
+
+TEST_CASE("song engine: muting a seq track silences its notes as it plays, and unmuting brings them back", "[song][seqmix]") {
+    Rig r;
+    REQUIRE(r.open("Demo"));
+    struct Count { std::atomic<int> hits{0}; } heard;
+    r.seq.setSink([](void* ctx, uint8_t, uint8_t, bool on) {
+        if (on) ++static_cast<Count*>(ctx)->hits;
+    }, &heard);
+    r.seq.setSceneBars(0, 1);
+    for (int b = 0; b < 4; ++b) REQUIRE(r.seq.addEventTicks(0, (uint32_t)b * AudioSong::kSeqPpq, 1, 100));
+    {
+        std::lock_guard<std::recursive_mutex> l(r.engine->songMutex());
+        auto& s = r.engine->song();
+        s.bpm = 120.0f;
+        s.length = 8;
+        REQUIRE(s.addSeqTrack(0, SeqSource::Kit, 0));     // its scene over the whole song
+        s.tracks[0].muted = true;                          // muted before it starts
+    }
+    r.engine->commit();
+    std::vector<float> out(kBlock * 2), bus(kBlock * 2, 0.0f);
+    REQUIRE(r.engine->play(0));
+    REQUIRE(waitFor([&] { r.block(out, bus); return r.engine->framesPlayed() > 0; }, 20000));
+    const uint32_t bar = r.engine->framesPerBar();
+    while (r.engine->framesPlayed() < bar) r.block(out, bus);
+    CHECK(heard.hits.load() == 0);
+    {
+        std::lock_guard<std::recursive_mutex> l(r.engine->songMutex());
+        r.engine->song().tracks[0].muted = false;
+    }
+    r.engine->commit();
+    REQUIRE(waitFor([&] {                                  // the worker hands the map over
+        r.block(out, bus);
+        return heard.hits.load() > 0;
+    }, 20000));
+    {
+        std::lock_guard<std::recursive_mutex> l(r.engine->songMutex());
+        r.engine->song().tracks[0].muted = true;
+    }
+    r.engine->commit();
+    const int before = heard.hits.load();
+    const uint32_t at = r.engine->framesPlayed();
+    while (r.engine->framesPlayed() < at + bar) r.block(out, bus);
+    CHECK(heard.hits.load() == before);
+    r.engine->stop();
 }

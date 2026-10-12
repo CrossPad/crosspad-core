@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: MIT
 #pragma once
 
+#include "crosspad/song/AudioSong.hpp"
+
 #include <cstddef>
 #include <cstdint>
 #include <string>
@@ -52,6 +54,13 @@ public:
     /// what the player had.
     virtual void beginPadsCapture() = 0;
     virtual void endPadsCapture() = 0;
+
+    /// The seq track's fader on the engine its notes play through -- @p
+    /// source's: the kit's engines, or the pitched instrument -- while the
+    /// song plays, on top of what the Mixer has for it; 1 when it stops, so
+    /// a bounce, which stops it first, records at the Mixer's level. Called
+    /// only when it changes. A platform without a mixer leaves it alone.
+    virtual void setSeqGain(SeqSource source, float gain) { (void)source; (void)gain; }
 
     virtual void log(bool warning, const char* msg) = 0;
 };

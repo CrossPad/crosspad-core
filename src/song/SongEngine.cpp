@@ -1791,10 +1791,19 @@ private:
         }
         const uint32_t cut = std::max(a.end, a.loopB);
         const int seqTrack = seqTrackOf(song, true);
-        if (seqTrack >= 0 && song.tracks[seqTrack].seqBlocks) {
+        if (seqTrack >= 0) {
             /* On the song's grid: the song sets the clock's tempo when it
-             * starts the sequencer with it. */
-            a.seqSpans = seqSpansOf(song.tracks[seqTrack], a.samplesPerBar, song.seqTicksPerBar(), cut);
+             * starts the sequencer with it. A track that plays its scene
+             * everywhere is one span of it over the whole song -- laid on the
+             * song like a cut one, so muting it silences its notes as it
+             * plays (applySeqSound()). */
+            if (song.tracks[seqTrack].seqBlocks)
+                a.seqSpans = seqSpansOf(song.tracks[seqTrack], a.samplesPerBar, song.seqTicksPerBar(), cut);
+            else {
+                PatternSequencer::SongSpan all;
+                all.b = cut;
+                a.seqSpans = {all};
+            }
             a.seqMapped = true;
         }
         for (int t = 0; t < kTracks; ++t) {
@@ -2125,6 +2134,26 @@ private:
             snap_ = std::move(a);
             snapGen_.fetch_add(1);
         }
+        applySeqSound();
+    }
+
+    /// The seq track as the arrangement has it while the song plays: its
+    /// fader on the engine its notes play through (setSeqGain), and its
+    /// notes silent while it is muted or another track is soloed -- the
+    /// pads a player hits stay theirs -- or under a REC, which replaces them.
+    /// Stopped, the engines as the Mixer has them. Caller holds songMutex_.
+    void applySeqSound() {
+        const bool on = playing();
+        const int t = seqTrackOf(song_, true);
+        const SongTrack* tr = t >= 0 ? &song_.tracks[t] : nullptr;
+        seq_.setSongMapMuted(takeRecMute_ || (on && tr && song_.silenced(t)));
+        for (const SeqSource s : {SeqSource::Kit, SeqSource::Pitch}) {
+            const float g = on && tr && tr->source == s ? tr->volume : 1.0f;
+            float& was = seqGain_[s == SeqSource::Pitch ? 1 : 0];
+            if (g == was) continue;
+            was = g;
+            p.setSeqGain(s, g);
+        }
     }
 
     /// Ready the song's seq track for a take: made if there is none (the
@@ -2157,7 +2186,7 @@ private:
         takeLaps_ = 0;
         takeNotes_.clear();
         takeHorizon_ = !takeCycle_;
-        seq_.setSongMapMuted(take == SyncTake::Record);
+        takeRecMute_ = take == SyncTake::Record;
         seqTake_.store(take);
         commit();
         return true;
@@ -2196,8 +2225,9 @@ private:
     /// again and the song ends where its blocks do. Caller holds songMutex_.
     void closeTake() {
         seq_.endSongTake();
-        seq_.setSongMapMuted(false);
+        takeRecMute_ = false;
         seqTake_.store(SyncTake::None);
+        applySeqSound();
         takeTrack_ = -1;
         takeNotes_.clear();
         if (takeHorizon_) {
@@ -2253,7 +2283,8 @@ private:
             const uint32_t from = takeLaps_ == 0 ? takeFrom_ : song_.loopStart * spb;
             if (landTake(pass, replace, from, song_.loopEnd * spb) && replace) {
                 takeReplaced_ = true;
-                seq_.setSongMapMuted(false);
+                takeRecMute_ = false;
+                applySeqSound();
             }
         }
     }
@@ -2762,10 +2793,10 @@ private:
             /* A seq track is the sequencer playing its scene with the song --
              * SYNC on or off; SYNC on without one plays the scene in use. */
             std::lock_guard<std::recursive_mutex> l(songMutex_);
-            /* A take asked for with the song (the seq view of a track) runs
-             * the sequencer even with the track muted: it is being recorded. */
+            /* Muted or not: its mute silences its notes as the song plays
+             * (applySeqSound()), so unmuting it mid-song brings them back. */
             const bool take = playTake_.load() != SyncTake::None || seqTake_.load() != SyncTake::None;
-            const int t = seqTrackOf(song_, take);
+            const int t = seqTrackOf(song_, true);
             if (t >= 0) seqScene = song_.tracks[t].scene;
             sync = song_.syncSeq || seqScene >= 0 || take;
             bpm = song_.bpm;
@@ -2823,6 +2854,8 @@ private:
         played_.store(0);
         job_.store(Job::Play);
         play_.store(Play::Priming, std::memory_order_seq_cst);
+        std::lock_guard<std::recursive_mutex> l(songMutex_);
+        applySeqSound();
     }
 
     void endPlayback() {
@@ -2836,6 +2869,11 @@ private:
         }
         if (play_.load() == Play::Idle && job_.load() != Job::Play) return;
         play_.store(Play::Idle, std::memory_order_seq_cst);
+        {
+            /* The engines back to the Mixer's level, and the notes heard. */
+            std::lock_guard<std::recursive_mutex> l(songMutex_);
+            applySeqSound();
+        }
         /* The song took the sequencer along; it takes it back down. */
         if (syncing_) {
             seq_.stop();
@@ -3265,6 +3303,10 @@ private:
     std::vector<PatternSequencer::SongTakeNote> takeNotes_;
     bool        takeHorizon_ = false;
     bool        takeBound_ = false;              // worker: the playback running is the take's
+    bool        takeRecMute_ = false;            // a REC's pass not landed yet: not heard under it
+    /* What applySeqSound() last gave setSeqGain(), kit and pitch; under
+     * songMutex_. */
+    float       seqGain_[2] = {1.0f, 1.0f};
     /* The seq view's block (openSeqEdit), under songMutex_: its track (-1
      * none), the bar it starts on, the scene it is edited in, whether it is
      * on the track yet, and the sequencer's edit count last handed over. */
