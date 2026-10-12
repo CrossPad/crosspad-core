@@ -1,11 +1,16 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include <catch2/catch_test_macros.hpp>
 
+#include "crosspad/control/AppName.hpp"
+#include "crosspad/control/AudioLevel.hpp"
+#include "crosspad/control/KitList.hpp"
 #include "crosspad/control/KitStatus.hpp"
 #include "crosspad/control/LedState.hpp"
 #include "crosspad/control/MixerLevels.hpp"
+#include "crosspad/control/PadInput.hpp"
 #include "crosspad/control/PitchedStatus.hpp"
 #include "crosspad/control/WaveStatus.hpp"
+#include "crosspad/audio/IAudioModule.hpp"
 #include "crosspad/instrument/PitchedInstrument.hpp"
 #include "crosspad/kit/IKitManager.hpp"
 #include "crosspad/platform/PlatformServices.hpp"
@@ -67,6 +72,36 @@ bool inCache(const char* path) {
     for (const auto& p : g_cached) if (p == path) return true;
     return false;
 }
+
+class PadSpy : public IPadLogicHandler {
+public:
+    void onActivate(PadManager&) override {}
+    void onDeactivate(PadManager&) override {}
+    void onPadPress(PadManager&, uint8_t pad, uint8_t vel) override { log += "press " + std::to_string(pad) + " " + std::to_string(vel) + ";"; }
+    void onPadRelease(PadManager&, uint8_t pad) override { log += "release " + std::to_string(pad) + ";"; }
+    void onPadPressure(PadManager&, uint8_t pad, uint8_t p) override { log += "pressure " + std::to_string(pad) + " " + std::to_string(p) + ";"; }
+    void onPadPan(PadManager&, uint8_t pad, int8_t pan) override { log += "pan " + std::to_string(pad) + " " + std::to_string(pan) + ";"; }
+    std::string log;
+};
+
+/// Reports a fixed level per stream; everything else is inert.
+class LevelModule : public IAudioModule {
+public:
+    bool setup(const AudioModuleConfig&) override { return true; }
+    void process() override {}
+    const AudioModuleConfig& getConfig() const override { return cfg_; }
+    void addNode(IAudioNode*) override {}
+    void removeNode(IAudioNode*) override {}
+    size_t nodeCount() const override { return 0; }
+    IAudioNode* getNode(size_t) const override { return nullptr; }
+    IAudioStream* getOutputStream(uint8_t) override { return nullptr; }
+    void getOutputLevel(uint8_t stream, float& l, float& r) const override {
+        l = 0.25f * (float)(stream + 1);
+        r = 0.125f;
+    }
+private:
+    AudioModuleConfig cfg_;
+};
 
 void* bankAlloc(size_t n) { return std::malloc(n); }
 void  bankFree(void* p)   { std::free(p); }
@@ -257,4 +292,77 @@ TEST_CASE("control: the missing list stops where an entry would not fit", "[cont
     CHECK(len < WaveStatus::kMissingChars);
     CHECK(len >= WaveStatus::kMissingChars - 16);
     CHECK(st.missing[len - 1] != ',');
+}
+
+TEST_CASE("control: kit list rows keep removed slots and say so", "[control]") {
+    FakeKitManager mgr;
+    mgr.kits.resize(3);
+    mgr.kits[0].name = "A";
+    mgr.kits[0].path = "/sdcard/kits/A/kit.json";
+    mgr.kits[0].parsed = true;
+    mgr.kits[1].name = "gone";            // removed: the slot stays, the path goes
+    mgr.kits[2].name = "C";
+    mgr.kits[2].path = "/sdcard/kits/C/kit.json";
+
+    std::vector<KitListRow> rows;
+    readKitList(mgr, [&](const KitListRow& r) { rows.push_back(r); });
+    REQUIRE(rows.size() == 3);
+    CHECK(rows[0].id == 0);
+    CHECK(std::string(rows[0].name) == "A");
+    CHECK(rows[0].parsed);
+    CHECK_FALSE(rows[0].removed);
+    CHECK(rows[1].removed);
+    CHECK(std::string(rows[1].name) == "gone");
+    CHECK(rows[2].id == 2);
+    CHECK_FALSE(rows[2].parsed);
+}
+
+TEST_CASE("control: a load request needs a kit manager and an id it holds", "[control]") {
+    {
+        KitManagerScope scope(nullptr);
+        CHECK_FALSE(kitIdLoadable(0));
+    }
+    FakeKitManager mgr;
+    mgr.kits.resize(2);
+    KitManagerScope scope(&mgr);
+    CHECK(kitIdLoadable(0));
+    CHECK(kitIdLoadable(1));
+    CHECK_FALSE(kitIdLoadable(2));
+    CHECK_FALSE(kitIdLoadable(-1));
+}
+
+TEST_CASE("control: pad input reaches the active pad logic as the STM's would", "[control]") {
+    test::CoreTestPlatform platform;
+    REQUIRE(platform.init());
+    auto spy = std::make_shared<PadSpy>();
+    platform.padManager.registerPadLogic("Spy", spy);
+    platform.padManager.setActivePadLogic("Spy");
+
+    applyPadInput(platform.padManager, PadInput::Press, 3, 90);
+    applyPadInput(platform.padManager, PadInput::Pressure, 3, 200);
+    applyPadInput(platform.padManager, PadInput::Pan, 3, 127);
+    applyPadInput(platform.padManager, PadInput::Pan, 3, 0);
+    applyPadInput(platform.padManager, PadInput::Release, 3, 55);
+    CHECK(spy->log == "press 3 90;pressure 3 200;pan 3 63;pan 3 -64;release 3;");
+}
+
+TEST_CASE("control: audio level of a stream", "[control]") {
+    LevelModule module;
+    getPlatformServices().setAudioModule(&module);
+    const AudioLevel lv = readAudioLevel(1);
+    getPlatformServices().setAudioModule(nullptr);
+    CHECK(lv.stream == 1);
+    CHECK(lv.left == 0.5f);
+    CHECK(lv.right == 0.125f);
+}
+
+TEST_CASE("control: an app is named by its launcher name, case aside", "[control]") {
+    CHECK(appNameMatches("Sampler", "sampler"));
+    CHECK(appNameMatches("DAW Control", "daw control"));
+    CHECK(appNameMatches("Mixer", "MIXER"));
+    CHECK_FALSE(appNameMatches("Mixer", "Mix"));
+    CHECK_FALSE(appNameMatches("Mix", "Mixer"));
+    CHECK_FALSE(appNameMatches("Mixer", ""));
+    CHECK_FALSE(appNameMatches(nullptr, "Mixer"));
+    CHECK_FALSE(appNameMatches("Mixer", nullptr));
 }
