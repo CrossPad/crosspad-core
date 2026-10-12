@@ -35,7 +35,7 @@ bool PosixFileSystem::list(const char* dir, EntryFn each, void* ctx)
     for (const auto& e : it) {
         const auto u8 = e.path().filename().u8string();
         std::error_code dec;
-        each(ctx, std::string(u8.begin(), u8.end()).c_str(), e.is_directory(dec));
+        if (!each(ctx, std::string(u8.begin(), u8.end()).c_str(), e.is_directory(dec))) break;
     }
     return true;
 }
@@ -122,7 +122,7 @@ bool PosixFileSystem::list(const char* dir, EntryFn each, void* ctx)
             if (path.empty() || path.back() != '/') path += '/';
             isDir = statIsDir(path + name);
         }
-        each(ctx, name, isDir);
+        if (!each(ctx, name, isDir)) break;
     }
     return true;
 }

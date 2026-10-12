@@ -72,6 +72,15 @@ TEST_CASE("posix fs: a listing names every entry but . and .., with its type", "
     CHECK_FALSE(p.forEach(t.str("nope"), [](const char*, bool) {}));
 }
 
+TEST_CASE("posix fs: a callback that answers false stops the listing", "[fs]") {
+    TempDir t;
+    PosixFileSystem p;
+    for (int i = 0; i < 5; ++i) touch(t.str("f" + std::to_string(i)));
+    int seen = 0;
+    CHECK(p.forEach(t.str(), [&](const char*, bool) { return ++seen < 2; }));
+    CHECK(seen == 2);
+}
+
 TEST_CASE("posix fs: a symlink to a folder lists as a folder", "[fs]") {
     TempDir t;
     PosixFileSystem p;

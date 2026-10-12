@@ -44,6 +44,7 @@ public:
 
     std::atomic<int> stats{0};
     std::atomic<int> lists{0};
+    std::atomic<int> delivered{0};   ///< entries handed to list() callbacks
 
     bool list(const char* dir, EntryFn each, void* ctx) override {
         ++lists;
@@ -56,7 +57,10 @@ public:
                 if (parent(n.path) == dir) entries.emplace_back(n.path.substr(n.path.rfind('/') + 1), n.dir);
             }
         }
-        for (const auto& e : entries) each(ctx, e.first.c_str(), e.second);
+        for (const auto& e : entries) {
+            ++delivered;
+            if (!each(ctx, e.first.c_str(), e.second)) break;
+        }
         return true;
     }
 

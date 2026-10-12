@@ -28,23 +28,11 @@
 #include "crosspad/instrument/InstrumentPlayState.hpp"
 #include "crosspad/kit/IKitManager.hpp"
 #include "crosspad/kit/KitInfo.hpp"
+#include "crosspad/platform/IFileSystem.hpp"
 #include "crosspad/platform/PlatformServices.hpp"
 #include "crosspad/sampletools/SampleFx.hpp"
 #include "crosspad/sampletools/SliceMath.hpp"
 #include "crosspad/song/ISongEngine.hpp"
-
-#ifdef _WIN32
-#include <fcntl.h>
-#include <filesystem>
-#include <io.h>
-#include <string.h>
-#else
-#include <dirent.h>
-#include <fcntl.h>
-#include <strings.h>
-#include <sys/stat.h>
-#include <unistd.h>
-#endif
 
 #include <algorithm>
 #include <atomic>
@@ -95,103 +83,26 @@ constexpr int      kAnswerTries    = 200;     // x 10 ms: for the worker to give
 constexpr uint32_t kAnswerPollMs   = 10;
 constexpr int      kDropTries      = 1000;    // x 1 ms: to mark it lost
 
-/// The few file operations the tools need: POSIX where there is POSIX (the
-/// board, Linux, macOS), the CRT and std::filesystem on Windows. Paths are
-/// UTF-8.
+/// The few file operations the tools need, on the platform's file system.
 namespace fsx {
-#ifdef _WIN32
-std::filesystem::path native(const std::string& p) { return std::filesystem::u8path(p); }
-int  openRead(const std::string& p) { return ::_wopen(native(p).c_str(), _O_RDONLY | _O_BINARY); }
-long readSome(int fd, void* dst, size_t n) { return ::_read(fd, dst, (unsigned)n); }
-bool seek(int fd, uint32_t at) { return ::_lseeki64(fd, at, SEEK_SET) >= 0; }
-void close(int fd) { ::_close(fd); }
-bool exists(const std::string& p) { std::error_code ec; return std::filesystem::exists(native(p), ec); }
-bool isDir(const std::string& p) { std::error_code ec; return std::filesystem::is_directory(native(p), ec); }
-bool makeDir(const std::string& p)
+IFileSystem& fs() { return getFileSystem(); }
+int  openRead(const std::string& p) { return fs().openRead(p.c_str()); }
+long readSome(int fd, void* dst, size_t n) { return fs().read(fd, dst, n); }
+bool seek(int fd, uint32_t at) { return fs().seek(fd, at); }
+void close(int fd) { fs().close(fd); }
+bool exists(const std::string& p) { return fs().exists(p.c_str()); }
+bool makeDir(const std::string& p) { return fs().makeDir(p.c_str()); }
+bool remove(const std::string& p) { return fs().remove(p.c_str()); }
+bool rename(const std::string& from, const std::string& to) { return fs().rename(from.c_str(), to.c_str()); }
+/// ASCII without case, as strcasecmp() in the C locale.
+int  compareNoCase(const char* a, const char* b)
 {
-    std::error_code ec;
-    if (std::filesystem::exists(native(p), ec)) return std::filesystem::is_directory(native(p), ec);
-    return std::filesystem::create_directory(native(p), ec);
+    for (;; ++a, ++b) {
+        const int ca = std::tolower((unsigned char)*a);
+        const int cb = std::tolower((unsigned char)*b);
+        if (ca != cb || ca == 0) return ca - cb;
+    }
 }
-bool remove(const std::string& p) { std::error_code ec; return std::filesystem::remove(native(p), ec); }
-bool rename(const std::string& from, const std::string& to)
-{
-    std::error_code ec;
-    std::filesystem::rename(native(from), native(to), ec);
-    return !ec;
-}
-int  compareNoCase(const char* a, const char* b) { return ::_stricmp(a, b); }
-
-/// A folder's entries, one at a time.
-class DirReader {
-public:
-    bool open(const std::string& dir)
-    {
-        std::error_code ec;
-        it_ = std::filesystem::directory_iterator(native(dir), ec);
-        first_ = true;
-        return !ec;
-    }
-    /// The next entry's name, or nullptr at the end.
-    const char* next()
-    {
-        std::error_code ec;
-        if (!first_) it_.increment(ec);
-        first_ = false;
-        if (ec || it_ == std::filesystem::directory_iterator()) return nullptr;
-        const auto u8 = it_->path().filename().u8string();
-        name_.assign(u8.begin(), u8.end());
-        return name_.c_str();
-    }
-    /// Whether the entry next() returned is a folder.
-    bool isDir(const std::string&) const { std::error_code ec; return it_->is_directory(ec); }
-
-private:
-    std::filesystem::directory_iterator it_;
-    std::string name_;
-    bool first_ = true;
-};
-#else
-int  openRead(const std::string& p) { return ::open(p.c_str(), O_RDONLY); }
-long readSome(int fd, void* dst, size_t n) { return (long)::read(fd, dst, n); }
-bool seek(int fd, uint32_t at) { return ::lseek(fd, (off_t)at, SEEK_SET) >= 0; }
-void close(int fd) { ::close(fd); }
-bool exists(const std::string& p) { struct stat st; return stat(p.c_str(), &st) == 0; }
-bool isDir(const std::string& p) { struct stat st; return stat(p.c_str(), &st) == 0 && S_ISDIR(st.st_mode); }
-bool makeDir(const std::string& p)
-{
-    struct stat st;
-    if (stat(p.c_str(), &st) == 0) return S_ISDIR(st.st_mode);
-    return mkdir(p.c_str(), 0775) == 0;
-}
-bool remove(const std::string& p) { return std::remove(p.c_str()) == 0; }
-bool rename(const std::string& from, const std::string& to) { return std::rename(from.c_str(), to.c_str()) == 0; }
-int  compareNoCase(const char* a, const char* b) { return strcasecmp(a, b); }
-
-/// A folder's entries, one at a time.
-class DirReader {
-public:
-    ~DirReader() { if (d_) closedir(d_); }
-    bool open(const std::string& dir) { return (d_ = opendir(dir.c_str())) != nullptr; }
-    /// The next entry's name, or nullptr at the end.
-    const char* next()
-    {
-        e_ = readdir(d_);
-        return e_ ? e_->d_name : nullptr;
-    }
-    /// Whether the entry next() returned, in @p dir, is a folder: from the
-    /// listing where the filesystem says, a stat where it does not.
-    bool isDir(const std::string& dir) const
-    {
-        if (e_->d_type != DT_UNKNOWN) return e_->d_type == DT_DIR;
-        return fsx::isDir(dir + "/" + e_->d_name);
-    }
-
-private:
-    DIR*    d_ = nullptr;
-    dirent* e_ = nullptr;
-};
-#endif
 } // namespace fsx
 
 /// A kit name that is one folder FAT will take.
@@ -1136,16 +1047,13 @@ struct SampleToolsEngine::Impl {
         std::vector<std::string> out;
         if (p.storageReady()) {
             const std::string dir = recDir();
-            fsx::DirReader d;
-            if (d.open(dir)) {
-                while (const char* e = d.next()) {
-                    const std::string n = e;
-                    if (n.size() < 5 || n[0] == '.') continue;
-                    std::string ext = n.substr(n.size() - 4);
-                    for (auto& c : ext) c = (char)tolower((unsigned char)c);
-                    if (ext == ".wav") out.push_back(dir + "/" + n);
-                }
-            }
+            fsx::fs().forEach(dir, [&](const char* e, bool) {
+                const std::string n = e;
+                if (n.size() < 5 || n[0] == '.') return;
+                std::string ext = n.substr(n.size() - 4);
+                for (auto& c : ext) c = (char)tolower((unsigned char)c);
+                if (ext == ".wav") out.push_back(dir + "/" + n);
+            });
         }
         std::sort(out.begin(), out.end(), [](const std::string& a, const std::string& b) { return a > b; });
         {
@@ -1174,10 +1082,6 @@ struct SampleToolsEngine::Impl {
             dir = root;
         }
         if (!p.storageReady()) { finish(false, "no card"); return; }
-        fsx::DirReader d;
-        bool opened = d.open(dir);
-        if (!opened && dir == recs) opened = d.open(dir = root);   // no take recorded yet
-        if (!opened) { finish(false, "cannot open " + dir); return; }
         std::string blob;
         std::vector<uint32_t> offs;
         std::vector<uint8_t> isDir;
@@ -1186,17 +1090,20 @@ struct SampleToolsEngine::Impl {
         isDir.reserve(256);
         bool truncated = false;
         uint32_t seen = 0;
-        while (const char* name = d.next()) {
-            if (name[0] == '.') continue;
-            const bool folder = d.isDir(dir);
-            if (!folder && !is_wav(name)) continue;
-            if (offs.size() >= CardFolder::kMaxEntries) { truncated = true; break; }
+        const auto entry = [&](const char* name, bool folder) {
+            if (name[0] == '.') return true;
+            if (!folder && !is_wav(name)) return true;
+            if (offs.size() >= CardFolder::kMaxEntries) { truncated = true; return false; }
             offs.push_back((uint32_t)blob.size());
             isDir.push_back(folder ? 1 : 0);
             blob.append(name);
             blob.push_back('\0');
             if (++seen % kDirServiceEvery == 0) giveWay();
-        }
+            return true;
+        };
+        bool opened = fsx::fs().forEach(dir, entry);
+        if (!opened && dir == recs) opened = fsx::fs().forEach(dir = root, entry);   // no take recorded yet
+        if (!opened) { finish(false, "cannot open " + dir); return; }
         std::vector<uint32_t> order(offs.size());
         std::iota(order.begin(), order.end(), 0u);
         std::sort(order.begin(), order.end(), [&](uint32_t a, uint32_t b) {

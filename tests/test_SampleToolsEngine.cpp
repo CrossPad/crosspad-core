@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include <catch2/catch_test_macros.hpp>
 
+#include "fake_file_system.hpp"
+
 #include "crosspad/audio/WavWriter.hpp"
 #include "crosspad/kit/PortableKitLoader.hpp"
 #include "crosspad/platform/PlatformServices.hpp"
@@ -226,6 +228,24 @@ TEST_CASE("SampleToolsEngine lists a folder: folders, then WAVs, by name", "[sam
         REQUIRE(r.finished() == ToolJob::Failed);
         CHECK(r.tools->jobResult() == "no card");
     }
+}
+
+TEST_CASE("SampleToolsEngine stops reading a folder past kMaxEntries", "[sampletools][fs]") {
+    test::FakeFileSystem card;
+    test::UseFileSystem use(card);
+    Rig r;
+    const std::string root = r.dir.string();
+    card.addDir(root);
+    card.addDir(root + "/sub");
+    for (size_t i = 0; i < CardFolder::kMaxEntries + 50; ++i) card.addFile(root + "/s" + std::to_string(i) + ".wav");
+    REQUIRE(r.tools->requestFolder(root));
+    REQUIRE(r.finished() == ToolJob::Ready);
+    const CardFolder f = r.tools->folder();
+    CHECK(f.truncated);
+    CHECK(f.size() == CardFolder::kMaxEntries);
+    CHECK(f.folders == 1);
+    CHECK(std::string(f.name(0)) == "sub");
+    CHECK(card.delivered == (int)CardFolder::kMaxEntries + 1);
 }
 
 TEST_CASE("SampleToolsEngine draws a file and its envelope", "[sampletools]") {

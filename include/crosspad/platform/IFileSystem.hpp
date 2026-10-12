@@ -4,6 +4,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <string>
+#include <type_traits>
 
 namespace crosspad {
 
@@ -35,8 +36,9 @@ struct FileStat {
  */
 class IFileSystem {
 public:
-    /// One entry of a listing: its name (no path), and whether it is a directory.
-    using EntryFn = void (*)(void* ctx, const char* name, bool isDir);
+    /// One entry of a listing: its name (no path), and whether it is a
+    /// directory. False stops the listing there.
+    using EntryFn = bool (*)(void* ctx, const char* name, bool isDir);
 
     virtual ~IFileSystem() = default;
 
@@ -79,10 +81,19 @@ public:
         return stat(path, &st) == FsStat::Found && st.isDir;
     }
 
-    /// list() with a callable taking (const char* name, bool isDir).
+    /// list() with a callable taking (const char* name, bool isDir); one that
+    /// returns bool stops the listing with false.
     template <typename F> bool forEach(const std::string& dir, F each) {
         return list(dir.c_str(),
-                    [](void* ctx, const char* name, bool isDir) { (*static_cast<F*>(ctx))(name, isDir); },
+                    [](void* ctx, const char* name, bool isDir) {
+                        F& f = *static_cast<F*>(ctx);
+                        if constexpr (std::is_void_v<decltype(f(name, isDir))>) {
+                            f(name, isDir);
+                            return true;
+                        } else {
+                            return static_cast<bool>(f(name, isDir));
+                        }
+                    },
                     &each);
     }
 
