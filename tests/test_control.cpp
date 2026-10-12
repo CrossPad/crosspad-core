@@ -366,3 +366,25 @@ TEST_CASE("control: an app is named by its launcher name, case aside", "[control
     CHECK_FALSE(appNameMatches(nullptr, "Mixer"));
     CHECK_FALSE(appNameMatches("Mixer", nullptr));
 }
+
+TEST_CASE("control: a missing entry cut by the buffer's end ends the list inside it", "[control]") {
+    // Missing entries ",15:10001" are 9 characters from the second on, so the
+    // 57th starts at 503 with 9 bytes of room and is cut.
+    constexpr int kFirstMissing = 10000;
+    constexpr int kLayers = kFirstMissing + 60;
+    FakeKitManager mgr;
+    mgr.kits.resize(1);
+    mgr.kits[0].path = "/k/kit.json";
+    for (int l = 0; l < kLayers; ++l) {
+        mgr.kits[0].pads[15].samples.push_back(SampleSlot(1, l < kFirstMissing ? "hit.wav" : "miss.wav"));
+    }
+    mgr.current = 0;
+    KitManagerScope scope(&mgr);
+    g_cached = {"/k/hit.wav"};
+    WaveStatus st;
+    readWaveCoverage(st, inCache);
+    CHECK(st.total == kLayers);
+    CHECK(st.cached == kFirstMissing);
+    CHECK(std::strlen(st.missing) == WaveStatus::kMissingChars - 1);
+    CHECK(std::string(st.missing, 8) == "15:10000");
+}

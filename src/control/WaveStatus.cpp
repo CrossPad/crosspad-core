@@ -39,8 +39,10 @@ void readWaveCoverage(WaveStatus& out, bool (*isCached)(const char* path)) {
             if (hit) {
                 ++out.cached;
             } else if (m < sizeof(out.missing) - kMissingEntryChars) {
-                m += snprintf(out.missing + m, sizeof(out.missing) - m, "%s%d:%d",
-                              m ? "," : "", i, layer);
+                const int r = snprintf(out.missing + m, sizeof(out.missing) - m, "%s%d:%d",
+                                       m ? "," : "", i, layer);
+                /* A cut entry ends the list where the buffer does. */
+                if (r > 0) m = m + (size_t)r < sizeof(out.missing) ? m + (size_t)r : sizeof(out.missing) - 1;
             }
             ++layer;
         }
