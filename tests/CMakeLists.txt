@@ -67,8 +67,9 @@ set(CORE_SOURCES
     ${CORE_DIR}/src/midi/MidiInputHandler.cpp
     ${CORE_DIR}/src/midi/MidiClock.cpp
 
-    # STM32 config sync
+    # STM32 config sync and maintenance
     ${CORE_DIR}/src/stm32/Stm32ConfigSync.cpp
+    ${CORE_DIR}/src/stm32/Stm32Manager.cpp
 
     # Kit JSON and sample-path resolution
     ${CORE_DIR}/src/kit/KitJsonParser.cpp

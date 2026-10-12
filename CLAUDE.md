@@ -79,7 +79,7 @@ Global singletons are accessed via free functions: `crosspad::getEventBus()`, `c
 - `SysExFramer`: state machine assembling frames → callback dispatch
 - `Stm32CommandSender`: builds commands (power off, brightness, routing matrix, keep-alive, DFU)
 - `Stm32MessageHandler`: parses incoming messages (pad events, encoder, battery status)
-- `Stm32Manager`: FreeRTOS maintenance task (keep-alive, routing updates)
+- `Stm32Manager`: maintenance pass (keep-alive, routing updates, amp gate) the platform runs every `kTickPeriodMs` from its own task
 
 ### Settings (`settings/`)
 - `CrosspadSettings` singleton: keypad, routing (STM/ESP), wireless, audio (per-pad × 16 + preview + master FX), vibration, UI brightness
