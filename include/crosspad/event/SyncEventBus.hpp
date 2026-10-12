@@ -8,12 +8,12 @@
  * calling thread. No queue, no dedicated dispatch task.
  *
  * Suitable for single-threaded or non-RTOS platforms (PC, Linux, tests).
- * Uses only std::mutex + std::vector — no platform dependencies.
+ * Uses only the standard library (SubscriptionTable) — no platform
+ * dependencies. A handler may subscribe, unsubscribe and post on this bus.
  */
 
 #include "crosspad/event/IEventBus.hpp"
-#include <vector>
-#include <mutex>
+#include "crosspad/event/SubscriptionTable.hpp"
 
 namespace crosspad {
 
@@ -43,16 +43,9 @@ public:
     bool sendNoteOff(uint8_t channel, uint8_t note, EventSource source = EventSource::System) override;
 
 private:
-    struct Subscription {
-        EventType type;
-        EventHandler handler;
-        void* userCtx;
-    };
-
     void dispatch(EventType type, const void* data, size_t dataSize);
 
-    std::vector<Subscription*> subs_;
-    std::mutex mutex_;
+    SubscriptionTable subs_;
     bool initialized_ = false;
 };
 

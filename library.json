@@ -37,6 +37,7 @@
             "+<kit/PortableKitLoader.cpp>",
             "+<kit/KitPathUtils.cpp>",
             "+<event/SyncEventBus.cpp>",
+            "+<event/SubscriptionTable.cpp>",
             "+<settings/ISettingsUI.cpp>",
             "+<dsp/PortableFft.cpp>",
             "+<dsp/FftFactory.cpp>",

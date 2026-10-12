@@ -6,7 +6,6 @@
 #include "crosspad/event/SyncEventBus.hpp"
 #include <cstdio>
 #include <cstring>
-#include <algorithm>
 
 namespace crosspad {
 
@@ -21,30 +20,16 @@ SubscriptionHandle SyncEventBus::subscribe(EventType type, EventHandler handler,
     if (!initialized_) {
         if (!init()) return nullptr;
     }
-
-    auto* sub = new Subscription{type, handler, user_ctx};
-    std::lock_guard<std::mutex> lock(mutex_);
-    subs_.push_back(sub);
-    return static_cast<SubscriptionHandle>(sub);
+    return subs_.add(type, handler, user_ctx);
 }
 
 void SyncEventBus::unsubscribe(SubscriptionHandle handle) {
-    if (!handle) return;
-
-    auto* sub = static_cast<Subscription*>(handle);
-    std::lock_guard<std::mutex> lock(mutex_);
-    subs_.erase(std::remove(subs_.begin(), subs_.end(), sub), subs_.end());
-    delete sub;
+    subs_.remove(handle);
 }
 
 void SyncEventBus::dispatch(EventType type, const void* data, size_t dataSize) {
     (void)dataSize;
-    std::lock_guard<std::mutex> lock(mutex_);
-    for (auto* sub : subs_) {
-        if (sub->type == type) {
-            sub->handler(data, type, sub->userCtx);
-        }
-    }
+    subs_.dispatch(type, data);
 }
 
 // ── Async post methods ──────────────────────────────────────────────────────
