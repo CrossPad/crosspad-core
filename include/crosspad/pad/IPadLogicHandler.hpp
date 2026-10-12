@@ -12,6 +12,30 @@ class PadManager;
  *
  * Each application (sequencer, sampler, etc.) can implement this interface
  * to define custom behavior when pads are pressed, released, or receive pressure.
+ *
+ * Threads. The pad callbacks (onPadPress, onPadRelease, onPadPressure,
+ * onPadPan) come from whatever feeds the pads -- the pad task, MIDI input,
+ * the UI, test injection -- and may run on several threads at once.
+ * onActivate() and onDeactivate() run on the thread that changes the active
+ * logic (an app's start and teardown: the UI thread), outside PadManager's
+ * lock; pad callbacks may already arrive while onActivate() runs.
+ *
+ * Deactivation guarantee: once onDeactivate() is called, and after it
+ * returns, no pad callback of this handler runs or is in flight. PadManager
+ * stops dispatching to the handler, then waits for the callbacks other
+ * threads are inside before it calls onDeactivate(), so a press racing an
+ * app's teardown cannot start a note or voice after it was cleaned up.
+ *
+ * Re-entrancy rules for a pad callback:
+ * - it may call PadManager's state, note, colour and LED methods, and
+ *   handlePad*()/notifyPad*() (a nested dispatch);
+ * - it must not change the active logic (setActivePadLogic, push/popPadLogic,
+ *   unregisterPadLogic, setBasePadLogic) -- post that to the UI thread. Done
+ *   from a callback it cannot wait for the others, and the guarantee above
+ *   does not hold for that change;
+ * - it must not block on anything the thread changing the logic may hold
+ *   (the LVGL lock on the UI thread): that thread waits for the callback.
+ * onActivate()/onDeactivate() must not change the active logic either.
  */
 class IPadLogicHandler {
 public:

@@ -5,6 +5,7 @@
 #include <memory>
 #include <vector>
 #include <mutex>
+#include <condition_variable>
 #include <atomic>
 #include "crosspad/led/RgbColor.hpp"
 #include "crosspad/led/LedTypes.hpp"
@@ -158,7 +159,10 @@ public:
     // Pad Logic Application Management
     void registerPadLogic(const std::string& appName, std::shared_ptr<IPadLogicHandler> handler);
     /// Activate appName's logic. An empty name hands the pads to the base
-    /// logic (see setBasePadLogic()) rather than leaving them dead.
+    /// logic (see setBasePadLogic()) rather than leaving them dead. Blocks,
+    /// before the old logic's onDeactivate(), until the pad callbacks other
+    /// threads are running have returned (IPadLogicHandler's guarantee); so
+    /// does every call below that deactivates a logic.
     void setActivePadLogic(const std::string& appName);
     /// Install the system instrument: the logic that owns the pads whenever no
     /// app has claimed them, so pads keep playing outside any app. Apps preempt
@@ -194,7 +198,9 @@ public:
     /// onDeactivate() re-enters PadManager's pad-logic state and can
     /// interleave activePadLogicName_/padLogicStack_ updates with the
     /// in-flight call. This is a pre-existing property of setActivePadLogic()
-    /// but is more likely to bite via the stack API — don't do it.
+    /// but is more likely to bite via the stack API — don't do it. Nor from a
+    /// pad callback (onPadPress() and the rest): see IPadLogicHandler for the
+    /// deactivation guarantee and why a change from there breaks it.
     void pushPadLogic(const std::string& appName);
     /// Re-activate the logic saved by the matching pushPadLogic(). No-op when
     /// the stack is empty. Same unregister-ordering and reentrancy caveats as
@@ -247,6 +253,28 @@ private:
     // Thread safety
     mutable std::mutex stateMutex_;
     mutable std::mutex logicMutex_;
+
+    // Pad-logic callbacks in flight on any thread (under logicMutex_). A
+    // deactivation takes the handler out of dispatch, then waits for these
+    // before onDeactivate(): see IPadLogicHandler.
+    int dispatchInFlight_ = 0;
+    std::condition_variable dispatchIdle_;
+
+    // The active handler for one dispatch, counted in flight while it lives;
+    // null (and not counted) when no pad logic is active.
+    class DispatchScope {
+    public:
+        explicit DispatchScope(PadManager& pm);
+        ~DispatchScope();
+        DispatchScope(const DispatchScope&) = delete;
+        DispatchScope& operator=(const DispatchScope&) = delete;
+        std::shared_ptr<IPadLogicHandler> handler;
+    private:
+        PadManager& pm_;
+    };
+    // Under logicMutex_ (released while waiting): returns once no pad-logic
+    // callback runs on another thread.
+    void waitDispatchIdle(std::unique_lock<std::mutex>& lock);
 
     // Helpers
     int getPadIndex(uint8_t midiNote);
