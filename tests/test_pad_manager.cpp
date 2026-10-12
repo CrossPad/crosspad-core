@@ -326,6 +326,30 @@ struct LockCountingStrip : test::MockLedStrip {
 };
 } // namespace
 
+TEST_CASE("PadManager: pad pan is the wire value minus its centre", "[pad][pan]") {
+    STATIC_REQUIRE(IPadLogicHandler::panFromWire(0) == IPadLogicHandler::kPanMin);
+    STATIC_REQUIRE(IPadLogicHandler::panFromWire(IPadLogicHandler::kPanWireCentre)
+                   == IPadLogicHandler::kPanCentre);
+    STATIC_REQUIRE(IPadLogicHandler::panFromWire(127) == IPadLogicHandler::kPanMax);
+
+    struct PanLogic : DummyPadLogic {
+        void onPadPan(PadManager&, uint8_t pad, int8_t pan) override { lastPad = pad; lastPan = pan; }
+        uint8_t lastPad = 0xFF;
+        int8_t lastPan = 1;
+    };
+    test::CoreTestPlatform platform;
+    REQUIRE(platform.init());
+    auto& pm = platform.padManager;
+    auto logic = std::make_shared<PanLogic>();
+    pm.registerPadLogic("pan", logic);
+    pm.setActivePadLogic("pan");
+
+    pm.notifyPadPan(5, IPadLogicHandler::panFromWire(0));
+    REQUIRE(logic->lastPad == 5);
+    REQUIRE(logic->lastPan == IPadLogicHandler::kPanMin);
+    REQUIRE(pm.getPadPan(5) == IPadLogicHandler::kPanMin);
+}
+
 TEST_CASE("PadLedController: coalesced, a voice's start is painted by update(), not by its caller",
           "[pad][led]") {
     LockCountingStrip strip;

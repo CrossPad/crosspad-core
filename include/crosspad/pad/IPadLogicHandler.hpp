@@ -15,6 +15,19 @@ class PadManager;
  */
 class IPadLogicHandler {
 public:
+    /// The range onPadPan() delivers. The STM streams each held pad's
+    /// left/right balance as a 7-bit controller value centred on
+    /// kPanWireCentre; the pan is that value minus the centre.
+    static constexpr int8_t kPanMin = -64;        ///< all of the press on the left cell
+    static constexpr int8_t kPanCentre = 0;
+    static constexpr int8_t kPanMax = 63;         ///< all of the press on the right cell
+    static constexpr uint8_t kPanWireCentre = 64; ///< the 7-bit value of a centred press
+
+    /// The pan of a 7-bit wire value (0 left .. 64 centred .. 127 right).
+    static constexpr int8_t panFromWire(uint8_t wire) {
+        return static_cast<int8_t>(static_cast<int>(wire & 0x7F) - kPanWireCentre);
+    }
+
     virtual ~IPadLogicHandler() = default;
 
     /// Called when this handler becomes the active pad logic
@@ -42,9 +55,9 @@ public:
     virtual void onPadPressure(PadManager& padManager, uint8_t padIdx, uint8_t pressure) = 0;
 
     /// Called when the press moves across the pad — left/right balance of the
-    /// two cells under it, -127 (left) .. +127 (right), 0 centred. Streams
-    /// while the pad is held, on change only. Optional: a handler that plays
-    /// notes has no use for it.
+    /// two cells under it, kPanMin (-64, left) .. kPanMax (+63, right),
+    /// kPanCentre (0) centred. Streams while the pad is held, on change only.
+    /// Optional: a handler that plays notes has no use for it.
     virtual void onPadPan(PadManager& padManager, uint8_t padIdx, int8_t pan) {
         (void)padManager; (void)padIdx; (void)pan;
     }
