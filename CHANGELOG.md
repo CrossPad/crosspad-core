@@ -6,6 +6,15 @@ carries the same number) and consumers gate on it with
 `crosspad/RequireVersion.hpp`. This file starts at 1.45.0; earlier releases
 are described in their `chore: X.Y.Z` commits.
 
+## 1.55.0 — 2026-10-12
+
+### Added
+
+- `IOutputLevels` (`crosspad/audio/IOutputLevels.hpp`) and
+  `PlatformServices::outputLevels`: the board's physical outputs -- speakers,
+  jacks -- each with its own hardware level after the DAC and its own mute,
+  and the mixer output each one carries. Null where the board has none.
+
 ## 1.54.1 — 2026-10-12
 
 ### Fixed
