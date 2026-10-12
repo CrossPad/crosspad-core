@@ -10,7 +10,7 @@ class VibrationSettings;
  * @brief Abstract vibration/haptics interface
  *
  * Implementations:
- *   - Drv2605Driver (core): portable DRV2605/LRA driver using II2cDevice
+ *   - Drv2605Driver (crosspad-platform-idf): DRV2605/LRA driver using II2cDevice
  *   - NullVibration (core): no-op stub for platforms without haptics
  *
  * The interface does NOT manage initialization, I2C setup, or background tasks —

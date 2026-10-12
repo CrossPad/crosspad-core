@@ -44,7 +44,7 @@ Every hardware/platform dependency is behind a pure virtual interface (`I` prefi
 
 | Interface | Purpose | ESP32-S3 Implementation |
 |-----------|---------|------------------------|
-| `IEventBus` | Async event dispatch | `EspEventBus` (esp_event) |
+| `IEventBus` | Async event dispatch | `EspEventBus` (esp_event, in crosspad-platform-idf) |
 | `ILedStrip` | LED hardware control | `NeoPixelLedStrip` (NeoPixelBus) |
 | `IKeyValueStore` | Persistent settings | Arduino Preferences / NVS |
 | `IStm32Transport` | UART to STM32 | `ArduinoStm32Transport` (Serial1) |
@@ -107,7 +107,7 @@ Headers use `#pragma once`. C-compatible headers (like `SysExProtocol.h`) use `.
 ## Consumer Integration Pattern
 
 Platform projects initialize crosspad-core via a platform init function that:
-1. Creates `EspEventBus` (static, with task params)
+1. Creates its `IEventBus` (ESP-IDF: `EspEventBus` in crosspad-platform-idf, static, with task params)
 2. Creates platform clock, MIDI output, LED strip implementations
 3. Constructs `PadLedController` and `PadAnimator`
 4. Constructs `PadManager` wired to all of the above

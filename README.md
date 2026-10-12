@@ -107,9 +107,8 @@ Flags: `Midi`, `AudioOut`, `AudioIn`, `Synth`, `Pads`, `Leds`, `Encoder`, `Displ
 
 ### Event System
 
-Three implementations of `IEventBus`:
-- **EspEventBus** — ESP-IDF event loop (ESP32 / Arduino-ESP32)
-- **FreeRtosEventBus** — FreeRTOS queue-based (PC with FreeRTOS)
+`IEventBus` is implemented by each platform (ESP-IDF: `EspEventBus` in
+crosspad-platform-idf; PC: `FreeRtosEventBus` in crosspad-pc). Core ships one:
 - **SyncEventBus** — synchronous immediate dispatch
 
 Event types: NoteOn, NoteOff, PadPressed, PadReleased, AppChanged, TempoChanged, SamplePlayback, and more.

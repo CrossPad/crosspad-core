@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include <catch2/catch_test_macros.hpp>
 #include "crosspad/dsp/FftFactory.hpp"
+#include "crosspad/dsp/PortableFft.hpp"
 
 #include <cmath>
 #include <cstdlib>
@@ -34,8 +35,8 @@ TEST_CASE("createFft: returns a working FFT and currentFft() agrees", "[dsp][fft
     REQUIRE(currentFft() == &fft);
     REQUIRE(&createFft(mem) == &fft);   // singleton, not a new object each call
 
-    // Without esp-dsp the factory lands on the portable backend, which reaches
-    // kMaxFftSize. With it, the size is whatever its table was built for.
+    // Without a registered backend the factory lands on PortableFft, which
+    // reaches kMaxFftSize. With one, the size is whatever the backend serves.
     REQUIRE(fft.maxSize() >= kMinFftSize);
     REQUIRE((fft.maxSize() & (fft.maxSize() - 1)) == 0);
 
@@ -60,12 +61,36 @@ TEST_CASE("createFft: returns a working FFT and currentFft() agrees", "[dsp][fft
 }
 
 TEST_CASE("createFft: survives an allocator that gives nothing", "[dsp][fft]") {
-    // An esp-dsp build whose table cannot be allocated must fall back rather
-    // than hand out an FFT that fails every call; on a host build there is no
-    // esp-dsp and PortableFft never touches the callbacks at all.
+    // A backend whose table cannot be allocated must fall back rather than
+    // hand out an FFT that fails every call; with no backend registered,
+    // PortableFft never touches the callbacks at all.
     FftMemory none;
     IFft& fft = createFft(none);
     std::vector<float> buf(2 * 64, 0.0f);
     buf[0] = 1.0f;
     REQUIRE(fft.forward(buf.data(), 64));
+}
+
+TEST_CASE("createFft: a backend that cannot serve yet is asked again", "[dsp][fft]") {
+    static PortableFft accelerated;
+    static int asked;
+    static bool ready;
+    asked = 0;
+    ready = false;
+    setFftBackend([](const FftMemory&) -> IFft* {
+        ++asked;
+        return ready ? &accelerated : nullptr;
+    });
+
+    FftMemory mem;
+    IFft& fallback = createFft(mem);
+    REQUIRE(&fallback != &accelerated);
+
+    ready = true;
+    REQUIRE(&createFft(mem) == &accelerated);
+    REQUIRE(currentFft() == &accelerated);
+    REQUIRE(asked == 2);
+
+    setFftBackend(nullptr);
+    REQUIRE(&createFft(mem) == &fallback);
 }

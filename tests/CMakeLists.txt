@@ -76,10 +76,7 @@ set(CORE_SOURCES
     ${CORE_DIR}/src/kit/KitRateConvert.cpp
 
     # DSP (FFT seam + factory, pitch detection, rate conversion).
-    # EspDspFft.cpp is here on purpose: without esp-dsp it compiles to nothing,
-    # and building it on the host is what keeps that guard honest.
     ${CORE_DIR}/src/dsp/PortableFft.cpp
-    ${CORE_DIR}/src/dsp/EspDspFft.cpp
     ${CORE_DIR}/src/dsp/FftFactory.cpp
     ${CORE_DIR}/src/dsp/PitchDetector.cpp
     ${CORE_DIR}/src/dsp/FftResampler.cpp

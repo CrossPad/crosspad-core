@@ -3,17 +3,18 @@
 # When used as an ESP-IDF component (via git submodule in components/crosspad-core/),
 # this file registers the portable core library.
 #
-# Platform-specific implementations (EspEventBus, etc.) live in a separate
-# component (e.g., components/crosspad-platform-idf/) that depends on this one.
+# Platform-specific implementations (EspEventBus, EspDspFft, Drv2605Driver,
+# etc.) live in a separate component (components/crosspad-platform-idf/) that
+# depends on this one.
 
 # Collect portable core sources
 file(GLOB_RECURSE CORE_SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/src/*.cpp")
 
 # esp-dsp is not a platform dependency: it ships with ESP-IDF *and* with
-# Arduino-ESP32, so the sources that use it (dsp/EspDspFft.cpp, the SIMD pan
-# accumulate in PitchedInstrument) live here and are guarded by
-# CROSSPAD_USE_ESP_DSP && __has_include(<esp_dsp.h>). Without both they
-# compile to nothing and the portable paths take over.
+# Arduino-ESP32, so the source that uses it (the SIMD pan accumulate in
+# PitchedInstrument) lives here and is guarded by
+# CROSSPAD_USE_ESP_DSP && __has_include(<esp_dsp.h>). Without both the
+# portable path takes over.
 if(IDF_TARGET STREQUAL "esp32s3")
     set(CORE_DSP_REQUIRES espressif__esp-dsp)
 else()
