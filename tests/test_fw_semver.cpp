@@ -70,6 +70,18 @@ TEST_CASE("Semver order: pre-release below release, describe builds in between",
     CHECK(v("v1.3.0") == v("1.3.0"));
 }
 
+TEST_CASE("Semver orders the simulator's release tags", "[fw]") {
+    // crosspad-pc tags: v0.3.0-CR, v0.3.1-RC, v0.3.1-RC1, ...
+    CHECK(v("0.3.1-RC") < v("0.3.1-RC1"));
+    CHECK(v("0.3.1-RC1") < v("0.3.1-RC2"));
+    CHECK(v("0.3.1-RC9") < v("0.3.1-RC10"));
+    CHECK(v("0.3.1-RC10") < v("0.3.1"));
+    CHECK(v("v0.3.0-CR") < v("0.3.0"));
+    CHECK(v("0.3.0") < v("0.3.1-RC"));
+    CHECK(v("1.0.0-beta1") < v("1.0.0-rc1"));    // a different tag, not the same number
+    CHECK_FALSE(v("1.0.0-rc1") == v("1.0.0-beta1"));
+}
+
 TEST_CASE("compareVersionText puts unparseable text lowest", "[fw]") {
     CHECK(compareVersionText("1.0.0", "garbage") > 0);
     CHECK(compareVersionText("garbage", "1.0.0") < 0);
