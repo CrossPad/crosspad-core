@@ -8,8 +8,13 @@
 namespace crosspad {
 
 constexpr size_t kFwTagMax = 32;
-/// "CrossPad-" + tag (31) + "-v2-" + kit (15) + "-manifest.json" + NUL
+/// A release asset is CrossPad-<tag>-v<rev>-<kit><suffix>. The device never
+/// builds the name: it takes it from the catalog of its own board revision.
 constexpr size_t kFwAssetNameMax = 80;
+/// The widest revision is "v255" (CPFI's board_rev is one byte), the longest suffix "-manifest.json".
+static_assert(sizeof "CrossPad-" - 1 + (kFwTagMax - 1) + sizeof "-v255-" - 1 + (kFwKitMax - 1) +
+                      sizeof "-manifest.json" <= kFwAssetNameMax,
+              "the longest release asset name fits, NUL included");
 constexpr size_t kFwCatalogKits = 16;
 constexpr size_t kFwCatalogVersions = 8;
 /// A kit icon is a 48x48 LVGL image (~7 kB); anything larger is not one.
