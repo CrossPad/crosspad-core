@@ -60,6 +60,7 @@ struct FakePlatform final : ISongEnginePlatform {
     /// Every writeIo: where in the file it started and how many bytes.
     std::mutex ioMutex;
     std::vector<std::pair<long, size_t>> writes;
+    SongEngineSizes engineSizes;
 
     bool startWorker(void (*entry)(void*), void* arg) override {
         worker = std::thread(entry, arg);
@@ -81,6 +82,7 @@ struct FakePlatform final : ISongEnginePlatform {
         return std::chrono::duration_cast<std::chrono::microseconds>(
             std::chrono::steady_clock::now().time_since_epoch()).count();
     }
+    SongEngineSizes sizes() override { return engineSizes; }
     void* allocRingSegment(size_t b, uint32_t) override { return std::malloc(b); }
     void freeRingSegment(void* p) override { std::free(p); }
     void* allocScratch(size_t b) override { return std::malloc(b); }
@@ -139,7 +141,7 @@ struct Rig {
     std::unique_ptr<SongEngine> engine;
     fs::path dir;
 
-    Rig() {
+    explicit Rig(SongEngineSizes sizes = {}) {
         /* ctest runs each case in its own process; an unseeded std::rand()
          * gave them all the same directory, so ctest -j removed each
          * other's clips. */
@@ -149,6 +151,7 @@ struct Rig {
         fs::remove_all(dir);
         fs::create_directories(dir);
         platform.root = (dir / "SONGS").string();
+        platform.engineSizes = sizes;
         clock.onPrepare(kBlock, kRate);
         seq.attach(&clock);
         engine = std::make_unique<SongEngine>(platform, clock, seq);
@@ -468,8 +471,8 @@ struct RampTake {
     std::vector<std::pair<long, size_t>> writes;
 };
 
-RampTake bounceRamp(bool rawIo) {
-    Rig r;
+RampTake bounceRamp(bool rawIo, SongEngineSizes sizes = {}) {
+    Rig r(sizes);
     r.platform.rawIo = rawIo;
     REQUIRE(r.open("Demo"));
     r.seq.setSceneBars(0, 1);
@@ -519,6 +522,23 @@ TEST_CASE("song engine: a bounce writes 4 kB pieces that end on 4 kB of the file
         }
         CHECK(wrong == 0);
     }
+}
+
+TEST_CASE("song engine: a bounce takes its piece size from the platform", "[song][bounce]") {
+    SongEngineSizes sizes;
+    sizes.chunkFrames = 512;
+    const RampTake t = bounceRamp(true, sizes);
+    /* 88200 frames = 501 (up to the first 2 kB of the file, after the 44-byte
+     * header) + 171 x 512 + 147. */
+    REQUIRE(t.status.framesTotal == 88200);
+    REQUIRE(t.writes.size() == 173);
+    CHECK(t.writes.front() == std::make_pair(44L, size_t(2004)));
+    for (size_t i = 1; i + 1 < t.writes.size(); ++i) {
+        CAPTURE(i);
+        CHECK(t.writes[i] == std::make_pair(long(i * 2048), size_t(2048)));
+    }
+    CHECK(t.writes.back() == std::make_pair(172L * 2048, size_t(588)));
+    CHECK(t.bytes == bounceRamp(true).bytes);
 }
 
 TEST_CASE("song engine: a bounce past stdio writes the same file as through it", "[song][bounce]") {

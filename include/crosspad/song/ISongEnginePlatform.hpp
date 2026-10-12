@@ -8,6 +8,8 @@
 #include <cstdio>
 #include <string>
 
+#include "crosspad/song/SongEngineSizes.hpp"
+
 namespace crosspad {
 
 /// What a platform gives the song engine: a worker thread, memory for its
@@ -26,6 +28,8 @@ public:
     virtual void waitWake(uint32_t timeoutMs) = 0;
     virtual void sleepMs(uint32_t ms) = 0;
     virtual int64_t nowUs() = 0;
+    /// The engine's ring and card-access sizes, read once at construction.
+    virtual SongEngineSizes sizes() { return {}; }
 
     /// One ring segment of @p bytes, or nullptr. @p missingSegs is how many
     /// the ring still needs to reach its minimum, for a platform that keeps a

@@ -70,23 +70,7 @@ static_assert(AudioSong::kSeqBlockBars == PatternSequencer::kMaxBars &&
 namespace {
 
 constexpr int      kTracks           = AudioSong::kTracks;
-constexpr uint32_t kBounceRingFrames = 32768;  // 128 kB, ~0.7 s of card stall
 constexpr uint32_t kBounceMinFrames  = 8192;   // 32 kB (~170 ms), the least a bounce starts with
-/* The tracks are mixed by the worker into one ring, not played from a ring
- * each: four rings were 128 kB of PSRAM, more than the board has free with an
- * app open, and play simply did not start. The price is that a mute or a
- * track fader is heard a ring's depth late.
- *
- * ~370 ms ahead, not the ~170 it was: moving round the UI while a song played
- * emptied it 21 times in three seconds (08.10.2026) -- the worker was off the
- * card longer than that. The ring takes what memory gives down to the prime,
- * so a board short of PSRAM plays as it did; the prime, and with it the wait
- * before the first note, is the same 4096 frames as before. */
-constexpr uint32_t kSongRingFrames   = 16384;  // 64 kB, ~370 ms ahead
-constexpr uint32_t kChunkFrames      = 1024;   // 4 kB per card access
-/// A bounce's first piece fills up the 4 kB the WAV header starts, so every
-/// piece after it ends on a 4 kB boundary of the file.
-constexpr uint32_t kFirstChunkFrames = (kChunkFrames * 4 - WavWriter::kHeaderBytes) / 4;
 static_assert(WavWriter::kHeaderBytes % 4 == 0, "the WAV header is whole frames");
 constexpr uint32_t kPrimeFrames      = 4096;
 /// The tracks' meters: the loudest frame of each track in every hop of the
@@ -457,7 +441,7 @@ enum class Play : uint8_t { Idle, Priming, Armed, Counting, Running, Ended };
 
 struct SongEngine::Impl {
     Impl(ISongEnginePlatform& platform, MetronomeNode& clock, PatternSequencer& sequencer)
-        : p(platform), clk_(clock), seq_(sequencer) {
+        : p(platform), clk_(clock), seq_(sequencer), sz(checkedSizes(platform.sizes())) {
         ring_.platform = &p;
         bRing_.platform = &p;
     }
@@ -465,6 +449,20 @@ struct SongEngine::Impl {
     ISongEnginePlatform& p;
     MetronomeNode& clk_;
     PatternSequencer& seq_;
+    const SongEngineSizes sz;
+
+    /// Rings no smaller than what they start with; a chunk longer than the
+    /// WAV header.
+    static SongEngineSizes checkedSizes(SongEngineSizes s) {
+        s.bounceRingFrames = std::max(s.bounceRingFrames, kBounceMinFrames);
+        s.songRingFrames = std::max(s.songRingFrames, kPrimeFrames);
+        s.chunkFrames = std::max(s.chunkFrames, WavWriter::kHeaderBytes / 4 + 1);
+        return s;
+    }
+
+    /// A bounce's first piece fills up the chunk the WAV header starts, so
+    /// every piece after it ends on a chunk boundary of the file.
+    uint32_t firstChunkFrames() const { return (sz.chunkFrames * 4 - WavWriter::kHeaderBytes) / 4; }
 
     /// printf into the platform's log.
     void logf(bool warning, const char* fmt, ...) {
@@ -629,8 +627,8 @@ struct SongEngine::Impl {
         if (workerStarted_.load()) return true;
         /* The one card buffer the worker uses, for whichever job it is on,
          * and the sum the tracks are mixed into. */
-        if (!io_) io_ = static_cast<int16_t*>(p.allocScratch(kChunkFrames * 4));
-        if (!acc_) acc_ = static_cast<int32_t*>(p.allocScratch(kChunkFrames * 8));
+        if (!io_) io_ = static_cast<int16_t*>(p.allocScratch(sz.chunkFrames * 4));
+        if (!acc_) acc_ = static_cast<int32_t*>(p.allocScratch(sz.chunkFrames * 8));
         if (!io_ || !acc_) return false;
         workerStarted_.store(p.startWorker(worker_entry, this));
         return workerStarted_.load();
@@ -1549,7 +1547,7 @@ private:
         ClipReader rd[kTracks];
         bool ok = true;
         for (uint32_t f = a; f < b && ok;) {
-            const uint32_t n = std::min(kChunkFrames, b - f);
+            const uint32_t n = std::min(sz.chunkFrames, b - f);
             std::memset(acc_, 0, n * 8);
             for (int t = 0; t < kTracks; ++t) {
                 if (!(mask & (1u << t))) continue;
@@ -1747,14 +1745,14 @@ private:
         w.reserve(total);
         bool ok = true;
         uint32_t done = 0;
-        std::memset(io_, 0, kChunkFrames * 4);
+        std::memset(io_, 0, sz.chunkFrames * 4);
         while (ok && done < lead) {
-            const uint32_t n = std::min(kChunkFrames, lead - done);
+            const uint32_t n = std::min(sz.chunkFrames, lead - done);
             ok = w.write(io_, n);
             done += n;
         }
         for (uint32_t f = a; ok && f < b;) {
-            const uint32_t n = std::min(kChunkFrames, b - f);
+            const uint32_t n = std::min(sz.chunkFrames, b - f);
             r.read(f, io_, n);
             ok = w.write(io_, n);
             f += n;
@@ -2806,7 +2804,7 @@ private:
             }
         }
         if (!spb) return;
-        if (!ring_.alloc(kSongRingFrames, kPrimeFrames)) {
+        if (!ring_.alloc(sz.songRingFrames, kPrimeFrames)) {
             logf(true, "live: not enough memory for the song ring (%u kB free)",
                  (unsigned)(p.freeMemoryBytes() / 1024));
             return;
@@ -2889,7 +2887,7 @@ private:
             if (!snap_.end && !snap_.loopB) return;
             const uint32_t from = std::min(fromBar * snap_.samplesPerBar,
                                            std::max(snap_.end, snap_.loopB) - 1);
-            if (!ring_.alloc(kSongRingFrames, kPrimeFrames)) {
+            if (!ring_.alloc(sz.songRingFrames, kPrimeFrames)) {
                 logf(true, "play: not enough memory for the song ring (%u kB free)",
                      (unsigned)(p.freeMemoryBytes() / 1024));
                 return;
@@ -2977,10 +2975,10 @@ private:
         }
         /* An edit while it plays moves the seq blocks with the audio. */
         if (syncing_ && play_.load() != Play::Priming && snapGen_.load() != mapSentGen_) pushSeqMap();
-        while (ring_.space() >= kChunkFrames) {
+        while (ring_.space() >= sz.chunkFrames) {
             if (stopReq_.load()) return;
             uint32_t wp = writePos_;
-            uint32_t n = kChunkFrames;
+            uint32_t n = sz.chunkFrames;
             /* Where each track's blocks fall in this chunk -- a block is at
              * least a bar, so two at most, and a third for safety. The path
              * is copied into the piece rather than a string: this runs every
@@ -3181,7 +3179,7 @@ private:
         /* A sixth of a second of card stall is the least worth recording
          * with; a card that stalls longer than the ring holds fails the take
          * as "card too slow" rather than writing it with holes. */
-        if (!bRing_.alloc(kBounceRingFrames, kBounceMinFrames)) {
+        if (!bRing_.alloc(sz.bounceRingFrames, kBounceMinFrames)) {
             w.close();
             std::remove(path.c_str());
             char why[64];
@@ -3272,7 +3270,7 @@ private:
              * piece ending mid-sector made the filesystem read that sector
              * back before writing it, and a short piece is a card command
              * for less than it costs. */
-            const uint32_t want = done ? kChunkFrames : kFirstChunkFrames;
+            const uint32_t want = done ? sz.chunkFrames : firstChunkFrames();
             const uint32_t n = bRing_.used() >= want || bDone_.load() ? bRing_.pop(chunk, want) : 0;
             if (n) {
                 const int64_t t0 = p.nowUs();
