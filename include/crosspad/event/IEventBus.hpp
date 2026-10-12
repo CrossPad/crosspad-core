@@ -70,7 +70,17 @@ public:
     /// Subscribe to a specific event type. Returns handle for unsubscribe.
     virtual SubscriptionHandle subscribe(EventType type, EventHandler handler, void* user_ctx = nullptr) = 0;
 
-    /// Unsubscribe using the handle returned by subscribe()
+    /// Unsubscribe using the handle returned by subscribe().
+    ///
+    /// After unsubscribe() returns, the handler is not running and will not
+    /// be called again -- except when unsubscribe() is called from inside a
+    /// handler on the dispatch thread: then the call in progress completes
+    /// and no further calls happen. A handler subscribed while a dispatch is
+    /// in progress is first called by the next dispatch.
+    ///
+    /// Waiting for a running handler is why a handler must never block on
+    /// anything the unsubscribing thread may hold -- the LVGL lock on the UI
+    /// thread, where apps unsubscribe in their teardown.
     virtual void unsubscribe(SubscriptionHandle handle) = 0;
 
     // ── Async posting (queued, thread-safe from any context) ────────────
