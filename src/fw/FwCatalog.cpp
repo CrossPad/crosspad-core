@@ -1,4 +1,5 @@
 #include "crosspad/fw/FwCatalog.hpp"
+#include <cstdio>
 #include <cstring>
 
 namespace crosspad {
@@ -133,6 +134,11 @@ const FwCatalogVersion* fwCatalogFind(const FwCatalog& c, const char* kit, const
         if (Semver::parse(k->versions[i].version, have) && have == want) return &k->versions[i];
     }
     return nullptr;
+}
+
+bool fwCatalogFileUrl(const char* baseUrl, const char* tag, const char* name, char* out, size_t n) {
+    const int w = std::snprintf(out, n, "%s%s%s/%s", baseUrl, kFwFileApi, tag, name);
+    return w > 0 && static_cast<size_t>(w) < n;
 }
 
 } // namespace crosspad

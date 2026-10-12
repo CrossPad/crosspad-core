@@ -85,4 +85,15 @@ const FwCatalogVersion* fwCatalogPickUpdate(const FwCatalog& c, const char* kit,
 /// `version` compared as a version ("v1.3.0" finds "1.3.0").
 const FwCatalogVersion* fwCatalogFind(const FwCatalog& c, const char* kit, const char* version);
 
+/// The update server's base URL ("http(s)://host[:port]"), bytes incl. NUL.
+constexpr size_t kFwBaseUrlMax = 128;
+constexpr const char* kFwFileApi = "/api/device/file/";
+/// <base>/api/device/file/<tag>/<name> with every part at its limit, incl. NUL.
+constexpr size_t kFwFileUrlMax = kFwBaseUrlMax + sizeof("/api/device/file/") + kFwTagMax + 1 + kFwAssetNameMax;
+
+/// <baseUrl>/api/device/file/<tag>/<name>; tag and name were checked to be
+/// URL-safe by the catalog parser, so nothing is escaped. False when it did
+/// not fit `n`: a cut-off URL names another file.
+bool fwCatalogFileUrl(const char* baseUrl, const char* tag, const char* name, char* out, size_t n);
+
 } // namespace crosspad
