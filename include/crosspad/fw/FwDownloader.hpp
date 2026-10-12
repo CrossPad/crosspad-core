@@ -6,6 +6,7 @@
 #include <cstdint>
 #include "crosspad/fw/FwCatalog.hpp"
 #include "crosspad/fw/FwManifest.hpp"
+#include "crosspad/fw/FwPackage.hpp"
 #include "crosspad/net/IHttpStream.hpp"
 #include "crosspad/util/ISha256.hpp"
 
@@ -29,10 +30,6 @@ struct FwDlProgress {
     std::atomic<uint32_t> done{0};
     std::atomic<uint32_t> total{0};
 };
-
-/// "<kit>-<version>", bytes incl. NUL: the directory a catalog version downloads into.
-constexpr size_t kFwPackageNameMax = 48;
-void fwPackageName(const char* kit, const char* version, char* out, size_t n);
 
 constexpr size_t kFwDlChunk = 4096;
 /// A real manifest is < 1 kB.

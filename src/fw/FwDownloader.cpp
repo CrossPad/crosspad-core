@@ -64,10 +64,6 @@ const char* fwDlResultName(FwDlResult r) {
     return "?";
 }
 
-void fwPackageName(const char* kit, const char* version, char* out, size_t n) {
-    std::snprintf(out, n, "%s-%s", kit, version);
-}
-
 bool FwBlocklist::has(const char* kit, const char* version) const {
     for (size_t i = 0; i < count_; ++i)
         if (std::strcmp(items_[i].kit, kit) == 0 && std::strcmp(items_[i].version, version) == 0) return true;

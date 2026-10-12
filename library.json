@@ -67,6 +67,7 @@
             "+<fw/FwManifest.cpp>",
             "+<fw/FwLibraryGc.cpp>",
             "+<fw/FwStore.cpp>",
+            "+<fw/FwPackage.cpp>",
             "+<sampler/BlockPool.cpp>",
             "+<sampler/SampleStore.cpp>",
             "+<sampler/StreamWindow.cpp>",

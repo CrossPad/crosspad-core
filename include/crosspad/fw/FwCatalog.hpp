@@ -19,6 +19,11 @@ constexpr size_t kFwCatalogKits = 16;
 constexpr size_t kFwCatalogVersions = 8;
 /// A kit icon is a 48x48 LVGL image (~7 kB); anything larger is not one.
 constexpr uint32_t kFwIconBytesMax = 16u * 1024u;
+/// The one icon file the device draws: an LVGL v9 binary image, RGB565A8,
+/// 48x48 (tools/fw_icon.py) -- its 12-byte header, RGB565, then the alpha plane.
+constexpr uint32_t kFwIconSide = 48;
+constexpr size_t kFwIconHeaderBytes = 12;
+constexpr size_t kFwIconBytes = kFwIconHeaderBytes + kFwIconSide * kFwIconSide * 3;
 
 enum class FwChannel : uint8_t { Stable, Beta };
 enum class FwTier : uint8_t { Official, Community };
