@@ -33,8 +33,9 @@ class PadManager;
  *   unregisterPadLogic, setBasePadLogic) -- post that to the UI thread. Done
  *   from a callback it cannot wait for the others, and the guarantee above
  *   does not hold for that change;
- * - it must not block on anything the thread changing the logic may hold
- *   (the LVGL lock on the UI thread): that thread waits for the callback.
+ * - it must not block on anything the thread changing the logic may hold:
+ *   that thread waits for the callback. Above all never on the LVGL lock --
+ *   post GUI work with IGuiPlatform::postToGui(), which never waits for it.
  * onActivate()/onDeactivate() must not change the active logic either.
  */
 class IPadLogicHandler {
