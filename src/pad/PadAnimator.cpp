@@ -11,56 +11,108 @@ void PadAnimator::init(ILedStrip& strip, IClock& clock) {
 }
 
 void PadAnimator::update() {
-    if (!active_ || !strip_) return;
+    CompletionCallback done = nullptr;
+    bool justFinished = false;
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (!active_ || !strip_) return;
 
-    strip_->lock();
-    switch (type_) {
-        case AnimType::PROGRESS: renderProgress(); break;
-        case AnimType::SUCCESS:  renderSuccess();  break;
-        case AnimType::ERROR:    renderError();    break;
-        case AnimType::BOOT:     renderBoot();     break;
-        case AnimType::CHARGING: renderCharging(); break;
-        case AnimType::FRAME:    renderFrame();    break;
-        default: break;
-    }
-    bool justFinished = !active_; // finish() may have been called during render
-    strip_->unlock();
+        strip_->lock();
+        switch (type_) {
+            case AnimType::PROGRESS: renderProgress(); break;
+            case AnimType::SUCCESS:  renderSuccess();  break;
+            case AnimType::ERROR:    renderError();    break;
+            case AnimType::BOOT:     renderBoot();     break;
+            case AnimType::CHARGING: renderCharging(); break;
+            case AnimType::FRAME:    renderFrame();    break;
+            default: break;
+        }
+        justFinished = !active_; // finish() may have been called during render
+        strip_->unlock();
 
-    // Notify outside the lock to avoid deadlock (LED restore takes the lock)
-    if (justFinished) {
-        notifyAnimState(false);
+        if (justFinished) {
+            done = completionCb_;
+            completionCb_ = nullptr;
+        }
     }
+
+    // Outside both locks: the LED restore takes the strip lock, and the
+    // completion callback may start the next animation -- then the pads stay
+    // animated and nothing ended.
+    if (done) done();
+    if (justFinished && !isActive()) notifyAnimState(false);
 }
 
-void PadAnimator::startProgress(RgbColor color) {
-    animColor_ = color;
-    currentProgress_ = 0.0f;
-    type_ = AnimType::PROGRESS;
-    active_ = true;
-    notifyAnimState(true);
+bool PadAnimator::isActive() const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return active_;
+}
 
-    // Render initial state (all black)
-    strip_->lock();
-    for (int i = 0; i < kPadCount; i++) {
-        setPixel(i, RgbColor(0, 0, 0));
+bool PadAnimator::owns(AnimToken token) const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return token != kNoAnim && token == token_;
+}
+
+PadAnimator::AnimToken PadAnimator::beginLocked(AnimType type) {
+    type_ = type;
+    active_ = true;
+    if (++lastToken_ == kNoAnim) ++lastToken_;
+    token_ = lastToken_;
+    return token_;
+}
+
+bool PadAnimator::endLocked() {
+    if (!active_) return false;
+    active_ = false;
+    type_ = AnimType::NONE;
+    token_ = kNoAnim;
+    completionCb_ = nullptr;
+    return true;
+}
+
+PadAnimator::AnimToken PadAnimator::startProgress(RgbColor color) {
+    AnimToken token;
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        animColor_ = color;
+        currentProgress_ = 0.0f;
+        token = beginLocked(AnimType::PROGRESS);
+
+        // Render initial state (all black)
+        strip_->lock();
+        for (int i = 0; i < kPadCount; i++) {
+            setPixel(i, RgbColor(0, 0, 0));
+        }
+        refresh();
+        strip_->unlock();
     }
-    refresh();
-    strip_->unlock();
+    notifyAnimState(true);
+    return token;
 }
 
 void PadAnimator::setProgress(float progress) {
     if (progress < 0.0f) progress = 0.0f;
     if (progress > 1.0f) progress = 1.0f;
+    std::lock_guard<std::mutex> lock(mutex_);
     currentProgress_ = progress;
 }
 
-void PadAnimator::showFrame(const RgbColor (&colors)[kPadCount]) {
-    for (int i = 0; i < kPadCount; i++) frame_[i] = colors[i];
-    if (type_ != AnimType::FRAME || !active_) {
-        type_ = AnimType::FRAME;
-        active_ = true;
-        notifyAnimState(true);
+PadAnimator::AnimToken PadAnimator::showFrame(const RgbColor (&colors)[kPadCount]) {
+    AnimToken token;
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        for (int i = 0; i < kPadCount; i++) frame_[i] = colors[i];
+        token = beginLocked(AnimType::FRAME);
     }
+    notifyAnimState(true);
+    return token;
+}
+
+bool PadAnimator::updateFrame(AnimToken token, const RgbColor (&colors)[kPadCount]) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (token == kNoAnim || token != token_) return false;
+    for (int i = 0; i < kPadCount; i++) frame_[i] = colors[i];
+    return true;
 }
 
 void PadAnimator::renderFrame() {
@@ -68,57 +120,80 @@ void PadAnimator::renderFrame() {
     refresh();
 }
 
-void PadAnimator::playSuccess(uint32_t fadeMs) {
-    type_ = AnimType::SUCCESS;
-    duration_ = fadeMs;
-    startTime_ = clock_->getTimeUs();
-    active_ = true;
+PadAnimator::AnimToken PadAnimator::begin(AnimType type) {
+    AnimToken token;
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        startTime_ = clock_->getTimeUs();
+        token = beginLocked(type);
+    }
     notifyAnimState(true);
+    return token;
 }
 
-void PadAnimator::playError(uint32_t holdMs) {
-    type_ = AnimType::ERROR;
-    duration_ = holdMs;
-    startTime_ = clock_->getTimeUs();
-    active_ = true;
-    notifyAnimState(true);
+PadAnimator::AnimToken PadAnimator::playSuccess(uint32_t fadeMs) {
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        duration_ = fadeMs;
+    }
+    return begin(AnimType::SUCCESS);
 }
 
-void PadAnimator::playBootAnim(uint32_t durationMs) {
-    if (!strip_) return;
-    type_ = AnimType::BOOT;
-    duration_ = durationMs;
-    startTime_ = clock_->getTimeUs();
-    active_ = true;
-    notifyAnimState(true);
+PadAnimator::AnimToken PadAnimator::playError(uint32_t holdMs) {
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        duration_ = holdMs;
+    }
+    return begin(AnimType::ERROR);
 }
 
-void PadAnimator::startCharging(float soc) {
-    chargeSoc_ = (soc < 0.0f) ? 0.0f : (soc > 1.0f ? 1.0f : soc);
-    chargingActive_ = true;     // assume charging until the caller says otherwise
-    type_ = AnimType::CHARGING;
-    startTime_ = clock_->getTimeUs();
-    active_ = true;
-    notifyAnimState(true);
+PadAnimator::AnimToken PadAnimator::playBootAnim(uint32_t durationMs) {
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (!strip_) return kNoAnim;
+        duration_ = durationMs;
+    }
+    return begin(AnimType::BOOT);
+}
+
+PadAnimator::AnimToken PadAnimator::startCharging(float soc) {
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        chargeSoc_ = (soc < 0.0f) ? 0.0f : (soc > 1.0f ? 1.0f : soc);
+        chargingActive_ = true;     // assume charging until the caller says otherwise
+    }
+    return begin(AnimType::CHARGING);
 }
 
 void PadAnimator::setChargePercent(float soc) {
+    std::lock_guard<std::mutex> lock(mutex_);
     chargeSoc_ = (soc < 0.0f) ? 0.0f : (soc > 1.0f ? 1.0f : soc);
 }
 
 void PadAnimator::setChargingActive(bool active) {
+    std::lock_guard<std::mutex> lock(mutex_);
     chargingActive_ = active;
 }
 
-void PadAnimator::stop() {
-    if (!active_) return;
-    active_ = false;
-    type_ = AnimType::NONE;
-    completionCb_ = nullptr;
+bool PadAnimator::stop(AnimToken token) {
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (token == kNoAnim || token != token_ || !endLocked()) return false;
+    }
+    notifyAnimState(false);
+    return true;
+}
+
+void PadAnimator::stopAll() {
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (!endLocked()) return;
+    }
     notifyAnimState(false);
 }
 
 void PadAnimator::setCompletionCallback(CompletionCallback cb) {
+    std::lock_guard<std::mutex> lock(mutex_);
     completionCb_ = cb;
 }
 
@@ -138,15 +213,11 @@ void PadAnimator::refresh() {
 }
 
 void PadAnimator::finish() {
+    // Inside mutex_ and the strip lock: update() runs the completion callback
+    // and the state notification once both are released.
     active_ = false;
     type_ = AnimType::NONE;
-    // Don't call notifyAnimState here — we're inside the strip lock.
-    // The caller (update()) handles notification after unlock.
-    if (completionCb_) {
-        CompletionCallback cb = completionCb_;
-        completionCb_ = nullptr;
-        cb();
-    }
+    token_ = kNoAnim;
 }
 
 void PadAnimator::notifyAnimState(bool active) {

@@ -75,7 +75,7 @@ Global singletons are accessed via free functions: `crosspad::getEventBus()`, `c
 - `PadManager`: central orchestrator for 16 pads — handles press/release, MIDI mapping, chord notes, delegates to `PadLedController` and `PadAnimator`
 - `IPadLogicHandler`: apps register custom pad behavior; `PadManager` swaps active handler on app switch
 - `PadLedController`: per-pad color state machine (default/pressed/playing colors, brightness)
-- `PadAnimator`: LED animations (progress bar, boot, success, error) using `ILedStrip` + `IClock`
+- `PadAnimator`: LED animations (progress bar, boot, success, error, still frames) using `ILedStrip` + `IClock`. One runs at a time and every start takes the pads; each start returns an `AnimToken` -- `owns(token)`, `updateFrame(token, …)` and `stop(token)` act only on the caller's own animation, `stopAll()` is for system paths (soft-off, sleep)
 
 ### STM32 Protocol (`protocol/`, `stm32/`)
 - SysEx framing over UART (manufacturer ID 0x7D)
