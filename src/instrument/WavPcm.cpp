@@ -13,90 +13,28 @@ constexpr uint32_t kChunkBytes = 4096;
 constexpr uint16_t kWaveFormatPcm = 0x0001;
 constexpr uint16_t kWaveFormatExtensible = 0xFFFE;
 
-uint32_t rdU32(const uint8_t* p) {
-    return static_cast<uint32_t>(p[0]) | (static_cast<uint32_t>(p[1]) << 8)
-         | (static_cast<uint32_t>(p[2]) << 16) | (static_cast<uint32_t>(p[3]) << 24);
-}
-
 uint16_t rdU16(const uint8_t* p) {
     return static_cast<uint16_t>(p[0] | (p[1] << 8));
 }
 
-/**
- * @brief Total bytes in @p f, leaving the stream rewound. -1 when unknown.
- *
- * A file whose length does not fit in a `long` cannot be seeked with fseek()
- * anyway, and ftell() reports that as a failure -- such a file is refused here
- * rather than parsed with a size the rest of the reader cannot express.
- */
-long fileSize(FILE* f) {
-    if (std::fseek(f, 0, SEEK_END) != 0) return -1;
-    const long n = std::ftell(f);
-    if (n < 0) return -1;
-    if (std::fseek(f, 0, SEEK_SET) != 0) return -1;
-    return n;
-}
-
-/// Walks the chunk list. On success `dataOffset`/`dataBytes` locate the PCM.
+/// The layout of a file wavReadLayout() accepted, as WavPcmReader reads it.
 bool parseHeader(FILE* f, WavInfo& info, long& dataOffset, uint32_t& dataBytes,
                  bool& formatSupported) {
     formatSupported = false;
-    const long fileBytes = fileSize(f);
-    if (fileBytes < 12) return false;
-    uint8_t hdr[12];
-    if (std::fread(hdr, 1, 12, f) != 12) return false;
-    if (std::memcmp(hdr, "RIFF", 4) != 0 || std::memcmp(hdr + 8, "WAVE", 4) != 0) return false;
-
-    uint16_t audioFormat = 0;
-    bool haveFmt = false, haveData = false;
-    dataOffset = 0;
-    dataBytes = 0;
-
-    uint8_t ch[8];
-    while (std::fread(ch, 1, 8, f) == 8) {
-        const long pos = std::ftell(f);           // first byte of the chunk body
-        if (pos < 0 || pos > fileBytes) break;
-
-        // The declared size comes straight off disk and is not trusted: a
-        // truncated or hostile file happily claims ~4 GB, which then overflows
-        // the `long` fseek() takes (32-bit on some hosts) and makes `frames`
-        // describe data that is not there. Clamping to the bytes actually left
-        // is what keeps every seek below inside the file and inside `long` --
-        // both operands of the subtraction are already longs.
-        uint64_t size = rdU32(ch + 4);
-        const uint64_t remain = static_cast<uint64_t>(fileBytes - pos);
-        if (size > remain) size = remain;
-
-        if (std::memcmp(ch, "fmt ", 4) == 0) {
-            uint8_t fmt[16];
-            const uint32_t want = (size < 16) ? static_cast<uint32_t>(size) : 16u;
-            if (std::fread(fmt, 1, want, f) != want) return false;
-            if (want < 16) return false;
-            audioFormat   = rdU16(fmt + 0);
-            info.channels = rdU16(fmt + 2);
-            info.sampleRate = rdU32(fmt + 4);
-            info.bits     = rdU16(fmt + 14);
-            haveFmt = true;
-            if (size > want && std::fseek(f, static_cast<long>(size - want), SEEK_CUR) != 0) return false;
-        } else if (std::memcmp(ch, "data", 4) == 0) {
-            dataOffset = pos;
-            dataBytes = static_cast<uint32_t>(size);
-            haveData = true;
-            if (std::fseek(f, static_cast<long>(size), SEEK_CUR) != 0) break;
-        } else {
-            if (std::fseek(f, static_cast<long>(size), SEEK_CUR) != 0) break;
-        }
-        if (size & 1u) {           // RIFF pads odd-sized chunks to even
-            if (std::fseek(f, 1, SEEK_CUR) != 0) break;
-        }
-        if (haveFmt && haveData) break;
-    }
-    if (!haveFmt || !haveData) return false;
+    WavLayout layout;
+    const bool found = wavReadLayout(f, layout, true);
+    info.channels   = layout.channels;
+    info.sampleRate = layout.rate;
+    info.bits       = layout.bits;
+    if (!found) return false;
+    dataOffset = static_cast<long>(layout.dataOffset);
+    dataBytes  = layout.dataBytes;
 
     const uint16_t frameBytes = static_cast<uint16_t>(info.channels * (info.bits / 8));
     info.frames = (frameBytes > 0) ? (dataBytes / frameBytes) : 0;
 
-    formatSupported = (audioFormat == kWaveFormatPcm || audioFormat == kWaveFormatExtensible)
+    formatSupported = (layout.format == kWaveFormatPcm
+                       || layout.format == kWaveFormatExtensible)
                    && info.bits == 16
                    && (info.channels == 1 || info.channels == 2);
     return true;
