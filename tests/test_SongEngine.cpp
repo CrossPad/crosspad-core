@@ -1077,14 +1077,15 @@ TEST_CASE("song engine: REC from a bar lays a block of its own notes there", "[s
     CHECK(c.notes->notes[0].len > 0);
 }
 
-TEST_CASE("song engine: a STOP just past a bar line ends the block on it", "[song][songtake]") {
+TEST_CASE("song engine: a REC ends with the bar of its last note, wherever STOP came", "[song][songtake]") {
     Rig r;
     REQUIRE(r.open("Demo"));
     Take t(r);
     REQUIRE(t.start(0, SyncTake::Record));
     const uint32_t bar = r.engine->framesPerBar();
     t.hit(1, 0, bar / 16);
-    t.to(4 * bar + bar / 8);                              // half a beat late
+    t.hit(2, 3 * bar + bar * 3 / 4, bar / 16);            // the last quarter of bar four
+    t.to(5 * bar + bar / 2);                              // STOP half way through bar six
     REQUIRE(t.stop());
     std::lock_guard<std::recursive_mutex> l(r.engine->songMutex());
     const auto& cs = r.engine->song().tracks[0].clips;
@@ -1101,14 +1102,15 @@ TEST_CASE("song engine: a second REC further on is a sequence of its own", "[son
         Take t(r);
         REQUIRE(t.start(0, SyncTake::Record));
         t.hit(1, 0, bar / 16);
-        t.to(4 * bar);
+        t.hit(3, 3 * bar, bar / 16);                      // bar four
+        t.to(4 * bar + bar / 2);
         REQUIRE(t.stop());
     }
     {
         Take t(r);
         REQUIRE(t.start(4, SyncTake::Record));            // the marker on bar five
         t.hit(2, bar / 2, bar / 16);
-        t.to(2 * bar);
+        t.to(2 * bar);                                    // a bar with nothing in it
         REQUIRE(t.stop());
     }
     std::lock_guard<std::recursive_mutex> l(r.engine->songMutex());
@@ -1117,7 +1119,7 @@ TEST_CASE("song engine: a second REC further on is a sequence of its own", "[son
     CHECK(cs[0].bar == 0);
     CHECK(cs[0].bars == 4);
     CHECK(cs[1].bar == 4);
-    CHECK(cs[1].bars == 2);
+    CHECK(cs[1].bars == 1);                               // its notes are all in its first bar
     REQUIRE(cs[0].notes);
     REQUIRE(cs[1].notes);
     CHECK(cs[0].notes != cs[1].notes);
@@ -1193,7 +1195,7 @@ TEST_CASE("song engine: a REC longer than a scene lands as blocks the seq view o
     REQUIRE(t.start(0, SyncTake::Record));
     t.hit(2, bar / 2, bar / 16);                          // bar one
     t.hit(5, 9 * bar + bar / 4, bar / 16);                // bar ten
-    t.to(10 * bar + bar / 2);                             // STOP half way into bar eleven
+    t.to(10 * bar + bar / 2);                             // STOP half way into bar eleven, past it
     REQUIRE(t.stop());
     uint8_t scene = 0;
     {
@@ -1204,14 +1206,14 @@ TEST_CASE("song engine: a REC longer than a scene lands as blocks the seq view o
         CHECK(tr.clips[0].bar == 0);
         CHECK(tr.clips[0].bars == AudioSong::kSeqBlockBars);
         CHECK(tr.clips[1].bar == AudioSong::kSeqBlockBars);
-        CHECK(tr.clips[1].bars == 3);
+        CHECK(tr.clips[1].bars == 2);                     // to bar ten, its last note's
     }
     /* Each opens in the seq view, its own notes in the scene. */
     REQUIRE(r.engine->openSeqEdit(0, 0, scene));
     CHECK(r.seq.eventCount(scene) == 1);
     REQUIRE(r.engine->openSeqEdit(0, 9, scene));
     CHECK(r.engine->seqEditBar() == AudioSong::kSeqBlockBars);
-    CHECK(r.seq.sceneBars(scene) == 3);
+    CHECK(r.seq.sceneBars(scene) == 2);
     CHECK(r.seq.eventCount(scene) == 1);
     r.engine->closeSeqEdit();
 }
@@ -1291,6 +1293,7 @@ TEST_CASE("song engine: a take punched in while playing starts on the bar it is 
         Take t(r);
         REQUIRE(t.start(0, SyncTake::Record));
         t.hit(1, 0, bar / 16);
+        t.hit(1, 3 * bar, bar / 16);                      // four bars long
         t.to(4 * bar);
         REQUIRE(t.stop());
     }

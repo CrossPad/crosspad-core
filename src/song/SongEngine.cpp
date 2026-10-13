@@ -2314,11 +2314,11 @@ private:
         }
     }
 
-    /// A stretch of the take onto the track: REC as one block from the bar
-    /// @p from is in to the bar @p to ends in (and at least past its last
-    /// note), the seq blocks under it gone; DUB into the blocks it fell
-    /// under. Song samples. Nothing played, nothing changes. Caller holds
-    /// songMutex_.
+    /// A stretch of the take onto the track: REC as blocks from the bar
+    /// @p from is in to the bar @p to ends in, or past its last note if that
+    /// is later -- @p to == @p from is "to the bar of the last note" -- the seq
+    /// blocks under it gone; DUB into the blocks it fell under. Song samples.
+    /// Nothing played, nothing changes. Caller holds songMutex_.
     bool landTake(const std::vector<PatternSequencer::SongTakeNote>& notes, bool replace,
                   uint32_t from, uint32_t to) {
         if (notes.empty() || takeTrack_ < 0) return false;
@@ -2356,25 +2356,23 @@ private:
     }
 
     /// The take is over -- stopped, or punched out with the song playing on:
-    /// what is left of it lands, as far as the song got. A stop a beat or
-    /// less past a bar line ends the block on that line, unless a note was
-    /// played after it: nobody presses STOP on the downbeat. Caller holds
+    /// what is left of it lands. A REC ends with the bar its last note is in,
+    /// wherever STOP was pressed: a note on the last quarter of bar four is a
+    /// four-bar sequence, not five because the stop came in bar five
+    /// (13.10.2026; it ran to the stop before). A lap round a region is the
+    /// region's, and is landed whole as it wraps (landLaps()). Caller holds
     /// songMutex_.
     void finishTake() {
         const SyncTake take = seqTake_.load();
         if (take == SyncTake::None) return;
         seq_.takeSongNotes(takeNotes_, true);
-        const uint32_t at = seq_.songMapPosition();
         const uint32_t spb = song_.samplesPerBar(sampleRate_);
-        const uint32_t bpb = song_.beatsPerBar ? song_.beatsPerBar : AudioSong::kDefaultBeatsPerBar;
-        const uint32_t grace = spb / bpb;
         if (takeCycle_) {
             const uint16_t laps = seq_.songTakeLaps();
             if (laps != takeLaps_) landLaps(laps);
         }
         const uint32_t from = takeCycle_ && takeLaps_ ? song_.loopStart * spb : takeFrom_;
-        const uint32_t to = at > from + grace ? at - grace : from;
-        landTake(takeNotes_, take == SyncTake::Record && !takeReplaced_, from, to);
+        landTake(takeNotes_, take == SyncTake::Record && !takeReplaced_, from, from);
         closeTake();
     }
 
