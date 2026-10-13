@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
 // Compile-time coherence guards. Included last.
 #if defined(FEAT_PAD_EDITOR) && (CROSSPAD_PAD_CONFIG_LEVEL != CROSSPAD_PAD_CONFIG_FULL)

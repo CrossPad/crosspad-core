@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 #include "crosspad/pad/PadAnimator.hpp"
 #include "crosspad/led/HslColor.hpp"
 #include <cstdio>

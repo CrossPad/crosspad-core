@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 #include "crosspad/stm32/Stm32Manager.hpp"
 #include "crosspad/stm32/Stm32ConfigSync.hpp"
 #include "crosspad/stm32/reg_map.h"

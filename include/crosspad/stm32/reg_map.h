@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 /*
  * STM32 I2C1 slave register map — the single mirror of
  * CrossPad_STM32_r20/app/inc/reg_map.h. Keep in sync with the firmware side.

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 #include "crosspad/midi/MidiInputHandler.hpp"
 #include "crosspad/pad/PadManager.hpp"
 #include "crosspad/event/IEventBus.hpp"

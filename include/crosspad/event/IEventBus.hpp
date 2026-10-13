@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 /**
  * @file IEventBus.hpp
  * @brief Platform-agnostic event bus interface for CrossPad

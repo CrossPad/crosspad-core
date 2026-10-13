@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 /*
  * Compile-time dependency version gate. Deliberately has no include guard —
  * include it once per dependency, after defining what you have and what you

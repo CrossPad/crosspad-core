@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
 // Single include point for all CrossPad compile-time config. Order matters:
 // Configuration → Configuration_adv → sanity checks.

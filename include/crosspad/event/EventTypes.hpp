@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 /**
  * @file EventTypes.hpp
  * @brief Portable event type and source enumerations for CrossPad event system
