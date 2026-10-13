@@ -29,6 +29,10 @@ void CrosspadSettings::loadFrom(IKeyValueStore& store) {
     launcherStyle = (LauncherStyle)readU8In(store, "cfg_display", "launcher",
                                             (uint8_t)LauncherStyle::Grid,
                                             (uint8_t)LauncherStyle::Grid, (uint8_t)LauncherStyle::List);
+    touchSensitivity = (TouchSensitivity)readU8In(store, "cfg_display", "touch_sens",
+                                                  (uint8_t)TouchSensitivity::Low,
+                                                  (uint8_t)TouchSensitivity::Low,
+                                                  (uint8_t)TouchSensitivity::High);
 
     // Recorder
     /* The fallback, not the constructor's: this load() is what a boot sees. */
@@ -131,6 +135,7 @@ void CrosspadSettings::loadFrom(IKeyValueStore& store) {
     // Wireless
     wireless.enableWiFi      = store.readBool("cfg_wireless", "wifi", false);
     wireless.enableBLE       = store.readBool("cfg_wireless", "ble", false);
+    wireless.enableRemote    = store.readBool("cfg_wireless", "remote", true);
     wireless.enableOSC       = store.readBool("cfg_wireless", "osc", false);
     wireless.enableOSCServer = store.readBool("cfg_wireless", "osc_srv", true);
     wireless.enableUDP       = store.readBool("cfg_wireless", "udp", true);
@@ -184,6 +189,7 @@ void CrosspadSettings::saveTo(IKeyValueStore& store) {
     store.saveU8("cfg_display", "perf_stats", perfStatsFlags);
     store.saveBool("cfg_display", "drawer_en", quickSettingsEnabled);
     store.saveU8("cfg_display", "launcher", (uint8_t)launcherStyle);
+    store.saveU8("cfg_display", "touch_sens", (uint8_t)touchSensitivity);
 
     // Recorder
     store.saveBool("cfg_rec", "auto_trim", recorderAutoTrim);
@@ -278,6 +284,7 @@ void CrosspadSettings::saveTo(IKeyValueStore& store) {
     // Wireless
     store.saveBool("cfg_wireless", "wifi", wireless.enableWiFi);
     store.saveBool("cfg_wireless", "ble", wireless.enableBLE);
+    store.saveBool("cfg_wireless", "remote", wireless.enableRemote);
     store.saveBool("cfg_wireless", "osc", wireless.enableOSC);
     store.saveBool("cfg_wireless", "osc_srv", wireless.enableOSCServer);
     store.saveBool("cfg_wireless", "udp", wireless.enableUDP);

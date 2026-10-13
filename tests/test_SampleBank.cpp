@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: MIT
+// SPDX-License-Identifier: GPL-3.0-or-later
 #include <catch2/catch_test_macros.hpp>
 #include "crosspad/instrument/SampleBank.hpp"
 
@@ -105,4 +105,75 @@ TEST_CASE("SampleBank: rejects loops that are too short or run past the end",
     REQUIRE(bank.addZone(ok));
     REQUIRE(bank.zone(0).loopStart == 10);
     REQUIRE(bank.zone(0).loopEnd == 10 + SampleBank::kMinLoopSamples);
+}
+
+// ---------------------------------------------------------------------------
+// The memory generation rule.
+//
+// On the device a bank's PCM comes out of the engine arena, which is wiped
+// wholesale (re-registered) whenever the engines hand it over. A block handed
+// out before such a wipe is not one the heap knows any more: freeing it is
+// "CORRUPT HEAP: Bad head" inside multi_heap_free -- the kit_churn crash of
+// 2026-10-09. The bank remembers the generation it was built in and, once that
+// generation has passed, forgets its blocks instead of freeing them.
+// ---------------------------------------------------------------------------
+
+namespace {
+uint32_t g_generation = 0;
+uint32_t currentGeneration() { return g_generation; }
+}
+
+TEST_CASE("SampleBank: frees its blocks while the memory generation holds",
+          "[instrument][bank][generation]") {
+    g_live = 0;
+    g_generation = 7;
+    {
+        SampleBank bank(bankAlloc, bankFree, currentGeneration);
+        REQUIRE(bank.generation() == 7);
+        REQUIRE_FALSE(bank.stale());
+        REQUIRE(bank.allocPcm(100) != nullptr);
+        REQUIRE(bank.allocPcm(50) != nullptr);
+        REQUIRE(g_live == 2);
+    }
+    REQUIRE(g_live == 0);   // same generation: both blocks went back
+}
+
+TEST_CASE("SampleBank: a bank from an older generation forgets, never frees",
+          "[instrument][bank][generation]") {
+    g_live = 0;
+    g_generation = 3;
+    int16_t* p = nullptr;
+    {
+        SampleBank bank(bankAlloc, bankFree, currentGeneration);
+        p = bank.allocPcm(100);
+        REQUIRE(p != nullptr);
+        Zone z; z.pcm = p; z.length = 100;
+        REQUIRE(bank.addZone(z));
+        REQUIRE(g_live == 1);
+
+        ++g_generation;              // the arena was reset under the bank
+        REQUIRE(bank.stale());
+        REQUIRE(bank.generation() == 3);
+        // Nothing more is carved for a bank whose earlier blocks are gone.
+        REQUIRE(bank.allocPcm(10) == nullptr);
+        REQUIRE(g_live == 1);
+    }
+    // The destructor did not hand the block to free(): the heap it came from
+    // no longer exists. (The test allocator still counts it as live; on the
+    // device the reset already took it.)
+    REQUIRE(g_live == 1);
+    bankFree(p);             // the host's malloc, unlike the arena, is still there
+}
+
+TEST_CASE("SampleBank: no generation source keeps the old behaviour",
+          "[instrument][bank][generation]") {
+    g_live = 0;
+    g_generation = 1;
+    {
+        SampleBank bank(bankAlloc, bankFree);
+        REQUIRE(bank.allocPcm(10) != nullptr);
+        ++g_generation;
+        REQUIRE_FALSE(bank.stale());   // nobody told it about generations
+    }
+    REQUIRE(g_live == 0);
 }

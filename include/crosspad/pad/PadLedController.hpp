@@ -1,4 +1,5 @@
 #pragma once
+#include <atomic>
 #include <cstdint>
 #include "crosspad/led/RgbColor.hpp"
 #include "crosspad/led/HslColor.hpp"
@@ -33,6 +34,9 @@ public:
     // output clicks), so audio platforms should enable this — but ONLY when
     // something ticks update() periodically, otherwise LEDs never repaint.
     // Off by default (refresh() fires immediately, the historical behavior).
+    // Coalesced, notifyNotePlay() -- called from the audio render through
+    // PadManager::handleSamplePlay() -- touches neither the pixels nor the
+    // strip lock: it records the state and update() paints it.
     void setCoalescedRefresh(bool on) { coalesceRefresh_ = on; }
     bool getCoalescedRefresh() const { return coalesceRefresh_; }
 
@@ -115,6 +119,9 @@ private:
     bool isAnimating_ = false;
     bool coalesceRefresh_ = false;
     bool ledsDirty_ = false; // guarded by the strip lock
+    /// Coalesced: a pad's playing state changed, update() repaints. Set from
+    /// the audio render, which may not wait for the strip lock.
+    std::atomic<bool> repaint_{false};
 
     // Per-pad state
     PadLedState padStates_[16];

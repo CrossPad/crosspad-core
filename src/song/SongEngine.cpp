@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: MIT
+// SPDX-License-Identifier: GPL-3.0-or-later
 //
 // The audio song engine: projects in the platform's songs root, bouncing a
 // sequencer scene to a WAV, and streaming four tracks of clips back into the
@@ -84,6 +84,10 @@ constexpr uint32_t kBounceMinFrames  = 8192;   // 32 kB (~170 ms), the least a b
  * before the first note, is the same 4096 frames as before. */
 constexpr uint32_t kSongRingFrames   = 16384;  // 64 kB, ~370 ms ahead
 constexpr uint32_t kChunkFrames      = 1024;   // 4 kB per card access
+/// A bounce's first piece fills up the 4 kB the WAV header starts, so every
+/// piece after it ends on a 4 kB boundary of the file.
+constexpr uint32_t kFirstChunkFrames = (kChunkFrames * 4 - WavWriter::kHeaderBytes) / 4;
+static_assert(WavWriter::kHeaderBytes % 4 == 0, "the WAV header is whole frames");
 constexpr uint32_t kPrimeFrames      = 4096;
 /// The tracks' meters: the loudest frame of each track in every hop of the
 /// ring, kept for long enough that what RT is playing is still there.
@@ -112,6 +116,9 @@ constexpr uint32_t kTakeHorizonBars  = 999;
 /// commit that changed nothing about them, convert none again.
 constexpr size_t   kNoteCacheSize    = 32;
 constexpr int64_t  kUndoMergeUs      = 700000;
+/// requestTempo(): the tempi a song may have.
+constexpr float    kMinBpm           = 20.0f;
+constexpr float    kMaxBpm           = 400.0f;
 /// releaseRings(): how often it logs that it is still waiting (a bounce
 /// notices a cancel within one card write).
 constexpr uint32_t kReleaseWaitMs    = 3000;
@@ -650,7 +657,7 @@ struct SongEngine::Impl {
     SongOpState openState() const { return openState_.load(); }
 
     bool requestRename(const std::string& name) {
-        if (!valid_name(name) || !ensureWorker()) return false;
+        if (!valid_name(name) || !ensureWorker() || !claimEdit()) return false;
         {
             std::lock_guard<std::recursive_mutex> l(songMutex_);
             editName_ = name;
@@ -659,12 +666,12 @@ struct SongEngine::Impl {
     }
 
     bool requestDelete() {
-        if (!ensureWorker()) return false;
+        if (!ensureWorker() || !claimEdit()) return false;
         return requestEdit(kEditDelete);
     }
 
     bool requestTempo(float bpm) {
-        if (!(bpm >= 20.0f && bpm <= 400.0f) || !ensureWorker()) return false;
+        if (!(bpm >= kMinBpm && bpm <= kMaxBpm) || !ensureWorker() || !claimEdit()) return false;
         editBpm_.store(bpm);
         return requestEdit(kEditTempo);
     }
@@ -673,7 +680,7 @@ struct SongEngine::Impl {
 
     bool requestMerge(uint8_t trackMask, uint32_t fromBar, uint32_t toBar) {
         const uint8_t all = (uint8_t)((1u << kTracks) - 1);
-        if (!(trackMask & all) || toBar <= fromBar || !ensureWorker()) return false;
+        if (!(trackMask & all) || toBar <= fromBar || !ensureWorker() || !claimEdit()) return false;
         editMask_.store(trackMask & all);
         editFrom_.store(fromBar);
         editTo_.store(toBar);
@@ -715,7 +722,7 @@ struct SongEngine::Impl {
     }
 
     bool requestExportLiveSet() {
-        if (!ensureWorker()) return false;
+        if (!ensureWorker() || !claimEdit()) return false;
         return requestEdit(kEditExport);
     }
     std::vector<std::string> editReport() {
@@ -822,9 +829,15 @@ struct SongEngine::Impl {
     bool requestImport(const std::string& file, uint32_t start, uint32_t end,
                        uint8_t track, uint32_t bar, uint32_t lead) {
         if (file.empty() || track >= kTracks || (end && end <= start) || !ensureWorker()) return false;
+        /* Checked before the claim: a refusal after it would leave the edit
+         * Busy for good. */
         {
             std::lock_guard<std::recursive_mutex> l(songMutex_);
             if (audioTarget(track, false) < 0) return false;
+        }
+        if (!claimEdit()) return false;
+        {
+            std::lock_guard<std::recursive_mutex> l(songMutex_);
             editName_ = file;
         }
         importA_ = start;
@@ -1231,8 +1244,18 @@ private:
         return true;
     }
 
+    /// One edit at a time: the caller that turns editState_ Busy owns the
+    /// edit parameters until the worker has finished with them.
+    bool claimEdit() {
+        SongOpState s = editState_.load();
+        do {
+            if (s == SongOpState::Busy) return false;
+        } while (!editState_.compare_exchange_weak(s, SongOpState::Busy));
+        return true;
+    }
+
+    /// Publish a claimed edit; its parameters are written before this.
     bool requestEdit(uint8_t edit) {
-        editState_.store(SongOpState::Busy);
         editReq_.store(edit);
         p.wake();
         return true;
@@ -1484,10 +1507,11 @@ private:
             std::lock_guard<std::recursive_mutex> l(songMutex_);
             copy = song_;
         }
-        /* Muted tracks are not what is heard: left out, left alone. A seq
-         * track has no audio to mix until it is bounced: likewise. */
+        /* Muted or silent tracks are not what is heard: left out, left alone.
+         * A seq track has no audio to mix until it is bounced: likewise. */
         for (int t = 0; t < kTracks; ++t) {
-            if (copy.tracks[t].muted || copy.tracks[t].kind == TrackKind::Seq) mask &= (uint8_t)~(1u << t);
+            if (copy.tracks[t].muted || copy.tracks[t].volume <= 0.0f ||
+                copy.tracks[t].kind == TrackKind::Seq) mask &= (uint8_t)~(1u << t);
         }
         if (!mask) return SongOpState::Failed;
         for (int t = 0; t < kTracks; ++t) {
@@ -1496,6 +1520,16 @@ private:
                 if (c.bar >= fromBar && c.bar < toBar) toBar = std::max<uint32_t>(toBar, c.bar + c.bars);
             }
         }
+        int target = 0;
+        while (!(mask & (1u << target))) ++target;
+        /* Blocks the merge leaves on the target track keep playing at its
+         * volume, so the clip is mixed relative to it; with none left the
+         * volumes go into the clip and the track goes to unity. */
+        bool targetKeepsBlocks = false;
+        for (const auto& c : copy.tracks[target].clips) {
+            if (c.bar < fromBar || c.bar >= toBar) targetKeepsBlocks = true;
+        }
+        const float refVolume = targetKeepsBlocks ? copy.tracks[target].volume : 1.0f;
         const Arrangement arr = flatten(copy);
         const uint32_t spBar = arr.samplesPerBar;
         const uint32_t a = fromBar * spBar, b = toBar * spBar;
@@ -1519,7 +1553,7 @@ private:
             std::memset(acc_, 0, n * 8);
             for (int t = 0; t < kTracks; ++t) {
                 if (!(mask & (1u << t))) continue;
-                const float g = copy.tracks[t].volume;
+                const float g = copy.tracks[t].volume / refVolume;
                 for (const auto& sg : arr.tracks[t]) {
                     if (sg.end <= f) continue;
                     if (sg.start >= f + n) break;
@@ -1547,10 +1581,8 @@ private:
 
         {
             std::lock_guard<std::recursive_mutex> l(songMutex_);
-            int target = -1;
             for (int t = 0; t < kTracks; ++t) {
                 if (!(mask & (1u << t))) continue;
-                if (target < 0) target = t;
                 auto& cs = song_.tracks[t].clips;
                 cs.erase(std::remove_if(cs.begin(), cs.end(), [&](const SongClip& c) {
                     return c.bar >= fromBar && c.bar < toBar;
@@ -1566,7 +1598,7 @@ private:
             c.bar = fromBar;
             c.bars = (uint16_t)std::max<uint32_t>(1, toBar - fromBar);
             song_.addClip(target, c);
-            song_.tracks[target].volume = 1.0f;      // the tracks' volumes are in the clip now
+            if (!targetKeepsBlocks) song_.tracks[target].volume = 1.0f;
             rebuild();
         }
         doSave();
@@ -1576,9 +1608,6 @@ private:
         return SongOpState::Ready;
     }
 
-    /// Worker: a region of a WAV into the project's clips/, laid on a track
-    /// -- see ISongEngine::requestImport. The clip is named after its source,
-    /// numbered when the project has one of that name already.
     /// Worker: the open song as a Live Set in its own folder -- see
     /// ISongEngine::requestExportLiveSet. The song is copied, the clips'
     /// headers read, and the Set written to a .tmp that only replaces the
@@ -1685,6 +1714,9 @@ private:
         return finish(SongOpState::Ready);
     }
 
+    /// Worker: a region of a WAV into the project's clips/, laid on a track
+    /// -- see ISongEngine::requestImport. The clip is named after its source,
+    /// numbered when the project has one of that name already.
     SongOpState doImport() {
         std::string src;
         {
@@ -2448,6 +2480,7 @@ private:
                 /* A project asked for by name is the one open: opening the
                  * last one afterwards would read it back over unsaved edits. */
                 lastTried_ = true;
+                if (saveReq_.exchange(false)) doSave();   // the edits waiting go to the song they were made in
                 openState_.store(doOpen(name));
                 continue;
             }
@@ -3219,34 +3252,52 @@ private:
         const int64_t deadline = p.nowUs() +
                                  (int64_t)total * 1000000 / sampleRate_ + 3000000;
         const char* error = nullptr;
-        char why[64];
+        char why[80];
         uint32_t done = 0;
         int64_t maxGapUs = 0, lastPop = 0;   // from the first block on: not the wait for bar one
+        int64_t firstPop = 0;
+        uint32_t ioUs = 0, ioMaxUs = 0, ioChunks = 0, drain = 0;
+        bool tooSlow = false;
         bool seqStopped = false;
         for (;;) {
             /* A lost block is a failed take, whatever else is true: checked
              * first, so a ring that overflowed and then drained is never
              * reported as a finished clip. */
-            if (bOverflow_.load()) {
-                std::snprintf(why, sizeof(why), "card too slow (stalled %u ms, buffer %u ms)",
-                              (unsigned)(maxGapUs / 1000),
-                              (unsigned)((uint64_t)bRing_.cap * 1000 / sampleRate_));
-                error = why;
-                break;
-            }
+            if (bOverflow_.load()) { tooSlow = true; break; }
             /* The take is complete the moment RT has its last frame: stop the
              * scene there, not when the card has caught up. */
             if (!seqStopped && bDone_.load()) { seq.stop(); seqStopped = true; }
-            const uint32_t n = bRing_.pop(chunk, kChunkFrames);
+            /* Only whole pieces, each ending on a 4 kB boundary of the file
+             * (the first fills up the header's), until the take's last: a
+             * piece ending mid-sector made the filesystem read that sector
+             * back before writing it, and a short piece is a card command
+             * for less than it costs. */
+            const uint32_t want = done ? kChunkFrames : kFirstChunkFrames;
+            const uint32_t n = bRing_.used() >= want || bDone_.load() ? bRing_.pop(chunk, want) : 0;
             if (n) {
-                if (!w.write(chunk, n)) { error = "card write failed"; break; }
+                const int64_t t0 = p.nowUs();
+                if (!firstPop) firstPop = t0;
+                if (!p.writeIo(w.stream(), chunk, n * 4)) { error = "card write failed"; break; }
+                w.advance(n);
                 const int64_t now = p.nowUs();
+                const uint32_t us = (uint32_t)(now - t0);
+                ioUs += us;
+                if (us > ioMaxUs) ioMaxUs = us;
+                ++ioChunks;
                 if (lastPop) maxGapUs = std::max(maxGapUs, now - lastPop);
                 lastPop = now;
                 done += n;
+                /* How the card keeps up: bytes per millisecond from the start
+                 * of the first piece is kB/s. */
+                const uint32_t ms = (uint32_t)(now - firstPop) / 1000;
+                drain = ms ? done * 4 / ms : 0;
                 {
                     std::lock_guard<std::mutex> l(statusMutex_);
                     status_.framesDone = done;
+                    status_.chunks     = ioChunks;
+                    status_.chunkAvgUs = ioUs / ioChunks;
+                    status_.chunkMaxUs = ioMaxUs;
+                    status_.drainKBps  = drain;
                 }
                 p.yieldIo();
                 continue;
@@ -3255,6 +3306,12 @@ private:
             if (bCancel_.load()) { error = "cancelled"; break; }
             if (p.nowUs() > deadline) { error = "timed out"; break; }
             p.sleepMs(2);
+        }
+        if (tooSlow) {
+            std::snprintf(why, sizeof(why), "card too slow (stalled %u ms, buffer %u ms, drain %u kB/s)",
+                          (unsigned)(maxGapUs / 1000),
+                          (unsigned)((uint64_t)bRing_.cap * 1000 / sampleRate_), (unsigned)drain);
+            error = why;
         }
         if (!error && done != total) error = "take incomplete";
 
@@ -3356,7 +3413,7 @@ private:
     mutable std::mutex noteCacheMutex_;
     static constexpr uint8_t kEditRename = 1, kEditTempo = 2, kEditMerge = 3, kEditImport = 4,
                              kEditDelete = 5, kEditExport = 6;
-    uint32_t    importA_ = 0, importB_ = 0, importBar_ = 0, importLead_ = 0;   // set before editReq_
+    uint32_t    importA_ = 0, importB_ = 0, importBar_ = 0, importLead_ = 0;   // owned by claimEdit()'s caller until editReq_
     uint8_t     importTrack_ = 0;
     std::atomic<uint8_t>  editMask_{0}, editProgress_{0};
     std::atomic<uint32_t> editFrom_{0}, editTo_{0};

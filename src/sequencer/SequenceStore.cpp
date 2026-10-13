@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: MIT
+// SPDX-License-Identifier: GPL-3.0-or-later
 #include "crosspad/sequencer/SequenceStore.hpp"
 #include "../util/JsonStdio.hpp"
 

@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: MIT
+// SPDX-License-Identifier: GPL-3.0-or-later
 #include "crosspad/audio/WavWriter.hpp"
 
 #include <climits>
@@ -7,7 +7,6 @@
 namespace crosspad {
 
 namespace {
-constexpr uint64_t kHeaderBytes     = 44;
 constexpr uint64_t kBytesPerSample = 2;
 constexpr uint64_t kRiffPreamble   = 8;   // "RIFF" + its size field, not counted by it
 
@@ -72,7 +71,7 @@ bool WavWriter::close()
 
 bool WavWriter::writeHeader(uint32_t dataBytes)
 {
-    uint8_t h[44];
+    uint8_t h[kHeaderBytes];
     std::memcpy(h + 0, "RIFF", 4);
     put32(h + 4, 36u + dataBytes);
     std::memcpy(h + 8, "WAVE", 4);

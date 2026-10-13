@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: MIT
+// SPDX-License-Identifier: GPL-3.0-or-later
 #include "crosspad/instrument/SampleBank.hpp"
 
 #include <cmath>
@@ -9,11 +9,15 @@ namespace {
 const Zone kEmptyZone{};
 }
 
-SampleBank::SampleBank(void* (*alloc)(size_t), void (*free)(void*))
-    : alloc_(alloc), free_(free) {}
+SampleBank::SampleBank(void* (*alloc)(size_t), void (*free)(void*),
+                       MemoryGenerationFn generation)
+    : alloc_(alloc), free_(free), genFn_(generation),
+      generation_(generation ? generation() : 0) {}
 
 SampleBank::~SampleBank() {
-    if (free_) {
+    // A stale bank's blocks went with the wipe that made it stale: handing
+    // them to free() would corrupt the heap that replaced them.
+    if (free_ && !stale()) {
         for (uint8_t i = 0; i < blockCount_; ++i) {
             if (blocks_[i]) free_(blocks_[i]);
         }
@@ -24,7 +28,7 @@ SampleBank::~SampleBank() {
 }
 
 int16_t* SampleBank::allocPcm(uint32_t length) {
-    if (!alloc_ || length == 0 || blockCount_ >= kMaxZones) return nullptr;
+    if (!alloc_ || length == 0 || blockCount_ >= kMaxZones || stale()) return nullptr;
     const size_t n = static_cast<size_t>(length) * sizeof(int16_t);
     int16_t* p = static_cast<int16_t*>(alloc_(n));
     if (!p) return nullptr;

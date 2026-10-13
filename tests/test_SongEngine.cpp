@@ -15,9 +15,12 @@
 #include <cstring>
 #include <filesystem>
 #include <mutex>
+#include <random>
 #include <thread>
+#include <utility>
 #include <vector>
 
+#include <unistd.h>
 #include <zlib.h>
 
 namespace fs = std::filesystem;
@@ -49,6 +52,14 @@ struct FakePlatform final : ISongEnginePlatform {
     std::atomic<bool> storage{true};
     std::atomic<int> storageAsked{0};
     std::atomic<int> captureBegun{0}, captureEnded{0};
+    /// writeIo the board's way: what stdio holds goes out first, then the
+    /// piece straight to the descriptor. Off, the engine's default (fwrite).
+    bool rawIo = false;
+    /// The writeIo call, from 0, that fails; -1 for none.
+    int failWriteAt = -1;
+    /// Every writeIo: where in the file it started and how many bytes.
+    std::mutex ioMutex;
+    std::vector<std::pair<long, size_t>> writes;
 
     bool startWorker(void (*entry)(void*), void* arg) override {
         worker = std::thread(entry, arg);
@@ -75,7 +86,26 @@ struct FakePlatform final : ISongEnginePlatform {
     void* allocScratch(size_t b) override { return std::malloc(b); }
     size_t freeMemoryBytes() override { return size_t(1) << 30; }
     bool storageReady() override { ++storageAsked; return storage.load(); }
-    void yieldIo() override {}
+    std::atomic<bool> holdIo{false};
+    void yieldIo() override {
+        while (holdIo.load()) std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    bool writeIo(FILE* f, const void* data, size_t bytes) override {
+        std::lock_guard<std::mutex> l(ioMutex);
+        if ((int)writes.size() == failWriteAt) return false;
+        if (!rawIo) {
+            writes.emplace_back(std::ftell(f), bytes);
+            return ISongEnginePlatform::writeIo(f, data, bytes);
+        }
+        if (std::fflush(f) != 0) return false;
+        const int fd = fileno(f);
+        writes.emplace_back((long)::lseek(fd, 0, SEEK_CUR), bytes);
+        return ::write(fd, data, bytes) == (ssize_t)bytes;
+    }
+    std::vector<std::pair<long, size_t>> writesSoFar() {
+        std::lock_guard<std::mutex> l(ioMutex);
+        return writes;
+    }
     const char* songsRoot() override { return root.c_str(); }
     std::string loadCurrent() override { return current; }
     void saveCurrent(const std::string& n) override { current = n; }
@@ -110,7 +140,12 @@ struct Rig {
     fs::path dir;
 
     Rig() {
-        dir = fs::temp_directory_path() / ("songengine_" + std::to_string(std::rand()));
+        /* ctest runs each case in its own process; an unseeded std::rand()
+         * gave them all the same directory, so ctest -j removed each
+         * other's clips. */
+        dir = fs::temp_directory_path() /
+              ("songengine_" + std::to_string(std::random_device{}()) + "_" +
+               std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
         fs::remove_all(dir);
         fs::create_directories(dir);
         platform.root = (dir / "SONGS").string();
@@ -373,6 +408,162 @@ TEST_CASE("song engine: a cancelled bounce leaves no file and restores the bus",
     CHECK(r.seq.activeScene() == sceneWas);
 }
 
+namespace {
+
+/// Frame @p k of a take as the pads bus carries it: (k % 30000, k / 30000),
+/// so no two frames of a take are alike and a piece written to the wrong
+/// place shows. Half a step up, as the capture truncates.
+float rampSample(uint32_t v) { return ((float)v + 0.5f) / 32767.0f; }
+
+/// Feeds a bounce the ramp, counting from the block its take starts on: the
+/// block in which the clock starts (the capture's own test).
+struct RampFeed {
+    uint32_t next = 0;
+    bool started = false;
+    std::vector<float> out = std::vector<float>(kBlock * 2);
+    std::vector<float> bus = std::vector<float>(kBlock * 2, 0.0f);
+
+    void block(Rig& r) {
+        std::fill(out.begin(), out.end(), 0.0f);
+        r.clock.mix(out.data(), kBlock);
+        r.seq.poll();
+        std::fill(out.begin(), out.end(), 0.0f);
+        r.engine->mix(out.data(), kBlock);
+        const uint32_t at = r.clock.positionSamples();
+        if (!started && r.clock.running() && !r.clock.countingIn() && at > 0 && at <= kBlock) started = true;
+        for (uint32_t i = 0; i < kBlock; ++i) {
+            const uint32_t k = started ? next++ : 0;
+            bus[i * 2]     = rampSample(k % 30000);
+            bus[i * 2 + 1] = rampSample(k / 30000);
+        }
+        r.engine->rtCapture(bus.data(), kBlock);
+    }
+
+    /// Blocks near real time until the bounce is no longer running.
+    BounceStatus run(Rig& r) {
+        for (int i = 0; i < 4000 && r.engine->bounceStatus().state == BounceState::Running; ++i) {
+            block(r);
+            std::this_thread::sleep_for(std::chrono::milliseconds(4));
+        }
+        return r.engine->bounceStatus();
+    }
+};
+
+std::vector<uint8_t> readFile(const fs::path& path) {
+    std::vector<uint8_t> all;
+    if (std::FILE* f = std::fopen(path.string().c_str(), "rb")) {
+        uint8_t buf[4096];
+        size_t n;
+        while ((n = std::fread(buf, 1, sizeof buf, f)) > 0) all.insert(all.end(), buf, buf + n);
+        std::fclose(f);
+    }
+    return all;
+}
+
+/// One bar at 120 BPM bounced from the ramp; the file's bytes and every
+/// writeIo it took.
+struct RampTake {
+    BounceStatus status;
+    std::vector<uint8_t> bytes;
+    std::vector<std::pair<long, size_t>> writes;
+};
+
+RampTake bounceRamp(bool rawIo) {
+    Rig r;
+    r.platform.rawIo = rawIo;
+    REQUIRE(r.open("Demo"));
+    r.seq.setSceneBars(0, 1);
+    REQUIRE(r.engine->bounceScene(0, 0));
+    RampFeed feed;
+    RampTake t;
+    t.status = feed.run(r);
+    REQUIRE(t.status.state == BounceState::Done);
+    t.bytes = readFile(r.clipsDir("Demo") / t.status.file);
+    t.writes = r.platform.writesSoFar();
+    return t;
+}
+
+} // namespace
+
+TEST_CASE("song engine: a bounce writes 4 kB pieces that end on 4 kB of the file", "[song][bounce]") {
+    for (const bool rawIo : {true, false}) {
+        CAPTURE(rawIo);
+        const RampTake t = bounceRamp(rawIo);
+        /* One bar at 120 BPM: 88200 frames = 1013 (up to the first 4 kB of
+         * the file, after the 44-byte header) + 85 x 1024 + 147. */
+        REQUIRE(t.status.framesTotal == 88200);
+        REQUIRE(t.writes.size() == 87);
+        CHECK(t.writes.front() == std::make_pair(44L, size_t(4052)));
+        for (size_t i = 1; i + 1 < t.writes.size(); ++i) {
+            CAPTURE(i);
+            CHECK(t.writes[i] == std::make_pair(long(i * 4096), size_t(4096)));
+        }
+        CHECK(t.writes.back() == std::make_pair(86L * 4096, size_t(588)));
+        CHECK(t.status.chunks == 87);
+        CHECK(t.status.chunkMaxUs >= t.status.chunkAvgUs);
+        CHECK(t.status.drainKBps > 0);
+
+        /* The take is the ramp, frame for frame, across every piece's edge. */
+        const std::vector<uint8_t>& b = t.bytes;
+        REQUIRE(b.size() == 44 + 88200 * 4);
+        auto le32 = [&](size_t at) { return b[at] | b[at + 1] << 8 | b[at + 2] << 16 | uint32_t(b[at + 3]) << 24; };
+        CHECK(std::memcmp(b.data(), "RIFF", 4) == 0);
+        CHECK(le32(4) == 36 + 88200 * 4);
+        CHECK(std::memcmp(b.data() + 36, "data", 4) == 0);
+        CHECK(le32(40) == 88200 * 4);
+        size_t wrong = 0;
+        for (uint32_t k = 0; k < 88200; ++k) {
+            int16_t lr[2];
+            std::memcpy(lr, b.data() + 44 + k * 4, 4);
+            if (lr[0] != int16_t(k % 30000) || lr[1] != int16_t(k / 30000)) ++wrong;
+        }
+        CHECK(wrong == 0);
+    }
+}
+
+TEST_CASE("song engine: a bounce past stdio writes the same file as through it", "[song][bounce]") {
+    const RampTake raw = bounceRamp(true);
+    const RampTake viaStdio = bounceRamp(false);
+    REQUIRE(raw.bytes.size() == viaStdio.bytes.size());
+    CHECK(raw.bytes == viaStdio.bytes);
+}
+
+TEST_CASE("song engine: a piece the card does not take fails the bounce and leaves no file", "[song][bounce]") {
+    Rig r;
+    r.platform.rawIo = true;
+    r.platform.failWriteAt = 3;
+    REQUIRE(r.open("Demo"));
+    r.seq.setSceneBars(0, 1);
+    REQUIRE(r.engine->bounceScene(0, 0));
+    RampFeed feed;
+    const BounceStatus st = feed.run(r);
+    REQUIRE(st.state == BounceState::Failed);
+    CHECK(st.error == "card write failed");
+    CHECK(st.chunks == 3);
+    CHECK(r.platform.captureEnded == 1);
+    CHECK(fs::is_empty(r.clipsDir("Demo")));
+}
+
+TEST_CASE("song engine: a bounce cancelled between pieces leaves no file", "[song][bounce]") {
+    Rig r;
+    r.platform.rawIo = true;
+    REQUIRE(r.open("Demo"));
+    r.seq.setSceneBars(0, 1);
+    REQUIRE(r.engine->bounceScene(0, 0));
+    RampFeed feed;
+    for (int i = 0; i < 2000 && r.platform.writesSoFar().size() < 4; ++i) {
+        feed.block(r);
+        std::this_thread::sleep_for(std::chrono::milliseconds(4));
+    }
+    REQUIRE(r.platform.writesSoFar().size() >= 4);
+    r.engine->cancelBounce();
+    const BounceStatus st = feed.run(r);
+    REQUIRE(st.state == BounceState::Failed);
+    CHECK(st.error == "cancelled");
+    CHECK(r.platform.captureEnded == 1);
+    CHECK(fs::is_empty(r.clipsDir("Demo")));
+}
+
 TEST_CASE("song engine: no storage, no project and no bounce", "[song]") {
     Rig r;
     r.platform.storage = false;
@@ -507,6 +698,61 @@ TEST_CASE("song engine: merge leaves muted tracks out and cuts a block reaching 
     CHECK(s.tracks[0].clips[1].bar == 1);
     REQUIRE(s.tracks[1].clips.size() == 1);   // muted: untouched
     CHECK(s.tracks[1].clips[0].file == "m.wav");
+}
+
+TEST_CASE("song engine: merge keeps the volume of a track whose other blocks stay", "[song]") {
+    Rig r;
+    REQUIRE(r.open("Demo"));
+    placeClip(r, "a.wav", 1000, 1, 0, 1);
+    placeClip(r, "keep.wav", 400, 1, 3, 1);
+    placeClip(r, "b.wav", 300, 2, 0, 1);
+    {
+        std::lock_guard<std::recursive_mutex> l(r.engine->songMutex());
+        r.engine->song().tracks[1].volume = 0.5f;
+    }
+    r.engine->commit();
+    REQUIRE(r.engine->requestMerge(0b0110, 0, 1));
+    REQUIRE(editDone(r));
+
+    /* Heard before: 1000 * 0.5 + 300 * 1.0 = 800, played back at track 1's 0.5. */
+    const std::vector<int16_t> pcm = readWavData((r.clipsDir("Demo") / "merge_01.wav").string());
+    REQUIRE_FALSE(pcm.empty());
+    CHECK(pcm.front() == 1600);
+
+    std::lock_guard<std::recursive_mutex> l(r.engine->songMutex());
+    const AudioSong& s = r.engine->song();
+    CHECK(s.tracks[1].volume == 0.5f);
+    REQUIRE(s.tracks[1].clips.size() == 2);
+    CHECK(s.tracks[1].clips[1].file == "keep.wav");
+}
+
+TEST_CASE("song engine: an edit asked for while another runs is refused", "[song]") {
+    Rig r;
+    REQUIRE(r.open("Demo"));
+    placeClip(r, "a.wav", 1000, 0, 0, 1);
+    r.engine->commit();
+    r.platform.holdIo.store(true);
+    REQUIRE(r.engine->requestMerge(0b0001, 0, 1));
+    CHECK(r.engine->editState() == SongOpState::Busy);
+    CHECK_FALSE(r.engine->requestTempo(90.0f));
+    CHECK_FALSE(r.engine->requestRename("Other"));
+    CHECK_FALSE(r.engine->requestImport((r.clipsDir("Demo") / "a.wav").string(), 0, 0, 1, 0, 0));
+    r.platform.holdIo.store(false);
+    REQUIRE(editDone(r));
+    REQUIRE(r.engine->requestTempo(90.0f));
+    REQUIRE(editDone(r));
+}
+
+TEST_CASE("song engine: opening another project saves the edit still waiting", "[song]") {
+    Rig r;
+    REQUIRE(r.open("Demo"));
+    placeClip(r, "a.wav", 1000, 0, 0, 1);
+    r.engine->commit();                             // saved only after kSaveDelayMs
+    REQUIRE(r.open("Other"));
+    REQUIRE(r.open("Demo"));
+    std::lock_guard<std::recursive_mutex> l(r.engine->songMutex());
+    REQUIRE(r.engine->song().tracks[0].clips.size() == 1);
+    CHECK(r.engine->song().tracks[0].clips[0].file == "a.wav");
 }
 
 TEST_CASE("song engine: a new tempo resizes every block to its file", "[song]") {

@@ -1,7 +1,16 @@
-// SPDX-License-Identifier: MIT
+// SPDX-License-Identifier: GPL-3.0-or-later
 #include "crosspad/sampler/BlockPool.hpp"
 
 #include <cstring>
+
+/* Set-up, a kit's take and the reports run on a worker or a verb, never in the
+ * render; the board builds this file for speed (-O2) for the render's sake.
+ * GCC's `cold` builds these for size and changes nothing about what they do. */
+#if defined(__GNUC__)
+#define CROSSPAD_COLD __attribute__((cold))
+#else
+#define CROSSPAD_COLD
+#endif
 
 namespace crosspad {
 
@@ -22,7 +31,7 @@ BlockPool::~BlockPool()
     livePages_ = 0;
 }
 
-bool BlockPool::configure(const Config& cfg)
+CROSSPAD_COLD bool BlockPool::configure(const Config& cfg)
 {
     if (!cfg.alloc || !cfg.free) return false;
     if (cfg.blockBytes == 0 || cfg.pageBytes < cfg.blockBytes) return false;
@@ -102,7 +111,7 @@ bool BlockPool::pullPageBlocksLocked(uint32_t page)
     return removed == perPage_;
 }
 
-uint32_t BlockPool::reserve(uint32_t blocks)
+CROSSPAD_COLD uint32_t BlockPool::reserve(uint32_t blocks)
 {
     if (!pages_) return 0;
     for (;;) {
@@ -137,7 +146,7 @@ uint32_t BlockPool::reserve(uint32_t blocks)
     }
 }
 
-uint32_t BlockPool::trim()
+CROSSPAD_COLD uint32_t BlockPool::trim()
 {
     if (!pages_) return 0;
     uint32_t released = 0;
@@ -163,7 +172,7 @@ uint32_t BlockPool::trim()
     return released;
 }
 
-void BlockPool::forgetPages()
+CROSSPAD_COLD void BlockPool::forgetPages()
 {
     if (!pages_) return;
     Spin g(*this);
@@ -176,7 +185,7 @@ void BlockPool::forgetPages()
     used_.store(0, std::memory_order_relaxed);
 }
 
-bool BlockPool::releaseAll()
+CROSSPAD_COLD bool BlockPool::releaseAll()
 {
     if (!pages_) return true;
     if (used_.load(std::memory_order_acquire) != 0) return false;
@@ -288,7 +297,7 @@ void* BlockPool::data(uint32_t block) const
     return pages_[p].base + static_cast<size_t>(block % perPage_) * blockBytes_;
 }
 
-BlockPool::Stats BlockPool::stats() const
+CROSSPAD_COLD BlockPool::Stats BlockPool::stats() const
 {
     Stats s;
     {

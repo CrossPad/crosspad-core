@@ -12,20 +12,33 @@ on:
 
 permissions:
   contents: read
+  packages: read   # pulls the CI image
 
+# CI image: ghcr.io/crosspad/crosspad-ci (tools/ci/Dockerfile in platform-idf),
+# the same image -- and so the same cmake, ninja, compilers and Python -- for
+# every CrossPad repository, on hardware machine (repository variable
+# CI_RUNNER=self-hosted, tools/ci_runner.py in platform-idf) and on GitHub's
+# runners alike. It is pinned here by tag and digest (GHCR lets a tag be
+# moved, not a digest); moving to a new image revision is a commit like any
+# other. Unset CI_RUNNER before the self-hosted runner goes off:
+# GitHub never falls back from a self-hosted label to a hosted runner.
 jobs:
   docs:
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.CI_RUNNER || 'ubuntu-latest' }}
+    container:
+      image: ghcr.io/crosspad/crosspad-ci:v5.5.5-1@sha256:d89e2175ab2371eca90278a6a8774108b9387775344b2bbf837eabc2a30036bd
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+    defaults:
+      run:
+        shell: bash
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install Doxygen + Graphviz
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y graphviz
-          wget -q https://www.doxygen.nl/files/doxygen-1.16.1.linux.bin.tar.gz
-          tar xzf doxygen-1.16.1.linux.bin.tar.gz
-          sudo install -m 755 doxygen-1.16.1/bin/doxygen /usr/local/bin/doxygen
+      # Doxygen 1.16.1 and graphviz are in the image.
+      - name: Doxygen version
+        run: doxygen --version
 
       - name: Generate docs
         run: |

@@ -5,7 +5,7 @@
 using namespace crosspad;
 
 TEST_CASE("MusicTheory: scale data", "[music]") {
-    REQUIRE(MusicTheory::scaleCount() == 9);
+    REQUIRE(MusicTheory::scaleCount() == 11);
 
     SECTION("scale names are non-null") {
         for (uint8_t i = 0; i < MusicTheory::scaleCount(); i++) {

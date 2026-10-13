@@ -1,10 +1,11 @@
-// SPDX-License-Identifier: MIT
+// SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
 
 #include "crosspad/song/AudioSong.hpp"
 
 #include <cstddef>
 #include <cstdint>
+#include <cstdio>
 #include <string>
 
 namespace crosspad {
@@ -41,6 +42,19 @@ public:
     /// A bulk read or write gives way to whatever else must read the storage
     /// in time (the board's sample streamer).
     virtual void yieldIo() = 0;
+    /// Append @p bytes of a bounce take at @p f's position. The engine hands
+    /// over whole 4 kB pieces that end on a 4 kB boundary of the file (only
+    /// the take's last one is short), from its own buffer. A board whose card
+    /// cannot DMA from that buffer (PSRAM) copies a piece to memory it can and
+    /// writes it past stdio -- fflush(f), then the file descriptor -- so the
+    /// filesystem gets whole aligned sectors in one command instead of one
+    /// command per sector and a read of every sector a piece ends in. The
+    /// position stdio keeps may then be stale; the writer only seeks to an
+    /// absolute place after this. False when not all of it was written.
+    virtual bool writeIo(FILE* f, const void* data, size_t bytes)
+    {
+        return std::fwrite(data, 1, bytes, f) == bytes;
+    }
     virtual const char* songsRoot() = 0;
     /// The project last open; empty when none was.
     virtual std::string loadCurrent() = 0;

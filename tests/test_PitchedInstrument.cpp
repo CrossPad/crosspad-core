@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: MIT
+// SPDX-License-Identifier: GPL-3.0-or-later
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/catch_approx.hpp>
 #include "crosspad/instrument/PitchedInstrument.hpp"
@@ -159,7 +159,7 @@ TEST_CASE("PitchedInstrument: a stolen voice fades instead of cutting",
     REQUIRE(inst.soundingVoices() == 1);
     REQUIRE(inst.activeVoices() == 2);
 
-    // 2 ms is 88 frames at 44.1 kHz: the fade is still running after one
+    // 5 ms is 220.5 frames at 44.1 kHz: the fade is still running after one
     // 64-frame block and its level is falling, which a hard cut would not do.
     std::vector<float> out(kFrames * 2, 0.0f);
     inst.mix(out.data(), kFrames);
@@ -167,10 +167,91 @@ TEST_CASE("PitchedInstrument: a stolen voice fades instead of cutting",
     REQUIRE(out[0] > out[2 * (kFrames - 1)]);
     REQUIRE(out[2 * (kFrames - 1)] > alone[0]);      // both voices are still in it
 
-    // ...and gone by the end of the second block.
+    // Still there after three blocks (192 frames)...
+    inst.mix(out.data(), kFrames);
+    inst.mix(out.data(), kFrames);
+    REQUIRE(inst.activeVoices() == 2);
+    // ...and gone by the end of the fourth (256).
     inst.mix(out.data(), kFrames);
     REQUIRE(inst.activeVoices() == 1);
     REQUIRE(inst.soundingVoices() == 1);
+    delete bank;
+}
+
+TEST_CASE("PitchedInstrument: a release tail is stolen before a held note",
+          "[instrument][engine]") {
+    SampleBank* bank = makeBank(200000, 60.0f, 0, 0, constFill);
+    PitchedInstrument inst;
+    inst.onPrepare(kFrames, kSr);
+    inst.setParams(params(3, 0.0f, 1000.0f));
+    inst.setBank(bank);
+
+    // 60 is the oldest and still held; 62, the newest, is in a long release.
+    inst.noteOn(60, 100, 0);
+    inst.noteOn(61, 100, 0);
+    inst.noteOn(62, 100, 0);
+    inst.noteOff(62);
+    inst.noteOn(63, 100, 0);           // over the cap: someone gives way
+    REQUIRE(inst.stealCount() == 1u);
+    REQUIRE(inst.soundingVoices() == 3);
+
+    // Releases from here on are instant, so a held 60 and 61 end at once.
+    // Had 60 been stolen, 62's 1 s tail would still be sounding.
+    inst.setParams(params(3, 0.0f, 0.0f));
+    inst.noteOff(60);
+    inst.noteOff(61);
+    std::vector<float> out(kFrames * 2, 0.0f);
+    for (int b = 0; b < 4; ++b) inst.mix(out.data(), kFrames);   // the 5 ms fade is over
+    REQUIRE(inst.activeVoices() == 1);                            // only 63
+    delete bank;
+}
+
+TEST_CASE("PitchedInstrument: the voice cap clamps every setParams", "[instrument][engine]") {
+    PitchedInstrument inst;
+    REQUIRE(inst.voiceCap() == PitchedInstrument::kMaxSounding);
+
+    // A kit or the editor asking for 24 under the board's cap of 10 gets 10,
+    // every time.
+    inst.setVoiceCap(10);
+    inst.setParams(params(24));
+    REQUIRE(inst.maxVoices() == 10);
+    inst.setParams(params(8));
+    REQUIRE(inst.maxVoices() == 8);
+    inst.setParams(params(PitchedInstrument::kMaxSounding));
+    REQUIRE(inst.maxVoices() == 10);
+
+    // The cap itself stays within 1..kMaxSounding.
+    inst.setVoiceCap(0);
+    REQUIRE(inst.voiceCap() == 1);
+    inst.setVoiceCap(200);
+    REQUIRE(inst.voiceCap() == PitchedInstrument::kMaxSounding);
+}
+
+TEST_CASE("PitchedInstrument: over budget a note takes a voice's place",
+          "[instrument][engine]") {
+    SampleBank* bank = makeBank(200000, 60.0f, 0, 0, constFill);
+    PitchedInstrument inst;
+    inst.onPrepare(kFrames, kSr);
+    inst.setParams(params(8, 0.0f, 150.0f));
+    inst.setBank(bank);
+
+    // Alone, a note always sounds.
+    inst.setOverloaded(true);
+    inst.noteOn(60, 100, 0);
+    REQUIRE(inst.soundingVoices() == 1);
+    REQUIRE(inst.stealCount() == 0u);
+
+    inst.noteOn(61, 100, 0);           // two would be one more than the pass has room for
+    REQUIRE(inst.soundingVoices() == 1);
+    REQUIRE(inst.stealCount() == 1u);
+    REQUIRE(inst.shedCount() == 1u);
+
+    inst.setOverloaded(false);
+    inst.noteOn(62, 100, 0);
+    REQUIRE(inst.soundingVoices() == 2);
+    REQUIRE(inst.stealCount() == 1u);
+    inst.resetStats();
+    REQUIRE(inst.shedCount() == 0u);
     delete bank;
 }
 

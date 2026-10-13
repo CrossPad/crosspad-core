@@ -110,6 +110,10 @@ set(CORE_SOURCES
     ${CORE_DIR}/src/fw/FwCatalog.cpp
     ${CORE_DIR}/src/fw/FwManifest.cpp
     ${CORE_DIR}/src/fw/FwLibraryGc.cpp
+    ${CORE_DIR}/src/fw/FwStore.cpp
+    ${CORE_DIR}/src/fw/FwAccount.cpp
+    ${CORE_DIR}/src/net/RemoteFrame.cpp
+    ${CORE_DIR}/src/fw/FwCardActions.cpp
 
     # Loop recorder
     ${CORE_DIR}/src/sequencer/PatternSequencer.cpp
@@ -121,6 +125,7 @@ set(CORE_SOURCES
     ${CORE_DIR}/src/sampler/StreamWindow.cpp
     ${CORE_DIR}/src/sampler/SamplerKit.cpp
     ${CORE_DIR}/src/sampler/SamplerEngine.cpp
+    ${CORE_DIR}/src/sampler/KitTake.cpp
     ${CORE_DIR}/src/transport/Transport.cpp
 )
 

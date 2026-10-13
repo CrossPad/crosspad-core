@@ -55,6 +55,16 @@ struct Stm32Settings {
     uint16_t padPanSwap = 1u << 6;
     uint8_t analogMinMs = BOARD_ANALOG_MIN_MS_DEF;
     uint8_t analogDelta = BOARD_ANALOG_DELTA_DEF;
+    // How long a pad must stay pressed before the STM sends its note-on
+    // (REG_CTL_BTN_PRESS_DB_MS). It is also the velocity window: the STM
+    // latches the deepest sample inside it. Deliberately not the STM's
+    // compiled-in 15 ms -- that was 14-15.75 ms of every pad's latency, while a
+    // hard hit peaks well inside 6. Shorter catches less of a slow, soft hit
+    // (it reads quieter) and lets a 6-15 ms knock on the case through.
+    // Release debounce stays the STM's.
+    static constexpr uint8_t kPressDebounceMinMs = 2;
+    static constexpr uint8_t kPressDebounceMaxMs = 15;
+    uint8_t pressDebounceMs = BOARD_PRESS_DEBOUNCE_MS_DEF;
 
     // per-pad config — access ONLY via the accessors below.
 #if defined(PAD_CONFIG_PER_PAD)
@@ -135,6 +145,7 @@ struct Stm32Settings {
         ccPanBase   = s.readU8("cfg_stm", "cc_pan", ccPanBase);
         analogMinMs = s.readU8("cfg_stm", "an_min_ms", analogMinMs);
         analogDelta = s.readU8("cfg_stm", "an_delta", analogDelta);
+        pressDebounceMs = s.readU8("cfg_stm", "press_db", pressDebounceMs);
 #if defined(PAD_CONFIG_PER_PAD)
         for (int i = 0; i < kPads; ++i) {
             char k[12];
@@ -177,6 +188,7 @@ struct Stm32Settings {
         s.saveU8("cfg_stm", "cc_pan", ccPanBase);
         s.saveU8("cfg_stm", "an_min_ms", analogMinMs);
         s.saveU8("cfg_stm", "an_delta", analogDelta);
+        s.saveU8("cfg_stm", "press_db", pressDebounceMs);
 #if defined(PAD_CONFIG_PER_PAD)
         for (int i = 0; i < kPads; ++i) {
             char k[12];
@@ -212,6 +224,7 @@ struct Stm32Settings {
         json["padPanSwap"]  = padPanSwap;
         json["analogMinMs"] = analogMinMs;
         json["analogDelta"] = analogDelta;
+        json["pressDebounceMs"] = pressDebounceMs;
         JsonArray sens = json["padSensitivity"].to<JsonArray>();
         JsonArray lr   = json["padLrRatio"].to<JsonArray>();
         JsonArray an   = json["padAnalogMode"].to<JsonArray>();
@@ -235,6 +248,8 @@ struct Stm32Settings {
         padPanSwap  = (uint16_t)jsonInt(json["padPanSwap"], padPanSwap, 0, 0xFFFF);
         analogMinMs = (uint8_t)jsonInt(json["analogMinMs"], analogMinMs, 0, 255);
         analogDelta = (uint8_t)jsonInt(json["analogDelta"], analogDelta, 0, 255);
+        pressDebounceMs = (uint8_t)jsonInt(json["pressDebounceMs"], pressDebounceMs,
+                                           kPressDebounceMinMs, kPressDebounceMaxMs);
 
         JsonVariantConst sens = json["padSensitivity"];
         JsonVariantConst lr   = json["padLrRatio"];

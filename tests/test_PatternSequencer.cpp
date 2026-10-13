@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: MIT
+// SPDX-License-Identifier: GPL-3.0-or-later
 #include <catch2/catch_test_macros.hpp>
 #include "crosspad/sequencer/PatternSequencer.hpp"
 
@@ -576,6 +576,203 @@ TEST_CASE("sequence file: open replaces every scene, and leaves them if it canno
     REQUIRE(SequenceStore::open(r.seq, path) == SequenceLoad::Unreadable);
     REQUIRE(r.seq.eventCount(0) == 2);
     removeAll(path);
+}
+
+// ── Note length ────────────────────────────────────────────────────────────
+
+namespace {
+/// Every press and release the sink saw, with the clock position it came at.
+struct Edge { uint8_t pad; bool on; uint32_t at; };
+struct EdgeRig : Rig {
+    std::vector<Edge> edges;
+    EdgeRig() {
+        seq.setSink([](void* ctx, uint8_t pad, uint8_t, bool on) {
+            auto* r = static_cast<EdgeRig*>(ctx);
+            r->edges.push_back({ pad, on, r->clock.positionSamples() });
+        }, this);
+    }
+    const Edge* first(uint8_t pad, bool on) const {
+        for (const Edge& e : edges) if (e.pad == pad && e.on == on) return &e;
+        return nullptr;
+    }
+};
+}
+
+TEST_CASE("sequencer: a held pad records how long it was held", "[seq][len]") {
+    Rig r;
+    r.seq.setCountIn(false);
+    r.seq.record();
+    r.run(kBlock);
+    r.seq.noteIn(3, 100);
+    r.run(kBeat);
+    r.seq.noteRelease(3);
+    r.run(kBlock);
+    REQUIRE(r.seq.eventCount(0) == 1);
+    REQUIRE(r.seq.eventLength(0, 0) == kBeat);
+}
+
+TEST_CASE("sequencer: a release outside a take records nothing", "[seq][len]") {
+    Rig r;
+    r.seq.setSceneBars(0, 1);
+    REQUIRE(r.seq.addEventTicks(0, 0, 3, 100));
+    r.seq.playback();
+    r.run(kBlock);
+    r.seq.noteIn(3, 100);
+    r.run(kBeat);
+    r.seq.noteRelease(3);
+    r.run(kBlock);
+    REQUIRE(r.seq.eventCount(0) == 1);
+    REQUIRE(r.seq.eventLength(0, 0) == 0);
+}
+
+TEST_CASE("sequencer: a hold over the loop end is measured across it", "[seq][len]") {
+    Rig r;
+    r.seq.setCountIn(false);
+    r.seq.setSceneBars(0, 1);
+    r.seq.record();
+    r.run(3 * kBeat);                          // beat four
+    r.seq.noteIn(6, 100);
+    r.run(2 * kBeat);                          // to beat two of the next pass
+    r.seq.noteRelease(6);
+    r.run(kBlock);
+    REQUIRE(r.seq.eventCount(0) == 1);
+    REQUIRE(r.seq.eventLength(0, 0) == 2 * kBeat);
+}
+
+TEST_CASE("sequencer: a pad still held when the take stops ends there", "[seq][len]") {
+    Rig r;
+    r.seq.setCountIn(false);
+    r.seq.record();
+    r.run(kBlock);
+    r.seq.noteIn(2, 100);
+    r.run(kBeat);
+    r.seq.stop();
+    r.seq.noteRelease(2);
+    r.run(kBlock);
+    REQUIRE(r.seq.eventLength(0, 0) >= kBeat);
+    REQUIRE(r.seq.eventLength(0, 0) <= kBeat + kBlock);
+}
+
+TEST_CASE("sequencer: playback holds a note for its length", "[seq][len]") {
+    EdgeRig r;
+    r.seq.setSceneBars(0, 1);
+    REQUIRE(r.seq.addEventTicks(0, kTicksPerBeat, 4, 100, 2 * kTicksPerBeat));
+    r.seq.playback();
+    r.run(r.loop(1) - kBlock);
+    const Edge* on  = r.first(4, true);
+    const Edge* off = r.first(4, false);
+    REQUIRE(on);
+    REQUIRE(off);
+    REQUIRE(off->at - on->at >= 2 * kBeat);
+    REQUIRE(off->at - on->at <= 2 * kBeat + kBlock);
+}
+
+TEST_CASE("sequencer: a note longer than the rest of the loop releases on the next pass", "[seq][len]") {
+    EdgeRig r;
+    r.seq.setSceneBars(0, 1);
+    REQUIRE(r.seq.addEventTicks(0, 3 * kTicksPerBeat, 5, 100, 2 * kTicksPerBeat));
+    r.seq.playback();
+    r.run(r.loop(1) + kBeat + 2 * kBlock);
+    const Edge* off = r.first(5, false);
+    REQUIRE(off);
+    REQUIRE(off->at >= kBeat);
+    REQUIRE(off->at <= kBeat + kBlock);
+}
+
+TEST_CASE("sequencer: a tap with no length is released on the next poll", "[seq][len]") {
+    EdgeRig r;
+    r.seq.setSceneBars(0, 1);
+    REQUIRE(r.seq.addEventTicks(0, kTicksPerBeat, 4, 100));
+    r.seq.playback();
+    r.run(2 * kBeat);
+    const Edge* on  = r.first(4, true);
+    const Edge* off = r.first(4, false);
+    REQUIRE(on);
+    REQUIRE(off);
+    REQUIRE(off->at - on->at <= kBlock);
+}
+
+TEST_CASE("sequencer: stop releases a note held by its length", "[seq][len]") {
+    EdgeRig r;
+    r.seq.setSceneBars(0, 1);
+    REQUIRE(r.seq.addEventTicks(0, 0, 7, 100, 3 * kTicksPerBeat));
+    r.seq.playback();
+    r.run(kBeat);
+    REQUIRE(r.first(7, true));
+    REQUIRE_FALSE(r.first(7, false));
+    r.seq.stop();
+    REQUIRE(r.first(7, false));
+}
+
+TEST_CASE("sequencer: a tempo change keeps a held note's length in beats", "[seq][len]") {
+    Rig r;
+    REQUIRE(r.seq.addEventTicks(0, 0, 1, 100, kTicksPerBeat));
+    r.seq.setClickBpm(60.0f);
+    REQUIRE(r.seq.eventLength(0, 0) == 2 * kBeat);
+    REQUIRE(r.seq.eventLengthTicks(0, 0) == kTicksPerBeat);
+}
+
+TEST_CASE("sequencer: double copies note lengths", "[seq][len]") {
+    Rig r;
+    r.seq.setSceneBars(0, 1);
+    REQUIRE(r.seq.addEventTicks(0, 0, 1, 100, kTicksPerBeat / 2));
+    REQUIRE(r.seq.doubleScene(0));
+    REQUIRE(r.seq.eventLength(0, 1) == kBeat / 2);
+}
+
+TEST_CASE("sequencer: sceneEventLength is a fraction of the scene", "[seq][len]") {
+    Rig r;
+    r.seq.setSceneBars(0, 1);
+    REQUIRE(r.seq.addEventTicks(0, 0, 1, 100, kTicksPerBeat));
+    REQUIRE(r.seq.sceneEventLength(0, 0) == 0.25f);
+}
+
+TEST_CASE("sequence file: note lengths travel, and a file without them loads as taps", "[seq][len][store]") {
+    const std::string path = "cp_seq_len.json";
+    removeAll(path);
+    Rig a;
+    REQUIRE(a.seq.addEventTicks(0, 0, 1, 100, kTicksPerBeat));
+    REQUIRE(a.seq.addEventTicks(0, kTicksPerBeat, 2, 100));
+    REQUIRE(SequenceStore::save(a.seq, path));
+    Rig b;
+    REQUIRE(SequenceStore::load(b.seq, path));
+    REQUIRE(b.seq.eventLengthTicks(0, 0) == kTicksPerBeat);
+    REQUIRE(b.seq.eventLengthTicks(0, 1) == 0);
+
+    writeText(path, "{\"version\":1,\"ppq\":96,\"bpm\":120,\"scenes\":[{\"bars\":1,\"events\":[[0,3,90]]}]}");
+    Rig c;
+    REQUIRE(SequenceStore::load(c.seq, path));
+    REQUIRE(c.seq.eventCount(0) == 1);
+    REQUIRE(c.seq.eventLength(0, 0) == 0);
+    removeAll(path);
+}
+
+TEST_CASE("sequencer: a pad still down is drawn as long as it has been held", "[seq][len]") {
+    Rig r;
+    r.seq.setCountIn(false);
+    r.seq.setSceneBars(0, 1);
+    r.seq.record();
+    r.run(kBlock);
+    r.seq.noteIn(3, 100);
+    r.run(kBeat);
+    REQUIRE(r.seq.eventLength(0, 0) == 0);                       // not known yet
+    REQUIRE(r.seq.sceneEventLength(0, 0) == (float)kBeat / (float)r.loop(1));
+    r.run(kBeat);
+    REQUIRE(r.seq.sceneEventLength(0, 0) == (float)(2 * kBeat) / (float)r.loop(1));
+}
+
+TEST_CASE("sequencer: a pad held longer than the loop is a note the whole loop long", "[seq][len]") {
+    Rig r;
+    r.seq.setCountIn(false);
+    r.seq.setSceneBars(0, 1);
+    r.seq.record();
+    r.run(kBlock);
+    r.seq.noteIn(3, 100);
+    r.run(r.loop(1) + kBeat);
+    REQUIRE(r.seq.sceneEventLength(0, 0) == 1.0f);   // drawn whole while still held
+    r.seq.noteRelease(3);
+    r.run(kBlock);
+    REQUIRE(r.seq.eventLength(0, 0) == r.loop(1));
 }
 
 /* ── A take that is cancelled keeps the scene; a Record take replaces as it

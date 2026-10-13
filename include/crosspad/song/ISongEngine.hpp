@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: MIT
+// SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
 
 #include "crosspad/song/AudioSong.hpp"
@@ -58,6 +58,16 @@ struct BounceStatus {
     uint32_t    framesTotal = 0;
     std::string file;          ///< clip name inside the project's clips/
     std::string error;         ///< why it failed; with Done, a warning (tempo off the grid)
+    /// How the card keeps up, after every piece and kept once the take ends or
+    /// fails: pieces written (ISongEnginePlatform::writeIo), the average and
+    /// longest time one took, and kB/s from the start of the first piece --
+    /// the pads bus makes 176 kB/s at 44.1 kHz, so a drain under that
+    /// overflows the ring. While the card keeps up the drain is the bus's own
+    /// rate; what the card could take is 4096000 / chunkAvgUs kB/s.
+    uint32_t    chunks     = 0;
+    uint32_t    chunkAvgUs = 0;
+    uint32_t    chunkMaxUs = 0;
+    uint32_t    drainKBps  = 0;
 };
 
 /// The audio song side of the platform: projects on the card, bouncing a
@@ -113,13 +123,17 @@ public:
     /// resized to what its file lasts at the new tempo (no time-stretch: a
     /// clip keeps its speed). editState() says when it is done.
     virtual bool requestTempo(float bpm) { (void)bpm; return false; }
+    /// One edit (rename, delete, tempo, merge, import, export) at a time: a
+    /// request made while this is Busy is refused.
     virtual SongOpState editState() const { return SongOpState::Idle; }
     /// Mix the tracks in @p trackMask (bit t = track t; muted ones are left
     /// out) from @p fromBar up to @p toBar -- or further, to the end of the
     /// last block that starts inside -- into one new clip, at each track's
     /// volume. The clip lands on the lowest of those tracks at @p fromBar;
     /// the blocks it replaces go, and a block reaching into the range from
-    /// before it is cut at @p fromBar. editState() says when it is done,
+    /// before it is cut at @p fromBar. Blocks of that track left outside the
+    /// range keep its volume and the clip is mixed relative to it; with none
+    /// left the track goes to unity. editState() says when it is done,
     /// editProgress() how far it is.
     virtual bool requestMerge(uint8_t trackMask, uint32_t fromBar, uint32_t toBar)
     {

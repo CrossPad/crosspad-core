@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: MIT
+// SPDX-License-Identifier: GPL-3.0-or-later
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/catch_approx.hpp>
 
@@ -9,13 +9,16 @@
 #include "wav_fixture.hpp"
 
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <filesystem>
 #include <map>
+#include <random>
 #include <string>
+#include <system_error>
 #include <vector>
 
 using namespace crosspad;
@@ -81,12 +84,21 @@ std::string testResolve(const std::string& kitPath, const std::string& sample) {
 /// a4.wav at 48 kHz (A4, 440 Hz) so one zone exercises rate conversion.
 struct KitDir {
     KitDir() {
-        g_root = (std::filesystem::temp_directory_path() / "cp_pitched_kit").string();
+        /* Per process: ctest -j runs the cases side by side, and a shared
+         * directory was removed under the one still reading it. */
+        g_root = (std::filesystem::temp_directory_path() /
+                  ("cp_pitched_kit_" + std::to_string(std::random_device{}()) + "_" +
+                   std::to_string(std::chrono::steady_clock::now().time_since_epoch().count())))
+                     .string();
         std::filesystem::remove_all(g_root);
         std::filesystem::create_directories(g_root);
         test::writeSineWav(g_root + "/a3.wav", 220.0, 44100, 0.5);
         test::writeSineWav(g_root + "/a4.wav", 440.0, 48000, 0.5);
         g_log.clear();
+    }
+    ~KitDir() {
+        std::error_code ec;
+        std::filesystem::remove_all(g_root, ec);
     }
 };
 
@@ -493,4 +505,63 @@ TEST_CASE("pitchedBuildBank: normalize brings a zone's peak to -1 dBFS", "[instr
     REQUIRE(pitchedBuildBank(oneZoneKit("a3.wav", 57.0f), env, fft, bank, err, sizeof(err)));
     REQUIRE(bank->zone(0).gain == Catch::Approx(kNormalizePeak * 32767.0 / 20000.0).epsilon(0.01));
     delete bank;
+}
+
+// ---------------------------------------------------------------------------
+// The memory generation (PitchedLoadEnv::generation).
+//
+// The bank is built out of memory that can be wiped wholesale between two
+// allocations (the device's engine arena reset). A build that saw such a wipe
+// holds zones whose PCM is gone: it must fail, and must not hand those blocks
+// back to the heap that replaced them.
+// ---------------------------------------------------------------------------
+
+namespace {
+uint32_t g_gen = 0;
+uint32_t genNow() { return g_gen; }
+int g_wipeYields = 0;
+/// The wipe, in the middle of the build: after the first zone is read.
+void wipeOnYield() {
+    if (++g_wipeYields == 1) ++g_gen;
+}
+}
+
+TEST_CASE("pitchedBuildBank: the bank carries the env's memory generation",
+          "[instrument][loader][generation]") {
+    KitDir dir;
+    PortableFft fft;
+    g_gen = 41;
+    PitchedLoadEnv env = makeEnv();
+    env.generation = genNow;
+    SampleBank* bank = nullptr;
+    char err[128] = {0};
+    REQUIRE(pitchedBuildBank(makeKit(), env, fft, bank, err, sizeof(err)));
+    REQUIRE(bank != nullptr);
+    REQUIRE(bank->generation() == 41);
+    REQUIRE_FALSE(bank->stale());
+    delete bank;
+}
+
+TEST_CASE("pitchedBuildBank: a wipe during the build fails it and frees nothing stale",
+          "[instrument][loader][generation]") {
+    KitDir dir;
+    PortableFft fft;
+    g_gen = 5;
+    g_wipeYields = 0;
+    g_alloc = AllocWatch{};
+    PitchedLoadEnv env = makeEnv();
+    env.alloc = watchAlloc;
+    env.free = watchFree;
+    env.generation = genNow;
+    env.yield = wipeOnYield;
+    SampleBank* bank = nullptr;
+    char err[128] = {0};
+    REQUIRE_FALSE(pitchedBuildBank(makeKit(), env, fft, bank, err, sizeof(err)));
+    REQUIRE(bank == nullptr);
+    REQUIRE(std::string(err).find("memory reset during the build") != std::string::npos);
+    // The zone PCM taken before the wipe was forgotten, not freed: it is still
+    // in the watch's books (the host's malloc outlives a "reset").
+    REQUIRE_FALSE(g_alloc.blocks.empty());
+    for (auto& b : g_alloc.blocks) std::free(b.first);
+    g_alloc = AllocWatch{};
 }

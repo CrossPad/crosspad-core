@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: MIT
+// SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
 
 /**
@@ -50,6 +50,7 @@ public:
     /// ~186 ms at 44.1 kHz — far more than the 10 ms window a scope draws, so
     /// a reader that misses a few UI frames still has a continuous history.
     static constexpr uint32_t kCapacity = 8192;
+    static_assert((kCapacity & (kCapacity - 1)) == 0, "the count wraps at 2^32: a power of two keeps its place");
 
     /**
      * @brief Append a block. RT-safe: no lock, no allocation, wraps in place.
@@ -60,7 +61,7 @@ public:
     void write(const float* mono, uint32_t n) {
         if (!enabled_.load(std::memory_order_acquire) || !mono || n == 0) return;
         if (buf_.empty()) reserve();
-        const uint64_t w = written_.load(std::memory_order_relaxed);
+        const uint32_t w = written_.load(std::memory_order_relaxed);
 
         uint32_t skip = 0;
         if (n > kCapacity) {
@@ -75,7 +76,15 @@ public:
             std::memcpy(buf_.data(), mono + skip + first, (n - first) * sizeof(float));
         }
 
-        written_.store(w + skip + n, std::memory_order_release);
+        /* 32 bits, not 64: this runs on the render thread, and a 64-bit atomic
+         * is not lock-free on a 32-bit core -- every store took libatomic's
+         * lock. kCapacity divides 2^32, so a count that wraps still names the
+         * same place in the ring; it only has to stay at least a ring's worth
+         * once it has been one, or snapshot() would think the ring was
+         * nearly empty for one turn after the wrap. */
+        uint32_t nw = w + skip + n;
+        if (nw < w) nw = kCapacity + (nw & (kCapacity - 1));
+        written_.store(nw, std::memory_order_release);
     }
 
     /**
@@ -88,8 +97,8 @@ public:
         if (!out || n == 0) return 0;
         if (n > kCapacity) n = kCapacity;
 
-        const uint64_t w = written_.load(std::memory_order_acquire);
-        if (static_cast<uint64_t>(n) > w) n = static_cast<uint32_t>(w);
+        const uint32_t w = written_.load(std::memory_order_acquire);
+        if (n > w) n = w;
         if (n == 0 || buf_.empty()) return 0;
 
         const uint32_t pos = static_cast<uint32_t>((w - n) % kCapacity);
@@ -101,8 +110,9 @@ public:
         return n;
     }
 
-    /// Total samples ever written. Wraps after 13 million years at 44.1 kHz.
-    uint64_t written() const { return written_.load(std::memory_order_acquire); }
+    /// Samples written, modulo 2^32 (27 hours at 44.1 kHz); once a ring's
+    /// worth has been written it never reads below kCapacity again.
+    uint32_t written() const { return written_.load(std::memory_order_acquire); }
 
     /// Disable the producer-side copy when no live display consumes it.
     bool enabled() const { return enabled_.load(std::memory_order_acquire); }
@@ -130,7 +140,7 @@ public:
 
 private:
     std::vector<float> buf_;
-    std::atomic<uint64_t> written_{0};
+    std::atomic<uint32_t> written_{0};
     std::atomic<uint32_t> sampleRate_{0};
     std::atomic<bool> enabled_{true};
 };

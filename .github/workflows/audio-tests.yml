@@ -19,26 +19,56 @@ on:
       - '.github/workflows/audio-tests.yml'
   workflow_dispatch:
 
+permissions:
+  contents: read
+  packages: read   # pulls the CI image
+
+# CI image: ghcr.io/crosspad/crosspad-ci (tools/ci/Dockerfile in platform-idf),
+# the same image -- and so the same cmake, ninja, compilers and Python -- for
+# every CrossPad repository, on hardware machine (repository variable
+# CI_RUNNER=self-hosted, tools/ci_runner.py in platform-idf) and on GitHub's
+# runners alike. It is pinned here by tag and digest (GHCR lets a tag be
+# moved, not a digest); moving to a new image revision is a commit like any
+# other. Unset CI_RUNNER before the self-hosted runner goes off:
+# GitHub never falls back from a self-hosted label to a hosted runner.
+# SECURITY: pull_request runs the PR's code on hardware PC, and the job
+# container gets the host's Docker socket. Before this repository goes public,
+# take pull_request off the self-hosted runner.
 jobs:
   tier1-unit:
     name: Tier 1 portable unit tests
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.CI_RUNNER || 'ubuntu-latest' }}
+    container:
+      image: ghcr.io/crosspad/crosspad-ci:v5.5.5-1@sha256:d89e2175ab2371eca90278a6a8774108b9387775344b2bbf837eabc2a30036bd
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+      # This repository's own cache volume on hardware (ccache): one for
+      # pushes to main, one for everything else (pull requests, manual runs,
+      # other branches). A split, not a security boundary: a job on hardware
+      # reaches the host's Docker through the socket the runner mounts. On a
+      # hosted runner it starts empty.
+      volumes:
+        - crosspad-ci-cache-${{ github.event.repository.name }}-${{ github.ref == 'refs/heads/main' && 'trusted' || 'untrusted' }}:/cache
+    env:
+      CCACHE_DIR: /cache/ccache
+      CCACHE_MAXSIZE: 500M
+    defaults:
+      run:
+        shell: bash
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Install build deps
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y cmake ninja-build g++
-
       - name: Configure tests/
         working-directory: tests
-        run: cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Debug
+        run: cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Debug -DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
 
       - name: Build
         working-directory: tests
-        run: cmake --build build
+        run: |
+          cmake --build build
+          ccache -s | grep -E 'Hits|Misses' || true
 
       - name: Run all tests (compact)
         working-directory: tests

@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: MIT
+// SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
 
 #include <cstdint>
@@ -18,6 +18,9 @@ namespace crosspad {
 /// Portable: plain stdio, so the simulator writes the same files.
 class WavWriter {
 public:
+    /// The header before the data chunk: data starts this far into the file.
+    static constexpr uint32_t kHeaderBytes = 44;
+
     WavWriter() = default;
     ~WavWriter() { close(); }
     WavWriter(const WavWriter&) = delete;
@@ -38,6 +41,13 @@ public:
 
     bool     isOpen() const { return file_ != nullptr; }
     uint32_t frames() const { return frames_; }
+
+    /// The open file, for a writer that appends frames past stdio at its
+    /// position (ISongEnginePlatform::writeIo); advance() then counts them.
+    /// close() only ever seeks to an absolute place, so the stdio position
+    /// such writes leave behind does no harm.
+    FILE* stream() const { return file_; }
+    void  advance(uint32_t frames) { frames_ += frames; }
 
 private:
     bool writeHeader(uint32_t dataBytes);

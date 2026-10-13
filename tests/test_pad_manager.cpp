@@ -317,3 +317,42 @@ TEST_CASE("PadManager: what a press would sound as comes from the active logic",
     pm.handlePadPress(9, 55);
     REQUIRE(lv->seen.plain());
 }
+
+namespace {
+/// Counts the strip lock: the audio render must never take it.
+struct LockCountingStrip : test::MockLedStrip {
+    void lock() override { ++locks; }
+    int locks = 0;
+};
+} // namespace
+
+TEST_CASE("PadLedController: coalesced, a voice's start is painted by update(), not by its caller",
+          "[pad][led]") {
+    LockCountingStrip strip;
+    crosspad::SyncEventBus bus;
+    crosspad::PadLedController leds;
+    leds.init(strip, bus, nullptr);
+    leds.begin();
+
+    // Immediate mode: the engine's report sends a frame right away.
+    int frames = strip.refreshCount;
+    leds.notifyNotePlay(3, true);
+    REQUIRE(strip.refreshCount == frames + 1);
+
+    // Coalesced (the board): the report, made from the audio render, only
+    // records the state -- no pixels, no strip lock, no frame -- and the next
+    // tick paints and sends.
+    leds.setCoalescedRefresh(true);
+    leds.update();
+    frames = strip.refreshCount;
+    const int locks = strip.locks;
+    leds.notifyNotePlay(3, false);
+    leds.notifyNotePlay(4, true);
+    REQUIRE(strip.locks == locks);
+    REQUIRE(strip.refreshCount == frames);
+    leds.update();
+    REQUIRE(strip.locks > locks);
+    REQUIRE(strip.refreshCount == frames + 1);
+    leds.update();                      // nothing new: no frame
+    REQUIRE(strip.refreshCount == frames + 1);
+}

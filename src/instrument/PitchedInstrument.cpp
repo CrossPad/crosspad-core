@@ -1,9 +1,18 @@
-// SPDX-License-Identifier: MIT
+// SPDX-License-Identifier: GPL-3.0-or-later
 #include "crosspad/instrument/PitchedInstrument.hpp"
 #include "crosspad/dsp/DspMath.hpp"
 
 #include <algorithm>
 #include <cmath>
+
+/* Set-up, a kit's take and the reports run on a worker or a verb, never in the
+ * render; the board builds this file for speed (-O2) for the render's sake.
+ * GCC's `cold` builds these for size and changes nothing about what they do. */
+#if defined(__GNUC__)
+#define CROSSPAD_COLD __attribute__((cold))
+#else
+#define CROSSPAD_COLD
+#endif
 
 namespace crosspad {
 
@@ -88,7 +97,7 @@ void PitchedInstrument::gateExit() {
     gated_.store(false, std::memory_order_seq_cst);
 }
 
-SampleBank* PitchedInstrument::installBank(SampleBank* bank, const InstrumentParams& p,
+CROSSPAD_COLD SampleBank* PitchedInstrument::installBank(SampleBank* bank, const InstrumentParams& p,
                                            const KitInfo* padMixFrom, uint32_t maxSpins,
                                            void (*yield)(), bool* safeToFree) {
     // The gate is the whole safety argument for freeing the returned bank.
@@ -117,7 +126,7 @@ SampleBank* PitchedInstrument::installBank(SampleBank* bank, const InstrumentPar
     return old;
 }
 
-bool PitchedInstrument::editZone(uint8_t zoneIdx, float rootMidi, uint32_t loopStart,
+CROSSPAD_COLD bool PitchedInstrument::editZone(uint8_t zoneIdx, float rootMidi, uint32_t loopStart,
                                  uint32_t loopEnd, uint32_t maxSpins, void (*yield)(),
                                  uint32_t loopXfade, uint32_t start) {
     // Everything is checked before anything moves: a rejected edit must leave
@@ -139,17 +148,23 @@ bool PitchedInstrument::editZone(uint8_t zoneIdx, float rootMidi, uint32_t loopS
     return ok;
 }
 
-void PitchedInstrument::setBank(SampleBank* bank) {
+CROSSPAD_COLD void PitchedInstrument::setBank(SampleBank* bank) {
     // Voices hold Zone pointers into the old bank; silence them before the
     // swap. reset() keeps Voice::zone as it is on purpose -- see its comment.
     for (uint8_t i = 0; i < kMaxVoices; ++i) voices_[i].reset();
     bank_.store(bank, std::memory_order_release);
 }
 
-void PitchedInstrument::setParams(const InstrumentParams& p) {
+CROSSPAD_COLD void PitchedInstrument::setVoiceCap(uint8_t cap) {
+    voiceCap_.store(static_cast<uint8_t>(clampInt(cap, 1, kMaxSounding)), std::memory_order_relaxed);
+}
+
+CROSSPAD_COLD void PitchedInstrument::setParams(const InstrumentParams& p) {
     uint8_t mv = p.maxVoices;
     if (mv == 0) mv = 1;
     if (mv > kMaxSounding) mv = kMaxSounding;
+    const uint8_t cap = voiceCap_.load(std::memory_order_relaxed);
+    if (mv > cap) mv = cap;
     maxVoices_.store(mv, std::memory_order_relaxed);
     attackMs_.store(p.attackMs < 0.0f ? 0.0f : p.attackMs, std::memory_order_relaxed);
     const float rel = p.releaseMs < 0.0f ? 0.0f : p.releaseMs;
@@ -196,13 +211,20 @@ void PitchedInstrument::retire(Voice& v, float ms) {
 
 int PitchedInstrument::findVoiceSlot() {
     const uint8_t maxV = maxVoices_.load(std::memory_order_relaxed);
+    const bool overloaded = overloaded_.load(std::memory_order_relaxed);
 
     // One pass answers all three questions: how many voices count against the
-    // cap, where a free slot is, and which of the counted ones is oldest.
+    // cap, where a free slot is, and which of the counted ones gives way.
+    // That is a voice already in its release before a held one -- taking a
+    // held note out of a chord is the steal anyone hears, a tail on its way
+    // out mostly is not -- and the oldest of those.
+    // The rank is the allocation order with the top bit set for a held note:
+    // the lowest rank gives way.
+    constexpr uint64_t kHeld = 1ull << 63;
     uint8_t sounding = 0;
     int freeSlot = -1;
-    int oldestSounding = -1;
-    uint64_t oldestOrder = 0;
+    int victim = -1;
+    uint64_t victimRank = 0;
     for (uint8_t i = 0; i < kMaxVoices; ++i) {
         Voice& v = voices_[i];
         if (!v.active.load(std::memory_order_relaxed)) {
@@ -211,18 +233,22 @@ int PitchedInstrument::findVoiceSlot() {
         }
         if (v.fading) continue;
         ++sounding;
-        if (oldestSounding < 0 || v.order < oldestOrder) {
-            oldestSounding = i;
-            oldestOrder = v.order;
+        const uint64_t rank = v.releasing ? v.order : (v.order | kHeld);
+        if (victim < 0 || rank < victimRank) {
+            victim = i;
+            victimRank = rank;
         }
     }
-    if (sounding < maxV && freeSlot >= 0) return freeSlot;
+    // Over budget, a note may not add a voice: it takes one's place.
+    const bool shed = overloaded && sounding > 0 && sounding < maxV;
+    if (sounding < maxV && !shed && freeSlot >= 0) return freeSlot;
 
-    // At the cap: the oldest sounding voice gives way. It keeps its own slot
-    // and fades there, so the new note takes a free one — kFadeSlots exist so
-    // that there is one.
-    if (oldestSounding >= 0) retire(voices_[oldestSounding], kStealFadeMs);
+    // At the cap: the chosen voice gives way. It keeps its own slot and fades
+    // there, so the new note takes a free one — kFadeSlots exist so that
+    // there is one.
+    if (victim >= 0) retire(voices_[victim], kStealFadeMs);
     steals_.fetch_add(1, std::memory_order_relaxed);
+    if (shed) sheds_.fetch_add(1, std::memory_order_relaxed);
     if (freeSlot >= 0) return freeSlot;
 
     // Steals arriving faster than kStealFadeMs can retire them: every slot is
@@ -230,7 +256,7 @@ int PitchedInstrument::findVoiceSlot() {
     // oldest of those is a click on a voice that is already most of the way
     // down, which is still the better answer than dropping the note.
     int oldestFading = -1;
-    oldestOrder = 0;
+    uint64_t oldestOrder = 0;
     for (uint8_t i = 0; i < kMaxVoices; ++i) {
         Voice& v = voices_[i];
         if (!v.active.load(std::memory_order_relaxed) || !v.fading) continue;
@@ -342,7 +368,7 @@ void PitchedInstrument::allNotesOff() {
     for (uint8_t i = 0; i < kMaxVoices; ++i) voices_[i].reset();
 }
 
-void PitchedInstrument::onPrepare(uint32_t maxFrames, uint32_t sampleRate) {
+CROSSPAD_COLD void PitchedInstrument::onPrepare(uint32_t maxFrames, uint32_t sampleRate) {
     maxFrames_ = maxFrames;
     if (sampleRate > 0) sampleRate_ = sampleRate;
     scratch_.assign(maxFrames, 0.0f);

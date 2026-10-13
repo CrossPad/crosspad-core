@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: MIT
+// SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
 
 #include "crosspad/pad/PadPerformance.hpp"
@@ -96,6 +96,8 @@ public:
     /// chord, or a sample on HOLD, needs. A release with no recorded press
     /// open is dropped.
     void noteOut(uint8_t pad);
+    /// The name main's recorder gave noteOut() (bc0789a): the same release.
+    void noteRelease(uint8_t pad) { noteOut(pad); }
 
     // ── Driven from a timer or the audio task ─────────────────────────────
 
@@ -354,11 +356,16 @@ private:
     /// `early`: count-in samples still to play when the hit was made, 0 once
     /// the loop runs. The clock holds position 0 through a count-in, so this
     /// is the only record of how far before beat one a hit was. `vel` 0 is a
-    /// release (noteOut()).
-    struct Hit   { uint32_t pos; uint32_t early; uint8_t pad; uint8_t vel; uint8_t perf; };
+    /// release (noteOut()). `elapsed`: the clock's unwrapped count
+    /// (MetronomeNode::elapsedSamples) when it was made -- what a length is
+    /// measured on, so a hold over the loop end, or over several, is not read
+    /// back as a short one.
+    struct Hit   { uint32_t pos; uint32_t early; uint8_t pad; uint8_t vel; uint8_t perf; uint32_t elapsed; };
     /// A recorded press still held: where the finger went down on the clock,
     /// and where its event was stored, to find it again at the release.
-    struct Open  { uint32_t start; uint32_t pos; uint8_t seq; bool on; };
+    /// `at`: where the note starts on the unwrapped count (beat one for a
+    /// press made in the count-in).
+    struct Open  { uint32_t start; uint32_t pos; uint8_t seq; bool on; uint32_t at; };
 
     /// Rounds to the nearest grid line, wrapping a hit that rounds up past the
     /// loop end back to zero -- a hit a hair early on beat one belongs at the
@@ -401,8 +408,9 @@ private:
     /// The song map's turn: @p samples more of the song, fired through it.
     void     fireSong(uint32_t samples, uint32_t loop);
     /// Strike @p pad as a note recorded at @p len samples is struck: let go
-    /// first if a note still holds it, then held for @p len, or a hit.
-    void     strike(uint8_t pad, uint8_t vel, uint8_t perf, uint32_t len);
+    /// first if a note still holds it, then held for what is left of @p len
+    /// after the @p gone samples of this poll it sounds in, or a hit.
+    void     strike(uint8_t pad, uint8_t vel, uint8_t perf, uint32_t len, uint32_t gone);
     /// A block's own notes due in [@p from, @p to) of their @p loop.
     void     fireNotes(const std::vector<SongNote>& notes, uint32_t loop, uint32_t from, uint32_t to);
     /// Where the song was when @p h was struck, and the lap it was in.
@@ -481,8 +489,12 @@ private:
     std::atomic<bool> erasing_{false};
     mutable std::recursive_mutex editMutex_;
     struct Press { uint8_t pad; uint8_t vel; bool on; uint8_t perf; };
-    /// A poll fires at most a whole scene and releases every pad.
-    static constexpr uint16_t kMaxPresses = kMaxEvents + 16;
+    /// A poll fires at most a whole scene, releases each of those notes, and
+    /// every pad held from before it.
+    static constexpr uint16_t kMaxPresses = 2 * kMaxEvents + 32;
+    /// poll()'s collection, here rather than on the poll task's stack: it is
+    /// over a kilobyte, and only the one thread that polls ever fills it.
+    Press    pressBuf_[kMaxPresses] = {};
     Press*   presses_    = nullptr;   // set only while poll() collects
     uint16_t pressCount_ = 0;
 

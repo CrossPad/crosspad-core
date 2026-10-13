@@ -175,6 +175,17 @@ bool EspEventBus::postGuiUpdateRequired(EventSource source) {
 
 bool EspEventBus::postSamplePlayback(uint8_t note, uint8_t wavIdx, bool isOn, EventSource source, uint8_t velocity,
                                      int8_t transpose, uint8_t key) {
+    /* The engine's report that a voice started or ended (EventSource::
+     * SamplePlayback) is not sent on this bus. It comes from the audio
+     * render, which may not wait for this queue's task (priority 4, no
+     * inheritance through a queue), and it has nothing to say: the render
+     * has already set the pad's state (PadManager::handleSamplePlay). Posted,
+     * it was ~2/3 of the queue's traffic -- requests to play from the pads,
+     * MIDI and BLE waited behind it -- and, posted without waiting, a
+     * subscriber could apply an older report's isOn after a newer one was
+     * dropped and leave a pad lit. A request to play (App, MIDI) is posted
+     * and waits: losing it would lose a note. */
+    if (source == EventSource::SamplePlayback) return true;
     SamplePlaybackData data = { .note = note, .wavIdx = wavIdx, .isOn = isOn, .velocity = velocity, .source = source,
                                 .transpose = transpose, .key = key };
     ESP_LOGD(TAG, "Post SamplePlayback: note=%d wav=%d on=%s vel=%d src=%s",
