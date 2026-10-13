@@ -1415,6 +1415,46 @@ TEST_CASE("song engine: the seq view edits one block, and its copy keeps its not
     CHECK(cs[1].notes == first);
 }
 
+TEST_CASE("song engine: the seq view left while its REC still runs puts the take on the block", "[song][seqedit]") {
+    Rig r;
+    REQUIRE(r.open("Demo"));
+    {
+        std::lock_guard<std::recursive_mutex> l(r.engine->songMutex());
+        auto& s = r.engine->song();
+        s.bpm = 120.0f;
+        REQUIRE(s.addSeqTrack(0, SeqSource::Kit, 1));
+        SeqNote n;
+        n.tick = 0; n.pad = 2; n.vel = 100;
+        s.putSeqTake(0, 0, makeSeqPattern(1, {n}), s.samplesPerBar(kRate));
+    }
+    r.engine->commit();
+    while (r.seq.sceneCount() < 2) r.seq.addScene();
+    REQUIRE(r.engine->openSeqEdit(0, 0, 1));
+    REQUIRE(r.seq.eventCount(1) == 1);
+
+    /* REC in the seq view, a hit, and ARR before STOP: the take is still on
+     * when the view lets go of the block. */
+    r.seq.setCountIn(false);
+    r.seq.record();
+    std::vector<float> out(kBlock * 2), bus(kBlock * 2, 0.0f);
+    REQUIRE(waitFor([&] { r.block(out, bus); return r.seq.isRecording(); }, 20000));
+    REQUIRE(r.seq.addEventTicks(1, AudioSong::kSeqPpq * 2, 6, 90));
+    r.seq.markDirty();
+    r.engine->syncSeqEdit();                               // while it records: left alone
+    {
+        std::lock_guard<std::recursive_mutex> l(r.engine->songMutex());
+        CHECK(r.engine->song().tracks[0].clips[0].notes->notes.size() == 1);
+    }
+    r.engine->closeSeqEdit();
+    std::lock_guard<std::recursive_mutex> l(r.engine->songMutex());
+    /* The hit is on the block -- what REC replaced of the old notes as it
+     * went past them is the take's business. */
+    const auto& c = r.engine->song().tracks[0].clips[0];
+    bool hit = false;
+    for (const auto& n : c.notes->notes) hit = hit || (n.pad == 6 && n.tick == AudioSong::kSeqPpq * 2);
+    CHECK(hit);
+}
+
 TEST_CASE("song engine: the seq view on an empty bar makes a block of its first notes", "[song][seqedit]") {
     Rig r;
     REQUIRE(r.open("Demo"));

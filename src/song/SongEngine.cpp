@@ -1048,8 +1048,13 @@ struct SongEngine::Impl {
         return true;
     }
 
-    void syncSeqEdit() {
-        if (editTrack_ < 0 || seq_.editGeneration() == editGen_ || seq_.isRecording()) return;
+    void syncSeqEdit() { syncSeqEditNow(false); }
+
+    /// The scene back onto the block it edits. Not while the seq view's REC
+    /// runs -- every hit would be a commit -- unless the view is letting go.
+    void syncSeqEditNow(bool evenRecording) {
+        if (editTrack_ < 0 || seq_.editGeneration() == editGen_) return;
+        if (!evenRecording && seq_.isRecording()) return;
         std::lock_guard<std::recursive_mutex> l(songMutex_);
         if (editTrack_ < 0) return;
         editGen_ = seq_.editGeneration();
@@ -1095,7 +1100,11 @@ struct SongEngine::Impl {
     }
 
     void closeSeqEdit() {
-        syncSeqEdit();
+        /* Left with its REC still on -- ARR, the MODE map, another clip: the
+         * take lands as far as it got. The next transport claim stops it a
+         * moment later, and by then nothing is bound to write it back; it was
+         * lost, and the block in Arrange kept its old notes (13.10.2026). */
+        syncSeqEditNow(true);
         std::lock_guard<std::recursive_mutex> l(songMutex_);
         editTrack_ = -1;
     }
