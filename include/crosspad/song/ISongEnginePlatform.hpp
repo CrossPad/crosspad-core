@@ -62,6 +62,11 @@ public:
     /// only when it changes. A platform without a mixer leaves it alone.
     virtual void setSeqGain(SeqSource source, float gain) { (void)source; (void)gain; }
 
+    /// A song has opened (or was made): @p song is it, read under the song's
+    /// lock on the engine's worker -- copy what is needed and return. The
+    /// platform loads the sounds it names (AudioSong::kit, ::instrument).
+    virtual void songOpened(const AudioSong& song) { (void)song; }
+
     virtual void log(bool warning, const char* msg) = 0;
 };
 

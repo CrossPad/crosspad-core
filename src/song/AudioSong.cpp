@@ -169,6 +169,8 @@ SongLoad AudioSong::load(const std::string& projectDir)
     loop = true;
     length = 0;
     syncSeq = false;
+    kit.clear();
+    instrument.clear();
     loopStart = loopEnd = 0;
     for (auto& t : tracks) t = SongTrack{};
     sets.clear();
@@ -195,6 +197,8 @@ SongLoad AudioSong::load(const std::string& projectDir)
     loop = doc["loop"] | true;
     length = doc["length"] | 0u;
     syncSeq = doc["sync"] | false;
+    kit = doc["kit"] | "";
+    instrument = doc["instrument"] | "";
     loopStart = doc["loop_start"] | 0u;
     loopEnd = doc["loop_end"] | 0u;
     int t = 0;
@@ -286,6 +290,8 @@ bool AudioSong::save() const
     doc["loop"] = loop;
     doc["length"] = length;
     doc["sync"] = syncSeq;
+    if (!kit.empty()) doc["kit"] = kit;
+    if (!instrument.empty()) doc["instrument"] = instrument;
     doc["loop_start"] = loopStart;
     doc["loop_end"] = loopEnd;
     JsonArray trs = doc["tracks"].to<JsonArray>();
@@ -421,6 +427,13 @@ int AudioSong::seqTracks() const
     int n = 0;
     for (const auto& t : tracks) n += (t.inUse && t.kind == TrackKind::Seq) ? 1 : 0;
     return n;
+}
+
+bool AudioSong::hasPitchTrack() const
+{
+    for (const auto& t : tracks)
+        if (t.inUse && t.kind == TrackKind::Seq && t.source == SeqSource::Pitch) return true;
+    return false;
 }
 
 bool AudioSong::anySolo() const
@@ -621,6 +634,41 @@ int AudioSong::adoptSceneNotes(int track, const SeqPatternPtr& scene, uint32_t b
     return changed;
 }
 
+namespace {
+
+/// @p notes -- ticks from the first of @p bars bars -- as the blocks the seq
+/// view opens: {first bar, pattern} each, kSeqBlockBars bars long or what is
+/// left, halved down to a bar while more than kSeqBlockNotes notes fall in it.
+std::vector<std::pair<uint32_t, SeqPatternPtr>> seqBlocksOf(uint32_t bars, std::vector<SeqNote> notes, uint32_t tpb)
+{
+    std::stable_sort(notes.begin(), notes.end(),
+                     [](const SeqNote& a, const SeqNote& b) { return a.tick < b.tick; });
+    std::vector<std::pair<uint32_t, SeqPatternPtr>> out;
+    size_t i = 0;
+    for (uint32_t at = 0; at < bars;) {
+        auto within = [&](uint32_t len) {
+            size_t k = i;
+            while (k < notes.size() && notes[k].tick < (at + len) * tpb) ++k;
+            return k - i;
+        };
+        uint32_t len = std::min<uint32_t>(AudioSong::kSeqBlockBars, bars - at);
+        while (len > 1 && within(len) > AudioSong::kSeqBlockNotes) len /= 2;
+        const bool last = at + len >= bars;
+        const size_t n = last ? notes.size() - i : within(len);
+        std::vector<SeqNote> mine(notes.begin() + (long)i, notes.begin() + (long)(i + n));
+        for (auto& m : mine) {
+            m.tick -= at * tpb;
+            if (!last) m.len = std::min<uint32_t>(m.len, len * tpb - m.tick);
+        }
+        out.emplace_back(at, makeSeqPattern((uint16_t)len, std::move(mine)));
+        i += n;
+        at += len;
+    }
+    return out;
+}
+
+} // namespace
+
 int AudioSong::putSeqTake(int track, uint32_t bar, const SeqPatternPtr& pattern, uint32_t spBar)
 {
     if (track < 0 || track >= kTracks || !pattern) return -1;
@@ -639,6 +687,17 @@ int AudioSong::putSeqTake(int track, uint32_t bar, const SeqPatternPtr& pattern,
     c.bars = pattern->bars;
     c.notes = pattern;
     return addClip(track, c);
+}
+
+int AudioSong::putSeqTakeNotes(int track, uint32_t bar, uint32_t bars, std::vector<SeqNote> notes, uint32_t spBar)
+{
+    int first = -1;
+    for (const auto& b : seqBlocksOf(bars, std::move(notes), seqTicksPerBar())) {
+        const int i = putSeqTake(track, bar + b.first, b.second, spBar);
+        if (i < 0) return -1;
+        if (first < 0) first = i;
+    }
+    return first;
 }
 
 bool AudioSong::dubSeqNotes(int track, const std::vector<SeqNote>& notes)
@@ -683,12 +742,13 @@ bool AudioSong::dubSeqNotes(int track, const std::vector<SeqNote>& notes)
         while (j < loose.size() && loose[j].tick / tpb < limit) last = loose[j++].tick / tpb;
         std::vector<SeqNote> mine(loose.begin() + (long)i, loose.begin() + (long)j);
         for (auto& m : mine) m.tick -= first * tpb;
-        const uint16_t bars = (uint16_t)std::min<uint32_t>(last - first + 1, 0xFFFF);
-        SongClip c;
-        c.bar = first;
-        c.bars = bars;
-        c.notes = makeSeqPattern(bars, std::move(mine));
-        addClip(track, c);
+        for (const auto& b : seqBlocksOf(std::min<uint32_t>(last - first + 1, 0xFFFF), std::move(mine), tpb)) {
+            SongClip c;
+            c.bar = first + b.first;
+            c.bars = b.second->bars;
+            c.notes = b.second;
+            addClip(track, c);
+        }
         i = j;
     }
     return true;

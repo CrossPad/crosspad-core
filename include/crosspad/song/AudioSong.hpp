@@ -177,6 +177,11 @@ public:
     static constexpr int kVersion = 2;
     /// Ticks to the quarter of a seq block's notes: PatternSequencer::kPpq.
     static constexpr uint16_t kSeqPpq = 96;
+    /// The most one seq block a take lays holds: what one scene of the
+    /// sequencer holds (PatternSequencer::kMaxBars, ::kMaxEvents), so the seq
+    /// view opens every block a REC or a DUB made.
+    static constexpr uint16_t kSeqBlockBars  = 8;
+    static constexpr size_t   kSeqBlockNotes = 192;
     static constexpr float kDefaultBpm = 120.0f;       ///< the grid before a clip sets one
     static constexpr uint8_t kDefaultBeatsPerBar = 4;
     static const char* fileName() { return "song.json"; }
@@ -189,6 +194,18 @@ public:
     bool        loop = true;
     uint32_t    length = 0;       ///< bars the song plays (and loops) over; 0 = to its last block
     bool        syncSeq = false;  ///< playing the song also plays the sequencer, locked to it
+    /// The sounds the song is made with, as a DAW's project keeps its
+    /// instruments: opening the song loads them, and a kit or instrument
+    /// loaded while it is open is written here. @c kit is the kit's kit.json
+    /// as the kit list names it (/crosspad/kits/<folder>/kit.json); empty, the
+    /// song has none and opening it leaves no kit loaded. @c instrument is
+    /// Pitch Play's for the song's Pitch track: an instrument.json from the
+    /// card's root (/crosspad/pitchplay/<name>/instrument.json), or one inside
+    /// the song's own folder (pitch/instrument.json, no leading '/') -- the
+    /// copy the song keeps of one that was never saved. Not part of undo: they
+    /// say what is loaded, not how the song is arranged.
+    std::string kit;
+    std::string instrument;
     /// The loop region, in bars, [loopStart, loopEnd): with loop on, playback
     /// goes round it instead of the whole song. loopEnd <= loopStart = none.
     uint32_t    loopStart = 0;
@@ -245,6 +262,8 @@ public:
     bool seqSlotFree() const { return seqTracks() < kMaxSeqTracks; }
     /// Some track is soloed.
     bool anySolo() const;
+    /// The seq track in use plays Pitch Play's instrument.
+    bool hasPitchTrack() const;
     /// Track @p t makes no sound: muted, or another track is soloed and it
     /// is not. What the engine plays by, for audio and seq tracks alike.
     bool silenced(int t) const;
@@ -313,12 +332,19 @@ public:
     /// from there. Returns the new block's index, -1 when @p track is not a
     /// seq track in use.
     int putSeqTake(int track, uint32_t bar, const SeqPatternPtr& pattern, uint32_t spBar);
+    /// REC: @p notes -- ticks from @p bar -- over @p bars bars, laid with
+    /// putSeqTake() as blocks the seq view opens: one per kSeqBlockBars bars
+    /// from @p bar, halved while more than kSeqBlockNotes notes fall in it. A
+    /// note held over the line between two blocks ends on it. Returns the
+    /// first block's index, -1 as putSeqTake().
+    int putSeqTakeNotes(int track, uint32_t bar, uint32_t bars, std::vector<SeqNote> notes, uint32_t spBar);
     /// DUB: @p notes -- ticks from the song's bar one -- into the blocks of
     /// seq track @p track that sound where each falls. Such a block gets a
     /// new pattern with them added (its copies keep theirs); a block that
     /// plays the scene is left alone. Notes under no block become blocks of
     /// their own: whole bars from the first such note's to the last's, never
-    /// over the next block. False when @p track is not a seq track in use.
+    /// over the next block, cut as putSeqTakeNotes() cuts a take. False when
+    /// @p track is not a seq track in use.
     bool dubSeqNotes(int track, const std::vector<SeqNote>& notes);
 
 private:

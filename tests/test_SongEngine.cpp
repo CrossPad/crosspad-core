@@ -83,6 +83,12 @@ struct FakePlatform final : ISongEnginePlatform {
     void beginPadsCapture() override { ++captureBegun; }
     void endPadsCapture() override { ++captureEnded; }
     std::atomic<float> seqGain[2] = {{1.0f}, {1.0f}};   // kit, pitch
+    std::mutex openedMutex;
+    std::vector<std::string> openedKits;                 // AudioSong::kit at every songOpened()
+    void songOpened(const AudioSong& s) override {
+        std::lock_guard<std::mutex> l(openedMutex);
+        openedKits.push_back(s.name + ":" + s.kit);
+    }
     void setSeqGain(SeqSource s, float g) override { seqGain[s == SeqSource::Pitch ? 1 : 0] = g; }
     void log(bool, const char*) override {}
 };
@@ -1179,6 +1185,37 @@ TEST_CASE("song engine: a REC with nothing played changes nothing", "[song][song
     CHECK(cs[0].notes->notes.size() == 1);
 }
 
+TEST_CASE("song engine: a REC longer than a scene lands as blocks the seq view opens", "[song][songtake][seqedit]") {
+    Rig r;
+    REQUIRE(r.open("Demo"));
+    const uint32_t bar = r.engine->framesPerBar();
+    Take t(r);
+    REQUIRE(t.start(0, SyncTake::Record));
+    t.hit(2, bar / 2, bar / 16);                          // bar one
+    t.hit(5, 9 * bar + bar / 4, bar / 16);                // bar ten
+    t.to(10 * bar + bar / 2);                             // STOP half way into bar eleven
+    REQUIRE(t.stop());
+    uint8_t scene = 0;
+    {
+        std::lock_guard<std::recursive_mutex> l(r.engine->songMutex());
+        const auto& tr = r.engine->song().tracks[0];
+        scene = tr.scene;
+        REQUIRE(tr.clips.size() == 2);
+        CHECK(tr.clips[0].bar == 0);
+        CHECK(tr.clips[0].bars == AudioSong::kSeqBlockBars);
+        CHECK(tr.clips[1].bar == AudioSong::kSeqBlockBars);
+        CHECK(tr.clips[1].bars == 3);
+    }
+    /* Each opens in the seq view, its own notes in the scene. */
+    REQUIRE(r.engine->openSeqEdit(0, 0, scene));
+    CHECK(r.seq.eventCount(scene) == 1);
+    REQUIRE(r.engine->openSeqEdit(0, 9, scene));
+    CHECK(r.engine->seqEditBar() == AudioSong::kSeqBlockBars);
+    CHECK(r.seq.sceneBars(scene) == 3);
+    CHECK(r.seq.eventCount(scene) == 1);
+    r.engine->closeSeqEdit();
+}
+
 TEST_CASE("song engine: a take is one step of undo", "[song][songtake][undo]") {
     Rig r;
     REQUIRE(r.open("Demo"));
@@ -1513,4 +1550,30 @@ TEST_CASE("song engine: muting a seq track silences its notes as it plays, and u
     while (r.engine->framesPlayed() < at + bar) r.block(out, bus);
     CHECK(heard.hits.load() == before);
     r.engine->stop();
+}
+
+
+TEST_CASE("song engine: the platform hears every song that opens, with the kit it names", "[song][sounds]") {
+    Rig r;
+    REQUIRE(r.open("Demo"));
+    {
+        std::lock_guard<std::recursive_mutex> l(r.engine->songMutex());
+        r.engine->song().kit = "/crosspad/kits/X/kit.json";
+    }
+    r.engine->commit();
+    REQUIRE(r.open("Other"));                              // new: no kit
+    REQUIRE(waitFor([&] {                                  // the save of Demo lands
+        std::FILE* f = std::fopen((r.dir / "SONGS" / "Demo" / "song.json").string().c_str(), "r");
+        if (!f) return false;
+        char buf[4096] = {};
+        std::fread(buf, 1, sizeof(buf) - 1, f);
+        std::fclose(f);
+        return std::strstr(buf, "/crosspad/kits/X/kit.json") != nullptr;
+    }));
+    REQUIRE(r.open("Demo"));
+    std::lock_guard<std::mutex> l(r.platform.openedMutex);
+    REQUIRE(r.platform.openedKits.size() == 3);
+    CHECK(r.platform.openedKits[0] == "Demo:");
+    CHECK(r.platform.openedKits[1] == "Other:");
+    CHECK(r.platform.openedKits[2] == "Demo:/crosspad/kits/X/kit.json");
 }

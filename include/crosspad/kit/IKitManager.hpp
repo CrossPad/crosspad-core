@@ -102,6 +102,13 @@ public:
     /// Default is a no-op — an implementation that keeps every kit parsed
     /// has nothing to retire.
     virtual void releaseRetiredKit() {}
+
+    /// No kit is current any more: what a song with no kit of its own opens
+    /// to. The kit stays in the list, and its pads' parsed sample data is
+    /// given back the way a kit that is no longer current gives it back
+    /// (releaseRetiredKit(), so call it from the same thread). The engines
+    /// holding its audio are the caller's to stop. Default: forget the id.
+    virtual void clearCurrentKit() { setCurrentKitId(-1); }
 };
 
 } // namespace crosspad

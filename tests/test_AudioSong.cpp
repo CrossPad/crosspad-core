@@ -548,6 +548,61 @@ TEST_CASE("AudioSong: a REC take replaces the seq blocks under it", "[song][seq]
     CHECK(cs[1].notes->notes[0].pad == 9);
 }
 
+TEST_CASE("AudioSong: a take longer than a scene is laid as blocks the seq view opens", "[song][seq][notes]") {
+    AudioSong s = songAt120();
+    REQUIRE(s.addSeqTrack(0, SeqSource::Kit, 0));
+    /* 19 bars from bar 2: a hit in the first, one held from bar 8 over the
+     * line into bar 9, and one in the last. */
+    const int i = s.putSeqTakeNotes(0, 2, 19, {note(18 * kTpb + 5, 3), note(0, 1), note(7 * kTpb + kTpb / 2, 2, 100, kTpb)}, kSpb);
+    REQUIRE(i == 0);
+    const auto& cs = s.tracks[0].clips;
+    REQUIRE(cs.size() == 3);
+    CHECK(cs[0].bar == 2);
+    CHECK(cs[0].bars == AudioSong::kSeqBlockBars);
+    CHECK(cs[1].bar == 2 + AudioSong::kSeqBlockBars);
+    CHECK(cs[1].bars == AudioSong::kSeqBlockBars);
+    CHECK(cs[2].bar == 2 + 2 * AudioSong::kSeqBlockBars);
+    CHECK(cs[2].bars == 3);
+    REQUIRE(cs[0].notes->notes.size() == 2);
+    CHECK(cs[0].notes->notes[0].pad == 1);
+    CHECK(cs[0].notes->notes[1].len == kTpb / 2);       // ends on the line into the next block
+    CHECK(cs[1].notes->notes.empty());
+    REQUIRE(cs[2].notes->notes.size() == 1);
+    CHECK(cs[2].notes->notes[0].tick == 2 * kTpb + 5);
+    CHECK(cs[2].notes->notes[0].pad == 3);
+}
+
+TEST_CASE("AudioSong: a block of a take holds no more notes than a scene", "[song][seq][notes]") {
+    AudioSong s = songAt120();
+    REQUIRE(s.addSeqTrack(0, SeqSource::Kit, 0));
+    /* 64 hits a bar over the first four bars of eight: 256 in eight bars or
+     * in four is more than a scene holds, 128 in two is not. */
+    std::vector<SeqNote> dense;
+    for (uint32_t t = 0; t < 4 * 64; ++t) dense.push_back(note(t * (kTpb / 64), (uint8_t)(t % 16)));
+    s.putSeqTakeNotes(0, 0, 8, dense, kSpb);
+    const auto& cs = s.tracks[0].clips;
+    REQUIRE(cs.size() == 2);
+    CHECK(cs[0].bars == 2);
+    CHECK(cs[1].bar == 2);
+    CHECK(cs[1].bars == 6);                   // the rest, which fits
+    for (const auto& c : cs) CHECK(c.notes->notes.size() <= AudioSong::kSeqBlockNotes);
+    CHECK(cs[0].notes->notes.size() + cs[1].notes->notes.size() == dense.size());
+}
+
+TEST_CASE("AudioSong: DUB under no block lays blocks the seq view opens", "[song][seq][notes]") {
+    AudioSong s = songAt120();
+    REQUIRE(s.addSeqTrack(0, SeqSource::Kit, 0));
+    REQUIRE(s.dubSeqNotes(0, {note(kTpb, 1), note(12 * kTpb, 2)}));
+    const auto& cs = s.tracks[0].clips;
+    REQUIRE(cs.size() == 2);
+    CHECK(cs[0].bar == 1);
+    CHECK(cs[0].bars == AudioSong::kSeqBlockBars);
+    CHECK(cs[1].bar == 1 + AudioSong::kSeqBlockBars);
+    CHECK(cs[1].bars == 4);
+    REQUIRE(cs[1].notes->notes.size() == 1);
+    CHECK(cs[1].notes->notes[0].tick == 3 * kTpb);
+}
+
 TEST_CASE("AudioSong: a take over the middle of a block leaves its tail playing on", "[song][seq][notes]") {
     AudioSong s = songAt120();
     REQUIRE(s.addSeqTrack(0, SeqSource::Kit, 0));
@@ -635,4 +690,29 @@ TEST_CASE("AudioSong: a region copy of a seq block shares its notes", "[song][se
     REQUIRE(cs.size() == 2);
     CHECK(cs[1].bar == 4);
     CHECK(cs[1].notes == p);
+}
+
+TEST_CASE("AudioSong: the song's kit and instrument survive a save, and a Pitch track is found", "[song][sounds]") {
+    const auto d = freshProject("cp_song_sounds");
+    AudioSong a = songAt120();
+    a.dir = d;
+    a.kit = "/crosspad/kits/DIPPER_-_DIPPER_kit/kit.json";
+    a.instrument = "pitch/instrument.json";
+    CHECK_FALSE(a.hasPitchTrack());
+    REQUIRE(a.addSeqTrack(1, SeqSource::Pitch, 0));
+    CHECK(a.hasPitchTrack());
+    REQUIRE(a.save());
+    AudioSong b;
+    REQUIRE(b.load(d) == SongLoad::Loaded);
+    CHECK(b.kit == a.kit);
+    CHECK(b.instrument == a.instrument);
+    CHECK(b.hasPitchTrack());
+    /* A song without them has none, and loading it clears what was there. */
+    AudioSong c = songAt120();
+    c.dir = d;
+    REQUIRE(c.save());
+    REQUIRE(b.load(d) == SongLoad::Loaded);
+    CHECK(b.kit.empty());
+    CHECK(b.instrument.empty());
+    fs::remove_all(d);
 }

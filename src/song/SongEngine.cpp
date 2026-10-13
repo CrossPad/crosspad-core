@@ -64,6 +64,9 @@ namespace crosspad {
 
 static_assert(AudioSong::kSeqPpq == PatternSequencer::kPpq,
               "a song's seq notes and a scene's events count the same ticks");
+static_assert(AudioSong::kSeqBlockBars == PatternSequencer::kMaxBars &&
+              AudioSong::kSeqBlockNotes == PatternSequencer::kMaxEvents,
+              "a block a take lays must fit the scene the seq view opens it in");
 namespace {
 
 constexpr int      kTracks           = AudioSong::kTracks;
@@ -1021,6 +1024,9 @@ struct SongEngine::Impl {
         const int i = blockAt(tr, bar);
         SeqPatternPtr notes = i >= 0 ? tr.clips[(size_t)i].notes : nullptr;
         if (notes && (notes->bars > PatternSequencer::kMaxBars || notes->notes.size() > PatternSequencer::kMaxEvents)) {
+            logf(true, "seq view: T%u block on bar %u is %u bars, %u notes: more than a scene holds",
+                 (unsigned)track + 1, (unsigned)tr.clips[(size_t)i].bar + 1, (unsigned)notes->bars,
+                 (unsigned)notes->notes.size());
             if (adopted) commit();
             return false;
         }
@@ -1035,6 +1041,9 @@ struct SongEngine::Impl {
         editScene_ = scene;
         editBound_ = i >= 0;
         editGen_ = seq_.editGeneration();
+        logf(false, "seq view: T%u bar %u, %s: %u notes into scene %u", (unsigned)track + 1,
+             (unsigned)editBar_ + 1, i >= 0 ? "a block" : "no block", notes ? (unsigned)notes->notes.size() : 0u,
+             (unsigned)scene);
         if (adopted) commit();
         return true;
     }
@@ -1071,6 +1080,12 @@ struct SongEngine::Impl {
         }
         SongClip& c = tr.clips[(size_t)i];
         if (samePattern(c.notes, now)) return;
+        /* Notes leaving a block is what the player loses: said each time. */
+        const size_t had = c.notes ? c.notes->notes.size() : 0;
+        if (now->notes.size() < had) {
+            logf(true, "seq view: T%u block on bar %u: %u notes -> %u", (unsigned)track + 1, (unsigned)c.bar + 1,
+                 (unsigned)had, (unsigned)now->notes.size());
+        }
         /* A block as long as its notes stays so when the scene grows or
          * shrinks (x2, /2, its length): what the seq view shows is the block. */
         if (c.notes && c.bars == c.notes->bars)
@@ -1283,6 +1298,12 @@ private:
     /// the one open stays -- nothing then saves an empty song over it.
     SongOpState doOpen(const std::string& name) {
         if (!p.storageReady()) return SongOpState::Failed;
+        /* The song open now has its last edits written first: a save waits
+         * kSaveDelayMs after a commit, and the song it would have written is
+         * replaced below -- a kit picked a moment before another song was
+         * opened was lost, and so was any edit inside that window. Before
+         * the read, too: reopening the same song reads what this writes. */
+        if (saveReq_.exchange(false)) doSave();
         const std::string root = p.songsRoot();
         const std::string dir = root + "/" + name;
         if (!fsx::makeDir(root) || !fsx::makeDir(dir) || !fsx::makeDir(dir + "/" + AudioSong::clipsDir())) {
@@ -1314,6 +1335,10 @@ private:
         }
         opened_ = true;
         p.saveCurrent(name);
+        {
+            std::lock_guard<std::recursive_mutex> l(songMutex_);
+            p.songOpened(song_);
+        }
         return SongOpState::Ready;
     }
 
@@ -2320,8 +2345,11 @@ private:
                 if (t < fromBar * tpb) continue;
                 mine.push_back({t - fromBar * tpb, ticks(n.len), n.pad, n.vel, n.perf});
             }
-            const uint16_t bars = (uint16_t)std::min<uint32_t>(toBar - fromBar, 0xFFFF);
-            song_.putSeqTake(takeTrack_, fromBar, makeSeqPattern(bars, std::move(mine)), spb);
+            /* Every hit before the bar it started on (in the count-in): nothing
+             * was played, and that changes nothing -- not an empty block over
+             * what was there. */
+            if (mine.empty()) return false;
+            song_.putSeqTakeNotes(takeTrack_, fromBar, std::min<uint32_t>(toBar - fromBar, 0xFFFF), std::move(mine), spb);
         }
         commit();
         return true;
