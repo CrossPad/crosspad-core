@@ -268,11 +268,14 @@ void SamplerEngine::noteOnBody(uint8_t pad, uint8_t velocity, int8_t transpose, 
     uint32_t first = kl.start < total ? kl.start : 0;
     uint32_t last  = (kl.end == 0 || kl.end > total) ? total : kl.end;
     if (first >= last) { first = 0; last = total; }
+    /* The store began the slot's head on this very frame (trimStart(), the
+     * same rule): a note starts in its head, never before it. */
+    if (first < slot->headStart) first = slot->headStart;
     /* A one-shot ends where its sound does, once a voice has found where that
      * is -- and a hit whose sound fits in the head then streams nothing. */
     const uint32_t heard = store_->audibleEnd(kl.slot);
     if (kp.mode != PadMode::Loop && heard > first && heard < last) last = heard;
-    const bool willStream = !slot->complete && last > slot->headFrames;
+    const bool willStream = !slot->complete && last > slot->headStart + slot->headFrames;
 
     /* Two ceilings, and the one that binds depends on the note.
      *
@@ -305,7 +308,7 @@ void SamplerEngine::noteOnBody(uint8_t pad, uint8_t velocity, int8_t transpose, 
      * the note to pay for it. */
     v.slot = slot;
     v.wantStream = willStream;
-    v.cursor.bind(slot->head, slot->headFrames, slot->desc.channels, last, &v.window);
+    v.cursor.bind(slot->head, slot->headStart, slot->headFrames, slot->desc.channels, last, &v.window);
 
     /* One increment carries both reasons a voice does not step by exactly one
      * frame: the file's rate against the engine's, and the pad's pitch. The
@@ -571,7 +574,7 @@ void SamplerEngine::serviceIo()
         if (v.wantStream && !v.window.isOpen()) {
             v.wantStream = false;
             const SampleStore::Slot* sl = v.slot;
-            if (!sl || !v.window.open(*pool_, sl->path, sl->desc.channels, sl->headFrames, v.last)) {
+            if (!sl || !v.window.open(*pool_, sl->path, sl->desc.channels, sl->headStart + sl->headFrames, v.last)) {
                 cStreamRefused_.fetch_add(1, std::memory_order_relaxed);
                 continue;
             }

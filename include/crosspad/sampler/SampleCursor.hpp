@@ -35,8 +35,18 @@ public:
     void bind(const int16_t* head, uint32_t headFrames, uint8_t channels,
               uint32_t totalFrames, const StreamWindow* window)
     {
+        bind(head, 0, headFrames, channels, totalFrames, window);
+    }
+
+    /// @p head holds the file's frames [@p headStart, @p headStart + @p headFrames):
+    /// a layer trimmed to start later than the file does has its head there.
+    void bind(const int16_t* head, uint32_t headStart, uint32_t headFrames, uint8_t channels,
+              uint32_t totalFrames, const StreamWindow* window)
+    {
         head_ = head;
+        headStart_ = headStart;
         headFrames_ = headFrames;
+        headEnd_ = headStart + headFrames;
         channels_ = channels < 1 ? 1 : (channels > 2 ? 2 : channels);
         totalFrames_ = totalFrames;
         window_ = window;
@@ -47,7 +57,7 @@ public:
 
     void clear()
     {
-        head_ = nullptr; window_ = nullptr; headFrames_ = totalFrames_ = 0;
+        head_ = nullptr; window_ = nullptr; headStart_ = headFrames_ = headEnd_ = totalFrames_ = 0;
         forgetRun();
     }
 
@@ -55,13 +65,13 @@ public:
     uint32_t headFrames() const { return headFrames_; }
     uint8_t  channels() const { return channels_; }
 
-    /// Frames that can be read right now: the head, plus whatever the streamer
-    /// has delivered. A voice must not step past this.
+    /// One past the last frame that can be read right now: the head, plus
+    /// whatever the streamer has delivered. A voice must not step past this.
     uint32_t readableFrames() const
     {
-        if (!window_) return headFrames_;
+        if (!window_) return headEnd_;
         const uint32_t v = window_->validUpTo();
-        return v > headFrames_ ? v : headFrames_;
+        return v > headEnd_ ? v : headEnd_;
     }
 
     /**
@@ -88,8 +98,8 @@ public:
      */
     bool sample(uint32_t i, float& left, float& right) const
     {
-        if (i + 1 < headFrames_) {
-            return one(head_ + static_cast<size_t>(i) * channels_, left, right);
+        if (i >= headStart_ && i + 1 < headEnd_) {
+            return one(head_ + static_cast<size_t>(i - headStart_) * channels_, left, right);
         }
         if (window_) {
             if (runPtr_ && i >= runFirst_ && i + 1 < runLast_) {
@@ -115,8 +125,8 @@ public:
         const int64_t i = static_cast<int64_t>(phase >> 32);
         const float f = static_cast<float>(static_cast<uint32_t>(phase)) * kFracNorm;
 
-        if (i >= 1 && i + 2 < static_cast<int64_t>(headFrames_)) {
-            return walk(head_ + (static_cast<size_t>(i) - 1) * channels_, f, left, right);
+        if (i >= static_cast<int64_t>(headStart_) + 1 && i + 2 < static_cast<int64_t>(headEnd_)) {
+            return walk(head_ + (static_cast<size_t>(i) - 1 - headStart_) * channels_, f, left, right);
         }
 
         /* Past the head, the same walk over the streamer's blocks -- as long
@@ -199,13 +209,15 @@ private:
     bool tap(int64_t j, float& l, float& r) const
     {
         if (totalFrames_ == 0) return false;
-        if (j < 0) j = 0;
+        /* Before the head is before the trim: the frame a voice starts on is
+         * its edge, as frame 0 is the file's. */
+        if (j < static_cast<int64_t>(headStart_)) j = headStart_;
         if (j >= static_cast<int64_t>(totalFrames_)) j = static_cast<int64_t>(totalFrames_) - 1;
 
         const int16_t* p = nullptr;
-        if (j < static_cast<int64_t>(headFrames_)) {
+        if (j < static_cast<int64_t>(headEnd_)) {
             if (!head_) return false;
-            p = head_ + static_cast<size_t>(j) * channels_;
+            p = head_ + static_cast<size_t>(j - headStart_) * channels_;
         } else {
             if (!window_) return false;
             p = window_->frame(static_cast<uint32_t>(j));
@@ -234,7 +246,9 @@ private:
     mutable const int16_t* runPtr_   = nullptr;
     mutable uint32_t       runFirst_ = 0;
     mutable uint32_t       runLast_  = 0;
+    uint32_t headStart_ = 0;
     uint32_t headFrames_ = 0;
+    uint32_t headEnd_ = 0;            ///< headStart_ + headFrames_
     uint32_t totalFrames_ = 0;
     uint8_t  channels_ = 1;
 };

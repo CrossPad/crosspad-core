@@ -284,6 +284,69 @@ TEST_CASE("SamplerEngine streams past the head without an underrun", "[sampleren
     REQUIRE(rig.pool.stats().blocksUsed == 0);
 }
 
+TEST_CASE("SamplerEngine plays a pad whose START is past the head, from the block it is struck in", "[samplerengine][trim]") {
+    Rig rig;
+    rig.build();
+    /* Silent up to the trim: a voice playing from the file's first frame would
+     * be heard as nothing. Before, the head was frames 0..1023 whatever the
+     * START, and the voice found its first frame nowhere -- silent, an
+     * underrun a hit (12.10.2026). */
+    rig.src.add("long.wav", 60000, 1);
+    rig.src.silence("long.wav", 0, 20000);
+    const uint16_t slot = rig.store.load("long.wav", 1024, 20000, 0);
+    REQUIRE(slot != SampleStore::kNoSlot);
+    REQUIRE(rig.store.slot(slot)->headStart == 20000);
+    KitPad& kp = rig.kit.pad[0];
+    kp.layers[0].slot = slot;
+    kp.layers[0].start = 20000;
+    kp.layers[0].end = 0;
+    kp.layerCount = 1;
+    kp.mode = PadMode::OneShot;
+    kp.gain = 1.0f;
+    kp.pan = 0.0f;
+    rig.publish();
+
+    rig.engine.noteOn(0, 127);
+    REQUIRE(rig.run(1) > 0.0f);
+    rig.run(700);                              // the 40000 frames after it, and more
+    const auto c = rig.engine.counters();
+    REQUIRE(c.underruns == 0);
+    REQUIRE(c.streamRefused == 0);
+    REQUIRE_FALSE(rig.engine.anySounding());
+}
+
+TEST_CASE("SampleStore keeps a head for each start of one file", "[samplestore][trim]") {
+    MemSource src;
+    src.add("loop.wav", 10000, 2);
+    SampleStore store;
+    store.bind(&src, &heapAlloc, &heapFree, nullptr);
+
+    const uint16_t a = store.load("loop.wav", 512);
+    const uint16_t b = store.load("loop.wav", 512, 4050, 6000);
+    REQUIRE(a != SampleStore::kNoSlot);
+    REQUIRE(b != SampleStore::kNoSlot);
+    REQUIRE(a != b);
+    CHECK(store.load("loop.wav", 512, 4050, 0) == b);      // the same start is the same head
+    CHECK(store.load("loop.wav", 512, 7000, 5000) == a);   // ending before it starts: from frame 0
+
+    const SampleStore::Slot* s = store.slot(b);
+    CHECK(s->headStart == 4050);
+    CHECK(s->headFrames == 512);
+    CHECK(s->head[0] == 8000 + 50 * 10);                    // frame 4050, channel 0
+    CHECK_FALSE(s->complete);
+
+    /* Near the end, what is left of the file is the whole head. */
+    const SampleStore::Slot* e = store.slot(store.load("loop.wav", 512, 9800));
+    REQUIRE(e);
+    CHECK(e->headStart == 9800);
+    CHECK(e->headFrames == 200);
+    CHECK(e->complete);
+    CHECK(SampleStore::trimStart(9800, 0, 10000) == 9800);
+    CHECK(SampleStore::trimStart(12000, 0, 10000) == 0);
+    CHECK(SampleStore::trimStart(5000, 5000, 10000) == 0);
+    store.unload();
+}
+
 TEST_CASE("SamplerEngine plays a 22 kHz file at the right speed", "[samplerengine]") {
     Rig rig;
     rig.build();
