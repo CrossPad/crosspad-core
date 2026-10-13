@@ -121,6 +121,8 @@ commits).
   subscribed, unsubscribed or posted on the same bus deadlocked.
 - A pad press or touch racing an app's teardown could reach the handler
   after `onDeactivate()`, starting or arming a note nothing would release.
+- `MetronomeNode`: during the block that took a transport move,
+  `positionSamples()` and `countInSamples()` still returned the old position.
 
 ## 1.69.0 — 2026-10-17
 

@@ -124,21 +124,26 @@ TEST_CASE("metronome: a transport change is never undone by the block in flight"
     });
 
     constexpr int kMoves = 2000;
-    constexpr uint32_t kFar = 200000;          // well inside the 16-bar loop
+    constexpr uint32_t kFar = 200000;          // well inside the default 4-bar loop (384000 samples)
     constexpr uint32_t kSettleBlocks = 3;      // the move lands at the next block start
     const uint32_t loop = m.loopSamples();
     int wrong = 0;
     for (int i = 0; i < kMoves; ++i) {
         const uint32_t target = (i & 1) ? kFar : 0;
         const uint32_t before = blocks.load(std::memory_order_acquire);
+        const auto off = [&] {
+            const uint32_t p = m.positionSamples();
+            const uint32_t ran = blocks.load(std::memory_order_acquire) - before;
+            // +1: the block in flight may have stored its position before counting.
+            return (p + loop - target) % loop > (ran + 1) * kBlock;
+        };
         m.startAt(target);
+        // Read at once too: the block that takes the move must not show the
+        // old position while it renders.
+        if (off()) ++wrong;
         const uint32_t b0 = blocks.load(std::memory_order_acquire);
         while (blocks.load(std::memory_order_acquire) - b0 < kSettleBlocks) std::this_thread::yield();
-        const uint32_t p = m.positionSamples();
-        const uint32_t ran = blocks.load(std::memory_order_acquire) - before;
-        // +1: the block in flight may have stored its position before counting.
-        const uint32_t ahead = (p + loop - target) % loop;
-        if (ahead > (ran + 1) * kBlock) ++wrong;
+        if (off()) ++wrong;
     }
     done.store(true);
     rt.join();

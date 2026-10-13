@@ -230,6 +230,10 @@ private:
         pos = p;
         cin = c;
         countInTotal_.store(c, std::memory_order_relaxed);
+        /* Before the command reads as applied: until this block ends, readers
+         * would otherwise see the position from before the move. */
+        posSamples_.store(p, std::memory_order_relaxed);
+        countInLeft_.store(c, std::memory_order_relaxed);
         clickLeft_ = 0;
         phase_ = 0.0f;
         appliedSeq_.store(seq, std::memory_order_release);
