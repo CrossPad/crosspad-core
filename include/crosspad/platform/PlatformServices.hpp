@@ -45,6 +45,8 @@ class ISequencerEngine;
 class ISongEngine;
 class ISampleTools;
 class IInputGain;
+class IInputPairs;
+class IOutputLevels;
 class IPadMix;
 class IPadPerformance;
 class PitchedInstrument;
@@ -90,6 +92,8 @@ struct PlatformServices {
     ISongEngine*      songEngine      = nullptr;
     ISampleTools*     sampleTools     = nullptr;   ///< recording, previewing and slicing samples
     IInputGain*       inputGain       = nullptr;   ///< the inputs' preamp gain (mics, line-in)
+    IInputPairs*      inputPairs      = nullptr;   ///< which inputs the ADCs hear; null when all always do
+    IOutputLevels*    outputLevels    = nullptr;   ///< the speakers' and jacks' analog levels; null where the board has none
     /// Per-pad level and pan of whichever engine plays the pads now; the
     /// engine that takes over the pads registers itself here.
     IPadMix*          padMix          = nullptr;

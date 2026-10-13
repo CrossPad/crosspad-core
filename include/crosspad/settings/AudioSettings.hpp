@@ -110,8 +110,10 @@ public:
     //
     // Platform mapping (same NVS keys, different wiring — do not "unify" without
     // touching the hardware):
-    //   ESP-IDF (dual codec): [0][0] = codec 0 = speakers, [1][0] = codec 1 =
-    //       headphones. The BSP only exposes whole-codec volume, so [*][1] is unused.
+    //   ESP-IDF (dual codec, OutputLevelsPort): [0][0] = the built-in speakers,
+    //       [0][1] = the Out 1/2 jack where the board gives it an output pair of
+    //       its own (PCB 2.0: codec 0 LOUT2/ROUT2 beside the speakers' LOUT1/ROUT1),
+    //       [1][0] = codec 1 = Out 3/4. [1][1] is unused.
     //   Arduino: OUT1 (=[c][0]) is the headphone amp and OUT2 (=[c][1]) the speaker
     //       amp, both codecs driven together.
     uint8_t outVolumeCodec[2][2];
