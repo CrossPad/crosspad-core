@@ -131,7 +131,7 @@ public:
         heldBar_ = (uint32_t)(to < 0 ? 0 : (to > kMaxBar ? kMaxBar : to));
     }
 
-    /// "ARR": the block song of the Song screen is "SONG" (UX 2000 3.2).
+    /// "ARR": the block song of the Song screen is "SONG".
     const char* name() const override { return "ARR"; }
 
     /// The song's tempo, which playing it puts on the clock; a song with no

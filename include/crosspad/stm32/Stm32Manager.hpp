@@ -92,11 +92,10 @@ public:
     /**
      * @brief Forget what we believe the STM's amp register holds.
      *
-     * The STM gates the amp off by itself when it dims into LIGHT sleep, without
-     * touching REG_CTL_AUDIO_EN. Our cached value therefore still reads "on" and
-     * the change-detecting write never fires — the speakers stay dead after wake
-     * while headphones keep playing. Call this on every wake notify so the next
-     * poll re-asserts the gate unconditionally.
+     * Call this on every wake notify, so the next poll re-asserts the amp gate
+     * unconditionally. The STM gates the amp off by itself when it dims into
+     * LIGHT sleep, without touching REG_CTL_AUDIO_EN, so the cached value
+     * cannot tell whether the speakers' amp is on after a wake.
      */
     void invalidateAmpState() { ampResyncPending_ = true; }
 

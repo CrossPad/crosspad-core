@@ -12,10 +12,10 @@ namespace crosspad {
  * @brief Lends the pitched sample engine to an app that plays an instrument
  *        of its own (Pitch Play), and keeps that app's instrument library.
  *
- * The pitched engine and the kits' streamer share one memory arena, so only
- * one of them is current. An app borrows it: a load stops the kits' engine
- * and builds the app's bank; release() frees the bank and puts the current
- * kit back as it was. Everything that touches the card -- reading WAVs,
+ * One of the two engines is current at a time: the pitched engine or the
+ * kits' engine. An app borrows the pitched one: a load stops the kits'
+ * engine and builds the app's bank; release() frees the bank and puts the
+ * current kit back as it was. Everything that touches the card -- reading WAVs,
  * reading and writing instrument files, copying samples -- runs on the host's
  * worker, never on the caller's (UI) thread: a request returns at once and
  * the caller polls state().
@@ -56,6 +56,7 @@ public:
     /// Safe when nothing is held. Call from the UI thread.
     virtual void release() = 0;
 
+    /// Where the host is (see State).
     virtual State state() const = 0;
 
     /// The instrument of the last load, open or save that succeeded, its
@@ -84,11 +85,11 @@ public:
     };
     virtual ZoneAudio zoneAudio(uint8_t zoneIdx) const { (void)zoneIdx; return {}; }
 
+    /// The file name of an instrument in its folder.
     static constexpr const char* kFileName = "instrument.json";
 
-    /// A zone longer than this is cut to it on load: an instrument is notes,
-    /// and a Recorder take minutes long picked by mistake would otherwise
-    /// convert for minutes and fill the bank.
+    /// A zone longer than this, in seconds, is cut to it on load: an
+    /// instrument's zones are notes, not whole recordings.
     static constexpr float kMaxZoneSeconds = 12.0f;
 };
 

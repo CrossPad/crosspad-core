@@ -20,7 +20,7 @@ public:
     virtual int64_t getTimeUs() = 0;
 };
 
-/// Platform-injected singleton (same pattern as getEventBus())
+/// The platform's clock.
 IClock& getClock();
 
 } // namespace crosspad

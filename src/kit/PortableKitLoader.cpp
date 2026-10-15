@@ -59,6 +59,10 @@ std::string PortableKitLoader::toLogicalPath(const std::string& fsPath) const {
     return fsPath;
 }
 
+// scanKits() exists beside listKits() because the vector listKits() returns
+// is one contiguous block of kits x sizeof(KitInfo) plus a string copy per
+// field: on the ESP32 that copy alone was a std::bad_alloc at boot (80 kits,
+// 412 kB of PSRAM left beside the sample engine).
 void PortableKitLoader::scanKits(const std::string& rootDir) {
     // Growing by doubling means copying everything found so far, and on a card
     // of 79 kits of ~1 kB that copy is one of the largest allocations of the
@@ -98,6 +102,8 @@ int PortableKitLoader::addKit(const std::string& kitJsonPath) {
     return static_cast<int>(kits_.size()) - 1;
 }
 
+// Not saveKit(): a kit this board has only ever listed carries sixteen empty
+// pads, so serialising its KitInfo would take every sample out of the kit.
 bool PortableKitLoader::saveKitInfo(int id, const KitInfo& meta) {
     if (id < 0 || id >= static_cast<int>(kits_.size())) return false;
     KitInfo& entry = kits_[id];
@@ -191,6 +197,9 @@ KitLoadResult PortableKitLoader::loadKit(KitInfo& kit) {
     return result;
 }
 
+// Kept out of loadKit(): freeing from the loader thread pulled the samples
+// vector out from under a GUI thread parked mid-callback, which surfaced as a
+// null dereference at samples[i].end. The reader thread calls this instead.
 void PortableKitLoader::releaseRetiredKit() {
     if (retiredKitId_ < 0) return;
     const int id = retiredKitId_;

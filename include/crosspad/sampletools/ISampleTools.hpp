@@ -30,14 +30,15 @@ enum class RecInput : uint8_t {
 /// Where a file job (listing, overview, saving, export) is.
 enum class ToolJob : uint8_t { Idle, Busy, Ready, Failed };
 
+/// What the recorder is doing, or what its last take came to.
 struct RecStatus {
     bool        recording  = false;
     uint32_t    frames     = 0;       ///< written so far, or the length of the last take
-    uint32_t    sampleRate = 0;
+    uint32_t    sampleRate = 0;       ///< of the take, in Hz
     std::string file;                 ///< full path of the take being written or last written
     std::string error;                ///< why the last take failed; empty when it did not
     bool        withSong = false;     ///< lined up with the song: frame 0 is bar @c fromBar
-    uint32_t    fromBar  = 0;
+    uint32_t    fromBar  = 0;         ///< the song bar frame 0 lines up with, when withSong
     bool        waiting  = false;     ///< armed with the song, which has not sounded yet
 };
 
@@ -54,9 +55,8 @@ struct WaveOverview {
 };
 
 /// A folder on the card as the tools list it: its folders, then its WAVs,
-/// each by name. The names are one block of text, not a string each: small
-/// allocations come from internal RAM on the board, and a folder of a few
-/// hundred samples was enough to empty it.
+/// each by name. The names are one block of text, not a string each, so a
+/// folder of hundreds of samples costs one allocation.
 struct CardFolder {
     static constexpr size_t kMaxEntries = 2000;
     std::string           path;            ///< the folder listed, full path
@@ -106,6 +106,7 @@ public:
     /// Listen to @p in: peaks() meters it and the next take records it. The
     /// codec input it needs is switched now, and given back by releaseInput().
     virtual bool     selectInput(RecInput in) = 0;
+    /// The input selected with selectInput().
     virtual RecInput input() const = 0;
     /// Whether @p in has anything to record right now -- USB only while the
     /// board is in its USB audio profile.
@@ -130,18 +131,22 @@ public:
         (void)countInBeats;
         return startRecordingWithSong(fromBar);
     }
+    /// End the take (and the song, for a take lined up with one).
     virtual void     stopRecording() = 0;
+    /// The take being recorded, or the last one.
     virtual RecStatus recStatus() = 0;
     /// The app is closing: stop metering and put the codec input back.
     virtual void     releaseInput() = 0;
 
     // ── Files (requests) ──────────────────────────────────────────────────
+    /// Request the list of takes; recordings() has it once job() is Ready.
     virtual bool requestRecordings() = 0;
     /// Full paths from the recordings folder, newest name first.
     virtual std::vector<std::string> recordings() = 0;
     /// Columns and envelope of [start, end) of @p file; end 0 = to its end.
     virtual bool requestOverview(const std::string& file, uint32_t start, uint32_t end,
                                  uint16_t columns) = 0;
+    /// The last finished overview.
     virtual WaveOverview overview() = 0;
     /// List @p dir -- any folder on the card; "" for the recordings folder.
     virtual bool requestFolder(const std::string& dir) { (void)dir; return false; }
@@ -176,7 +181,9 @@ public:
         (void)file; (void)out; (void)peak;
         return false;
     }
+    /// Where the current file job is.
     virtual ToolJob     job() const = 0;
+    /// What the last job came to: a path, a name, or why it failed.
     virtual std::string jobResult() = 0;
     virtual uint8_t     jobProgress() const = 0;   ///< percent
 
@@ -192,7 +199,9 @@ public:
         (void)sound;
         return preview(file, start, end, loop);
     }
+    /// Stop the preview.
     virtual void     stopPreview() = 0;
+    /// True while a preview plays.
     virtual bool     previewing() const = 0;
     /// The frame of the file being heard now.
     virtual uint32_t previewFrame() const = 0;

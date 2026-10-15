@@ -9,7 +9,7 @@ namespace crosspad {
 
 /// Result of a kit load operation.
 struct KitLoadResult {
-    bool success = false;
+    bool success = false; ///< true when the kit was read
     std::string error;    ///< Empty on success, describes failure otherwise
     int padsLoaded = 0;   ///< Number of pads with valid sample references
 };
@@ -26,11 +26,17 @@ public:
     virtual ~IKitManager() = default;
 
     // ── Runtime state ───────────────────────────────────────────────────────
+    /// Number of entries in the kit list (removed kits included; see removeKit()).
     virtual int      getKitCount() const = 0;
+    /// The kit at @p id in the list, or null when @p id is out of range.
     virtual KitInfo* getKit(int id) = 0;
+    /// The kit that is playing now, or null when there is none.
     virtual KitInfo* getCurrentKit() = 0;
+    /// The current kit's id, or -1 when there is none.
     virtual int      getCurrentKitId() const = 0;
+    /// Make @p id the current kit's id.
     virtual void     setCurrentKitId(int id) = 0;
+    /// True while a kit is being loaded.
     virtual bool     isLoading() const = 0;
 
     // ── Persistence ─────────────────────────────────────────────────────────
@@ -40,12 +46,10 @@ public:
     virtual std::vector<KitInfo> listKits(const std::string& rootDir) = 0;
 
     /// Same scan, no copy: rebuilds the list read back through getKitCount()
-    /// and getKit(). Use it when the caller only wants the card scanned — the
+    /// and getKit(). Use it when the caller only wants the card scanned: the
     /// vector listKits() returns is one contiguous block of
-    /// kits × sizeof(KitInfo) plus a string copy per field, and on the ESP32
-    /// that copy alone was a std::bad_alloc at boot (80 kits, 412 kB of PSRAM
-    /// left beside the sample engine). Default keeps old implementations
-    /// correct; they still pay for the copy.
+    /// kits × sizeof(KitInfo) plus a string copy per field, which a card with
+    /// many kits makes large. The default calls listKits().
     virtual void scanKits(const std::string& rootDir) { (void)listKits(rootDir); }
 
     /// Full-parse a kit: read JSON, parse metadata + pads array.
@@ -66,10 +70,10 @@ public:
     /// the tempo it counts -- back into its own JSON. Only those four fields
     /// are taken from @p meta.
     ///
-    /// Not saveKit(): that serialises the KitInfo it is handed, pads and all,
-    /// and a kit this board has only ever listed carries sixteen empty pads --
-    /// saving one would take every sample out of the kit. Here the file is read
-    /// first and its pads are written back exactly as they were.
+    /// Use this, not saveKit(), for a kit that has only been listed: saveKit()
+    /// writes the KitInfo it is handed, pads and all, and a listed kit's pads
+    /// are not parsed. Here the file is read first and its pads are written
+    /// back exactly as they were.
     virtual bool saveKitInfo(int id, const KitInfo& meta) { (void)id; (void)meta; return false; }
 
     /// The kit at @p id gone: its JSON, the folder it had to itself with
@@ -91,14 +95,11 @@ public:
     /// Free the sample payload of the kit that stopped being current at
     /// the last loadKit(), if any.
     ///
-    /// Deliberately not done inside loadKit(). A KitInfo* handed out by
-    /// getCurrentKit() stays valid, but its pads[].samples vectors do not
-    /// survive this call — and the GUI holds such a pointer across blocking
-    /// reads, because drawing a waveform goes to the SD card. Freeing from
-    /// the loader thread pulled the vector out from under a GUI thread
-    /// parked mid-callback, which surfaces as a null dereference at
-    /// samples[i].end. Call this from the same thread that reads kit pad
-    /// data: then it can only run between callbacks, never inside one.
+    /// Not done inside loadKit(). A KitInfo* handed out by getCurrentKit()
+    /// stays valid, but its pads[].samples vectors do not survive this call,
+    /// and the GUI holds such a pointer across blocking reads (drawing a
+    /// waveform reads the SD card). Call this from the same thread that reads
+    /// kit pad data, so it runs between callbacks, never inside one.
     ///
     /// Default is a no-op — an implementation that keeps every kit parsed
     /// has nothing to retire.

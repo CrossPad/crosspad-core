@@ -7,7 +7,7 @@
 namespace crosspad {
 
 /// What belongs to the device rather than to a firmware: pad feel and STM32
-/// power behaviour, the panel, the USB and radio choices a bench depends on,
+/// power behaviour, the panel, the USB and radio choices,
 /// and the clock the kits were made for. A per-firmware import never moves these.
 struct SharedSettingsSnapshot {
     Stm32Settings stm;

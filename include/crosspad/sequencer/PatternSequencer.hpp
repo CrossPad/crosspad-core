@@ -110,7 +110,7 @@ public:
 
     void setLength(uint8_t beats) override;
     void setQuantization(Quantization q) override { quant_ = q; }
-    /// What a take is being snapped to, or Off. For the UI and HIL.
+    /// What a take is being snapped to, or Off. For the UI and tests.
     Quantization quantization() const { return quant_; }
     void setLoop(bool loop) override { loop_ = loop; }
     /// Any pre-length turns the count-in on: it is always one bar of the

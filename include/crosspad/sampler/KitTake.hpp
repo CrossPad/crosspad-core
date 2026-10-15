@@ -6,12 +6,10 @@
  * @brief What the native engine's take needs from a kit, copied out of it.
  *
  * A take reads every header and every resident head off the card -- seconds
- * on its own worker -- and it used to read the kit model (`KitInfo`) all that
- * time through the kit manager's current-kit pointer. The model is not the
- * worker's: a kit load that finishes meanwhile retires it, and the UI thread
- * frees a retired kit's pads (`releaseRetiredKit()`) while the take is still
- * walking them. And a take asked for during another was refused with nothing
- * to retry it, so the engine kept the old kit under the new one's name.
+ * on its own worker. It does not read the kit model (`KitInfo`) through the
+ * kit manager's current-kit pointer meanwhile: the model is not the worker's.
+ * A kit load that finishes meanwhile retires it, and the UI thread frees a
+ * retired kit's pads (`releaseRetiredKit()`).
  *
  * So the thread that asks -- the one that knows the kit is current right then
  * -- copies what the take reads into a `TakeSpec`, plain data with no pointer
@@ -20,7 +18,8 @@
  * sample's name is kept as the kit wrote it and resolved on the worker).
  *
  * `WorkerGate` is the other half: start the worker or leave the request for
- * the one running, with no request lost to a worker on its way out.
+ * the one running, with no request lost to a worker on its way out -- a take
+ * asked for during another is taken after it.
  */
 
 #include "crosspad/kit/KitInfo.hpp"

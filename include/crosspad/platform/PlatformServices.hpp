@@ -5,14 +5,13 @@
  * @file PlatformServices.hpp
  * @brief Centralized service registry for all CrossPad platform services.
  *
- * Replaces per-platform singleton getter boilerplate. Platforms create their
- * concrete implementations and pass them via CrosspadPlatformConfig — the
- * common init function populates this registry. Runtime service swaps (e.g.,
- * connecting MIDI after init) use the typed setters, which also auto-update
- * PlatformCapabilities flags.
+ * Platforms create their concrete implementations and pass them via
+ * CrosspadPlatformConfig; the common init function populates this registry.
+ * Runtime service swaps (e.g., connecting MIDI after init) use the typed
+ * setters, which also update the PlatformCapabilities flags.
  *
- * Getter functions (getClock(), getMidiOutput(), etc.) are defined once in
- * PlatformServices.cpp — platforms no longer need to implement them.
+ * The getter functions (getClock(), getMidiOutput(), etc.) read this
+ * registry; platforms do not implement them.
  */
 
 #include <cstdint>

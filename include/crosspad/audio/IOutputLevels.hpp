@@ -12,6 +12,7 @@ class IOutputLevels {
 public:
     virtual ~IOutputLevels() = default;
 
+    /// How many outputs the board has; they are numbered 0 .. outputs()-1.
     virtual int         outputs() const = 0;
     /// What the board calls output @p o ("Speakers", "Out 1/2").
     virtual const char* name(int o) const = 0;

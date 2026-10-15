@@ -106,9 +106,9 @@ public:
      *
      * A zone with `loopEnd <= loopStart` is stored as a one-shot. A zone that
      * does declare a loop is rejected outright -- not clamped -- when the loop
-     * runs past `length` or spans fewer than kMinLoopSamples samples: silently
-     * repairing a loop the file asked for hides a broken kit, and the engine
-     * has to trust the zone it is handed.
+     * runs past `length` or spans fewer than kMinLoopSamples samples: a loop
+     * the file asked for is never silently changed, and the engine can trust
+     * the zone it is handed.
      */
     bool addZone(const Zone& z);
 
