@@ -25,23 +25,13 @@
 
 #include "crosspad/audio/IAudioNode.hpp"
 #include "crosspad/audio/ScopeTap.hpp"
+#include "crosspad/dsp/AudioKernels.hpp"
 #include "crosspad/instrument/SampleBank.hpp"
 #include "crosspad/kit/KitInfo.hpp"
 
 #include <atomic>
 #include <cstdint>
 #include <vector>
-
-#if defined(CROSSPAD_USE_ESP_DSP) && __has_include(<esp_dsp.h>)
-  #include <esp_dsp.h>
-  #ifndef CROSSPAD_HAS_ESP_DSP
-    #define CROSSPAD_HAS_ESP_DSP 1
-  #endif
-#else
-  #ifndef CROSSPAD_HAS_ESP_DSP
-    #define CROSSPAD_HAS_ESP_DSP 0
-  #endif
-#endif
 
 namespace crosspad {
 
@@ -51,33 +41,6 @@ struct InstrumentParams {
     float attackMs = 2.0f;
     float releaseMs = 150.0f;
 };
-
-namespace detail {
-
-/**
- * @brief out[L,R] += mono * (gainL, gainR), interleaved stereo.
- *
- * @param tmp scratch of at least @p frames floats (the ESP-DSP path needs a
- *            unit-stride intermediate; the scalar path ignores it).
- */
-inline void accumulatePanned(const float* mono, float* out, uint32_t frames,
-                             float gainL, float gainR, float* tmp) {
-#if CROSSPAD_HAS_ESP_DSP
-    const int n = static_cast<int>(frames);
-    dsps_mulc_f32(mono, tmp, n, gainL, 1, 1);
-    dsps_add_f32(out, tmp, out, n, 2, 1, 2);
-    dsps_mulc_f32(mono, tmp, n, gainR, 1, 1);
-    dsps_add_f32(out + 1, tmp, out + 1, n, 2, 1, 2);
-#else
-    (void)tmp;
-    for (uint32_t i = 0; i < frames; ++i) {
-        out[2 * i]     += mono[i] * gainL;
-        out[2 * i + 1] += mono[i] * gainR;
-    }
-#endif
-}
-
-} // namespace detail
 
 class PitchedInstrument : public IAudioNode {
 public:
@@ -354,7 +317,7 @@ private:
     uint32_t sampleRate_ = 44100;
     uint32_t maxFrames_ = 0;
     std::vector<float> scratch_;   ///< per-voice mono render
-    std::vector<float> panTmp_;    ///< unit-stride intermediate for ESP-DSP
+    std::vector<float> panTmp_;    ///< dsp::macPanned()'s reference path (esp-dsp, unit stride)
     std::vector<float> monoSum_;   ///< block sum of every voice, for the tap
     ScopeTap scopeTap_;
 };

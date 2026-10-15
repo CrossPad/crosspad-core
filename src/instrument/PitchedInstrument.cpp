@@ -512,8 +512,7 @@ void PitchedInstrument::renderBlock(float* out, uint32_t frames) {
             if (captureScope) {
                 for (uint32_t n = 0; n < frames; ++n) mono[n] += scratch_[n];
             }
-            detail::accumulatePanned(scratch_.data(), out, frames, v.gainL, v.gainR,
-                                     panTmp_.data());
+            dsp::macPanned(out, scratch_.data(), frames, v.gainL, v.gainR, panTmp_.data());
         }
     }
 
