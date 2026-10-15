@@ -32,8 +32,10 @@ idf_component_register(
 )
 
 if(IDF_TARGET STREQUAL "esp32s3")
-    # PUBLIC, not PRIVATE: PitchedInstrument.hpp picks its accumulate loop from
-    # this macro, so core and every consumer that includes the header have to
-    # agree on it or the inline function has two definitions.
-    target_compile_definitions(${COMPONENT_LIB} PUBLIC CROSSPAD_USE_ESP_DSP=1)
+    # PUBLIC, not PRIVATE: dsp/AudioKernels.hpp picks its loops from these
+    # macros, inline, so core and every consumer that includes it have to
+    # agree on them or one inline function has two definitions.
+    # CROSSPAD_SIMD_PIE: the S3's 128-bit float loads and stores (EE.LDF.128 /
+    # EE.STF.128), which an ESP32 or an S2 does not have.
+    target_compile_definitions(${COMPONENT_LIB} PUBLIC CROSSPAD_USE_ESP_DSP=1 CROSSPAD_SIMD_PIE=1)
 endif()

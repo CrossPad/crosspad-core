@@ -94,6 +94,9 @@ set(CORE_SOURCES
     # Audio file writing
     ${CORE_DIR}/src/audio/WavWriter.cpp
 
+    # Output EQ (its kernels: test_AudioKernels)
+    ${CORE_DIR}/src/audio/OutputEq.cpp
+
     # Audio song model
     ${CORE_DIR}/src/song/AudioSong.cpp
     ${CORE_DIR}/src/song/LiveSet.cpp

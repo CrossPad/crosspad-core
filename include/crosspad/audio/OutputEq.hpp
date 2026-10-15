@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
 
+#include "crosspad/dsp/AudioKernelsRef.hpp"
+
 #include <atomic>
 #include <cstdint>
 
@@ -80,7 +82,7 @@ public:
     void reset();
 
 private:
-    struct Section { float b0 = 1, b1 = 0, b2 = 0, a1 = 0, a2 = 0; };
+    using Section = dsp::Biquad;
     struct Set { Section s[kEqBands]; uint8_t n = 0; };
 
     /* Everything an EQ needs, taken the first time one is asked for and not
