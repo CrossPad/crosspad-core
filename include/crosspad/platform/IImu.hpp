@@ -37,7 +37,7 @@ enum class Orientation : uint8_t {
 /**
  * @brief Abstract IMU interface for portable motion data access
  *
- * On CrossPad the data comes from the board's LSM6DSO motion sensor, read
+ * On CrossPad the data comes from the board's ST LSM6DS3TR-C motion sensor, read
  * by the platform's IMU task and fused with a Kalman filter. A platform
  * without a sensor provides NullImu, which reports isAvailable() false.
  *
