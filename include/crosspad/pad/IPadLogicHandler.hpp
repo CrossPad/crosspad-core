@@ -5,7 +5,7 @@
 
 namespace crosspad {
 
-// Forward declaration — PadManager is now in crosspad-core
+// Forward declaration
 class PadManager;
 
 /**
@@ -45,7 +45,7 @@ public:
     /// left/right balance as a 7-bit controller value centred on
     /// kPanWireCentre; the pan is that value minus the centre.
     static constexpr int8_t kPanMin = -64;        ///< all of the press on the left cell
-    static constexpr int8_t kPanCentre = 0;
+    static constexpr int8_t kPanCentre = 0;       ///< a press centred on the pad
     static constexpr int8_t kPanMax = 63;         ///< all of the press on the right cell
     static constexpr uint8_t kPanWireCentre = 64; ///< the 7-bit value of a centred press
 
@@ -56,10 +56,13 @@ public:
 
     virtual ~IPadLogicHandler() = default;
 
-    /// Called when this handler becomes the active pad logic
+    /// Called when this handler becomes the active pad logic: set the pads'
+    /// colours and state here. Pad callbacks may already arrive while it runs.
     virtual void onActivate(PadManager& padManager) = 0;
 
-    /// Called when this handler is deactivated
+    /// Called when this handler stops being the active pad logic: stop its
+    /// notes and voices here. No pad callback of this handler runs once it
+    /// is called (see the class notes).
     virtual void onDeactivate(PadManager& padManager) = 0;
 
     /// Called when a pad is pressed (padIdx 0-15, velocity 0-127)

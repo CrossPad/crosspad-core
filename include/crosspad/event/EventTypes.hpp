@@ -15,40 +15,34 @@ namespace crosspad {
  * @brief Event types dispatched through the CrossPad event bus
  */
 enum class EventType : int32_t {
-    // Audio-related events
-    NoteOn,
-    NoteOff,
+    NoteOn,             ///< a note started (NoteOnData)
+    NoteOff,            ///< a note ended (NoteOffData)
 
-    // Pad input events
-    PadPressed,
-    PadReleased,
+    PadPressed,         ///< a pad was pressed (PadPressedData)
+    PadReleased,        ///< a pad was released (PadReleasedData)
 
-    // Application state events
-    AppChanged,
-    TempoChanged,
-    LiveModeChanged,
+    AppChanged,         ///< an app announced a change of its own (AppChangedData); see IEventBus::postAppChanged()
+    TempoChanged,       ///< the tempo changed (TempoChangedData)
+    LiveModeChanged,    ///< live mode was switched (LiveModeChangedData)
 
-    // GUI refresh events
-    GuiUpdateRequired,
+    GuiUpdateRequired,  ///< the GUI should refresh; the data is the EventSource
 
-    // Sample playback state events
-    SamplePlayback,
+    SamplePlayback,     ///< a sample started or stopped on a pad (SamplePlaybackData)
 
-    // Board motion recognised by the IMU (tap, double tap, free fall, ...)
-    MotionGesture,
+    MotionGesture,      ///< board motion recognised by the IMU: tap, double tap, free fall, ... (MotionGestureData)
 
-    Max
+    Max                 ///< number of event types; not an event
 };
 
 /**
  * @brief Event source identifiers for filtering in subscribers
  *
- * Subscribers can check the source to decide whether to handle an event.
- * For example, the audio engine ignores NOTE_ON from SEQUENCER_CB source
- * when the sequencer is in record mode (to avoid double-triggering).
+ * Subscribers can check the source to decide whether to handle an event --
+ * for example, to tell a finger's press (PadManager) from the loop
+ * recorder playing a take back (SequencerCallback).
  */
 enum class EventSource : uint8_t {
-    PadManager,         ///< Physical pad presses (via STM32 SYSEX)
+    PadManager,         ///< Physical pad presses
     MidiInput,          ///< External MIDI devices (USB, UART, BLE)
     Cli,                ///< Command line interface / serial console
     App,                ///< Generic application source
@@ -60,7 +54,7 @@ enum class EventSource : uint8_t {
     SamplePlayback,     ///< Sample playback state info (wavIdx, note)
     Imu,                ///< Motion recognised in the IMU itself
 
-    Max
+    Max                 ///< number of sources; not a source
 };
 
 /**

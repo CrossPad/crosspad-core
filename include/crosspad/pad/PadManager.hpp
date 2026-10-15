@@ -34,18 +34,31 @@ public:
     PadManager() = default;
     ~PadManager() = default;
 
+    /// Wire the manager to the LED controller, animator, MIDI output, event
+    /// bus, settings and status. The platform calls it once at start-up.
     void init(PadLedController& ledController, PadAnimator& animator,
               IMidiOutput& midiOutput, IEventBus& eventBus,
               CrosspadSettings* settings, CrosspadStatus* status);
+    /// Start the LED controller and give each pad its default note (the key
+    /// offset + the pad index). The platform calls it once, after init().
     void begin();
+    /// Advance the pad animator and the LED controller. The platform calls it
+    /// periodically.
     void update();
 
-    // Input suppression (replaces global forceButtonOff)
+    /// While suppressed, pad presses and touches are ignored; releases still
+    /// go through.
     void setInputSuppressed(bool suppressed) { inputSuppressed_ = suppressed; }
+    /// Whether pad presses are being ignored (setInputSuppressed()).
     bool isInputSuppressed() const { return inputSuppressed_; }
+    /// Release every pad that is held, as handlePadRelease() would.
     void allNotesOff();
 
-    // Physical pad interaction
+    // ── Pad input (fed by the platform) ─────────────────────────────────
+    /// A pad press (padIdx 0-15, velocity 0-127). The active pad logic gets
+    /// onPadPress(); with none, the pad lights and the note goes to MIDI and
+    /// the event bus.
+    ///
     /// @p source says who pressed: a finger (PadManager, the default) or the
     /// loop recorder playing a take back (SequencerCallback). It travels with
     /// the bus events, and pad logic reads it with pressSource().
@@ -54,6 +67,8 @@ public:
     void handlePadPress(uint8_t padIdx, uint8_t velocity = 127,
                         EventSource source = EventSource::PadManager,
                         PadPerformance performance = {});
+    /// A pad release (padIdx 0-15). The active pad logic gets onPadRelease();
+    /// with none, the pad's LED and note are released.
     void handlePadRelease(uint8_t padIdx, EventSource source = EventSource::PadManager);
     /// A finger came onto @p padIdx (@p touching) and its velocity is still
     /// being measured, or it left without a hit (!@p touching). Passed to the
@@ -65,10 +80,11 @@ public:
     /// before it is handled. A platform whose pads come in by more ways than
     /// it can stamp one by one gives it the loop recorder's input here.
     using InputTap = void (*)(void* ctx, uint8_t padIdx, uint8_t velocity);
+    /// Install the InputTap (one at a time; nullptr removes it).
     void setInputTap(InputTap tap, void* ctx) { inputTap_ = tap; inputTapCtx_ = ctx; }
     /// Who made the last press or release of @p padIdx. Per pad, not per
     /// call: a take playing pad 3 while a finger holds pad 5 answers each
-    /// right, which one shared flag set around the dispatch could not.
+    /// right.
     EventSource pressSource(uint8_t padIdx) const {
         return padIdx < 16 ? pressSource_[padIdx].load(std::memory_order_acquire)
                            : EventSource::PadManager;
@@ -85,131 +101,174 @@ public:
     /// (IPadLogicHandler::performance()); @p velocity becomes what it would
     /// sound at. For the loop recorder, at the moment a hit comes in.
     PadPerformance performanceFor(uint8_t padIdx, uint8_t& velocity) const;
+    /// Pad pressure (aftertouch, 0-127) for the active pad logic's
+    /// onPadPressure(). Pressure from the pad hardware comes in through
+    /// notifyPadPressure(), which also drives the pad's LED.
     void handlePadPressure(uint8_t padIdx, uint8_t pressure);
-    // Like handlePadPressure but always drives the LED brightness by padIdx,
-    // bypassing the note↔pad lookups (getPadForMidiNote can return 255 under
-    // sampler kit configs; PadLedController.midiNote is unpopulated). Used by
-    // the STM32 MIDI aftertouch route to make live pressure reach the RGB.
+    /// Pad pressure (0-127) from the pad hardware. The active pad logic gets
+    /// onPadPressure(), and the pad's LED follows the pressure by pad index
+    /// whatever app is active.
     void notifyPadPressure(uint8_t padIdx, uint8_t pressure);
-    // Left/right balance of the press (IPadLogicHandler::kPanMin..kPanMax),
-    // from the STM32's two cells per pad; reaches the active pad logic only —
-    // no LED, no MIDI.
+    /// Left/right balance of the press (IPadLogicHandler::kPanMin..kPanMax),
+    /// from the two cells under each pad. Reaches the active pad logic's
+    /// onPadPan() only: no LED, no MIDI.
     void notifyPadPan(uint8_t padIdx, int8_t pan);
+    /// The last pan notifyPadPan() delivered for @p padIdx; 0 when centred.
     int8_t getPadPan(uint8_t padIdx);
 
-    // Notification methods for updating LEDs directly
+    // ── LED state without dispatch ──────────────────────────────────────
+    /// Mark the pad as held and light it, without pad logic, MIDI or bus
+    /// events. @p fromSampler is ignored.
     void notifyNoteOn(uint8_t padIdx, uint8_t velocity, bool fromSampler = false);
+    /// Mark the pad as released and repaint it, without pad logic, MIDI or
+    /// bus events. @p fromSampler is ignored.
     void notifyNoteOff(uint8_t padIdx, bool fromSampler = false);
+    /// Mark the pad as playing (a sample sounding on it) or not, and repaint.
     void notifySamplePlay(uint8_t padIdx, bool isPlaying);
 
-    // MIDI event handling
+    // ── MIDI input ──────────────────────────────────────────────────────
+    /// An incoming Note On lights the pad mapped to @p note; velocity 0 is
+    /// treated as a Note Off. No pad logic, MIDI out or bus events.
     void handleMidiNoteOn(uint8_t channel, uint8_t note, uint8_t velocity);
+    /// An incoming Note Off releases the LED of the pad mapped to @p note.
     void handleMidiNoteOff(uint8_t channel, uint8_t note);
+    /// Incoming polyphonic aftertouch for the pad mapped to @p note.
     void handleMidiAftertouch(uint8_t channel, uint8_t note, uint8_t pressure);
 
-    // Sample playback
+    // ── Sample playback ─────────────────────────────────────────────────
+    /// Same as notifySamplePlay(); @p wavIdx is ignored.
     void handleSamplePlay(uint8_t padIdx, bool isPlaying, uint8_t wavIdx = 0);
+    /// Start or stop the pad's note through the event bus: posts a Note On
+    /// when the pad is not playing, a Note Off when it is.
     void togglePadPlay(uint8_t padIdx);
 
-    // Pad state queries
+    // ── Pad state ───────────────────────────────────────────────────────
+    /// Whether the pad is held now.
     bool isPadPressed(uint8_t padIdx);
+    /// Whether a sample is sounding on the pad now.
     bool isPadPlaying(uint8_t padIdx);
 
-    // Color management (forwarded to PadLedController)
+    // ── Colours (forwarded to PadLedController) ─────────────────────────
+    /// Give one pad a resting colour of its own. From then on the global
+    /// colours below no longer change that pad, until clearPadColor().
     void setPadColor(uint8_t padIdx, RgbColor color);
+    /// Resting colour of every pad without a colour of its own.
     void setDefaultColor(RgbColor color);
+    /// Colour of a held pad, for every pad without a colour of its own.
     void setPressedColor(RgbColor color);
+    /// Colour of a pad whose sample is sounding, for every pad without a
+    /// colour of its own.
     void setPlayingColor(RgbColor color);
+    /// setPadColor() from 8-bit red, green and blue.
     void setPadColor(uint8_t padIdx, uint8_t r, uint8_t g, uint8_t b);
-    void clearPadColor(uint8_t padIdx);   // drop custom-color override → default-managed
+    /// Drop the pad's own colour: it follows the global colours again.
+    void clearPadColor(uint8_t padIdx);
+    /// setDefaultColor() from 8-bit red, green and blue.
     void setDefaultColor(uint8_t r, uint8_t g, uint8_t b);
+    /// setPressedColor() from 8-bit red, green and blue.
     void setPressedColor(uint8_t r, uint8_t g, uint8_t b);
+    /// setPlayingColor() from 8-bit red, green and blue.
     void setPlayingColor(uint8_t r, uint8_t g, uint8_t b);
+    /// The pad's resting colour.
     RgbColor getPadColor(uint8_t padIdx);
+    /// The pad's colour while held.
     RgbColor getPressedColor(uint8_t padIdx);
+    /// The pad's colour while its sample sounds.
     RgbColor getPlayingColor(uint8_t padIdx);
 
-    // Brightness
+    /// Pad LED brightness, 0-255. The lower of this and the LED brightness in
+    /// Settings applies.
     void setBrightness(uint8_t brightness);
+    /// The brightness set with setBrightness().
     uint8_t getBrightness();
 
-    // Feedback mode
+    /// How the pads light when pressed (see KeypadFeedbackMode).
     void setFeedbackMode(KeypadFeedbackMode mode);
+    /// The current feedback mode.
     KeypadFeedbackMode getFeedbackMode();
 
-    // Custom color callback
+    /// The function that colours every pad in KeypadFeedbackMode::APP_DEFINED.
     void setCustomColorCallback(KeypadCustomColorCallback callback);
 
-    // Pad config
+    // ── Pad configuration ───────────────────────────────────────────────
+    /// Take a kit's pads: each pad's colour, pressed colour and note. The
+    /// array is kept by pointer, so it must stay alive while it is in use.
     void loadPadConfig(Pad* pads, uint8_t count);
+    /// Set the MIDI note the pad plays.
     void setPadNote(uint8_t padIdx, uint8_t note);
+    /// The MIDI note the pad plays.
     uint8_t getPadNote(uint8_t padIdx);
+    /// Set note @p chordIdx (0-7) of the pad's chord.
     void setChordNote(uint8_t padIdx, uint8_t chordIdx, int8_t note);
+    /// Note @p chordIdx (0-7) of the pad's chord; -1 when an index is out of
+    /// range.
     int8_t getChordNote(uint8_t padIdx, uint8_t chordIdx);
+    /// Set the MIDI channel the pad sends on (0-based, 0-15).
     void setPadChannel(uint8_t padIdx, uint8_t channel);
+    /// The MIDI channel the pad sends on (0-based).
     uint8_t getPadChannel(uint8_t padIdx);
 
-    // Note mapping
+    // ── Note mapping ────────────────────────────────────────────────────
+    /// Reset every pad's note to the key offset + the pad index.
     void applyDefaultOffsetToPadNotes();
+    /// The MIDI note pad @p padIdx plays.
     uint8_t getMidiNoteForPad(uint8_t padIdx);
+    /// The pad that plays @p note, or 255 when no pad does.
     uint8_t getPadForMidiNote(uint8_t note);
 
-    // RGB Callback Manager
+    /// Named callbacks to run when the pad colours need repainting.
     RGBCallbackManager& getRGBCallbackManager() { return rgbCallbackManager_; }
 
-    // Pad Logic Application Management
+    // ── Pad logic ───────────────────────────────────────────────────────
+    /// Register @p handler under @p appName, replacing any handler already
+    /// registered under that name. A null handler is refused.
     void registerPadLogic(const std::string& appName, std::shared_ptr<IPadLogicHandler> handler);
     /// Activate appName's logic. An empty name hands the pads to the base
-    /// logic (see setBasePadLogic()) rather than leaving them dead. Blocks,
-    /// before the old logic's onDeactivate(), until the pad callbacks other
-    /// threads are running have returned (IPadLogicHandler's guarantee); so
-    /// does every call below that deactivates a logic.
+    /// logic (see setBasePadLogic()); a name that is not registered leaves
+    /// no logic active. Blocks, before the old logic's onDeactivate(), until
+    /// the pad callbacks other threads are running have returned
+    /// (IPadLogicHandler's guarantee); so does every call below that
+    /// deactivates a logic.
     void setActivePadLogic(const std::string& appName);
     /// Install the system instrument: the logic that owns the pads whenever no
     /// app has claimed them, so pads keep playing outside any app. Apps preempt
     /// it through pushPadLogic()/setActivePadLogic() and hand it back on
     /// teardown. Pass "" to remove it (pads go silent with no app again).
     ///
-    /// The handler must stay registered for as long as it is the base — do not
-    /// unregisterPadLogic() a base handler on app teardown, or the fallback
-    /// resolves to nothing.
+    /// Keep the handler registered for as long as it is the base: do not
+    /// unregisterPadLogic() a base handler on app teardown.
     void setBasePadLogic(const std::string& appName);
+    /// The base logic's name; "" when there is none.
     std::string getBasePadLogic() const;
+    /// The active logic's name; "" when no logic is active.
     std::string getActivePadLogic() const;
+    /// Remove the handler registered under @p appName, deactivating it first
+    /// when it is the active one.
     void unregisterPadLogic(const std::string& appName);
+    /// The names of every registered pad logic.
     std::vector<std::string> getRegisteredPadLogics() const;
     /// The handler registered under appName, or null. For a logic that plays
     /// through another -- an app that owns the pads but keeps the base
     /// instrument sounding under them.
     std::shared_ptr<IPadLogicHandler> getPadLogic(const std::string& appName) const;
-    /// Save the currently active pad logic on an internal stack, then activate
-    /// appName. Pair with popPadLogic() — used by screens/apps that overlay a
-    /// temporary logic and must hand control back on teardown.
+    /// Save the active pad logic on an internal stack, then activate
+    /// appName. Pair with popPadLogic() -- for screens and apps that overlay
+    /// a temporary logic and hand control back on teardown.
     ///
-    /// Caveat — unregister ordering: if the saved (pre-push) logic gets
-    /// unregisterPadLogic()'d while it is sitting on the stack, popPadLogic()
-    /// will end with NO active logic — setActivePadLogic()'s lookup-miss
-    /// branch deactivates the current handler but activates nothing, since the
-    /// saved name no longer resolves. Callers must popPadLogic() BEFORE
-    /// unregistering their own handler, not after.
-    ///
-    /// Caveat — reentrancy: IPadLogicHandler::onActivate()/onDeactivate() run
-    /// OUTSIDE logicMutex_ (see setActivePadLogic()). Calling pushPadLogic()
-    /// or setActivePadLogic() from inside a handler's onActivate()/
-    /// onDeactivate() re-enters PadManager's pad-logic state and can
-    /// interleave activePadLogicName_/padLogicStack_ updates with the
-    /// in-flight call. This is a pre-existing property of setActivePadLogic()
-    /// but is more likely to bite via the stack API — don't do it. Nor from a
-    /// pad callback (onPadPress() and the rest): see IPadLogicHandler for the
-    /// deactivation guarantee and why a change from there breaks it.
+    /// Rules:
+    /// - call popPadLogic() before unregistering the handler that was active
+    ///   at the push; popPadLogic() reactivates it by name;
+    /// - do not call it from IPadLogicHandler::onActivate()/onDeactivate(),
+    ///   nor from a pad callback (onPadPress() and the rest) -- post the
+    ///   change to the UI thread instead (see IPadLogicHandler).
     void pushPadLogic(const std::string& appName);
     /// Re-activate the logic saved by the matching pushPadLogic(). No-op when
-    /// the stack is empty. Same unregister-ordering and reentrancy caveats as
-    /// pushPadLogic() apply — see its doc comment.
+    /// the stack is empty. The rules of pushPadLogic() apply.
     void popPadLogic();
 
-    // Accessors
+    /// The LED controller the manager drives.
     PadLedController& getLedController() { return *ledController_; }
+    /// The pad animator the manager ticks.
     PadAnimator& getAnimator() { return *animator_; }
 
 private:
@@ -283,7 +342,7 @@ private:
     void updateLEDState(uint8_t padIdx);
 };
 
-/// Platform-injected singleton accessor
+/// The platform's PadManager.
 PadManager& getPadManager();
 
 } // namespace crosspad

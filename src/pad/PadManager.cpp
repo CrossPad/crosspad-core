@@ -232,7 +232,11 @@ void PadManager::notifyPadPressure(uint8_t padIdx, uint8_t pressure) {
     }
     // ...but the LED brightness is ALWAYS driven here by padIdx, so live
     // pressure reaches the RGB regardless of which app is active (mirrors how
-    // handlePadPress drives notifyNoteOn unconditionally).
+    // handlePadPress drives notifyNoteOn unconditionally). By index, not by
+    // note: getPadForMidiNote() can return 255 under sampler kit configs, and
+    // PadLedController's per-pad midiNote is not populated, so the note-based
+    // handleAftertouch() route does not find the pad. Used by the STM32 MIDI
+    // aftertouch route.
     if (ledController_) {
         ledController_->notifyAftertouch(padIdx, pressure);
     }

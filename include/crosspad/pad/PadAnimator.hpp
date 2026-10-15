@@ -11,9 +11,9 @@ namespace crosspad {
 /**
  * @brief Portable pad LED animator for progress bars, success/error/boot animations.
  *
- * Uses ILedStrip and IClock — no ESP-IDF dependencies.
- * The platform glue creates the instance and wires the animation-state callback
- * so PadLedController knows when to suppress normal LED updates.
+ * Uses ILedStrip and IClock only. The platform creates the instance and
+ * wires the animation-state callback so PadLedController pauses its normal
+ * LED updates while an animation runs.
  *
  * One animation runs at a time, and starting one replaces whatever ran: the
  * OTA bar or a loading animation always takes the pads. Every start returns
@@ -37,8 +37,12 @@ public:
 
     PadAnimator() = default;
 
+    /// Wire the animator to the LED strip and clock. The platform calls it
+    /// once at start-up.
     void init(ILedStrip& strip, IClock& clock);
-    void update(); // call every ~10 ms from animation task
+    /// Render the running animation's next frame. PadManager::update() calls
+    /// it, about every 10 ms.
+    void update();
 
     /// Some animation runs -- not necessarily the caller's; see owns().
     bool isActive() const;
@@ -47,32 +51,43 @@ public:
     /// finished, been stopped or been replaced by another start.
     bool owns(AnimToken token) const;
 
-    // Progress bar (OTA)
+    /// Start a progress bar across the pads (as the firmware update shows),
+    /// in @p color, at 0. It runs until stopped.
     AnimToken startProgress(RgbColor color = RgbColor(208, 240, 9));
-    void setProgress(float progress); // 0.0 - 1.0
+    /// Move the progress bar to @p progress, 0.0 - 1.0 (clamped).
+    void setProgress(float progress);
 
-    // A still frame, one colour per pad (index = pad), held until another
-    // animation or a stop: for a caller that draws its own animation -- the
-    // boot splash, pad for pad with the screen. showFrame() starts it (taking
-    // the pads from whatever ran); updateFrame() repaints it and returns false,
-    // showing nothing, once another animation has taken over.
+    /// Show a still frame, one colour per pad (index = pad), held until
+    /// another animation or a stop: for a caller that draws its own animation
+    /// -- the boot splash, pad for pad with the screen. Takes the pads from
+    /// whatever ran.
     AnimToken showFrame(const RgbColor (&colors)[kPadCount]);
+    /// Repaint the frame @p token showed. Returns false, showing nothing,
+    /// once another animation has taken over.
     bool updateFrame(AnimToken token, const RgbColor (&colors)[kPadCount]);
 
-    // End-state animations
+    /// Every pad green, fading out over @p fadeMs; then the pads go dark and
+    /// the animation ends.
     AnimToken playSuccess(uint32_t fadeMs = 800);
+    /// Every pad flashes red three times (200 ms on, 200 ms off); then the
+    /// animation ends. @p holdMs is ignored.
     AnimToken playError(uint32_t holdMs = 2000);
 
-    // Boot animation
+    /// The boot animation: a rainbow wipe across the pads, then a breathe,
+    /// over @p durationMs.
     AnimToken playBootAnim(uint32_t durationMs = 600);
 
-    // Charge-while-off gauge. Persistent (runs until stop()): a battery gauge
-    // fills the 4x4 pads bottom-up, color red->green by SoC, a soft concentric
-    // glow drifts over the lit pads, and the single frontier pad breathes to 0.
-    // At soc == 1.0 (full) there is no frontier — all 16 pads green + drift.
+    /// Charge-while-off gauge, running until stopped: a battery gauge fills
+    /// the 4x4 pads bottom-up, red to green by state of charge (@p soc,
+    /// 0.0 - 1.0), a soft glow drifts over the lit pads, and the single
+    /// frontier pad breathes. At soc == 1.0 (full) there is no frontier:
+    /// all 16 pads green with the glow.
     AnimToken startCharging(float soc = 0.0f);
-    void setChargePercent(float soc);   // 0.0 - 1.0, live updates while charging
-    void setChargingActive(bool active); // false → static gauge (plugged, not charging)
+    /// Update the charging gauge's state of charge, 0.0 - 1.0 (clamped).
+    void setChargePercent(float soc);
+    /// Charging (true, the default at start) or plugged in and not charging
+    /// (false: a still gauge).
+    void setChargingActive(bool active);
 
     // Control
     /// Stops the animation @p token started. False, and nothing stopped, when
@@ -82,11 +97,14 @@ public:
     void stopAll();
 
     using CompletionCallback = void (*)();
+    /// One-shot: called once when the running animation ends by itself (not
+    /// when it is stopped), outside the animator's lock, then cleared.
     void setCompletionCallback(CompletionCallback cb);
 
     /// Called with true when animation starts, false when it ends.
-    /// Platform glue wires this to PadLedController::setAnimating / stopAnimation.
+    /// The platform wires this to PadLedController::setAnimating / stopAnimation.
     using AnimationStateCallback = void (*)(bool active);
+    /// Install the AnimationStateCallback.
     void setAnimationStateCallback(AnimationStateCallback cb);
 
 private:
@@ -128,7 +146,7 @@ private:
     void renderFrame();
 };
 
-/// Platform-injected singleton accessor
+/// The platform's PadAnimator.
 PadAnimator& getPadAnimator();
 
 } // namespace crosspad

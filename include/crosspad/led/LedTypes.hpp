@@ -43,11 +43,11 @@ enum class KeypadAnimationMode {
  * @brief Feedback modes that control how pads respond to touch
  */
 enum class KeypadFeedbackMode {
-    STANDARD,
-    VELOCITY,
-    AFTERTOUCH,
-    SPECTRUM,
-    APP_DEFINED
+    STANDARD,     ///< held: the pressed colour
+    VELOCITY,     ///< held: the pressed colour, dimmed by the hit's velocity
+    AFTERTOUCH,   ///< held: the pressed colour, dimmed by the live pressure
+    SPECTRUM,     ///< gives each pad a resting colour from its index and the complementary pressed colour, then lights as STANDARD
+    APP_DEFINED   ///< every pad's colour comes from the custom colour callback
 };
 
 /**
@@ -62,10 +62,15 @@ struct KeypadAnimationParams {
     uint8_t repeatCount = 0;
 };
 
-// Callback function types
+/// A pad was pressed (@p isOn true) or released.
 typedef void (*KeypadNoteOnCallback)(uint8_t padIdx, bool isOn, uint8_t velocity);
+/// A pad's pressure changed (0-127).
 typedef void (*KeypadAftertouchCallback)(uint8_t padIdx, uint8_t pressure);
+/// An animation on @p padIdx ended.
 typedef void (*KeypadAnimationCompleteCallback)(uint8_t padIdx);
+/// The colour of @p padIdx in KeypadFeedbackMode::APP_DEFINED, given whether
+/// it is held and whether its sample sounds. The LED brightness is applied
+/// on top.
 typedef RgbColor (*KeypadCustomColorCallback)(uint8_t padIdx, bool isPressed, bool isPlaying);
 
 } // namespace crosspad

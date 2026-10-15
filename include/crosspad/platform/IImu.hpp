@@ -37,13 +37,14 @@ enum class Orientation : uint8_t {
 /**
  * @brief Abstract IMU interface for portable motion data access
  *
- * Platform implementations:
- *   - ESP-IDF: wraps bsp_imu_* (LSM6DSO + Kalman filter)
- *   - Arduino: stub returning isAvailable()=false (no IMU driver yet)
+ * On CrossPad the data comes from the board's LSM6DSO motion sensor, read
+ * by the platform's IMU task and fused with a Kalman filter. A platform
+ * without a sensor provides NullImu, which reports isAvailable() false.
  *
- * The interface does NOT manage initialization or background tasks —
- * those remain in the platform layer. This is read-only access to data
- * that the platform's IMU task produces.
+ * The interface does not manage initialization or background tasks; those
+ * stay in the platform layer. It is read-only access to the data the
+ * platform's IMU task produces. Apps that only need gestures (tap, double
+ * tap, free fall) subscribe to EventType::MotionGesture instead.
  */
 class IImu {
 public:
@@ -52,7 +53,9 @@ public:
     /// Whether IMU hardware is present and producing data
     virtual bool isAvailable() const = 0;
 
-    /// Get latest IMU data snapshot (thread-safe, returns cached data from background task)
+    /// Copy the latest IMU snapshot into @p out (thread-safe; the data is
+    /// cached by the platform's IMU task). Returns false, leaving @p out
+    /// unchanged, when no data is available.
     virtual bool getData(ImuData& out) const = 0;
 
     /// Coarse orientation derived from accelerometer
@@ -65,7 +68,7 @@ public:
     virtual bool isFreeFall() const = 0;
 };
 
-/// Platform-injected singleton (same pattern as getClock())
+/// The platform's IMU; never null (NullImu where the board has no sensor).
 IImu& getImu();
 
 } // namespace crosspad

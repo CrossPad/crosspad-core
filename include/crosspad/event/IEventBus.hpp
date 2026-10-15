@@ -3,16 +3,18 @@
  * @file IEventBus.hpp
  * @brief Platform-agnostic event bus interface for CrossPad
  *
- * Pure C++ — no platform dependencies. Platform implementations (ESP-IDF,
+ * Pure C++ -- no platform dependencies. Platform implementations (ESP-IDF,
  * Linux, etc.) implement this interface to provide thread-safe event dispatch.
  *
- * Design decisions:
- * - Virtual interface (not #ifdef) for testability and clean separation
- * - Callback signature mirrors esp_event_handler_t semantics but without
- *   platform types: handler(event_data_ptr, event_type, user_context)
- * - All post methods are asynchronous (queued) — thread-safe from any context
- * - send methods are synchronous — for ISR or time-critical paths
- * - Subscription uses opaque handle for unsubscribe (not raw function pointer)
+ * - Handlers have the signature handler(event_data_ptr, event_type,
+ *   user_context); the data is valid only during the call.
+ * - post methods are thread-safe from any context. On the firmware and the
+ *   simulator they queue the event and a dispatch task calls the handlers;
+ *   an implementation may also dispatch at once on the calling thread
+ *   (SyncEventBus, used by the host tests). Write handlers that work either
+ *   way.
+ * - send methods dispatch at once, for time-critical paths.
+ * - subscribe() returns an opaque handle that unsubscribe() takes.
  *
  * Usage:
  * ```cpp
@@ -56,14 +58,17 @@ using SubscriptionHandle = void*;
 /**
  * @brief Abstract event bus interface
  *
- * Thread-safe, asynchronous event dispatch. Platform implementations provide
- * the actual queue and dispatch mechanism (esp_event, std::queue, etc.)
+ * Thread-safe event dispatch. Platform implementations provide the actual
+ * queue and dispatch mechanism (esp_event on the firmware, direct dispatch
+ * in SyncEventBus). Every post method returns false when the event could
+ * not be posted.
  */
 class IEventBus {
 public:
     virtual ~IEventBus() = default;
 
-    /// Initialize the event bus (create queue, start dispatch task if needed)
+    /// Initialize the event bus (create queue, start dispatch task if needed).
+    /// The platform calls it once at start-up.
     virtual bool init() = 0;
 
     // ── Subscription ────────────────────────────────────────────────────
@@ -86,14 +91,28 @@ public:
 
     // ── Async posting (queued, thread-safe from any context) ────────────
 
+    /// Post EventType::NoteOn (NoteOnData).
     virtual bool postNoteOn(uint8_t channel, uint8_t note, uint8_t velocity, EventSource source) = 0;
+    /// Post EventType::NoteOff (NoteOffData).
     virtual bool postNoteOff(uint8_t channel, uint8_t note, uint8_t velocity, EventSource source) = 0;
+    /// Post EventType::PadPressed (PadPressedData).
     virtual bool postPadPressed(uint8_t padIdx, bool isOn, uint8_t velocity, EventSource source = EventSource::PadManager) = 0;
+    /// Post EventType::PadReleased (PadReleasedData).
     virtual bool postPadReleased(uint8_t padIdx, EventSource source = EventSource::PadManager) = 0;
+    /// Post EventType::AppChanged (AppChangedData) with @p appName. An app
+    /// posts it to announce a change of its own -- the Sampler does after it
+    /// changes the kit; opening and closing apps does not post it.
     virtual bool postAppChanged(const char* appName, EventSource source = EventSource::System) = 0;
+    /// Post EventType::TempoChanged (TempoChangedData), @p bpm in beats per
+    /// minute.
     virtual bool postTempoChanged(float bpm, EventSource source = EventSource::SequencerCallback) = 0;
+    /// Post EventType::LiveModeChanged (LiveModeChangedData).
     virtual bool postLiveModeChanged(bool enabled, EventSource source = EventSource::System) = 0;
+    /// Post EventType::GuiUpdateRequired; the data is the EventSource.
     virtual bool postGuiUpdateRequired(EventSource source = EventSource::Gui) = 0;
+    /// Post EventType::SamplePlayback (SamplePlaybackData): a sample started
+    /// (@p isOn) or stopped on pad @p note.
+    ///
     /// @param velocity 1-127 playback velocity; defaults to full scale so
     ///        callers that have no velocity (preview, kit stop-all) are
     ///        unaffected. Ignored when isOn = false.
@@ -106,13 +125,15 @@ public:
     /// EventType::MotionGesture instead of talking to any IMU driver.
     virtual bool postMotionGesture(MotionGesture gesture, uint8_t orientation = 0, EventSource source = EventSource::Imu) = 0;
 
-    // ── Sync posting (immediate dispatch, use from ISR or time-critical) ─
+    // ── Sync posting (immediate dispatch, for time-critical paths) ──────
 
+    /// Dispatch EventType::NoteOn (NoteOnData) at once, on the calling thread.
     virtual bool sendNoteOn(uint8_t channel, uint8_t note, uint8_t velocity, EventSource source = EventSource::System) = 0;
+    /// Dispatch EventType::NoteOff (NoteOffData) at once, on the calling thread.
     virtual bool sendNoteOff(uint8_t channel, uint8_t note, EventSource source = EventSource::System) = 0;
 };
 
-/// Platform-injected singleton (implemented by PlatformServices)
+/// The platform's event bus.
 IEventBus& getEventBus();
 
 } // namespace crosspad
