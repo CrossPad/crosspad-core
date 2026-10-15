@@ -6,6 +6,32 @@ carries the same number) and consumers gate on it with
 `crosspad/RequireVersion.hpp`. This file starts at 1.45.0; earlier releases
 are described in their `chore: X.Y.Z` commits.
 
+## 1.64.0 — 2026-10-16
+
+### Added
+
+- `crosspad/dsp/AudioKernels.hpp`: the render's float loops -- `mac`,
+  `macPanned`, `scaleStereo`, `peakStereo`, `clampPeakStereo`,
+  `biquadStereo` -- branchless and one pass each, with the ESP32-S3's
+  128-bit float loads and stores (`EE.LDF.128` / `EE.STF.128`) where
+  `CROSSPAD_SIMD_PIE` is set (core's CMakeLists sets it for esp32s3).
+  `AudioKernelsRef.hpp` keeps the loops they replace; host tests hold the
+  kernels to their bits. `dsp::setKernelMode()` picks reference, portable or
+  PIE at run time -- a prototype's switch, for timing both on the board.
+- `crosspad/dsp/AlignedVector.hpp`: a vector on 16 bytes, for buffers the
+  PIE kernels should take.
+- `SampleCursor::span()`: the frames `sample()` would read straight from one
+  run, and where they are.
+
+### Changed
+
+- `SamplerEngine` renders a voice's block in runs with its state in locals:
+  the same samples, bit for bit, in a fraction of the time.
+- `EqChain` runs both channels of a section in one pass; `PitchedInstrument`
+  adds a voice into the bus in one pass instead of four.
+- `PitchedInstrument.hpp` no longer defines `detail::accumulatePanned()` or
+  `CROSSPAD_HAS_ESP_DSP`; it is `dsp::macPanned()`.
+
 ## 1.63.0 — 2026-10-13
 
 Merge of main's 1.55.0 line into the native-engine line (1.56.0..1.62.0, see
