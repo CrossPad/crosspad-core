@@ -18,6 +18,8 @@ are described in their `chore: X.Y.Z` commits.
   `AudioKernelsRef.hpp` keeps the loops they replace; host tests hold the
   kernels to their bits. `dsp::setKernelMode()` picks reference, portable or
   PIE at run time -- a prototype's switch, for timing both on the board.
+  The dispatching functions are out of line (`src/dsp/AudioKernels.cpp`): one
+  copy of each kernel in an image, not three inlined into every caller.
 - `crosspad/dsp/AlignedVector.hpp`: a vector on 16 bytes, for buffers the
   PIE kernels should take.
 - `SampleCursor::span()`: the frames `sample()` would read straight from one

@@ -96,6 +96,7 @@ set(CORE_SOURCES
 
     # Output EQ (its kernels: test_AudioKernels)
     ${CORE_DIR}/src/audio/OutputEq.cpp
+    ${CORE_DIR}/src/dsp/AudioKernels.cpp
 
     # Audio song model
     ${CORE_DIR}/src/song/AudioSong.cpp

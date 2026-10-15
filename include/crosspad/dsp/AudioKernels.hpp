@@ -253,67 +253,23 @@ inline void biquadStereo(float* io, uint32_t frames, const Biquad& c, float* z1,
 } // namespace fast
 
 // ── Dispatch ─────────────────────────────────────────────────────────────────
+//
+// Out of line (src/dsp/AudioKernels.cpp, built -O2 on the board): one copy of
+// each kernel in the image, not three inlined into every caller -- the image
+// is PSRAM too. A call is a few cycles against a few hundred for the block.
 
 /// dst[i] += src[i] * g over @p n samples. @p dst and @p src must not overlap.
-inline void mac(float* dst, const float* src, float g, uint32_t n)
-{
-    switch (kernelMode()) {
-    case KernelMode::Reference: ref::mac(dst, src, g, n); return;
-#if CROSSPAD_DSP_PIE
-    case KernelMode::Pie:
-        if (quadAligned(n, dst, src)) { pie::mac(dst, src, g, n); return; }
-        break;
-#endif
-    default: break;
-    }
-    fast::mac(dst, src, g, n);
-}
+void mac(float* dst, const float* src, float g, uint32_t n);
 
 /// out[L] += mono * gl, out[R] += mono * gr: a mono voice into a stereo bus.
 /// @p tmp is the reference path's: @p frames floats it may write.
-inline void macPanned(float* out, const float* mono, uint32_t frames, float gl, float gr, float* tmp)
-{
-    switch (kernelMode()) {
-    case KernelMode::Reference: ref::macPanned(mono, out, frames, gl, gr, tmp); return;
-#if CROSSPAD_DSP_PIE
-    case KernelMode::Pie:
-        if (quadAligned(frames, out, mono)) { pie::macPanned(out, mono, frames, gl, gr); return; }
-        break;
-#endif
-    default: break;
-    }
-    fast::macPanned(out, mono, frames, gl, gr);
-}
+void macPanned(float* out, const float* mono, uint32_t frames, float gl, float gr, float* tmp);
 
 /// Left samples of interleaved stereo times @p gl, right times @p gr, in place.
-inline void scaleStereo(float* buf, uint32_t frames, float gl, float gr)
-{
-    switch (kernelMode()) {
-    case KernelMode::Reference: ref::scaleStereo(buf, frames, gl, gr); return;
-#if CROSSPAD_DSP_PIE
-    case KernelMode::Pie:
-        if (quadAligned(frames * 2, buf)) { pie::scaleStereo(buf, frames, gl, gr); return; }
-        break;
-#endif
-    default: break;
-    }
-    fast::scaleStereo(buf, frames, gl, gr);
-}
+void scaleStereo(float* buf, uint32_t frames, float gl, float gr);
 
 /// The largest |sample| on each side of interleaved stereo; NaN is ignored.
-inline void peakStereo(const float* buf, uint32_t frames, float& pL, float& pR)
-{
-    switch (kernelMode()) {
-    case KernelMode::Reference: ref::peakStereo(buf, frames, pL, pR); return;
-#if CROSSPAD_DSP_PIE
-    case KernelMode::Pie:
-        if (quadAligned(frames * 2, buf)) { pie::peakStereo(buf, frames, pL, pR); return; }
-        break;
-#endif
-    default: break;
-    }
-    fast::peakStereo(buf, frames, pL, pR);
-}
+void peakStereo(const float* buf, uint32_t frames, float& pL, float& pR);
 
 /// Clamp interleaved stereo to [-1, 1] in place (NaN passes through) and
 /// return each side's peak after it.
@@ -323,27 +279,10 @@ inline void peakStereo(const float* buf, uint32_t frames, float& pL, float& pR)
 /// the one before. Only a block over full scale takes the clamping pass. The
 /// same results as the reference: the largest of min(|x|, 1) is min(largest
 /// |x|, 1), and NaN is left out of both.
-inline void clampPeakStereo(float* buf, uint32_t frames, float& pL, float& pR)
-{
-    if (kernelMode() == KernelMode::Reference) { ref::clampPeakStereo(buf, frames, pL, pR); return; }
-    peakStereo(buf, frames, pL, pR);
-    if (pL > 1.0f || pR > 1.0f) ref::clampPeakStereo(buf, frames, pL, pR);
-}
+void clampPeakStereo(float* buf, uint32_t frames, float& pL, float& pR);
 
 /// One transposed direct-form II section over interleaved stereo, in place.
 /// @p z1 and @p z2 are the two channels' state, [left, right].
-inline void biquadStereo(float* io, uint32_t frames, const Biquad& c, float* z1, float* z2)
-{
-    switch (kernelMode()) {
-    case KernelMode::Reference: ref::biquadStereo(io, frames, c, z1, z2); return;
-#if CROSSPAD_DSP_PIE
-    case KernelMode::Pie:
-        if (quadAligned(frames * 2, io)) { pie::biquadStereo(io, frames, c, z1, z2); return; }
-        break;
-#endif
-    default: break;
-    }
-    fast::biquadStereo(io, frames, c, z1, z2);
-}
+void biquadStereo(float* io, uint32_t frames, const Biquad& c, float* z1, float* z2);
 
 } // namespace crosspad::dsp
