@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "crosspad/sampler/SamplerEngine.hpp"
+#include "crosspad/dsp/AudioKernels.hpp"
 
 #include <cmath>
 #include <cstddef>
@@ -466,7 +467,206 @@ void SamplerEngine::learnEnd(const Voice& v)
     store_->learnAudibleEnd(v.slotIdx, v.loudEnd);
 }
 
+namespace {
+
+/* A run of frames at full level -- the envelope neither rising nor falling,
+ * which is nearly every frame of a hit after its first half millisecond --
+ * as a plain walk: no envelope test, no channel test, everything it reads in
+ * registers. The same sums and the same loudness bookkeeping as the frame
+ * at a time path. Returns the frames played: all @p n, or the index of the
+ * frame on which the quiet stopped the voice (that frame was played).
+ *
+ * Kept out of line so it gets the registers to itself: inlined into
+ * renderVoice() the gains and the loudness threshold were spilled and read
+ * back from the stack every frame. */
+#if defined(__GNUC__)
+#define CP_OWN_REGISTERS __attribute__((noinline))
+#else
+#define CP_OWN_REGISTERS
+#endif
+
+template <int Ch>
+CP_OWN_REGISTERS uint32_t playLevel(const int16_t* p, uint32_t n, float* o, uint32_t at,
+                                    float gainL, float gainR, float e, float loudLevel,
+                                    uint32_t quietLimit, uint32_t& quietIo, uint32_t& loudEndIo)
+{
+    uint32_t quiet = quietIo, loudEnd = loudEndIo, k = 0;
+    for (; k < n; ++k, p += Ch, o += 2) {
+        const float l = static_cast<float>(p[0]);
+        const float r = Ch == 2 ? static_cast<float>(p[1]) : l;
+        o[0] += l * gainL * e;
+        o[1] += r * gainR * e;
+        if (dsp::maxOf(std::fabs(l), std::fabs(r)) >= loudLevel) {
+            loudEnd = at + k + 1;
+            quiet = 0;
+        } else if (quietLimit && ++quiet >= quietLimit) {
+            break;
+        }
+    }
+    quietIo = quiet;
+    loudEndIo = loudEnd;
+    return k;
+}
+
+} // namespace
+
 bool SamplerEngine::renderVoice(Voice& v, float* out, uint32_t frames)
+{
+    if (dsp::kernelMode() == dsp::KernelMode::Reference) return renderVoiceRef(v, out, frames);
+
+    const float fadeFrames = kStealFadeMs * 0.001f * static_cast<float>(sampleRate_);
+    const float fadeStep = fadeFrames > 1.0f ? (1.0f / fadeFrames) : 1.0f;
+    const float relFrames = params_.releaseMs * 0.001f * static_cast<float>(sampleRate_);
+    const float relStep = relFrames > 1.0f ? (1.0f / relFrames) : 1.0f;
+
+    const bool fading = v.fading.load(std::memory_order_acquire);
+    const bool releasing = v.releasing.load(std::memory_order_acquire);
+    const float down = fading ? fadeStep : (releasing ? relStep : 0.0f);
+
+    /* Only a one-shot: a loop is meant to carry on and a held note is the
+     * player's to release. */
+    const uint32_t quietLimit =
+        (!v.loop && !releasing && params_.silenceMs > 0.0f)
+            ? static_cast<uint32_t>(params_.silenceMs * 0.001f * static_cast<float>(sampleRate_))
+            : 0;
+
+    const float loudLevel = params_.silenceLevel * 32768.0f;   // in the file's own units
+
+    const uint64_t lastQ = static_cast<uint64_t>(v.last) * kOne;
+    const uint64_t firstQ = static_cast<uint64_t>(v.first) * kOne;
+    const uint64_t spanQ = lastQ > firstQ ? (lastQ - firstQ) : kOne;
+
+    /* A voice stepping exactly one frame a frame needs no interpolation: the
+     * file is at the engine's rate and the pad has no pitch on it, which is
+     * most of a kit. Decided once a block, not once a frame. */
+    const bool unitRate = (v.inc == kOne) && ((v.phase & (kOne - 1)) == 0);
+
+    /* What the frames change lives in locals for the block and goes back
+     * into the voice once. In the voice, every sum into `out` -- a float
+     * store -- might have changed the voice's own floats as far as the
+     * compiler knew, so each frame reloaded and stored them; together with
+     * a cursor asked frame by frame, that was most of a voice's 60 us. */
+    float env = v.env;
+    const float envStep = v.envStep, gainL = v.gainL, gainR = v.gainR;
+    uint32_t quiet = v.quiet, loudEnd = v.loudEnd;
+    uint64_t phase = v.phase;
+    bool silenced = false;
+    auto settle = [&]() {
+        v.env = env;
+        v.quiet = quiet;
+        v.loudEnd = loudEnd;
+        v.phase = phase;
+    };
+
+    /* One frame after it has been read: envelope, into the bus, loudness --
+     * the reference's arithmetic in the reference's order. False: the voice
+     * ends on this frame (`silenced` says whether the quiet did it). */
+    auto play = [&](float l, float r, uint32_t at, float* o) -> bool {
+        if (down > 0.0f) {
+            env -= down;
+            if (env <= 0.0f) return false;
+        } else if (env < 1.0f) {
+            env += envStep;
+            if (env > 1.0f) env = 1.0f;
+        }
+        const float e = env * (1.0f / 32768.0f);
+        o[0] += l * gainL * e;
+        o[1] += r * gainR * e;
+        const float a = (l < 0 ? -l : l) > (r < 0 ? -r : r) ? (l < 0 ? -l : l) : (r < 0 ? -r : r);
+        if (a >= loudLevel) {
+            loudEnd = at + 1;
+            quiet = 0;
+        } else if (quietLimit && ++quiet >= quietLimit) {
+            silenced = true;
+            return false;
+        }
+        return true;
+    };
+    auto stopped = [&]() {
+        settle();
+        if (silenced) {
+            learnEnd(v);
+            cSilenced_.fetch_add(1, std::memory_order_relaxed);
+        }
+        return false;
+    };
+    /* Past the trim's end: a one-shot is over, a loop goes round. */
+    auto atEnd = [&]() {
+        if (phase < lastQ) return true;
+        if (!v.loop) {
+            settle();
+            if (v.last == v.slot->desc.frames) learnEnd(v);
+            return false;
+        }
+        phase = firstQ + (phase - firstQ) % spanQ;
+        v.cursor.nextLap();
+        return true;
+    };
+
+    const uint8_t ch = v.cursor.channels();
+    uint32_t i = 0;
+    while (i < frames) {
+        const uint32_t at = static_cast<uint32_t>(phase >> 32);
+        const int16_t* p = nullptr;
+        uint32_t n = unitRate ? v.cursor.span(at, frames - i, p) : 0;
+        if (n) {
+            /* A pointer walk over the run, up to the frame whose step reaches
+             * the trim's end -- only that one can end the voice by its phase. */
+            const uint32_t toEnd = at < v.last ? v.last - at : 1;
+            if (n > toEnd) n = toEnd;
+            float* o = out + static_cast<size_t>(i) * 2;
+            if (down == 0.0f && env == 1.0f) {
+                const float e = env * (1.0f / 32768.0f);
+                const uint32_t done =
+                    ch == 2 ? playLevel<2>(p, n, o, at, gainL, gainR, e, loudLevel, quietLimit, quiet, loudEnd)
+                            : playLevel<1>(p, n, o, at, gainL, gainR, e, loudLevel, quietLimit, quiet, loudEnd);
+                if (done < n) {
+                    silenced = true;
+                    phase = static_cast<uint64_t>(at + done) * kOne;
+                    return stopped();
+                }
+            } else {
+                for (uint32_t k = 0; k < n; ++k, p += ch, o += 2) {
+                    const float l = static_cast<float>(p[0]);
+                    const float r = ch == 2 ? static_cast<float>(p[1]) : l;
+                    if (!play(l, r, at + k, o)) {
+                        phase = static_cast<uint64_t>(at + k) * kOne;
+                        return stopped();
+                    }
+                }
+            }
+            i += n;
+            phase += static_cast<uint64_t>(n) * kOne;
+            if (!atEnd()) return false;
+            continue;
+        }
+
+        float l = 0.0f, r = 0.0f;
+        const bool got = unitRate ? v.cursor.sample(at, l, r) : v.cursor.read(phase, l, r);
+        if (!got) {
+            /* The frame is not here. Either the sample ended -- the ordinary
+             * case -- or the streamer has not delivered it, which is the one
+             * thing this engine must never do quietly. */
+            if ((phase >> 32) + 2 < static_cast<uint64_t>(v.last)) {
+                cUnderruns_.fetch_add(1, std::memory_order_relaxed);
+            }
+            settle();
+            return false;
+        }
+        if (!play(l, r, at, out + static_cast<size_t>(i) * 2)) return stopped();
+        ++i;
+        phase += v.inc;
+        if (!atEnd()) return false;
+    }
+    settle();
+    v.playFrame.store(v.cursor.streamFrame(static_cast<uint32_t>(phase >> 32)), std::memory_order_release);
+    return true;
+}
+
+/* renderVoice() as it was before the block form, frame by frame through the
+ * voice: SIMD_MODE 0 times it on the board against the one above. Goes with
+ * the switch. */
+bool SamplerEngine::renderVoiceRef(Voice& v, float* out, uint32_t frames)
 {
     const float fadeFrames = kStealFadeMs * 0.001f * static_cast<float>(sampleRate_);
     const float fadeStep = fadeFrames > 1.0f ? (1.0f / fadeFrames) : 1.0f;

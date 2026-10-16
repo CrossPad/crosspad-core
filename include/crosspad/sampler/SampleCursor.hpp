@@ -154,6 +154,46 @@ public:
         return read(static_cast<uint64_t>(i) << 32, left, right);
     }
 
+    /**
+     * @brief The frames from @p i on that sample() would read straight out of
+     *        one run -- the head, or one block the streamer delivered.
+     *
+     * For a voice stepping a frame a frame to take a block's worth with a
+     * pointer walk, instead of asking sample() 64 times: @p p is set to frame
+     * @p i (frames are channels() samples apart) and the count, at most
+     * @p max, is returned. The same pointer, the same frames, the same run
+     * remembered, as sample() frame by frame. 0 where sample() would go its
+     * slow way -- a seam, the very end, a frame not delivered -- and the
+     * voice then asks sample() for that one frame.
+     */
+    uint32_t span(uint32_t i, uint32_t max, const int16_t*& p) const
+    {
+        uint32_t end = 0;   // the first frame at or past i that sample() serves some other way
+        if (i >= headStart_ && i + 1 < headEnd_) {
+            p = head_ + static_cast<size_t>(i - headStart_) * channels_;
+            end = headEnd_ - 1;
+        } else if (window_ && (!lapOffset_ || i >= headEnd_)) {
+            /* The window's numbering, as in sample(): a later lap is the
+             * laps behind it further on. */
+            const uint32_t w = i + lapOffset_;
+            if (!(runPtr_ && w >= runFirst_ && w + 1 < runLast_)) {
+                uint32_t first = 0, last = 0;
+                const int16_t* q = window_->run(w, first, last);
+                if (!q || w + 1 >= last) {
+                    runPtr_ = nullptr;
+                    return 0;
+                }
+                runPtr_ = q; runFirst_ = w; runLast_ = last;
+            }
+            p = runPtr_ + static_cast<size_t>(w - runFirst_) * channels_;
+            end = runLast_ - 1 - lapOffset_;
+        } else {
+            return 0;
+        }
+        const uint32_t n = end - i;
+        return n < max ? n : max;
+    }
+
     bool read(uint64_t phase, float& left, float& right) const
     {
         const int64_t i = static_cast<int64_t>(phase >> 32);

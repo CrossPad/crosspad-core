@@ -433,6 +433,7 @@ private:
     void   learnEnd(const Voice& v);
     void   endVoice(Voice& v);
     bool   renderVoice(Voice& v, float* out, uint32_t frames);
+    bool   renderVoiceRef(Voice& v, float* out, uint32_t frames);
 
     /// The audition's half of serviceIo(); one pass at a time (pSvc_).
     void servicePreview();

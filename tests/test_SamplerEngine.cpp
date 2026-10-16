@@ -2,6 +2,7 @@
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/matchers/catch_matchers_floating_point.hpp>
 
+#include "crosspad/dsp/AudioKernels.hpp"
 #include "crosspad/sampler/SamplerEngine.hpp"
 
 #include <cmath>
@@ -1021,4 +1022,147 @@ TEST_CASE("SamplerEngine keeps a resampled stereo loop longer than its head goin
         REQUIRE(rig.engine.padSounding(0));
     }
     CHECK(rig.engine.counters().underruns == 0);
+}
+
+namespace {
+
+/* Everything a voice can do in one script: resident and streamed, mono and
+ * stereo, a loop, a held note let go, a pitched note (the interpolated
+ * path), a trim, a choke, a one-shot that goes quiet, a steal, a block size
+ * that is not 64. Returns every block that came out and the counters. */
+struct Played {
+    std::vector<float> out;
+    SamplerEngine::Counters c;
+};
+
+Played playScript(crosspad::dsp::KernelMode mode)
+{
+    const crosspad::dsp::KernelMode was = crosspad::dsp::kernelMode();
+    crosspad::dsp::setKernelMode(mode);
+
+    Rig rig;
+    rig.build();
+    rig.src.add("kick.wav", 500, 1);
+    rig.src.add("snare.wav", 30000, 2);
+    rig.src.add("loop.wav", 400, 1);
+    rig.src.add("pad.wav", 5000, 2);
+    rig.src.add("hit.wav", 20000, 1);
+    rig.src.silence("hit.wav", 3000, 20000);
+    rig.src.add("tone.wav", 8000, 1);
+    rig.src.add("trim.wav", 1000, 2);
+    rig.src.add("open.wav", 6000, 1);
+    rig.src.add("closed.wav", 6000, 1);
+    rig.assign(0, "kick.wav", 1024);
+    rig.assign(1, "snare.wav", 1024);                  // streams past its head
+    rig.assign(2, "loop.wav", 1024, PadMode::Loop);
+    rig.assign(3, "pad.wav", 8000, PadMode::Hold);
+    rig.assign(4, "hit.wav", 1024);
+    rig.assign(5, "tone.wav", 8000);
+    rig.assign(6, "trim.wav", 1024);
+    rig.kit.pad[6].layers[0].start = 50;
+    rig.kit.pad[6].layers[0].end = 900;
+    rig.assign(7, "open.wav", 8000);
+    rig.assign(8, "closed.wav", 8000);
+    rig.kit.pad[7].choke = 2;
+    rig.kit.pad[8].choke = 2;
+    SamplerEngine::Params pr;
+    pr.silenceMs = 20.0f;
+    pr.maxVoices = 6;
+    rig.engine.setParams(pr);
+    rig.publish();
+
+    Played p;
+    auto block = [&](uint32_t frames) {
+        std::vector<float> out(frames * 2, 0.0f);
+        rig.engine.mix(out.data(), frames);
+        p.out.insert(p.out.end(), out.begin(), out.end());
+        rig.engine.serviceIo();
+    };
+
+    rig.engine.noteOn(0, 127);
+    rig.engine.noteOn(1, 100);
+    rig.engine.noteOn(2, 90);
+    for (int b = 0; b < 6; ++b) block(64);
+    rig.engine.noteOn(3, 127);
+    rig.engine.noteOn(5, 110, 7);                      // a fifth up: not one frame a frame
+    rig.engine.noteOn(6, 80);
+    for (int b = 0; b < 9; ++b) block(37);             // a block size that splits every run
+    rig.engine.noteOff(3);
+    rig.engine.noteOn(4, 127);
+    rig.engine.noteOn(7, 127);
+    for (int b = 0; b < 20; ++b) block(64);
+    rig.engine.noteOn(8, 127);                         // chokes 7
+    rig.engine.noteOn(1, 64);                          // a retrigger, and over the cap: a steal
+    rig.engine.noteOn(0, 30);
+    for (int b = 0; b < 120; ++b) block(64);
+    rig.engine.allNotesOff();
+    for (int b = 0; b < 10; ++b) block(64);
+
+    p.c = rig.engine.counters();
+    crosspad::dsp::setKernelMode(was);
+    return p;
+}
+
+} // namespace
+
+TEST_CASE("SamplerEngine's block render plays what the frame-by-frame one did, bit for bit",
+          "[samplerengine][kernels]")
+{
+    const Played ref = playScript(crosspad::dsp::KernelMode::Reference);
+    const Played blk = playScript(crosspad::dsp::KernelMode::Portable);
+
+    REQUIRE(ref.out.size() == blk.out.size());
+    size_t firstDiff = ref.out.size();
+    for (size_t i = 0; i < ref.out.size(); ++i) {
+        if (std::memcmp(&ref.out[i], &blk.out[i], sizeof(float)) != 0) { firstDiff = i; break; }
+    }
+    INFO("first differing sample " << firstDiff);
+    CHECK(firstDiff == ref.out.size());
+
+    float peak = 0.0f;
+    for (float s : ref.out) peak = std::max(peak, std::fabs(s));
+    CHECK(peak > 0.1f);                                // the script did play
+
+    CHECK(ref.c.notesStarted == blk.c.notesStarted);
+    CHECK(ref.c.steals == blk.c.steals);
+    CHECK(ref.c.silenced == blk.c.silenced);
+    CHECK(ref.c.silenced >= 1);                        // the quiet one-shot was stopped
+    CHECK(ref.c.underruns == blk.c.underruns);
+    CHECK(ref.c.notesDropped == blk.c.notesDropped);
+}
+
+TEST_CASE("SamplerEngine's block render takes a long loop's laps as the frame-by-frame one did",
+          "[samplerengine][kernels]")
+{
+    /* The block render walks runs of the window; on a later lap those runs
+     * are numbered a lap further on. Three laps of a loop longer than its
+     * head and ring, mono and stereo, against the frame-by-frame render. */
+    auto play = [](crosspad::dsp::KernelMode mode, uint8_t channels) {
+        const crosspad::dsp::KernelMode was = crosspad::dsp::kernelMode();
+        crosspad::dsp::setKernelMode(mode);
+        Rig rig;
+        rig.build();
+        rig.src.add("bar.wav", 9000, channels);
+        rig.assign(0, "bar.wav", 1024, PadMode::Loop);
+        rig.publish();
+        rig.engine.noteOn(0, 127);
+        std::vector<float> all;
+        std::vector<float> out(64 * 2);
+        for (uint32_t b = 0; b < 3 * 9000 / 64; ++b) {
+            std::fill(out.begin(), out.end(), 0.0f);
+            rig.engine.mix(out.data(), 64);
+            all.insert(all.end(), out.begin(), out.end());
+            rig.engine.serviceIo();
+        }
+        REQUIRE(rig.engine.padSounding(0));
+        CHECK(rig.engine.counters().underruns == 0);
+        crosspad::dsp::setKernelMode(was);
+        return all;
+    };
+    for (uint8_t ch : {1, 2}) {
+        const std::vector<float> ref = play(crosspad::dsp::KernelMode::Reference, ch);
+        const std::vector<float> blk = play(crosspad::dsp::KernelMode::Portable, ch);
+        REQUIRE(ref.size() == blk.size());
+        CHECK(std::memcmp(ref.data(), blk.data(), ref.size() * sizeof(float)) == 0);
+    }
 }
