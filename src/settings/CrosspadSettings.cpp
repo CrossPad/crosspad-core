@@ -55,6 +55,8 @@ void CrosspadSettings::loadFrom(IKeyValueStore& store) {
         if (fcIdx < AudioEngineSettings::kFrameCountsCount) {
             audioEngine.frameCount = AudioEngineSettings::kFrameCounts[fcIdx];
         }
+        const int32_t q = store.readI32("cfg_audio_eng", "q_frames", (int32_t)audioEngine.queueFrames);
+        audioEngine.queueFrames = (q >= 0 && q <= (int32_t)AudioEngineSettings::kMaxQueueFrames) ? (uint32_t)q : 0;
     }
     masterFX.mute            = store.readBool("cfg_audio", "mute", false);
     masterFX.speakersEnabled = store.readBool("cfg_audio", "spk_en", true);
@@ -211,6 +213,7 @@ void CrosspadSettings::saveTo(IKeyValueStore& store) {
             if (AudioEngineSettings::kFrameCounts[i] == audioEngine.frameCount) { fcIdx = i; break; }
         }
         store.saveU8("cfg_audio_eng", "fc_idx", fcIdx);
+        store.saveI32("cfg_audio_eng", "q_frames", (int32_t)audioEngine.queueFrames);
     }
     store.saveBool("cfg_audio", "mute", masterFX.mute);
     store.saveBool("cfg_audio", "spk_en", masterFX.speakersEnabled);
