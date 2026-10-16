@@ -47,15 +47,10 @@ void scaleStereo(float* buf, uint32_t frames, float gl, float gr)
 
 void peakStereo(const float* buf, uint32_t frames, float& pL, float& pR)
 {
-    switch (kernelMode()) {
-    case KernelMode::Reference: ref::peakStereo(buf, frames, pL, pR); return;
-#if CROSSPAD_DSP_PIE
-    case KernelMode::Pie:
-        if (quadAligned(frames * 2, buf)) { pie::peakStereo(buf, frames, pL, pR); return; }
-        break;
-#endif
-    default: break;
-    }
+    if (kernelMode() == KernelMode::Reference) { ref::peakStereo(buf, frames, pL, pR); return; }
+    /* No PIE path: on the board (16.10.2026) its four-float loads read a
+     * channel's block no faster than the portable loop (565 vs 595 cycles
+     * alone) and the render's peaks took 39 us against 32 with them. */
     fast::peakStereo(buf, frames, pL, pR);
 }
 
@@ -68,15 +63,11 @@ void clampPeakStereo(float* buf, uint32_t frames, float& pL, float& pR)
 
 void biquadStereo(float* io, uint32_t frames, const Biquad& c, float* z1, float* z2)
 {
-    switch (kernelMode()) {
-    case KernelMode::Reference: ref::biquadStereo(io, frames, c, z1, z2); return;
-#if CROSSPAD_DSP_PIE
-    case KernelMode::Pie:
-        if (quadAligned(frames * 2, io)) { pie::biquadStereo(io, frames, c, z1, z2); return; }
-        break;
-#endif
-    default: break;
-    }
+    if (kernelMode() == KernelMode::Reference) { ref::biquadStereo(io, frames, c, z1, z2); return; }
+    /* No PIE path: the section is FPU-bound and the wide loads saved nothing
+     * on the board (1182 vs 1151 cycles a block, the four-float version
+     * spilling a register); with it and the PIE peaks the output stage took
+     * 120 us a block against 110. */
     fast::biquadStereo(io, frames, c, z1, z2);
 }
 

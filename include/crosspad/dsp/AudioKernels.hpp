@@ -10,8 +10,9 @@
  * 8, 16 and 32-bit *integers* only; the FPU is scalar single precision. What
  * PIE does give float code is EE.LDF.128 / EE.STF.128: four floats between
  * memory and four FPU registers in one instruction, post-incremented. A loop
- * that is mostly loads and stores -- a send, a gain, a peak -- spends three
- * of every four of its instructions on memory, so that is where it wins.
+ * that is mostly loads and stores -- a send, a gain -- spends three of every
+ * four of its instructions on memory, so that is where it wins. Measured on
+ * the board, a peak and a biquad did not gain from it, and have no PIE path.
  * The arithmetic stays on the FPU, which has a fused madd.s.
  *
  * The portable versions are what the PIE ones fall back to (a buffer not on
@@ -120,44 +121,6 @@ inline void scaleStereo(float* buf, uint32_t frames, float gl, float gr)
         l0 *= gl; r0 *= gr; l1 *= gl; r1 *= gr;
         CP_STF4(buf, l0, r0, l1, r1);
     }
-}
-
-inline void peakStereo(const float* buf, uint32_t frames, float& pL, float& pR)
-{
-    float l = 0.0f, r = 0.0f, l2 = 0.0f, r2 = 0.0f;
-    for (uint32_t i = 0; i < frames; i += 2) {
-        float l0, r0, l1, r1;
-        CP_LDF4(buf, l0, r0, l1, r1);
-        l = maxOf(l, std::fabs(l0)); r = maxOf(r, std::fabs(r0));
-        l2 = maxOf(l2, std::fabs(l1)); r2 = maxOf(r2, std::fabs(r1));
-    }
-    pL = maxOf(l, l2);
-    pR = maxOf(r, r2);
-}
-
-inline void biquadStereo(float* io, uint32_t frames, const Biquad& c, float* z1, float* z2)
-{
-    const float b0 = c.b0, b1 = c.b1, b2 = c.b2, a1 = c.a1, a2 = c.a2;
-    float z1l = z1[0], z1r = z1[1], z2l = z2[0], z2r = z2[1];
-    const float* s = io;
-    for (uint32_t f = 0; f < frames; f += 2) {
-        float xl0, xr0, xl1, xr1;
-        CP_LDF4(s, xl0, xr0, xl1, xr1);
-        const float yl0 = b0 * xl0 + z1l;
-        const float yr0 = b0 * xr0 + z1r;
-        z1l = b1 * xl0 - a1 * yl0 + z2l;
-        z1r = b1 * xr0 - a1 * yr0 + z2r;
-        z2l = b2 * xl0 - a2 * yl0;
-        z2r = b2 * xr0 - a2 * yr0;
-        const float yl1 = b0 * xl1 + z1l;
-        const float yr1 = b0 * xr1 + z1r;
-        z1l = b1 * xl1 - a1 * yl1 + z2l;
-        z1r = b1 * xr1 - a1 * yr1 + z2r;
-        z2l = b2 * xl1 - a2 * yl1;
-        z2r = b2 * xr1 - a2 * yr1;
-        CP_STF4(io, yl0, yr0, yl1, yr1);
-    }
-    z1[0] = z1l; z1[1] = z1r; z2[0] = z2l; z2[1] = z2r;
 }
 
 #undef CP_LDF4
