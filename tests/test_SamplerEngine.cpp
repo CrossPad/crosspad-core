@@ -1223,3 +1223,35 @@ TEST_CASE("SamplerEngine's block render steps a fraction a frame as the frame-by
     for (float s : ref) peak = std::max(peak, std::fabs(s));
     CHECK(peak > 0.1f);
 }
+
+TEST_CASE("SamplerEngine over its budget holds the polyphony where it is", "[samplerengine]") {
+    Rig rig;
+    rig.build();
+    for (const char* f : {"a.wav", "b.wav", "c.wav", "d.wav"}) rig.src.add(f, 20000, 1);
+    rig.assign(0, "a.wav", 20000);
+    rig.assign(1, "b.wav", 20000);
+    rig.assign(2, "c.wav", 20000);
+    rig.assign(3, "d.wav", 20000);
+    rig.publish();
+
+    for (uint8_t pad = 0; pad < 3; ++pad) rig.engine.noteOn(pad, 127);
+    rig.run(2);
+    REQUIRE(rig.engine.voicesActive() == 3);
+
+    /* Over budget: the fourth note takes the oldest voice's place. */
+    rig.engine.setOverloaded(true);
+    rig.engine.noteOn(3, 127);
+    rig.run(4);                                    // past the steal's fade
+    CHECK(rig.engine.voicesActive() == 3);
+    CHECK_FALSE(rig.engine.padSounding(0));
+    CHECK(rig.engine.padSounding(3));
+    CHECK(rig.engine.counters().sheds == 1);
+    CHECK(rig.engine.counters().steals == 1);
+
+    /* Back under it: a note adds a voice again. */
+    rig.engine.setOverloaded(false);
+    rig.engine.noteOn(0, 127);
+    rig.run(2);
+    CHECK(rig.engine.voicesActive() == 4);
+    CHECK(rig.engine.counters().sheds == 1);
+}

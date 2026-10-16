@@ -111,7 +111,7 @@ void SamplerEngine::startFade(Voice& v)
     v.fading.store(true, std::memory_order_release);
 }
 
-void SamplerEngine::stealOldest()
+bool SamplerEngine::stealOldest()
 {
     Voice* oldest = nullptr;
     uint32_t best = 0xFFFFFFFFu;
@@ -120,10 +120,10 @@ void SamplerEngine::stealOldest()
         if (v.fading.load(std::memory_order_acquire)) continue;       // already on its way out
         if (v.age < best) { best = v.age; oldest = &v; }
     }
-    if (oldest) {
-        startFade(*oldest);
-        cSteals_.fetch_add(1, std::memory_order_relaxed);
-    }
+    if (!oldest) return false;
+    startFade(*oldest);
+    cSteals_.fetch_add(1, std::memory_order_relaxed);
+    return true;
 }
 
 /* Is this voice charged to the streaming budget?
@@ -301,7 +301,13 @@ void SamplerEngine::noteOnBody(uint8_t pad, uint8_t velocity, int8_t transpose, 
     if (willStream && streamingVoices() >= params_.maxStreamingVoices) {
         stealOldestStreaming();
     }
-    if (voicesActive() >= params_.maxVoices) stealOldest();
+    /* Over the render's budget a note may not add a voice either: it takes
+     * the oldest one's place (setOverloaded()). */
+    const uint8_t active = voicesActive();
+    const bool shed = overloaded_.load(std::memory_order_relaxed) && active > 0 && active < params_.maxVoices;
+    if ((active >= params_.maxVoices || shed) && stealOldest() && shed) {
+        cSheds_.fetch_add(1, std::memory_order_relaxed);
+    }
 
     Voice* vp = claimVoice();
     if (!vp) {
@@ -1087,12 +1093,13 @@ CROSSPAD_COLD SamplerEngine::Counters SamplerEngine::counters() const
     c.streamRefused = cStreamRefused_.load(std::memory_order_relaxed);
     c.underruns     = cUnderruns_.load(std::memory_order_relaxed);
     c.voicesPeak    = cVoicesPeak_.load(std::memory_order_relaxed);
+    c.sheds         = cSheds_.load(std::memory_order_relaxed);
     return c;
 }
 
 CROSSPAD_COLD void SamplerEngine::resetCounters()
 {
-    cNotes_ = 0; cDropped_ = 0; cSteals_ = 0;
+    cNotes_ = 0; cDropped_ = 0; cSteals_ = 0; cSheds_ = 0;
     cStreamRefused_ = 0; cUnderruns_ = 0; cVoicesPeak_ = 0; cSilenced_ = 0;
     cNoteOnMaxUs_ = 0;
 }

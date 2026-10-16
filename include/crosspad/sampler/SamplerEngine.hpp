@@ -154,6 +154,7 @@ public:
         uint32_t streamRefused = 0;   ///< the pool had no blocks: the voice plays its head only
         uint32_t underruns     = 0;   ///< a voice reached frames the streamer had not delivered
         uint32_t voicesPeak    = 0;
+        uint32_t sheds         = 0;   ///< steals setOverloaded() forced below the cap (part of steals)
         uint32_t rtMaxUs       = 0;   ///< set by the port, which owns the clock
         /**
          * @brief Longest noteOn() call in **wall time** -- work and waiting both.
@@ -197,6 +198,21 @@ public:
     /// The pool the voices stream through and the store they read.
     void bind(BlockPool* pool, SampleStore* store);
     void setParams(const Params& p);
+
+    /**
+     * @brief The render is over its budget: hold the polyphony where it is.
+     *
+     * Raised by the platform while its audio task's average pass is close to
+     * a block -- the signal PitchedInstrument::setOverloaded() gets. Until it
+     * is lowered, a note takes the place of the oldest sounding voice instead
+     * of adding one. maxVoices is a count, and what a voice costs is not: a
+     * file at another rate than the engine's, or a pitched pad, interpolates
+     * every frame -- ~70 us a voice on the S3 against ~20 at unit rate -- so
+     * sixteen of them are more than a block, and a render that never waits
+     * for its DMA starves the thread that plays and releases the notes.
+     */
+    void setOverloaded(bool on) { overloaded_.store(on, std::memory_order_relaxed); }
+    bool overloaded() const { return overloaded_.load(std::memory_order_relaxed); }
     void setNoteCallbacks(NoteCb on, NoteCb off, void* ctx);
 
     /**
@@ -420,7 +436,7 @@ private:
 
     void   noteOnBody(uint8_t pad, uint8_t velocity, int8_t transpose, uint8_t key);
     Voice* claimVoice();
-    void   stealOldest();
+    bool   stealOldest();
     /// The oldest voice that is reading the card. Used when the streaming
     /// budget is full and a resident voice would be the wrong one to lose.
     void   stealOldestStreaming();
@@ -504,7 +520,8 @@ private:
     NoteCb onNote_ = nullptr, offNote_ = nullptr;
     void*  cbCtx_  = nullptr;
 
-    std::atomic<uint32_t> cNotes_{0}, cDropped_{0}, cSteals_{0};
+    std::atomic<uint32_t> cNotes_{0}, cDropped_{0}, cSteals_{0}, cSheds_{0};
+    std::atomic<bool> overloaded_{false};
     std::atomic<uint32_t> cStreamRefused_{0}, cUnderruns_{0}, cVoicesPeak_{0}, cSilenced_{0};
 };
 

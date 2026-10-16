@@ -18,6 +18,9 @@ line (1.64.0 below): both sets of additions, one version.
   DAC it renders, chosen live from the choices the platform offers.
 - `AudioEngineSettings::queueFrames` (NVS `cfg_audio_eng/q_frames`, JSON
   `audioEngine.queueFrames`, 0 = the platform's default, at most 4096).
+- `SamplerEngine::setOverloaded()` and `Counters::sheds`: while the platform
+  says its render is over budget, a note takes the oldest voice's place
+  instead of adding one -- what `PitchedInstrument::setOverloaded()` does.
 
 ### Fixed
 
