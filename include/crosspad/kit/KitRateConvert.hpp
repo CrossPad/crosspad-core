@@ -127,6 +127,10 @@ public:
 
     virtual bool makeDir(const std::string& fsPath);
 
+    /// The conversion has ended, whichever way: anything held for it (an FFT
+    /// built for it, say) can go.
+    virtual void endJob() {}
+
     /// The tidy is about to remove @p fsPath: close any handle the platform
     /// keeps open on it. One a voice still reads from stays, and the file
     /// with it, until a later tidy.
@@ -242,6 +246,7 @@ private:
     const char* name(uint32_t off) const { return names_.c_str() + off; }
     uint32_t addName(const std::string& s);
 
+    bool stepOnce();
     bool planKit();
     bool planFile(FileJob& f);
     bool planDone();

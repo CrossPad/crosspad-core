@@ -154,7 +154,8 @@ void forEachSample(JsonDocument& doc, Fn fn) {
         }
         ++padIdx;
     }
-    for (JsonObject z : doc["instrument"]["zones"].as<JsonArray>()) {
+    JsonArray zones = doc["instrument"]["zones"].as<JsonArray>();
+    for (JsonObject z : zones) {
         const char* s = z["sample"] | "";
         if (s[0]) fn(-1, JsonVariant(), z, s);
     }
@@ -961,6 +962,12 @@ bool KitRateConverter::commit() {
 }
 
 bool KitRateConverter::step() {
+    const bool more = stepOnce();
+    if (!more && host_) host_->endJob();
+    return more;
+}
+
+bool KitRateConverter::stepOnce() {
     switch (progress_.phase) {
     case Phase::Planning:
         if (cancel_.load(std::memory_order_relaxed)) { progress_.phase = Phase::Cancelled; return false; }
