@@ -31,6 +31,7 @@
  * IKitConvertHost.
  */
 
+#include "crosspad/audio/WavLayout.hpp"
 #include "crosspad/dsp/IFft.hpp"
 
 #include <ArduinoJson.h>
@@ -53,37 +54,6 @@ const char* rateFolderName(uint32_t rate, char* buf);
 
 /// A frame position at @p inRate as the same moment at @p outRate, rounded.
 uint32_t scaleFrame(uint32_t frame, uint32_t inRate, uint32_t outRate);
-
-/// A RIFF/WAVE file as laid out on the card, read from its chunk headers.
-struct WavLayout {
-    struct Chunk {
-        char     id[4]     = {};
-        uint32_t offset    = 0;       ///< of the payload
-        uint32_t size      = 0;       ///< of the payload, without the pad byte
-        bool     afterData = false;
-    };
-
-    uint16_t format = 0, channels = 0, bits = 0;
-    uint32_t rate = 0;
-    uint32_t dataOffset = 0;   ///< of the first sample
-    uint32_t dataBytes  = 0;   ///< clamped to what the file holds
-    uint32_t frames     = 0;
-    uint32_t fileBytes  = 0;
-    uint32_t riffBytes  = 0;   ///< the RIFF size field plus its 8-byte header
-    /// Everything but `fmt ` and `data`, in file order; past kMaxChunks they
-    /// are not copied.
-    static constexpr uint8_t kMaxChunks = 16;
-    Chunk    chunks[kMaxChunks];
-    uint8_t  chunkCount = 0;
-
-    /// 16-bit integer PCM, mono or stereo: what the sampler plays and what
-    /// this converts. WAVE_FORMAT_EXTENSIBLE with a PCM subformat counts.
-    bool pcm16() const;
-
-    /// Walk the chunks of @p f from its start. False when it is not a WAVE
-    /// with both a `fmt ` and a `data` chunk.
-    bool parse(FILE* f);
-};
 
 /**
  * @brief Move the sample positions a metadata chunk carries to @p outRate.

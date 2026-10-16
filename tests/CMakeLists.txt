@@ -94,6 +94,7 @@ set(CORE_SOURCES
 
     # Audio file writing
     ${CORE_DIR}/src/audio/WavWriter.cpp
+    ${CORE_DIR}/src/audio/WavLayout.cpp
 
     # Output EQ (its kernels: test_AudioKernels)
     ${CORE_DIR}/src/audio/OutputEq.cpp
