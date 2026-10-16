@@ -29,6 +29,12 @@ namespace {
 constexpr uint32_t kChunkFrames = 1024;          // frames read per step
 constexpr uint32_t kMaxScaledChunk = 64 * 1024;  // a metadata chunk read whole; larger is dropped
 constexpr uint64_t kSpaceMargin = 256 * 1024;    // beyond the files themselves
+/* Everything below comes off a card anyone can write to, so every size it
+ * states is bounded before it is used. */
+constexpr uint64_t kMaxOutBytes = 0x7FFF0000u;   // a converted file's samples: under every 32-bit size it has
+constexpr long     kMaxJsonBytes = 1024 * 1024;  // a kit's JSON
+constexpr long     kMaxListBytes = 64 * 1024;    // the tidy's list
+constexpr size_t   kMaxListLines = 1024;
 constexpr uint16_t kFormatPcm = 1;
 constexpr uint16_t kFormatExtensible = 0xFFFE;
 const char* const kJournal = ".originals";
@@ -43,6 +49,14 @@ void wr32(uint8_t* p, uint32_t v) {
     p[0] = v & 0xFF; p[1] = (v >> 8) & 0xFF; p[2] = (v >> 16) & 0xFF; p[3] = v >> 24;
 }
 bool idIs(const char id[4], const char* tag) { return std::memcmp(id, tag, 4) == 0; }
+
+/// @p v at @p inRate as the same moment at @p outRate, rounded, clamped to
+/// 32 bits: upsampling a position near the top of the range does not wrap.
+uint32_t scale64(uint64_t v, uint32_t inRate, uint32_t outRate) {
+    if (!inRate || inRate == outRate) return v > UINT32_MAX ? UINT32_MAX : static_cast<uint32_t>(v);
+    const uint64_t r = (v * outRate + inRate / 2) / inRate;   // v < 2^33, outRate < 2^31: no overflow
+    return r > UINT32_MAX ? UINT32_MAX : static_cast<uint32_t>(r);
+}
 
 /// A length or a position, rounded as scaleFrame() does.
 uint32_t scaleU32At(uint8_t* p, uint32_t inRate, uint32_t outRate) {
@@ -99,6 +113,21 @@ std::string normalizePath(const std::string& p) {
     return out;
 }
 
+/// @p path is @p dir or below it -- @p path normalised, @p dir already so.
+bool isUnder(const std::string& path, const std::string& dir) {
+    return path.size() > dir.size() && path.compare(0, dir.size(), dir) == 0 && path[dir.size()] == '/';
+}
+
+/// A sample of a kit, as a card path with every "." and ".." resolved: the
+/// only form any check below is made on.
+std::string sampleFsPath(const std::string& kitJsonPath, const char* sample) {
+    return normalizePath(kitFsPath(resolveKitSamplePath(kitJsonPath, sample)));
+}
+
+bool hasWavSuffix(const std::string& p) {
+    return p.size() > 4 && sameName(p.c_str() + p.size() - 4, ".wav");
+}
+
 bool makeDirs(IKitConvertHost& host, const std::string& path, const std::string& floor) {
     if (path.size() <= floor.size()) return true;
     if (pathExists(path)) return true;
@@ -136,6 +165,11 @@ bool readJson(const std::string& fsPath, JsonDocument& doc, const JsonDocument* 
     // What writeJson() leaves when a save is cut between its two renames.
     if (!f && errno == ENOENT) f = std::fopen((fsPath + ".bak").c_str(), "r");
     if (!f) return false;
+    // A kit is a few kB; a document of megabytes is not one, and parsing it
+    // would take the PSRAM the UI lives in.
+    const bool sane = std::fseek(f, 0, SEEK_END) == 0 && std::ftell(f) >= 0 &&
+                      std::ftell(f) <= kMaxJsonBytes && std::fseek(f, 0, SEEK_SET) == 0;
+    if (!sane) { std::fclose(f); return false; }
     JsonFileReader in(f);
     const DeserializationError err = filter
         ? deserializeJson(doc, in, DeserializationOption::Filter(*filter))
@@ -175,11 +209,12 @@ std::vector<std::string> readLines(const std::string& path) {
     if (!f) return out;
     std::string line;
     int c;
-    while ((c = std::fgetc(f)) != EOF) {
+    long read = 0;
+    while (read++ < kMaxListBytes && out.size() < kMaxListLines && (c = std::fgetc(f)) != EOF) {
         if (c == '\n') { if (!line.empty()) out.push_back(line); line.clear(); }
         else if (c != '\r') line += static_cast<char>(c);
     }
-    if (!line.empty()) out.push_back(line);
+    if (!line.empty() && out.size() < kMaxListLines) out.push_back(line);
     std::fclose(f);
     return out;
 }
@@ -290,8 +325,7 @@ std::string rateFolderName(uint32_t rate) {
 }
 
 uint32_t scaleFrame(uint32_t frame, uint32_t inRate, uint32_t outRate) {
-    if (!inRate || inRate == outRate) return frame;
-    return static_cast<uint32_t>((static_cast<uint64_t>(frame) * outRate + inRate / 2) / inRate);
+    return scale64(frame, inRate, outRate);
 }
 
 bool WavLayout::pcm16() const {
@@ -307,7 +341,8 @@ bool WavLayout::parse(FILE* f) {
     uint8_t h[12];
     if (std::fseek(f, 0, SEEK_SET) != 0 || std::fread(h, 1, 12, f) != 12) return false;
     if (std::memcmp(h, "RIFF", 4) != 0 || std::memcmp(h + 8, "WAVE", 4) != 0) return false;
-    riffBytes = rd32(h + 4) + 8;
+    const uint32_t riff = rd32(h + 4);
+    riffBytes = riff > UINT32_MAX - 8 ? UINT32_MAX : riff + 8;
 
     bool haveFmt = false, haveData = false;
     uint32_t pos = 12;
@@ -360,35 +395,43 @@ bool scaleWavChunk(const char id[4], uint8_t* p, uint32_t size, uint32_t inRate,
     if (wavChunkDropped(id)) return false;
     if (idIs(id, "smpl") && size >= 36) {
         wr32(p + 8, static_cast<uint32_t>((1000000000ull + outRate / 2) / outRate));   // ns per sample
-        const uint32_t loops = rd32(p + 28);
-        for (uint32_t i = 0; i < loops && 36 + 24 * (i + 1) <= size; ++i) {
+        const uint32_t loops = std::min(rd32(p + 28), (size - 36) / 24);
+        for (uint32_t i = 0; i < loops; ++i) {
             uint8_t* l = p + 36 + 24 * i;
             const uint32_t start = scaleU32At(l + 8, inRate, outRate);
             // The end is the loop's last frame, inclusive: scaled as the frame
-            // after it, so the loop keeps its length.
-            uint32_t endPlus = scaleFrame(rd32(l + 12) + 1, inRate, outRate);
-            if (endPlus <= start) endPlus = start + 1;
-            wr32(l + 12, endPlus - 1);
+            // after it, so the loop keeps its length. Never before the start.
+            const uint32_t endPlus = scale64(static_cast<uint64_t>(rd32(l + 12)) + 1, inRate, outRate);
+            wr32(l + 12, endPlus > start ? endPlus - 1 : start);
         }
     } else if (idIs(id, "cue ") && size >= 4) {
-        const uint32_t n = rd32(p);
-        for (uint32_t i = 0; i < n && 4 + 24 * (i + 1) <= size; ++i) {
+        const uint32_t n = std::min(rd32(p), (size - 4) / 24);
+        for (uint32_t i = 0; i < n; ++i) {
             uint8_t* c = p + 4 + 24 * i;
             scaleU32At(c + 4, inRate, outRate);    // dwPosition
             scaleU32At(c + 20, inRate, outRate);   // dwSampleOffset
         }
     } else if (idIs(id, "LIST") && size >= 4 && std::memcmp(p, "adtl", 4) == 0) {
+        // at <= size throughout, and every pass moves it on by 8 or more:
+        // a sub-chunk size is compared with the room left, never added to
+        // the cursor first (it wrapped, wrote past the buffer and never moved
+        // again).
         uint32_t at = 4;
-        while (at + 8 <= size) {
+        while (size - at >= 8) {
             const uint32_t sz = rd32(p + at + 4);
-            if (std::memcmp(p + at, "ltxt", 4) == 0 && sz >= 8 && at + 8 + sz <= size) {
+            if (sz > size - at - 8) break;                     // runs past the list: nothing after it is read
+            if (std::memcmp(p + at, "ltxt", 4) == 0 && sz >= 8) {
                 scaleU32At(p + at + 8 + 4, inRate, outRate);   // dwSampleLength
             }
-            at += 8 + sz + (sz & 1);
+            at += 8 + sz;
+            if ((sz & 1) && at < size) ++at;
         }
     } else if (idIs(id, "bext") && size >= 346) {
         const uint64_t ref = static_cast<uint64_t>(rd32(p + 338)) | static_cast<uint64_t>(rd32(p + 342)) << 32;
-        const uint64_t scaled = inRate ? (ref * outRate + inRate / 2) / inRate : ref;
+        // Seconds since midnight in samples: anything past a day is not a time
+        // reference, and is left as it is rather than overflow.
+        const uint64_t scaled = (inRate && ref < (UINT64_MAX - inRate) / outRate)
+                                    ? (ref * outRate + inRate / 2) / inRate : ref;
         wr32(p + 338, static_cast<uint32_t>(scaled));
         wr32(p + 342, static_cast<uint32_t>(scaled >> 32));
     } else if (idIs(id, "fact") && size >= 4) {
@@ -481,7 +524,7 @@ bool KitRateConverter::begin(IKitConvertHost& host, const std::string& kitJsonPa
     host_ = &host;
     g_allocHost = &host;
     kitJson_ = kitJsonPath;
-    kitDirFs_ = parentOf(kitFsPath(kitJsonPath));
+    kitDirFs_ = normalizePath(parentOf(kitFsPath(kitJsonPath)));
     target_ = targetRate;
     names_.clear();
     files_.clear();
@@ -503,18 +546,20 @@ bool KitRateConverter::planKit() {
     if (std::strcmp(doc["engine"] | "", "pitched") == 0) return fail("pitched kit");
 
     const std::string folder = rateFolderName(target_);
-    const std::string insidePrefix = kitDirFs_ + "/";
+    const std::string folderFs = kitDirFs_ + "/" + folder;
     std::vector<uint32_t> rels;   // for the name check of borrowed files
     forEachSample(doc, [&](int pad, JsonVariant, JsonObject, const char* s) {
         if (pad < 0) return;
-        const std::string fs = kitFsPath(resolveKitSamplePath(kitJson_, s));
+        // Resolved, then every ".." taken out, before anything is decided on
+        // it: "../../x.wav" begins with the kit's folder as text and is not in it.
+        const std::string fs = sampleFsPath(kitJson_, s);
+        if (fs.empty() || baseOf(fs).empty()) return;
         for (const FileJob& f : files_) if (sameName(name(f.src), fs.c_str())) return;
         FileJob f;
-        f.src = addName(fs);
         std::string rel;
-        if (fs.compare(0, insidePrefix.size(), insidePrefix) == 0) {
+        if (isUnder(fs, kitDirFs_)) {
             f.inside = true;
-            rel = folder + "/" + fs.substr(insidePrefix.size());
+            rel = folder + "/" + fs.substr(kitDirFs_.size() + 1);
         } else {
             // Borrowed from elsewhere on the card: copied in, never touched.
             const std::string base = baseOf(fs);
@@ -528,9 +573,13 @@ bool KitRateConverter::planKit() {
                 if (!taken) break;
             }
         }
+        // Whatever the names were, the file written is in the rate's folder.
+        const std::string dst = normalizePath(kitDirFs_ + "/" + rel);
+        if (!isUnder(dst, folderFs)) return;
+        f.src = addName(fs);
         f.rel = addName(rel);
         rels.push_back(f.rel);
-        f.dst = addName(kitDirFs_ + "/" + rel);
+        f.dst = addName(dst);
         files_.push_back(f);
     });
     progress_.files = static_cast<uint16_t>(files_.size());
@@ -554,6 +603,14 @@ bool KitRateConverter::planFile(FileJob& f) {
     f.srcBytes = lay.fileBytes;
     if (lay.rate == target_) {
         f.state = FileState::Skip;   // already at the rate: nothing to do, nothing wrong
+        return true;
+    }
+    // Converted, it has to fit every 32-bit size a WAV has, with room for its
+    // metadata: an 8 kHz file of 900 MB would be 5 GB at 44.1 kHz.
+    const uint64_t outFrames = (static_cast<uint64_t>(lay.frames) * target_ + lay.rate / 2) / lay.rate;
+    if (outFrames * lay.channels * 2 > kMaxOutBytes) {
+        f.state = FileState::Skip;
+        ++progress_.skipped;
         return true;
     }
     // The store keys a sample on its path: one that does not fit is a pad
@@ -854,7 +911,7 @@ bool KitRateConverter::commit() {
 
     forEachSample(doc, [&](int pad, JsonVariant v, JsonObject o, const char* s) {
         if (pad < 0) return;
-        const std::string fs = kitFsPath(resolveKitSamplePath(kitJson_, s));
+        const std::string fs = sampleFsPath(kitJson_, s);
         for (const FileJob& f : files_) {
             if (f.state != FileState::Done || !sameName(name(f.src), fs.c_str())) continue;
             KitConvertEdit e;
@@ -952,14 +1009,24 @@ KitTidyResult tidyKit(IKitConvertHost& host, const std::string& kitJsonPath,
                       const std::string& kitsRoot, uint32_t targetRate) {
     KitTidyResult r;
     const std::string jsonFs = kitFsPath(kitJsonPath);
-    const std::string kitDirFs = parentOf(jsonFs);
+    const std::string kitDirFs = normalizePath(parentOf(jsonFs));
     const std::string journal = kitDirFs + "/" + rateFolderName(targetRate) + "/" + kJournal;
     std::vector<std::string> lines = readLines(journal);
     if (lines.empty()) { r.ok = !pathExists(journal) || writeLines(journal, lines); return r; }
 
+    /* The list is a file on the card, and a card is anyone's to write: a line
+     * is an original only if it names a WAV in the kit's own folder -- not
+     * above it, not the kit's JSON, not the converted files themselves. Any
+     * other line is dropped from the list and nothing is done with it. */
+    const std::string folderFs = kitDirFs + "/" + rateFolderName(targetRate);
     std::vector<std::string> paths;   // card paths of the originals
     std::vector<bool> named(lines.size(), false);
-    for (const auto& l : lines) paths.push_back(kitDirFs + "/" + l);
+    std::vector<bool> refused(lines.size(), false);
+    for (size_t i = 0; i < lines.size(); ++i) {
+        paths.push_back(normalizePath(kitDirFs + "/" + lines[i]));
+        refused[i] = lines[i][0] == '/' || !isUnder(paths[i], kitDirFs) || isUnder(paths[i], folderFs) ||
+                     !hasWavSuffix(paths[i]);
+    }
 
     ArduinoJson::Allocator* alloc = host.jsonAllocator() ? host.jsonAllocator()
                                                          : ArduinoJson::detail::DefaultAllocator::instance();
@@ -970,7 +1037,7 @@ KitTidyResult tidyKit(IKitConvertHost& host, const std::string& kitJsonPath,
         JsonDocument doc(alloc);
         if (!readJson(jsonFs, doc)) return r;      // not ok: nothing removed
         forEachSample(doc, [&](int, JsonVariant, JsonObject, const char* s) {
-            mark(kitFsPath(resolveKitSamplePath(kitJsonPath, s)));
+            mark(sampleFsPath(kitJsonPath, s));
         });
     }
 
@@ -985,7 +1052,7 @@ KitTidyResult tidyKit(IKitConvertHost& host, const std::string& kitJsonPath,
         forEachSample(doc, [&](int, JsonVariant, JsonObject, const char* s) {
             // A bare name or a path below the other kit stays in that kit's
             // folder; only these two can reach into this one.
-            if (s[0] == '/') mark(kitFsPath(s));
+            if (s[0] == '/') mark(normalizePath(kitFsPath(s)));
             else if (std::strstr(s, "..")) mark(normalizePath(otherDirFs + "/" + s));
         });
         host.giveWay();
@@ -993,7 +1060,7 @@ KitTidyResult tidyKit(IKitConvertHost& host, const std::string& kitJsonPath,
 
     std::vector<std::string> left;
     for (size_t i = 0; i < lines.size(); ++i) {
-        if (named[i]) { ++r.kept; continue; }
+        if (named[i] || refused[i]) { ++r.kept; continue; }
         host.releaseFile(paths[i]);
         if (std::remove(paths[i].c_str()) == 0 || !pathExists(paths[i])) {
             ++r.removed;

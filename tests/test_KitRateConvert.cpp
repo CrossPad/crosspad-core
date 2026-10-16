@@ -469,3 +469,124 @@ TEST_CASE("an upsampled file has the length of the new rate", "[KitRateConvert]"
     CHECK(k.pads[0].samples[0].start == 22050);
     CHECK(k.pads[0].samples[0].end == 0);
 }
+
+// ── Untrusted card contents (security review, 16.10.2026) ──────────────────
+
+TEST_CASE("an adtl list whose ltxt size wraps the arithmetic stays in its buffer", "[KitRateConvert][untrusted]") {
+    // "adtl" + "ltxt" + a size that wraps at + 8 + sz to 4, and four bytes:
+    // the check passed, the length was written past the end, and the cursor
+    // never moved again.
+    std::vector<uint8_t> list;
+    test::putTag(list, "adtl");
+    test::putTag(list, "ltxt");
+    test::putU32(list, 0xFFFFFFF8u);
+    test::putU32(list, 0x11223344u);
+    REQUIRE(list.size() == 16);
+    std::vector<uint8_t> copy = list;
+    CHECK(scaleWavChunk("LIST", list.data(), static_cast<uint32_t>(list.size()), 48000, 44100));
+    CHECK(list == copy);
+}
+
+TEST_CASE("frame positions past the 32-bit range are clamped, not wrapped", "[KitRateConvert][untrusted]") {
+    CHECK(scaleFrame(0xFFFFFFF0u, 22050, 44100) == UINT32_MAX);
+    auto c = smplChunk(22050, 0xFFFFFFF0u, 0xFFFFFFFFu);
+    std::vector<uint8_t> p(c.begin() + 8, c.end());
+    REQUIRE(scaleWavChunk("smpl", p.data(), static_cast<uint32_t>(p.size()), 22050, 44100));
+    CHECK(u32(p, 36 + 8) == UINT32_MAX);
+    CHECK(u32(p, 36 + 12) == UINT32_MAX);
+}
+
+TEST_CASE("a sample named with .. is never written or removed outside the kit", "[KitRateConvert][untrusted]") {
+    freshRoot();
+    const std::string kit = g_root + "/kits/kitA";
+    writeWav(g_root + "/victim.wav", 1, 48000, 4800);
+    writeWav(kit + "/own.wav", 1, 48000, 4800);
+    writeText(kit + "/kit.json",
+              "{\"pads\":[{\"samples\":[{\"sample\":\"../../victim.wav\"}]},"
+              "{\"samples\":[{\"sample\":\"SAMPLES/../own.wav\"}]}]}");
+    TestHost host;
+    KitRateConverter c;
+    REQUIRE(c.begin(host, kit + "/kit.json", 44100));
+    REQUIRE(runAll(c) == KitRateConverter::Phase::Done);
+    CHECK_FALSE(fs::exists(g_root + "/kits/victim.wav"));      // written outside before
+    CHECK(fs::exists(kit + "/44k1/_shared/victim.wav"));       // a borrowed file: copied in
+    CHECK(fs::exists(kit + "/44k1/own.wav"));
+    KitTidyResult t = tidyKit(host, kit + "/kit.json", g_root + "/kits", 44100);
+    CHECK(t.ok);
+    CHECK(fs::exists(g_root + "/victim.wav"));                 // removed before
+    CHECK_FALSE(fs::exists(kit + "/own.wav"));
+    for (const auto& e : fs::recursive_directory_iterator(g_root)) {
+        const std::string p = e.path().string();
+        INFO(p);
+        CHECK((p.rfind(kit, 0) == 0 || p == g_root + "/victim.wav" || p == g_root + "/kits"));
+    }
+}
+
+TEST_CASE("the tidy's list cannot point it outside the kit's samples", "[KitRateConvert][untrusted]") {
+    freshRoot();
+    const std::string json = makeKitA();
+    const std::string kit = g_root + "/kits/kitA";
+    writeWav(g_root + "/victim.wav", 1, 48000, 100);
+    writeWav(kit + "/44k1/conv.wav", 1, 44100, 100);
+    writeWav(kit + "/stray.wav", 1, 48000, 100);
+    writeText(kit + "/44k1/.originals",
+              "../../victim.wav\n" + g_root + "/victim.wav\nkit.json\n44k1/conv.wav\n"
+              "SAMPLES/../../kitA/kit.json\nstray.wav\n");
+    TestHost host;
+    KitTidyResult t = tidyKit(host, json, g_root + "/kits", 44100);
+    CHECK(t.ok);
+    CHECK(fs::exists(g_root + "/victim.wav"));
+    CHECK(fs::exists(json));
+    CHECK(fs::exists(kit + "/44k1/conv.wav"));
+    CHECK_FALSE(fs::exists(kit + "/stray.wav"));               // a sample of the kit's own, named by nothing
+    CHECK(t.removed == 1);
+}
+
+TEST_CASE("a file that would not fit a WAV once converted is not converted", "[KitRateConvert][untrusted]") {
+    freshRoot();
+    const std::string kit = g_root + "/kits/huge";
+    // 8 kHz stereo, 900 MB of data, sparse: at 44.1 kHz it would be ~5 GB --
+    // past what the RIFF and data sizes can say. Was planned, and every size
+    // computed in 32 bits wrapped.
+    std::vector<uint8_t> body;
+    test::putFmtChunk(body, 2, 16, 8000);
+    test::putTag(body, "data");
+    const uint32_t dataBytes = 900u * 1024 * 1024;
+    test::putU32(body, dataBytes);
+    fs::create_directories(kit);
+    test::writeRiff(kit + "/big.wav", body);
+    fs::resize_file(kit + "/big.wav", 12 + body.size() + dataBytes);
+    // writeRiff wrote the RIFF size for the header alone; say what follows.
+    {
+        FILE* f = std::fopen((kit + "/big.wav").c_str(), "r+b");
+        REQUIRE(f);
+        std::fseek(f, 4, SEEK_SET);
+        const uint32_t riff = static_cast<uint32_t>(4 + body.size() + dataBytes);
+        std::fwrite(&riff, 4, 1, f);
+        std::fclose(f);
+    }
+    writeText(kit + "/kit.json", "{\"pads\":[{\"samples\":[{\"sample\":\"big.wav\"}]}]}");
+    TestHost host;
+    KitRateConverter c;
+    REQUIRE(c.begin(host, kit + "/kit.json", 44100));
+    while (c.phase() == KitRateConverter::Phase::Planning && c.step()) {}
+    CHECK(c.progress().toConvert == 0);
+    CHECK(c.progress().skipped == 1);
+    fs::remove(kit + "/big.wav");
+}
+
+TEST_CASE("a chunk that claims more than the file holds ends the walk", "[KitRateConvert][untrusted]") {
+    freshRoot();
+    const std::string p = g_root + "/odd.wav";
+    std::vector<uint8_t> body;
+    test::putFmtChunk(body, 1, 16, 48000);
+    test::putTag(body, "data");
+    test::putU32(body, 0x7FFFFFF0u);             // declared far past the file
+    for (int i = 0; i < 100; ++i) test::putU16(body, static_cast<uint16_t>(i));
+    test::putTag(body, "smpl");                  // inside the data, as the file says
+    test::writeRiff(p, body);
+    WavLayout l = layoutOf(p);
+    CHECK(l.dataBytes == 100 * 2 + 4);
+    CHECK(l.frames == 102);
+    CHECK(l.chunks.empty());
+}
