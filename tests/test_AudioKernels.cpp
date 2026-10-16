@@ -16,7 +16,7 @@ using namespace crosspad::dsp;
 
 namespace {
 
-/* The kernels promise the reference's bits wherever nothing fuses a multiply
+/* The kernels promise the old loops' bits wherever nothing fuses a multiply
  * and an add, which is every host these tests build on. So: compare bits. */
 bool sameBits(const float* a, const float* b, size_t n)
 {
@@ -42,17 +42,106 @@ void fill(float* b, size_t n, uint32_t seed, bool nan = false)
     }
 }
 
-struct ModeGuard {
-    KernelMode was = kernelMode();
-    ~ModeGuard() { setKernelMode(was); }
-};
+/* The render's loops as they were before the kernels: the oracle every kernel
+ * is held to, bit for bit. */
+namespace oracle {
+
+void mac(float* dst, const float* src, float g, uint32_t n)
+{
+    for (uint32_t s = 0; s < n; ++s) dst[s] += src[s] * g;
+}
+
+void macPanned(const float* mono, float* out, uint32_t frames, float gainL, float gainR)
+{
+    for (uint32_t i = 0; i < frames; ++i) {
+        out[2 * i]     += mono[i] * gainL;
+        out[2 * i + 1] += mono[i] * gainR;
+    }
+}
+
+void scaleStereo(float* s, uint32_t frames, float gl, float gr)
+{
+    for (uint32_t i = 0; i < frames; ++i) {
+        s[i * 2 + 0] *= gl;
+        s[i * 2 + 1] *= gr;
+    }
+}
+
+void peakStereo(const float* buf, uint32_t frames, float& pL, float& pR)
+{
+    float l0 = 0.0f, r0 = 0.0f;
+    for (uint32_t i = 0; i < frames; ++i) {
+        float l = buf[i * 2 + 0]; if (l < 0) l = -l;
+        float r = buf[i * 2 + 1]; if (r < 0) r = -r;
+        if (l > l0) l0 = l;
+        if (r > r0) r0 = r;
+    }
+    pL = l0;
+    pR = r0;
+}
+
+/* Every block clamped, over full scale or not. */
+void clampPeakStereo(float* dst, uint32_t frames, float& pL, float& pR)
+{
+    float pl = 0.0f, pr = 0.0f;
+    for (uint32_t i = 0; i < frames; ++i) {
+        float l = dst[i * 2 + 0];
+        float r = dst[i * 2 + 1];
+        if (l >  1.0f) l =  1.0f;
+        if (l < -1.0f) l = -1.0f;
+        if (r >  1.0f) r =  1.0f;
+        if (r < -1.0f) r = -1.0f;
+        dst[i * 2 + 0] = l;
+        dst[i * 2 + 1] = r;
+        float aL = l < 0 ? -l : l;
+        float aR = r < 0 ? -r : r;
+        if (aL > pl) pl = aL;
+        if (aR > pr) pr = aR;
+    }
+    pL = pl;
+    pR = pr;
+}
+
+/* One section, a channel at a time, as EqChain ran it. */
+void biquadStereo(float* io, uint32_t frames, const Biquad& s, float* z1s, float* z2s)
+{
+    for (int ch = 0; ch < 2; ++ch) {
+        float z1 = z1s[ch], z2 = z2s[ch];
+        for (uint32_t f = 0; f < frames; ++f) {
+            const float x = io[f * 2 + ch];
+            const float y = s.b0 * x + z1;
+            z1 = s.b1 * x - s.a1 * y + z2;
+            z2 = s.b2 * x - s.a2 * y;
+            io[f * 2 + ch] = y;
+        }
+        z1s[ch] = z1;
+        z2s[ch] = z2;
+    }
+}
+
+} // namespace oracle
+
+/* FNV-1a over the bits of every sample: what a recorded run is compared by. */
+uint64_t digest(const std::vector<float>& v)
+{
+    uint64_t h = 1469598103934665603ull;
+    for (float f : v) {
+        uint32_t b;
+        std::memcpy(&b, &f, sizeof b);
+        for (int i = 0; i < 4; ++i) {
+            h ^= (b >> (i * 8)) & 0xFFu;
+            h *= 1099511628211ull;
+        }
+    }
+    return h;
+}
 
 /* Odd lengths reach the tails; 64 is the board's block. */
 const uint32_t kFrames[] = {0, 1, 2, 3, 7, 63, 64, 129};
 
 } // namespace
 
-TEST_CASE("AudioKernels: mac is the reference's sum", "[dsp][kernels]")
+TEST_CASE("AudioKernels: mac is the old loop's sum", "[dsp][kernels]")
 {
     for (uint32_t frames : kFrames) {
         const uint32_t n = frames * 2;
@@ -60,43 +149,42 @@ TEST_CASE("AudioKernels: mac is the reference's sum", "[dsp][kernels]")
         fill(src.data(), n, 11 + frames, true);
         fill(a.data(), n, 23 + frames);
         b = a;
-        ref::mac(a.data(), src.data(), 0.73f, n);
-        fast::mac(b.data(), src.data(), 0.73f, n);
+        oracle::mac(a.data(), src.data(), 0.73f, n);
+        mac(b.data(), src.data(), 0.73f, n);
         INFO("frames " << frames);
         CHECK(sameBits(a.data(), b.data(), n));
     }
 }
 
-TEST_CASE("AudioKernels: macPanned is the reference's sum", "[dsp][kernels]")
+TEST_CASE("AudioKernels: macPanned is the old loop's sum", "[dsp][kernels]")
 {
     for (uint32_t frames : kFrames) {
-        AlignedVector<float> mono(frames + 1), a(frames * 2 + 2), b(frames * 2 + 2), tmp(frames + 1);
+        AlignedVector<float> mono(frames + 1), a(frames * 2 + 2), b(frames * 2 + 2);
         fill(mono.data(), frames, 5 + frames, true);
         fill(a.data(), frames * 2, 6 + frames);
         b = a;
-        ref::macPanned(mono.data(), a.data(), frames, 0.3f, -1.7f, tmp.data());
-        fast::macPanned(b.data(), mono.data(), frames, 0.3f, -1.7f);
+        oracle::macPanned(mono.data(), a.data(), frames, 0.3f, -1.7f);
+        macPanned(b.data(), mono.data(), frames, 0.3f, -1.7f);
         INFO("frames " << frames);
         CHECK(sameBits(a.data(), b.data(), frames * 2));
     }
 }
 
-TEST_CASE("AudioKernels: scaleStereo is the reference's pan", "[dsp][kernels]")
+TEST_CASE("AudioKernels: scaleStereo is the old loop's pan", "[dsp][kernels]")
 {
     for (uint32_t frames : kFrames) {
         AlignedVector<float> a(frames * 2 + 1), b(frames * 2 + 1);
         fill(a.data(), frames * 2, 31 + frames, true);
         b = a;
-        ref::scaleStereo(a.data(), frames, 0.25f, 1.0f);
-        fast::scaleStereo(b.data(), frames, 0.25f, 1.0f);
+        oracle::scaleStereo(a.data(), frames, 0.25f, 1.0f);
+        scaleStereo(b.data(), frames, 0.25f, 1.0f);
         INFO("frames " << frames);
         CHECK(sameBits(a.data(), b.data(), frames * 2));
     }
 }
 
-TEST_CASE("AudioKernels: peaks and the clamp match the reference, NaN and all", "[dsp][kernels]")
+TEST_CASE("AudioKernels: peaks and the clamp match the old loops, NaN and all", "[dsp][kernels]")
 {
-    ModeGuard guard;
     for (uint32_t frames : kFrames) {
         for (int variant = 0; variant < 3; ++variant) {
             AlignedVector<float> a(frames * 2 + 1), b(frames * 2 + 1);
@@ -106,15 +194,13 @@ TEST_CASE("AudioKernels: peaks and the clamp match the reference, NaN and all", 
             if (variant == 1) for (auto& v : a) v *= 0.7f;
             b = a;
             float rl = -1, rr = -1, fl = -1, fr = -1;
-            ref::peakStereo(a.data(), frames, rl, rr);
-            fast::peakStereo(b.data(), frames, fl, fr);
+            oracle::peakStereo(a.data(), frames, rl, rr);
+            peakStereo(b.data(), frames, fl, fr);
             INFO("frames " << frames << " variant " << variant);
             CHECK(sameBits(rl, fl));
             CHECK(sameBits(rr, fr));
 
-            setKernelMode(KernelMode::Reference);
-            clampPeakStereo(a.data(), frames, rl, rr);
-            setKernelMode(KernelMode::Portable);
+            oracle::clampPeakStereo(a.data(), frames, rl, rr);
             clampPeakStereo(b.data(), frames, fl, fr);
             CHECK(sameBits(a.data(), b.data(), frames * 2));
             CHECK(sameBits(rl, fl));
@@ -123,7 +209,7 @@ TEST_CASE("AudioKernels: peaks and the clamp match the reference, NaN and all", 
     }
 }
 
-TEST_CASE("AudioKernels: biquadStereo is the reference's section, state included", "[dsp][kernels]")
+TEST_CASE("AudioKernels: biquadStereo is the old section, state included", "[dsp][kernels]")
 {
     /* A 30 Hz high-pass at 44.1 kHz: the poles nearest the unit circle the EQ
      * makes, where a change in the order of operations would show first. */
@@ -145,8 +231,8 @@ TEST_CASE("AudioKernels: biquadStereo is the reference's section, state included
         for (uint32_t block = 0; block < 5; ++block) {
             fill(a.data(), frames * 2, 101 + block * 13 + frames);
             b = a;
-            ref::biquadStereo(a.data(), frames, c, z1a, z2a);
-            fast::biquadStereo(b.data(), frames, c, z1b, z2b);
+            oracle::biquadStereo(a.data(), frames, c, z1a, z2a);
+            biquadStereo(b.data(), frames, c, z1b, z2b);
             INFO("frames " << frames << " block " << block);
             REQUIRE(sameBits(a.data(), b.data(), frames * 2));
             REQUIRE(sameBits(z1a, z1b, 2));
@@ -155,9 +241,12 @@ TEST_CASE("AudioKernels: biquadStereo is the reference's section, state included
     }
 }
 
-TEST_CASE("AudioKernels: an EQ chain sounds the same in every kernel mode", "[dsp][kernels][eq]")
+TEST_CASE("AudioKernels: an EQ chain sounds as it did through the loops before the kernels",
+          "[dsp][kernels][eq]")
 {
-    ModeGuard guard;
+    /* EqChain's sections are its own, so the chain is held to a recording:
+     * the digest of these 40 blocks through the section-at-a-time loops
+     * (oracle::biquadStereo), taken before those loops left the library. */
     EqSettings s;
     s.on = true;
     s.band[0] = {EqKind::HighPass, 35.0f, 0.0f, 0.7f};
@@ -165,25 +254,21 @@ TEST_CASE("AudioKernels: an EQ chain sounds the same in every kernel mode", "[ds
     s.band[2] = {EqKind::Peak, 3200.0f, -6.0f, 2.0f};
     s.band[3] = {EqKind::HighShelf, 9000.0f, 3.0f, 0.7f};
 
-    EqChain ref, fast;
-    ref.setRate(44100);
-    fast.setRate(44100);
-    ref.set(s);
-    fast.set(s);
-    REQUIRE(ref.on());
+    EqChain chain;
+    chain.setRate(44100);
+    chain.set(s);
+    REQUIRE(chain.on());
 
     constexpr uint32_t kBlock = 64;
-    AlignedVector<float> a(kBlock * 2), b(kBlock * 2);
+    AlignedVector<float> a(kBlock * 2);
+    std::vector<float> all;
     for (uint32_t block = 0; block < 40; ++block) {
         fill(a.data(), a.size(), 7 + block);
-        b = a;
-        setKernelMode(KernelMode::Reference);
-        ref.process(a.data(), kBlock);
-        setKernelMode(KernelMode::Portable);
-        fast.process(b.data(), kBlock);
-        INFO("block " << block);
-        REQUIRE(sameBits(a.data(), b.data(), a.size()));
+        chain.process(a.data(), kBlock);
+        all.insert(all.end(), a.begin(), a.end());
     }
+    REQUIRE(all.size() == 5120);
+    CHECK(digest(all) == 0xba2c69f4bd1e9bf5ull);
 }
 
 TEST_CASE("AudioKernels: an aligned vector starts on 16 bytes", "[dsp][kernels]")

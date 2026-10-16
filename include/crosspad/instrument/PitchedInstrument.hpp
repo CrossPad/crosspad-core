@@ -317,7 +317,6 @@ private:
     uint32_t sampleRate_ = 44100;
     uint32_t maxFrames_ = 0;
     std::vector<float> scratch_;   ///< per-voice mono render
-    std::vector<float> panTmp_;    ///< dsp::macPanned()'s reference path (esp-dsp, unit stride)
     std::vector<float> monoSum_;   ///< block sum of every voice, for the tap
     ScopeTap scopeTap_;
 };

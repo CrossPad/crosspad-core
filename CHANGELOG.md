@@ -6,6 +6,28 @@ carries the same number) and consumers gate on it with
 `crosspad/RequireVersion.hpp`. This file starts at 1.45.0; earlier releases
 are described in their `chore: X.Y.Z` commits.
 
+## 1.66.0 — 2026-10-16
+
+The A/B switch of the audio kernels goes, now that the board has chosen
+(16.10.2026: PIE fastest, and exact where it must be).
+
+### Removed
+
+- `dsp::KernelMode`, `kernelMode()`, `setKernelMode()` and
+  `crosspad/dsp/AudioKernelsRef.hpp` (`dsp::ref::*`): a kernel runs PIE
+  where it is compiled in and its buffers are on 16 bytes, the portable loop
+  otherwise. Introduced in 1.64.0 for measuring and never released, so a
+  minor bump: nothing outside this line called them.
+- `SamplerEngine`'s frame-by-frame render (`renderVoiceRef`).
+- `dsp::macPanned()`'s scratch argument, and `PitchedInstrument`'s scratch
+  block for it.
+
+### Changed
+
+- `dsp::Biquad` lives in `AudioKernels.hpp`.
+- The host tests keep the old loops as a test-local oracle; what the old
+  sampler render and EQ chain played is kept as digests recorded through them.
+
 ## 1.65.0 — 2026-10-16
 
 Merge of the note-latency line (1.63.1, 1.64.0 there) and the audio-SIMD

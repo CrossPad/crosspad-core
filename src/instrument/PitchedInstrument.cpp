@@ -372,7 +372,6 @@ CROSSPAD_COLD void PitchedInstrument::onPrepare(uint32_t maxFrames, uint32_t sam
     maxFrames_ = maxFrames;
     if (sampleRate > 0) sampleRate_ = sampleRate;
     scratch_.assign(maxFrames, 0.0f);
-    panTmp_.assign(maxFrames, 0.0f);
     monoSum_.assign(maxFrames, 0.0f);
     scopeTap_.setSampleRate(sampleRate_);
 }
@@ -512,7 +511,7 @@ void PitchedInstrument::renderBlock(float* out, uint32_t frames) {
             if (captureScope) {
                 for (uint32_t n = 0; n < frames; ++n) mono[n] += scratch_[n];
             }
-            dsp::macPanned(out, scratch_.data(), frames, v.gainL, v.gainR, panTmp_.data());
+            dsp::macPanned(out, scratch_.data(), frames, v.gainL, v.gainR);
         }
     }
 

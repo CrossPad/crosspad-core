@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
 
-#include "crosspad/dsp/AudioKernelsRef.hpp"
+#include "crosspad/dsp/AudioKernels.hpp"
 
 #include <atomic>
 #include <cstdint>

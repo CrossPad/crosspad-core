@@ -22,21 +22,18 @@
  * render's `x < 0 ? -x : x` and `if (x > peak)` turned into -- and so that
  * each loop body holds independent chains for the FPU's latency to hide in.
  *
- * Bit-exact against the loops they replace (dsp/AudioKernelsRef.hpp keeps
- * those, for the tests and for SIMD_BENCH) on every platform without a fused
- * multiply-add, which is every host the tests run on. Where the device fuses
- * (mac*: the esp-dsp route rounded the product and the sum separately, madd.s
- * rounds once) the difference is at most half an ulp of each sum.
+ * Bit-exact against the loops they replaced on every platform without a
+ * fused multiply-add, which is every host the tests run on (the tests keep
+ * those loops as their oracle). Where the device fuses (mac*: the esp-dsp
+ * route rounded the product and the sum separately, madd.s rounds once) the
+ * difference is at most half an ulp of each sum.
  *
- * Kernel selection: kernelMode() is read once per call. 0 runs the reference
- * loops, so one image can be measured both ways in the real render (CDC
- * SIMD_MODE); 1 the portable kernels; 2 PIE where it is compiled in. A
- * prototype's switch: it goes once the board has said which one stays.
+ * Which kernel runs: PIE where it is compiled in and the buffers are on 16
+ * bytes, the portable one otherwise. The board measured the old loops, the
+ * portable kernels and PIE against each other in the real render (16.10.2026)
+ * and PIE won where it exists; that switch is gone.
  */
 
-#include "crosspad/dsp/AudioKernelsRef.hpp"
-
-#include <atomic>
 #include <cmath>
 #include <cstdint>
 
@@ -48,18 +45,8 @@
 
 namespace crosspad::dsp {
 
-enum class KernelMode : uint8_t { Reference = 0, Portable = 1, Pie = 2 };
-
-inline std::atomic<uint8_t> g_kernelMode{static_cast<uint8_t>(CROSSPAD_DSP_PIE ? KernelMode::Pie
-                                                                               : KernelMode::Portable)};
-
-inline KernelMode kernelMode() { return static_cast<KernelMode>(g_kernelMode.load(std::memory_order_relaxed)); }
-/// Pie on a build without it is Portable.
-inline void setKernelMode(KernelMode m)
-{
-    if (m == KernelMode::Pie && !CROSSPAD_DSP_PIE) m = KernelMode::Portable;
-    g_kernelMode.store(static_cast<uint8_t>(m), std::memory_order_relaxed);
-}
+/// One biquad section, normalised by a0.
+struct Biquad { float b0 = 1, b1 = 0, b2 = 0, a1 = 0, a2 = 0; };
 
 /// Whether every pointer is on 16 bytes and @p n a multiple of four: what
 /// EE.LDF.128 / EE.STF.128 need. They ignore the low address bits, so a
@@ -172,6 +159,27 @@ inline void peakStereo(const float* buf, uint32_t frames, float& pL, float& pR)
     pR = r;
 }
 
+/* The clamp itself, for a block that went over full scale. Comparisons, so a
+ * NaN passes through and is left out of the peaks. */
+inline void clampPeakStereo(float* buf, uint32_t frames, float& pL, float& pR)
+{
+    float pl = 0.0f, pr = 0.0f;
+    for (uint32_t i = 0; i < frames; ++i) {
+        float l = buf[i * 2 + 0];
+        float r = buf[i * 2 + 1];
+        if (l >  1.0f) l =  1.0f;
+        if (l < -1.0f) l = -1.0f;
+        if (r >  1.0f) r =  1.0f;
+        if (r < -1.0f) r = -1.0f;
+        buf[i * 2 + 0] = l;
+        buf[i * 2 + 1] = r;
+        pl = maxOf(pl, std::fabs(l));
+        pr = maxOf(pr, std::fabs(r));
+    }
+    pL = pl;
+    pR = pr;
+}
+
 /* Both channels in one pass: two recursions the FPU can overlap, where one
  * channel at a time leaves it waiting on each sample's madd before the next.
  * Two frames a turn, so the state moves between registers by renaming
@@ -225,8 +233,7 @@ inline void biquadStereo(float* io, uint32_t frames, const Biquad& c, float* z1,
 void mac(float* dst, const float* src, float g, uint32_t n);
 
 /// out[L] += mono * gl, out[R] += mono * gr: a mono voice into a stereo bus.
-/// @p tmp is the reference path's: @p frames floats it may write.
-void macPanned(float* out, const float* mono, uint32_t frames, float gl, float gr, float* tmp);
+void macPanned(float* out, const float* mono, uint32_t frames, float gl, float gr);
 
 /// Left samples of interleaved stereo times @p gl, right times @p gr, in place.
 void scaleStereo(float* buf, uint32_t frames, float gl, float gr);
@@ -240,8 +247,8 @@ void peakStereo(const float* buf, uint32_t frames, float& pL, float& pR);
 /// The peak first: a block inside [-1, 1] -- every block once the limiter is
 /// in front of this -- has nothing to clamp, and its peak after the clamp is
 /// the one before. Only a block over full scale takes the clamping pass. The
-/// same results as the reference: the largest of min(|x|, 1) is min(largest
-/// |x|, 1), and NaN is left out of both.
+/// same results as clamping every block: the largest of min(|x|, 1) is
+/// min(largest |x|, 1), and NaN is left out of both.
 void clampPeakStereo(float* buf, uint32_t frames, float& pL, float& pR);
 
 /// One transposed direct-form II section over interleaved stereo, in place.
