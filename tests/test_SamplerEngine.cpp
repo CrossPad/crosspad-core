@@ -1166,3 +1166,60 @@ TEST_CASE("SamplerEngine's block render takes a long loop's laps as the frame-by
         CHECK(std::memcmp(ref.data(), blk.data(), ref.size() * sizeof(float)) == 0);
     }
 }
+
+TEST_CASE("SamplerEngine's block render steps a fraction a frame as the frame-by-frame one did",
+          "[samplerengine][kernels]")
+{
+    /* The interpolating walk over runs: 48 kHz files in a 44.1 kHz engine
+     * (a kit made at 48k streams every voice this way), streamed and
+     * resident, mono and stereo, a 48k loop round its laps, pitched pads up
+     * and down, a release, a block size that splits the runs. */
+    auto play = [](crosspad::dsp::KernelMode mode) {
+        const crosspad::dsp::KernelMode was = crosspad::dsp::kernelMode();
+        crosspad::dsp::setKernelMode(mode);
+        Rig rig;
+        rig.build();
+        rig.src.add("s48.wav", 30000, 2, 48000);
+        rig.src.add("m48.wav", 12000, 1, 48000);
+        rig.src.add("r48.wav", 3000, 2, 48000);
+        rig.src.add("l48.wav", 7000, 2, 48000);
+        rig.src.add("tone.wav", 20000, 1);
+        rig.assign(0, "s48.wav", 1024);                    // streams past its head
+        rig.assign(1, "m48.wav", 1024);
+        rig.assign(2, "r48.wav", 4096);                    // resident
+        rig.assign(3, "l48.wav", 1024, PadMode::Loop);
+        rig.assign(4, "tone.wav", 1024, PadMode::Hold);
+        rig.assign(5, "tone.wav", 1024);
+        rig.kit.pad[4].semitones = 5;
+        rig.kit.pad[5].semitones = -7;
+        rig.publish();
+        std::vector<float> all;
+        auto block = [&](uint32_t frames) {
+            std::vector<float> out(frames * 2, 0.0f);
+            rig.engine.mix(out.data(), frames);
+            all.insert(all.end(), out.begin(), out.end());
+            rig.engine.serviceIo();
+        };
+        for (uint8_t pad = 0; pad < 6; ++pad) rig.engine.noteOn(pad, 100);
+        for (int b = 0; b < 40; ++b) block(64);
+        for (int b = 0; b < 30; ++b) block(37);
+        rig.engine.noteOff(4);
+        rig.engine.noteOn(1, 70);                          // a retrigger mid-stream
+        for (int b = 0; b < 400; ++b) block(64);
+        CHECK(rig.engine.counters().underruns == 0);
+        crosspad::dsp::setKernelMode(was);
+        return all;
+    };
+    const std::vector<float> ref = play(crosspad::dsp::KernelMode::Reference);
+    const std::vector<float> blk = play(crosspad::dsp::KernelMode::Portable);
+    REQUIRE(ref.size() == blk.size());
+    size_t firstDiff = ref.size();
+    for (size_t i = 0; i < ref.size(); ++i) {
+        if (std::memcmp(&ref[i], &blk[i], sizeof(float)) != 0) { firstDiff = i; break; }
+    }
+    INFO("first differing sample " << firstDiff);
+    CHECK(firstDiff == ref.size());
+    float peak = 0.0f;
+    for (float s : ref) peak = std::max(peak, std::fabs(s));
+    CHECK(peak > 0.1f);
+}
