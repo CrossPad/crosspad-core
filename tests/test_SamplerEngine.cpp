@@ -1248,3 +1248,330 @@ TEST_CASE("SamplerEngine over its budget holds the polyphony where it is", "[sam
     CHECK(rig.engine.voicesActive() == 4);
     CHECK(rig.engine.counters().sheds == 1);
 }
+
+// ── A hit before its velocity: arm(), fire(), disarm() ──────────────────────
+
+namespace {
+
+/// The engine's clock, moved by the test.
+uint32_t g_armClockUs = 0;
+uint32_t armClock() { return g_armClockUs; }
+
+/// A rig with four kinds of pad: resident mono, streamed stereo, a pitched
+/// loop, a Hold pad -- played @p blocks blocks after @p strike.
+template <typename Strike>
+std::vector<float> armRun(Strike strike, uint32_t blocks)
+{
+    Rig rig;
+    rig.build();
+    rig.src.add("kick.wav", 500, 1);
+    rig.src.add("snare.wav", 30000, 2);
+    rig.src.add("loop.wav", 3000, 1);
+    rig.src.add("pad.wav", 8000, 2);
+    rig.assign(0, "kick.wav", 1024);
+    rig.assign(1, "snare.wav", 1024);              // streams past its head
+    rig.assign(2, "loop.wav", 1024, PadMode::Loop);
+    rig.assign(3, "pad.wav", 8000, PadMode::Hold);
+    rig.kit.pad[2].semitones = 3;
+    rig.kit.pad[1].pan = -0.4f;
+    rig.publish();
+    strike(rig.engine);
+    std::vector<float> all;
+    std::vector<float> out(64 * 2);
+    for (uint32_t b = 0; b < blocks; ++b) {
+        std::fill(out.begin(), out.end(), 0.0f);
+        rig.engine.mix(out.data(), 64);
+        all.insert(all.end(), out.begin(), out.end());
+        rig.engine.serviceIo();
+    }
+    CHECK(rig.engine.counters().underruns == 0);
+    return all;
+}
+
+} // namespace
+
+TEST_CASE("SamplerEngine: an armed voice, fired, plays what noteOn() plays, bit for bit",
+          "[samplerengine][arm]")
+{
+    const auto direct = armRun([](SamplerEngine& e) {
+        e.noteOn(0, 100);
+        e.noteOn(1, 64);
+        e.noteOn(2, 127, 2);
+        e.noteOn(3, 90);
+    }, 120);
+    const auto armed = armRun([](SamplerEngine& e) {
+        REQUIRE(e.arm(0, 0));
+        REQUIRE(e.arm(1, 1));
+        REQUIRE(e.arm(2, 2, 2));
+        REQUIRE(e.arm(3, 3));
+        REQUIRE(e.armedVoices() == 4);
+        REQUIRE(e.voicesActive() == 0);           // armed is not sounding
+        REQUIRE(e.fire(0, 0, 100));
+        REQUIRE(e.fire(1, 1, 64));
+        REQUIRE(e.fire(2, 2, 127, 2));
+        REQUIRE(e.fire(3, 3, 90));
+        REQUIRE(e.armedVoices() == 0);
+        const auto c = e.counters();
+        CHECK(c.armed == 4);
+        CHECK(c.armFired == 4);
+        CHECK(c.notesStarted == 4);
+    }, 120);
+    REQUIRE(direct.size() == armed.size());
+    CHECK(std::memcmp(direct.data(), armed.data(), direct.size() * sizeof(float)) == 0);
+    float peak = 0.0f;
+    for (float s : armed) peak = std::max(peak, std::fabs(s));
+    CHECK(peak > 0.1f);
+}
+
+TEST_CASE("SamplerEngine: an armed voice is never heard, never cuts, never steals", "[samplerengine][arm]")
+{
+    Rig rig;
+    rig.build();
+    rig.src.add("a.wav", 20000, 1);
+    rig.src.add("b.wav", 20000, 1);
+    rig.src.add("c.wav", 20000, 1);
+    rig.assign(0, "a.wav", 20000);
+    rig.assign(1, "b.wav", 20000);
+    rig.assign(2, "c.wav", 20000);
+    rig.kit.pad[0].choke = 1;
+    rig.kit.pad[1].choke = 1;
+    SamplerEngine::Params pr;
+    pr.maxVoices = 1;
+    rig.engine.setParams(pr);
+    rig.publish();
+
+    rig.engine.noteOn(0, 127);
+    REQUIRE(rig.run(2) > 0.0f);
+    /* Its own pad (mono per pad), its choke group, and over the cap: each of
+     * these would cut pad 0 on a note-on -- an arm does none of it. */
+    REQUIRE(rig.engine.arm(0, 0));
+    REQUIRE(rig.engine.arm(1, 1));
+    REQUIRE(rig.engine.arm(2, 2));
+    for (int b = 0; b < 10; ++b) {
+        std::vector<float> out(128, 0.0f);
+        rig.engine.mix(out.data(), 64);
+        rig.engine.serviceIo();
+    }
+    CHECK(rig.engine.padSounding(0));
+    CHECK_FALSE(rig.engine.padSounding(1));
+    CHECK_FALSE(rig.engine.padSounding(2));
+    CHECK(rig.engine.voicesActive() == 1);
+    CHECK(rig.engine.counters().steals == 0);
+    CHECK(rig.engine.meter().active == 1);
+    /* What it does hold is its sample: pad 2 swapped to another file under
+     * the finger, the old one is still the armed voice's, not the loader's. */
+    const uint16_t cSlot = rig.kit.pad[2].layers[0].slot;
+    rig.kit.pad[2].layers[0].slot = rig.kit.pad[1].layers[0].slot;
+    CHECK(rig.engine.slotInUse(cSlot));
+
+    rig.engine.disarm(0);
+    rig.engine.disarm(1);
+    rig.engine.disarm(2);
+    rig.run(1);                                // the streaming pass frees them
+    CHECK(rig.engine.armedVoices() == 0);
+    CHECK(rig.engine.counters().armCancelled == 3);
+    CHECK_FALSE(rig.engine.slotInUse(cSlot));
+    CHECK(rig.engine.padSounding(0));          // still the one note, uncut
+}
+
+TEST_CASE("SamplerEngine: fire() cuts its pad and choke group and makes room, as noteOn() does",
+          "[samplerengine][arm]")
+{
+    Rig rig;
+    rig.build();
+    rig.src.add("open.wav", 20000, 1);
+    rig.src.add("closed.wav", 20000, 1);
+    rig.src.add("x.wav", 20000, 1);
+    rig.assign(7, "open.wav", 20000);
+    rig.assign(8, "closed.wav", 20000);
+    rig.assign(9, "x.wav", 20000);
+    rig.kit.pad[7].choke = 2;
+    rig.kit.pad[8].choke = 2;
+    SamplerEngine::Params pr;
+    pr.maxVoices = 2;
+    rig.engine.setParams(pr);
+    rig.publish();
+
+    SECTION("choke group") {
+        rig.engine.noteOn(7, 127);
+        rig.run(2);
+        REQUIRE(rig.engine.arm(8, 8));
+        REQUIRE(rig.engine.fire(8, 8, 127));
+        rig.run(10);                           // the 2 ms fade
+        CHECK_FALSE(rig.engine.padSounding(7));
+        CHECK(rig.engine.padSounding(8));
+    }
+    SECTION("its own pad") {
+        rig.engine.noteOn(9, 127);
+        rig.run(2);
+        REQUIRE(rig.engine.arm(9, 9));
+        REQUIRE(rig.engine.fire(9, 9, 127));
+        rig.run(10);
+        CHECK(rig.engine.voicesActive() == 1);   // the old hit faded, the new one plays
+        CHECK(rig.engine.padSounding(9));
+    }
+    SECTION("over the cap") {
+        rig.engine.noteOn(7, 127);
+        rig.engine.noteOn(9, 127);
+        rig.run(2);
+        REQUIRE(rig.engine.arm(4, 8));       // touch on pad 4, sounding pad 8 (16 levels)
+        CHECK(rig.engine.counters().steals == 0);
+        REQUIRE(rig.engine.fire(4, 8, 127));
+        CHECK(rig.engine.counters().steals >= 1);
+        rig.run(10);
+        CHECK(rig.engine.voicesActive() <= 2);
+    }
+}
+
+TEST_CASE("SamplerEngine: fire() takes the layer the velocity picks", "[samplerengine][arm]")
+{
+    auto play = [](bool viaArm, uint8_t velocity) {
+        Rig rig;
+        rig.build();
+        rig.src.add("soft.wav", 300, 1);
+        rig.src.add("hard.wav", 3000, 1);
+        KitPad& kp = rig.kit.pad[0];
+        kp.layers[0].slot = rig.store.load("soft.wav", 1024);
+        kp.layers[1].slot = rig.store.load("hard.wav", 4096);
+        kp.layerCount = 2;
+        kp.gain = 1.0f;
+        rig.publish();
+        if (viaArm) {
+            REQUIRE(rig.engine.arm(0, 0));
+            REQUIRE(rig.engine.fire(0, 0, velocity));
+        } else {
+            rig.engine.noteOn(0, velocity);
+        }
+        std::vector<float> all, out(128);
+        for (int b = 0; b < 20; ++b) {
+            std::fill(out.begin(), out.end(), 0.0f);
+            rig.engine.mix(out.data(), 64);
+            all.insert(all.end(), out.begin(), out.end());
+            rig.engine.serviceIo();
+        }
+        const bool sounding = rig.engine.padSounding(0);
+        return std::make_pair(all, sounding);
+    };
+    for (uint8_t vel : {30, 120}) {
+        INFO("velocity " << int(vel));
+        const auto a = play(true, vel), d = play(false, vel);
+        CHECK(std::memcmp(a.first.data(), d.first.data(), a.first.size() * sizeof(float)) == 0);
+        CHECK(a.second == d.second);
+        CHECK(a.second == (vel >= 64));        // the 300-frame layer is over after 1280 frames
+    }
+}
+
+TEST_CASE("SamplerEngine: a hit that is not the armed one cancels it", "[samplerengine][arm]")
+{
+    Rig rig;
+    rig.build();
+    rig.src.add("a.wav", 2000, 1);
+    rig.src.add("b.wav", 2000, 1);
+    rig.assign(3, "a.wav", 4096);
+    rig.assign(5, "b.wav", 4096);
+    rig.publish();
+
+    SECTION("another sound pad") {
+        REQUIRE(rig.engine.arm(3, 3));
+        CHECK_FALSE(rig.engine.fire(3, 5, 100));
+    }
+    SECTION("another pitch (16 levels of pitch turned on under the finger)") {
+        REQUIRE(rig.engine.arm(3, 3));
+        CHECK_FALSE(rig.engine.fire(3, 3, 100, 4, 16 + 3));
+    }
+    SECTION("nothing armed for that touch") {
+        REQUIRE(rig.engine.arm(3, 3));
+        CHECK_FALSE(rig.engine.fire(4, 3, 100));
+        CHECK(rig.engine.armedVoices() == 1);
+        rig.engine.disarm(3);
+    }
+    CHECK(rig.engine.armedVoices() == 0);
+    CHECK(rig.engine.voicesActive() == 0);
+    CHECK(rig.engine.counters().armCancelled == 1);
+}
+
+TEST_CASE("SamplerEngine: 16 levels of pitch arm and fire a note of their own", "[samplerengine][arm]")
+{
+    Rig rig;
+    rig.build();
+    rig.src.add("tone.wav", 20000, 1);
+    rig.assign(0, "tone.wav", 20000, PadMode::Hold);
+    rig.publish();
+
+    /* Pads 4 and 7 play pad 0 a third and a fifth up: two notes at once. */
+    REQUIRE(rig.engine.arm(4, 0, 4, 16 + 4));
+    REQUIRE(rig.engine.arm(7, 0, 7, 16 + 7));
+    REQUIRE(rig.engine.fire(4, 0, 100, 4, 16 + 4));
+    REQUIRE(rig.engine.fire(7, 0, 100, 7, 16 + 7));
+    rig.run(4);
+    CHECK(rig.engine.voicesActive() == 2);     // a chord, not one note cutting the other
+    rig.engine.noteOff(0, 16 + 4);             // Hold: the release of one key only
+    rig.run(10);
+    CHECK(rig.engine.voicesActive() == 1);
+}
+
+TEST_CASE("SamplerEngine: an armed voice nobody ends expires", "[samplerengine][arm]")
+{
+    Rig rig;
+    rig.build();
+    rig.src.add("a.wav", 2000, 1);
+    rig.assign(0, "a.wav", 4096);
+    rig.publish();
+    g_armClockUs = 1000;
+    rig.engine.setClock(&armClock);
+
+    REQUIRE(rig.engine.arm(0, 0));
+    g_armClockUs += SamplerEngine::kArmTimeoutMs * 1000u - 1000u;
+    rig.engine.serviceIo();
+    CHECK(rig.engine.armedVoices() == 1);      // a slow press window is not cut short
+    g_armClockUs += 2000u;
+    rig.engine.serviceIo();
+    CHECK(rig.engine.armedVoices() == 0);
+    CHECK(rig.engine.counters().armExpired == 1);
+    CHECK_FALSE(rig.engine.fire(0, 0, 100));   // the velocity then plays through noteOn()
+    rig.engine.serviceIo();                    // the expired voice is freed
+    rig.engine.noteOn(0, 100);
+    CHECK(rig.run(1) > 0.0f);
+    rig.engine.setClock(nullptr);
+}
+
+TEST_CASE("SamplerEngine: a second touch replaces the first; a mutation refuses both",
+          "[samplerengine][arm]")
+{
+    Rig rig;
+    rig.build();
+    rig.src.add("a.wav", 2000, 1);
+    rig.src.add("b.wav", 2000, 1);
+    rig.assign(0, "a.wav", 4096);
+    rig.assign(1, "b.wav", 4096);
+    rig.publish();
+
+    REQUIRE(rig.engine.arm(0, 0));
+    REQUIRE(rig.engine.arm(0, 1));             // the mode moved: the touch now sounds pad 1
+    CHECK(rig.engine.armedVoices() == 1);
+    CHECK(rig.engine.counters().armCancelled == 1);
+    CHECK(rig.engine.fire(0, 1, 100));
+
+    REQUIRE(rig.engine.arm(2, 0));
+    rig.engine.beginMutation();
+    CHECK_FALSE(rig.engine.fire(2, 0, 100));   // the loader holds the kit: no voice into it
+    CHECK_FALSE(rig.engine.arm(3, 0));
+    rig.engine.endMutation();
+    CHECK(rig.engine.armedVoices() == 0);
+    CHECK(rig.engine.counters().armFired == 1);
+}
+
+TEST_CASE("SamplerEngine: abandonVoices() takes armed voices too", "[samplerengine][arm]")
+{
+    Rig rig;
+    rig.build();
+    rig.src.add("a.wav", 2000, 1);
+    rig.assign(0, "a.wav", 4096);
+    rig.publish();
+    REQUIRE(rig.engine.arm(0, 0));
+    rig.engine.beginMutation();
+    REQUIRE(rig.engine.abandonVoices());
+    CHECK(rig.engine.armedVoices() == 0);
+    CHECK_FALSE(rig.engine.fire(0, 0, 100));
+    rig.engine.endMutation();
+}

@@ -115,6 +115,18 @@ void PadManager::handlePadPress(uint8_t padIdx, uint8_t velocity, EventSource so
     }
 }
 
+void PadManager::handlePadTouch(uint8_t padIdx, bool touching) {
+    if (padIdx >= 16) return;
+    if (inputSuppressed_) return;
+
+    std::shared_ptr<IPadLogicHandler> handler;
+    {
+        std::lock_guard<std::mutex> lock(logicMutex_);
+        handler = activePadLogic_;
+    }
+    if (handler) handler->onPadTouch(*this, padIdx, touching);
+}
+
 void PadManager::handlePadRelease(uint8_t padIdx, EventSource source) {
     if (padIdx >= 16) return;
 

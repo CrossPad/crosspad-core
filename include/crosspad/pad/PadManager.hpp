@@ -53,6 +53,11 @@ public:
                         EventSource source = EventSource::PadManager,
                         PadPerformance performance = {});
     void handlePadRelease(uint8_t padIdx, EventSource source = EventSource::PadManager);
+    /// A finger came onto @p padIdx (@p touching) and its velocity is still
+    /// being measured, or it left without a hit (!@p touching). Passed to the
+    /// active pad logic's onPadTouch(); a press or a release follows the way
+    /// it always did. Nothing while input is suppressed.
+    void handlePadTouch(uint8_t padIdx, bool touching);
     /// Called with every press a player makes -- whatever app's pad logic is
     /// active, never for the loop recorder's playback (SequencerCallback) --
     /// before it is handled. A platform whose pads come in by more ways than

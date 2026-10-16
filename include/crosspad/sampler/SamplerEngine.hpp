@@ -26,8 +26,21 @@
  *   Finished --(streaming thread: give the blocks back)--> Free
  * ```
  *
- * Each arrow has exactly one writer, so the only atomic operation needed is
- * the claim, where two note sources could race for the same slot. In
+ * A hit whose velocity is not known yet takes a detour (arm(), fire()):
+ *
+ * ```
+ *   Free --(note thread: claim, fill all but the level)--> Armed
+ *   Armed --(the velocity: level, cut, room, publish)--> Playing
+ *   Armed --(a touch that never became a hit, or kArmTimeoutMs)--> Finished
+ * ```
+ *
+ * The render never sees an Armed voice. Whoever ends one -- fire(), disarm(),
+ * the streaming thread's timeout -- takes it with a compare-and-swap, so
+ * exactly one of them does.
+ *
+ * Each arrow has exactly one writer, so the only atomic operations needed are
+ * the claim, where two note sources could race for the same slot, and the
+ * end of an armed voice. In
  * particular **the render thread never gives a block back and never closes
  * anything** -- it marks the voice Finished and moves on, which is the same
  * rule the file port had to discover the hard way about `fclose()`.
@@ -155,6 +168,10 @@ public:
         uint32_t underruns     = 0;   ///< a voice reached frames the streamer had not delivered
         uint32_t voicesPeak    = 0;
         uint32_t sheds         = 0;   ///< steals setOverloaded() forced below the cap (part of steals)
+        uint32_t armed         = 0;   ///< voices armed by a touch
+        uint32_t armFired      = 0;   ///< ... that its velocity started
+        uint32_t armCancelled  = 0;   ///< ... that a touch without a hit, or a hit other than the armed one, ended
+        uint32_t armExpired    = 0;   ///< ... that nothing ended within kArmTimeoutMs
         uint32_t rtMaxUs       = 0;   ///< set by the port, which owns the clock
         /**
          * @brief Longest noteOn() call in **wall time** -- work and waiting both.
@@ -246,6 +263,56 @@ public:
     /// Release the notes of @p pad struck as @p key (kOwnKey: the pad's own).
     void noteOff(uint8_t pad, uint8_t key = kOwnKey);
     void allNotesOff();
+
+    // ── A hit before its velocity ─────────────────────────────────────────
+    /**
+     * @brief How long an armed voice waits for its velocity.
+     *
+     * A safety net, not the way a touch ends: the pad's own controller says
+     * when a touch leaves without a hit (disarm()). Longer than any press
+     * window the STM can be set to (its debounce is a byte of milliseconds),
+     * so a slow window is never cut short -- and a voice armed by a message
+     * that was lost holds a slot for this long, nothing more.
+     */
+    static constexpr uint32_t kArmTimeoutMs = 300;
+
+    /**
+     * @brief A finger is on @p touch and its velocity is still being measured:
+     * get @p pad's voice ready.
+     *
+     * Everything a note-on does that does not depend on the velocity is done
+     * here -- the voice claimed, the sample and its trim bound, the cursor on
+     * its first frame, the pitch, the envelope at its start -- so that fire()
+     * only has to set the level and publish. Nothing is cut, stolen or heard:
+     * a touch that never becomes a hit leaves no trace.
+     *
+     * @p touch is the pad the finger is on, @p pad the one it will sound (16
+     * levels play one pad from all of them), @p transpose and @p key as for
+     * noteOn(). A second arm() for the same @p touch replaces the first.
+     * Note thread. False when there is nothing to arm (no kit, no sample, the
+     * loader holds the engine, no slot free) -- the hit then plays through
+     * noteOn() as it always did.
+     */
+    bool arm(uint8_t touch, uint8_t pad, int8_t transpose = 0, uint8_t key = kOwnKey);
+
+    /**
+     * @brief The velocity of @p touch's hit: start the voice armed for it.
+     *
+     * The rest of a note-on, at the level @p velocity gives: the pad's own
+     * voice and its choke group cut, room made under the caps, the layer
+     * chosen again if the pad splits by velocity or its sample was swapped
+     * since the arm. False when no voice is armed for @p touch, or when the
+     * hit is not the one that was armed (another sound pad, pitch or key --
+     * the mode changed under the finger); that armed voice is dropped and the
+     * caller plays the hit with noteOn().
+     */
+    bool fire(uint8_t touch, uint8_t pad, uint8_t velocity, int8_t transpose = 0, uint8_t key = kOwnKey);
+
+    /// The touch on @p touch ended without a hit: drop its armed voice, if any.
+    void disarm(uint8_t touch);
+
+    /// Voices armed and waiting for a velocity, for a status line.
+    uint8_t armedVoices() const;
 
     /**
      * @brief Silence one pad now, whatever its mode says.
@@ -394,7 +461,7 @@ public:
     uint8_t  voicesActive() const;
 
 private:
-    enum class VoiceState : uint8_t { Free = 0, Claiming, Playing, Finished };
+    enum class VoiceState : uint8_t { Free = 0, Claiming, Playing, Finished, Armed };
 
     struct Voice {
         std::atomic<uint8_t> state{static_cast<uint8_t>(VoiceState::Free)};
@@ -417,6 +484,9 @@ private:
 
         uint8_t  pad = 0, layer = 0, choke = 0;
         uint8_t  key = 0;        ///< the hit it belongs to: the pad, or what noteOn() was given
+        int8_t   transpose = 0;  ///< the semitones the hit added to the pad's own
+        uint8_t  touch = 0;      ///< Armed: the pad the finger is on
+        uint32_t armUs = 0;      ///< Armed: when, on the engine's clock
         uint32_t age = 0;        ///< order of starting, for the steal
         uint32_t quiet = 0;      ///< consecutive frames below silenceLevel
         uint32_t loudEnd = 0;    ///< one past the last frame above it, 0 = none yet
@@ -434,7 +504,34 @@ private:
         bool wantStream = false;
     };
 
+    /// What a note of one layer reads, decided before a voice is taken.
+    struct Plan {
+        const SampleStore::Slot* slot = nullptr;
+        uint16_t slotIdx = 0;
+        uint8_t  layer = 0;
+        uint32_t first = 0, last = 0;
+        bool     willStream = false;
+    };
+
     void   noteOnBody(uint8_t pad, uint8_t velocity, int8_t transpose, uint8_t key);
+    bool   armBody(uint8_t touch, uint8_t pad, int8_t transpose, uint8_t key);
+    bool   fireBody(Voice& v, uint8_t pad, uint8_t velocity, int8_t transpose, uint8_t key);
+    /// The layer a hit at @p velocity plays (round-robin moves on).
+    uint8_t pickLayer(const KitPad& kp, uint8_t pad, uint8_t velocity);
+    /// @p layer's sample and trim; false when it has no sample.
+    bool   plan(const KitPad& kp, uint8_t layer, Plan& p) const;
+    /// A new hit of @p key cuts the pad's own voice and its choke group.
+    void   cutFor(const KitPad& kp, uint8_t key);
+    /// Room under the streaming budget, the voice cap and the overload shed.
+    void   makeRoom(bool willStream);
+    /// Everything but the level: the sample, the trim, pitch, envelope start.
+    void   fill(Voice& v, const KitPad& kp, const Plan& p, uint8_t pad, int8_t transpose, uint8_t key);
+    /// The level, its age, and Playing -- the voice is heard from here.
+    void   start(Voice& v, const KitPad& kp, uint8_t velocity);
+    /// An Armed voice of @p touch, or nullptr.
+    Voice* armedFor(uint8_t touch);
+    /// Armed -> Finished, if nobody took it first.
+    bool   dropArmed(Voice& v);
     Voice* claimVoice();
     bool   stealOldest();
     /// The oldest voice that is reading the card. Used when the streaming
@@ -520,6 +617,7 @@ private:
     void*  cbCtx_  = nullptr;
 
     std::atomic<uint32_t> cNotes_{0}, cDropped_{0}, cSteals_{0}, cSheds_{0};
+    std::atomic<uint32_t> cArmed_{0}, cArmFired_{0}, cArmCancelled_{0}, cArmExpired_{0};
     std::atomic<bool> overloaded_{false};
     std::atomic<uint32_t> cStreamRefused_{0}, cUnderruns_{0}, cVoicesPeak_{0}, cSilenced_{0};
 };

@@ -6,6 +6,30 @@ carries the same number) and consumers gate on it with
 `crosspad/RequireVersion.hpp`. This file starts at 1.45.0; earlier releases
 are described in their `chore: X.Y.Z` commits.
 
+## 1.67.0 — 2026-10-16
+
+A pad's voice made ready while its velocity is still being measured.
+
+### Added
+
+- `SamplerEngine::arm()` / `fire()` / `disarm()` and `kArmTimeoutMs`: a touch
+  claims and fills a voice (sample, trim, cursor, pitch, envelope start) and
+  leaves it Armed -- unheard, cutting and stealing nothing; the velocity
+  fires it (level, choke and own-pad cut, room under the caps, the layer
+  again where it splits by velocity or the sample was swapped). A touch that
+  leaves, a hit other than the armed one, a mutation or the timeout end it.
+  `Counters::armed/armFired/armCancelled/armExpired`.
+- `IPadLogicHandler::onPadTouch()` (default: nothing) and
+  `PadManager::handlePadTouch()`.
+- `CROSSPAD_CMD_PAD_TOUCH` 0x22 (STM->ESP `[pad, touching]`), decoded by
+  `Stm32MessageHandler` into `PadManager::handlePadTouch()`. An STM that does
+  not send it changes nothing.
+
+### Changed
+
+- `SamplerEngine::noteOn()` in steps it shares with `fire()` (layer, plan,
+  cut, room, fill, start); same order of effects, same output to the bit.
+
 ## 1.66.0 — 2026-10-16
 
 The A/B switch of the audio kernels goes, now that the board has chosen

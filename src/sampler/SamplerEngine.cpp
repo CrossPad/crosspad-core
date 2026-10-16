@@ -235,21 +235,63 @@ void SamplerEngine::noteOnBody(uint8_t pad, uint8_t velocity, int8_t transpose, 
      * sounds; a pad hit with no force still has to make a sound. */
     if (velocity == 0) velocity = 1;
 
-    /* Which layer. A velocity split by default, in the order the kit lists
-     * them; round-robin where the kit asks for it. */
-    uint8_t layer;
-    if (kp.roundRobin) {
-        layer = static_cast<uint8_t>(roundRobin_[pad].fetch_add(1, std::memory_order_relaxed)
-                                     % kp.layerCount);
-    } else {
-        layer = static_cast<uint8_t>((velocity * kp.layerCount) / 128);
-        if (layer >= kp.layerCount) layer = kp.layerCount - 1;
-    }
+    Plan p;
+    if (!plan(kp, pickLayer(kp, pad, velocity), p)) return;
+    cutFor(kp, key);
+    makeRoom(p.willStream);
 
+    Voice* vp = claimVoice();
+    if (!vp) {
+        cDropped_.fetch_add(1, std::memory_order_relaxed);
+        return;
+    }
+    fill(*vp, kp, p, pad, transpose, key);
+    start(*vp, kp, velocity);
+}
+
+uint8_t SamplerEngine::pickLayer(const KitPad& kp, uint8_t pad, uint8_t velocity)
+{
+    /* A velocity split by default, in the order the kit lists them;
+     * round-robin where the kit asks for it. */
+    if (kp.roundRobin) {
+        return static_cast<uint8_t>(roundRobin_[pad].fetch_add(1, std::memory_order_relaxed) % kp.layerCount);
+    }
+    const uint8_t layer = static_cast<uint8_t>((velocity * kp.layerCount) / 128);
+    return layer >= kp.layerCount ? static_cast<uint8_t>(kp.layerCount - 1) : layer;
+}
+
+bool SamplerEngine::plan(const KitPad& kp, uint8_t layer, Plan& p) const
+{
     const KitLayer& kl = kp.layers[layer];
     const SampleStore::Slot* slot = store_->slot(kl.slot);
-    if (!slot) return;
+    if (!slot) return false;
 
+    /* The trim, before anything is claimed: whether this note will have to be
+     * fed off the card decides which budget it is charged to, and that has to
+     * be known before a voice is taken. Nothing here depends on the voice. */
+    const uint32_t total = slot->desc.frames;
+    uint32_t first = kl.start < total ? kl.start : 0;
+    uint32_t last  = (kl.end == 0 || kl.end > total) ? total : kl.end;
+    if (first >= last) { first = 0; last = total; }
+    /* The store began the slot's head on this very frame (trimStart(), the
+     * same rule): a note starts in its head, never before it. */
+    if (first < slot->headStart) first = slot->headStart;
+    /* A one-shot ends where its sound does, once a voice has found where that
+     * is -- and a hit whose sound fits in the head then streams nothing. */
+    const uint32_t heard = store_->audibleEnd(kl.slot);
+    if (kp.mode != PadMode::Loop && heard > first && heard < last) last = heard;
+
+    p.slot = slot;
+    p.slotIdx = kl.slot;
+    p.layer = layer;
+    p.first = first;
+    p.last = last;
+    p.willStream = !slot->complete && last > slot->headStart + slot->headFrames;
+    return true;
+}
+
+void SamplerEngine::cutFor(const KitPad& kp, uint8_t key)
+{
     /* A pad retriggers itself, and chokes its group.
      *
      * The engine this replaces had one player slot per pad, so hitting a pad
@@ -272,23 +314,10 @@ void SamplerEngine::noteOnBody(uint8_t pad, uint8_t velocity, int8_t transpose, 
         const bool samePad   = params_.monoPerPad && v.key == key;
         if (sameChoke || samePad) startFade(v);
     }
+}
 
-    /* The trim, before anything is claimed: whether this note will have to be
-     * fed off the card decides which budget it is charged to, and that has to
-     * be known before a voice is taken. Nothing here depends on the voice. */
-    const uint32_t total = slot->desc.frames;
-    uint32_t first = kl.start < total ? kl.start : 0;
-    uint32_t last  = (kl.end == 0 || kl.end > total) ? total : kl.end;
-    if (first >= last) { first = 0; last = total; }
-    /* The store began the slot's head on this very frame (trimStart(), the
-     * same rule): a note starts in its head, never before it. */
-    if (first < slot->headStart) first = slot->headStart;
-    /* A one-shot ends where its sound does, once a voice has found where that
-     * is -- and a hit whose sound fits in the head then streams nothing. */
-    const uint32_t heard = store_->audibleEnd(kl.slot);
-    if (kp.mode != PadMode::Loop && heard > first && heard < last) last = heard;
-    const bool willStream = !slot->complete && last > slot->headStart + slot->headFrames;
-
+void SamplerEngine::makeRoom(bool willStream)
+{
     /* Two ceilings, and the one that binds depends on the note.
      *
      * A resident voice is arithmetic; a streaming one also has to be fed off
@@ -308,13 +337,12 @@ void SamplerEngine::noteOnBody(uint8_t pad, uint8_t velocity, int8_t transpose, 
     if ((active >= params_.maxVoices || shed) && stealOldest() && shed) {
         cSheds_.fetch_add(1, std::memory_order_relaxed);
     }
+}
 
-    Voice* vp = claimVoice();
-    if (!vp) {
-        cDropped_.fetch_add(1, std::memory_order_relaxed);
-        return;
-    }
-    Voice& v = *vp;
+void SamplerEngine::fill(Voice& v, const KitPad& kp, const Plan& p, uint8_t pad, int8_t transpose, uint8_t key)
+{
+    const SampleStore::Slot* slot = p.slot;
+    const uint32_t first = p.first, last = p.last;
 
     /* The streamed part, if any, is left to the streaming thread.
      *
@@ -325,12 +353,12 @@ void SamplerEngine::noteOnBody(uint8_t pad, uint8_t velocity, int8_t transpose, 
      * always there long before the voice reaches it; there is no reason for
      * the note to pay for it. */
     v.slot = slot;
-    v.wantStream = willStream;
+    v.wantStream = p.willStream;
     v.cursor.bind(slot->head, slot->headStart, slot->headFrames, slot->desc.channels, last, &v.window);
     /* What StreamWindow::open() will make a lap of, for the same voice. */
     const uint32_t headEnd = slot->headStart + slot->headFrames;
     const uint32_t lapFirst = first > headEnd ? first : headEnd;
-    v.cursor.setLoop(kp.mode == PadMode::Loop && willStream && last > lapFirst ? last - lapFirst : 0);
+    v.cursor.setLoop(kp.mode == PadMode::Loop && p.willStream && last > lapFirst ? last - lapFirst : 0);
 
     /* One increment carries both reasons a voice does not step by exactly one
      * frame: the file's rate against the engine's, and the pad's pitch. The
@@ -347,14 +375,9 @@ void SamplerEngine::noteOnBody(uint8_t pad, uint8_t velocity, int8_t transpose, 
     v.loop  = (kp.mode == PadMode::Loop);
     v.pad   = pad;
     v.key   = key;
-    v.layer = layer;
+    v.transpose = transpose;
+    v.layer = p.layer;
     v.choke = kp.choke;
-
-    float pl = 0, pr = 0;
-    SamplerKit::panGains(kp.pan, pl, pr);
-    const float g = kp.gain * (velocity / 127.0f);
-    v.gainL = g * pl;
-    v.gainR = g * pr;
 
     v.env = 0.0f;
     v.envTarget = 1.0f;
@@ -363,15 +386,24 @@ void SamplerEngine::noteOnBody(uint8_t pad, uint8_t velocity, int8_t transpose, 
 
     v.quiet = 0;
     v.loudEnd = 0;
-    v.slotIdx = kl.slot;
+    v.slotIdx = p.slotIdx;
     v.announced = false;
     v.fading.store(false, std::memory_order_relaxed);
     v.releasing.store(false, std::memory_order_relaxed);
     v.playFrame.store(first, std::memory_order_relaxed);
+}
+
+void SamplerEngine::start(Voice& v, const KitPad& kp, uint8_t velocity)
+{
+    float pl = 0, pr = 0;
+    SamplerKit::panGains(kp.pan, pl, pr);
+    const float g = kp.gain * (velocity / 127.0f);
+    v.gainL = g * pl;
+    v.gainR = g * pr;
     v.age = ageCounter_.fetch_add(1, std::memory_order_relaxed);
 
     const size_t idx = static_cast<size_t>(&v - voices_);
-    padVoices_[pad].fetch_or(1u << idx, std::memory_order_acq_rel);
+    padVoices_[v.pad].fetch_or(1u << idx, std::memory_order_acq_rel);
 
     /* Published last: everything above is written before any other thread may
      * look at this slot. */
@@ -381,6 +413,136 @@ void SamplerEngine::noteOnBody(uint8_t pad, uint8_t velocity, int8_t transpose, 
     const uint32_t act = voicesActive();
     uint32_t pk = cVoicesPeak_.load(std::memory_order_relaxed);
     while (act > pk && !cVoicesPeak_.compare_exchange_weak(pk, act, std::memory_order_relaxed)) { }
+}
+
+// ── A hit before its velocity ───────────────────────────────────────────────
+
+SamplerEngine::Voice* SamplerEngine::armedFor(uint8_t touch)
+{
+    for (auto& v : voices_) {
+        if (v.state.load(std::memory_order_acquire) == static_cast<uint8_t>(VoiceState::Armed) &&
+            v.touch == touch) {
+            return &v;
+        }
+    }
+    return nullptr;
+}
+
+bool SamplerEngine::dropArmed(Voice& v)
+{
+    /* Finished, not Free: the voice's cursor and slot are the streaming
+     * thread's to clear, as for any voice that has ended. It never sounded,
+     * so there is nothing to announce and no pad bit to clear. */
+    uint8_t expect = static_cast<uint8_t>(VoiceState::Armed);
+    return v.state.compare_exchange_strong(expect, static_cast<uint8_t>(VoiceState::Finished),
+                                           std::memory_order_acq_rel, std::memory_order_relaxed);
+}
+
+bool SamplerEngine::arm(uint8_t touch, uint8_t pad, int8_t transpose, uint8_t key)
+{
+    if (touch >= kPads || pad >= kPads) return false;
+    disarm(touch);
+    /* Counted like a note-on: the voice takes a reference into the kit
+     * (slotInUse()). */
+    notesInFlight_.fetch_add(1, std::memory_order_seq_cst);
+    const bool ok = armBody(touch, pad, transpose, key == kOwnKey ? pad : key);
+    notesInFlight_.fetch_sub(1, std::memory_order_seq_cst);
+    return ok;
+}
+
+bool SamplerEngine::armBody(uint8_t touch, uint8_t pad, int8_t transpose, uint8_t key)
+{
+    if (mutating_.load(std::memory_order_acquire)) return false;
+    const SamplerKit* k = kit_.load(std::memory_order_acquire);
+    if (!k || !store_ || !pool_) return false;
+    const KitPad& kp = k->pad[pad];
+    if (kp.layerCount == 0) return false;
+
+    /* The layer the hardest hit would take: one layer at every velocity on
+     * nearly every pad, and fire() takes another if the velocity says so. */
+    Plan p;
+    if (!plan(kp, pickLayer(kp, pad, 127), p)) return false;
+    Voice* vp = claimVoice();
+    if (!vp) return false;
+    Voice& v = *vp;
+    fill(v, kp, p, pad, transpose, key);
+    v.touch = touch;
+    v.armUs = now_ ? now_() : 0;
+    v.state.store(static_cast<uint8_t>(VoiceState::Armed), std::memory_order_release);
+    cArmed_.fetch_add(1, std::memory_order_relaxed);
+    return true;
+}
+
+bool SamplerEngine::fire(uint8_t touch, uint8_t pad, uint8_t velocity, int8_t transpose, uint8_t key)
+{
+    if (touch >= kPads) return false;
+    Voice* vp = armedFor(touch);
+    if (!vp) return false;
+    /* Taken from Armed, so a disarm() or the timeout that comes now finds
+     * nothing to end. Claiming is what slotInUse() and the render already
+     * read as "being filled". */
+    uint8_t expect = static_cast<uint8_t>(VoiceState::Armed);
+    if (!vp->state.compare_exchange_strong(expect, static_cast<uint8_t>(VoiceState::Claiming),
+                                           std::memory_order_acq_rel, std::memory_order_relaxed)) {
+        return false;
+    }
+    notesInFlight_.fetch_add(1, std::memory_order_seq_cst);
+    const uint32_t t0 = now_ ? now_() : 0;
+    const bool ok = fireBody(*vp, pad, velocity, transpose, key == kOwnKey ? pad : key);
+    if (!ok) {
+        vp->state.store(static_cast<uint8_t>(VoiceState::Finished), std::memory_order_release);
+        cArmCancelled_.fetch_add(1, std::memory_order_relaxed);
+    } else if (now_) {
+        const uint32_t dt = now_() - t0;
+        uint32_t m = cNoteOnMaxUs_.load(std::memory_order_relaxed);
+        while (dt > m && !cNoteOnMaxUs_.compare_exchange_weak(m, dt, std::memory_order_relaxed)) { }
+    }
+    notesInFlight_.fetch_sub(1, std::memory_order_seq_cst);
+    return ok;
+}
+
+bool SamplerEngine::fireBody(Voice& v, uint8_t pad, uint8_t velocity, int8_t transpose, uint8_t key)
+{
+    if (mutating_.load(std::memory_order_acquire)) return false;
+    /* Not the hit that was armed: the mode moved under the finger. */
+    if (v.pad != pad || v.key != key || v.transpose != transpose) return false;
+    const SamplerKit* k = kit_.load(std::memory_order_acquire);
+    if (!k) return false;
+    const KitPad& kp = k->pad[pad];
+    if (kp.layerCount == 0) return false;
+    if (velocity == 0) velocity = 1;
+
+    /* The layer, again where it can differ: a pad split by velocity, or a
+     * pad whose sample was swapped while the finger was on it. Round-robin
+     * keeps the one the arm moved on to. */
+    const uint8_t layer = kp.roundRobin ? v.layer : pickLayer(kp, pad, velocity);
+    if (layer >= kp.layerCount) return false;
+    if (layer != v.layer || kp.layers[layer].slot != v.slotIdx) {
+        Plan p;
+        if (!plan(kp, layer, p)) return false;
+        fill(v, kp, p, pad, transpose, key);
+    }
+    cutFor(kp, key);
+    makeRoom(v.wantStream);
+    start(v, kp, velocity);
+    cArmFired_.fetch_add(1, std::memory_order_relaxed);
+    return true;
+}
+
+void SamplerEngine::disarm(uint8_t touch)
+{
+    if (touch >= kPads) return;
+    Voice* v = armedFor(touch);
+    if (v && dropArmed(*v)) cArmCancelled_.fetch_add(1, std::memory_order_relaxed);
+}
+
+uint8_t SamplerEngine::armedVoices() const
+{
+    uint8_t n = 0;
+    for (const auto& v : voices_) {
+        if (v.state.load(std::memory_order_acquire) == static_cast<uint8_t>(VoiceState::Armed)) ++n;
+    }
+    return n;
 }
 
 void SamplerEngine::noteOff(uint8_t pad, uint8_t key)
@@ -942,6 +1104,14 @@ bool SamplerEngine::serviceIo()
             v.state.store(static_cast<uint8_t>(VoiceState::Free), std::memory_order_release);
             continue;
         }
+        if (st == static_cast<uint8_t>(VoiceState::Armed)) {
+            /* A touch whose end was never heard. Ended here, freed on the
+             * next pass like any Finished voice. */
+            if (now_ && now_() - v.armUs > kArmTimeoutMs * 1000u && dropArmed(v)) {
+                cArmExpired_.fetch_add(1, std::memory_order_relaxed);
+            }
+            continue;
+        }
         if (st != static_cast<uint8_t>(VoiceState::Playing)) continue;
         if (!src) continue;
         /* Open the ring the note asked for, here rather than there. A refusal
@@ -1006,6 +1176,10 @@ CROSSPAD_COLD SamplerEngine::Counters SamplerEngine::counters() const
     c.underruns     = cUnderruns_.load(std::memory_order_relaxed);
     c.voicesPeak    = cVoicesPeak_.load(std::memory_order_relaxed);
     c.sheds         = cSheds_.load(std::memory_order_relaxed);
+    c.armed         = cArmed_.load(std::memory_order_relaxed);
+    c.armFired      = cArmFired_.load(std::memory_order_relaxed);
+    c.armCancelled  = cArmCancelled_.load(std::memory_order_relaxed);
+    c.armExpired    = cArmExpired_.load(std::memory_order_relaxed);
     return c;
 }
 
@@ -1014,6 +1188,7 @@ CROSSPAD_COLD void SamplerEngine::resetCounters()
     cNotes_ = 0; cDropped_ = 0; cSteals_ = 0; cSheds_ = 0;
     cStreamRefused_ = 0; cUnderruns_ = 0; cVoicesPeak_ = 0; cSilenced_ = 0;
     cNoteOnMaxUs_ = 0;
+    cArmed_ = 0; cArmFired_ = 0; cArmCancelled_ = 0; cArmExpired_ = 0;
 }
 
 } // namespace crosspad

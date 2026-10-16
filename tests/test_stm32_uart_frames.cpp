@@ -1,6 +1,9 @@
 #include <catch2/catch_test_macros.hpp>
+#include <memory>
+#include <tuple>
 #include <utility>
 #include <vector>
+#include "crosspad/pad/IPadLogicHandler.hpp"
 #include "crosspad/protocol/Stm32MessageHandler.hpp"
 #include "crosspad/pad/PadManager.hpp"
 #include "crosspad/status/CrosspadStatus.hpp"
@@ -126,4 +129,53 @@ TEST_CASE("a rev 1.x encoder count steps once per click, two counts each", "[stm
     count(1); count(0); count(60);                // and back down through it
     REQUIRE(h.takeEncoderSteps() == -1);
     REQUIRE(h.encoderDetent() == 3);
+}
+
+namespace {
+
+class TouchSpy : public IPadLogicHandler {
+public:
+    void onActivate(PadManager&) override {}
+    void onDeactivate(PadManager&) override {}
+    void onPadPress(PadManager&, uint8_t pad, uint8_t vel) override { log.emplace_back('P', pad, vel); }
+    void onPadRelease(PadManager&, uint8_t pad) override { log.emplace_back('R', pad, 0); }
+    void onPadPressure(PadManager&, uint8_t, uint8_t) override {}
+    void onPadTouch(PadManager&, uint8_t pad, bool touching) override {
+        log.emplace_back(touching ? 'T' : 'U', pad, 0);
+    }
+    std::vector<std::tuple<char, uint8_t, uint8_t>> log;
+};
+
+} // namespace
+
+TEST_CASE("a pad-touch frame reaches the active pad logic before its hit", "[stm][touch]") {
+    PadManager pads;
+    CrosspadStatus status;
+    Stm32MessageHandler h;
+    h.init(pads, status);
+    auto spy = std::make_shared<TouchSpy>();
+    pads.registerPadLogic("Spy", spy);
+    pads.setActivePadLogic("Spy");
+
+    auto touch = [&](uint8_t pad, uint8_t on) {
+        const uint8_t f[] = {CROSSPAD_SYSEX_START, CROSSPAD_SYSEX_MANUFACTURER, CROSSPAD_CMD_PAD_TOUCH,
+                             pad, on, CROSSPAD_SYSEX_END};
+        h.handleMessage(f, sizeof(f));
+    };
+    touch(3, 1);
+    pads.handlePadPress(3, 90);           // the note-on, as the MIDI parser hands it over
+    touch(7, 1);
+    touch(7, 0);                          // a touch that never became a hit
+    touch(16, 1);                         // no such pad: dropped
+    const uint8_t shortFrame[] = {CROSSPAD_SYSEX_START, CROSSPAD_SYSEX_MANUFACTURER, CROSSPAD_CMD_PAD_TOUCH,
+                                  2, CROSSPAD_SYSEX_END};
+    h.handleMessage(shortFrame, sizeof(shortFrame));
+
+    using E = std::tuple<char, uint8_t, uint8_t>;
+    REQUIRE(spy->log == std::vector<E>{E{'T', 3, 0}, E{'P', 3, 90}, E{'T', 7, 0}, E{'U', 7, 0}});
+
+    spy->log.clear();
+    pads.setInputSuppressed(true);        // the MODE map takes the pads: no touch either
+    touch(4, 1);
+    REQUIRE(spy->log.empty());
 }

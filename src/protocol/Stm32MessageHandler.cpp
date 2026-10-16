@@ -56,6 +56,13 @@ void Stm32MessageHandler::handleMessage(const uint8_t* data, unsigned size) {
         parseDigitalButtons(data, size);
         break;
 
+    case CROSSPAD_CMD_PAD_TOUCH:
+        // [F0 7D 22 pad touching F7]: an STM that measures a velocity says
+        // when a finger lands, before the note-on that carries it.
+        if (size < 6 || data[3] >= 16) break;
+        padManager_->handlePadTouch(data[3], data[4] != 0);
+        break;
+
     case CROSSPAD_CMD_BUTTONS_ANALOG:
         // Decoded, not yet dispatched.
         break;
