@@ -11,7 +11,8 @@ StreamWindow::~StreamWindow()
 }
 
 bool StreamWindow::open(BlockPool& pool, const char* path, uint8_t channels,
-                        uint32_t streamStart, uint32_t sampleFrames, uint8_t blocks)
+                        uint32_t streamStart, uint32_t sampleFrames, uint8_t blocks,
+                        uint32_t loopFirst)
 {
     close(pool);
     if (!path || channels == 0 || blocks == 0 || streamStart >= sampleFrames) return false;
@@ -70,6 +71,8 @@ bool StreamWindow::open(BlockPool& pool, const char* path, uint8_t channels,
     sampleFrames_ = sampleFrames;
     nextBlock_ = 0;
     idlePasses_ = 0;
+    lapFirst_ = loopFirst > streamStart ? loopFirst : streamStart;
+    lapFrames_ = (loopFirst != kNoLoop && lapFirst_ < sampleFrames) ? sampleFrames - lapFirst_ : 0;
     validUpTo_.store(streamStart, std::memory_order_release);
     /* Last: everything above is in place before the render thread may look. */
     pool_.store(&pool, std::memory_order_release);
@@ -87,7 +90,26 @@ void StreamWindow::close(BlockPool& pool)
     contig_ = false;
     path_ = nullptr;
     nextBlock_ = 0;
+    lapFrames_ = 0;
     validUpTo_.store(0, std::memory_order_release);
+}
+
+uint32_t StreamWindow::readStream(ISampleSource& src, uint32_t first, uint32_t n, int16_t* dst) const
+{
+    if (!lapFrames_) return src.read(path_, first, n, dst);
+    uint32_t done = 0;
+    while (done < n) {
+        const uint32_t f = first + done;
+        const uint32_t file = f < sampleFrames_ ? f : lapFirst_ + (f - sampleFrames_) % lapFrames_;
+        /* One read never crosses the seam: the frames after it are the lap's
+         * start, somewhere else in the file. */
+        const uint32_t toSeam = sampleFrames_ - file;
+        const uint32_t want = (n - done) < toSeam ? (n - done) : toSeam;
+        const uint32_t got = src.read(path_, file, want, dst + static_cast<size_t>(done) * channels_);
+        done += got;
+        if (got < want) break;
+    }
+    return done;
 }
 
 uint32_t StreamWindow::service(ISampleSource& src, uint32_t playFrame, uint8_t maxBlocks)
@@ -105,7 +127,7 @@ uint32_t StreamWindow::service(ISampleSource& src, uint32_t playFrame, uint8_t m
     while (done < maxBlocks) {
         const uint32_t n = nextBlock_;
         const uint32_t first = streamStart_ + (n << blockShift_);
-        if (first >= sampleFrames_) break;              // the file is all delivered
+        if (!lapFrames_ && first >= sampleFrames_) break;   // the file is all delivered
         /* Slot n % blocks_ still carries block n - blocks_. Writing it now
          * would pull the floor out from under a voice that has not left it.
          *
@@ -130,18 +152,20 @@ uint32_t StreamWindow::service(ISampleSource& src, uint32_t playFrame, uint8_t m
             const uint32_t toWrap    = blocks_ - slot;
             const uint32_t toLookahd = (playBlock + blocks_) - (n + 1);
             span = toWrap < toLookahd ? toWrap : toLookahd;
-            const uint32_t framesLeft = sampleFrames_ - first;
-            const uint32_t blocksLeft = (framesLeft + blockFrames_ - 1) >> blockShift_;
-            if (blocksLeft < span) span = blocksLeft;
+            if (!lapFrames_) {
+                const uint32_t framesLeft = sampleFrames_ - first;
+                const uint32_t blocksLeft = (framesLeft + blockFrames_ - 1) >> blockShift_;
+                if (blocksLeft < span) span = blocksLeft;
+            }
             const uint32_t left = static_cast<uint32_t>(maxBlocks - done);
             if (left < span) span = left;
             if (span == 0) span = 1;
         }
 
         const uint32_t wantSpan = span << blockShift_;
-        const uint32_t want = (sampleFrames_ - first) < wantSpan
+        const uint32_t want = (!lapFrames_ && (sampleFrames_ - first) < wantSpan)
                                   ? (sampleFrames_ - first) : wantSpan;
-        const uint32_t got = src.read(path_, first, want, data_[slot]);
+        const uint32_t got = readStream(src, first, want, data_[slot]);
         if (got == 0) break;                            // the card said nothing; try next pass
 
         /* Blocks *covered*, rounded up: a read that ended 188 frames into the

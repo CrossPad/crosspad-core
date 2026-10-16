@@ -320,6 +320,10 @@ void SamplerEngine::noteOnBody(uint8_t pad, uint8_t velocity, int8_t transpose, 
     v.slot = slot;
     v.wantStream = willStream;
     v.cursor.bind(slot->head, slot->headStart, slot->headFrames, slot->desc.channels, last, &v.window);
+    /* What StreamWindow::open() will make a lap of, for the same voice. */
+    const uint32_t headEnd = slot->headStart + slot->headFrames;
+    const uint32_t lapFirst = first > headEnd ? first : headEnd;
+    v.cursor.setLoop(kp.mode == PadMode::Loop && willStream && last > lapFirst ? last - lapFirst : 0);
 
     /* One increment carries both reasons a voice does not step by exactly one
      * frame: the file's rate against the engine's, and the pad's pitch. The
@@ -539,9 +543,10 @@ bool SamplerEngine::renderVoice(Voice& v, float* out, uint32_t frames)
                 return false;
             }
             v.phase = firstQ + (v.phase - firstQ) % spanQ;
+            v.cursor.nextLap();
         }
     }
-    v.playFrame.store(static_cast<uint32_t>(v.phase >> 32), std::memory_order_release);
+    v.playFrame.store(v.cursor.streamFrame(static_cast<uint32_t>(v.phase >> 32)), std::memory_order_release);
     return true;
 }
 
@@ -827,7 +832,8 @@ bool SamplerEngine::serviceIo()
         if (v.wantStream && !v.window.isOpen()) {
             v.wantStream = false;
             const SampleStore::Slot* sl = v.slot;
-            if (!sl || !v.window.open(*pool_, sl->path, sl->desc.channels, sl->headStart + sl->headFrames, v.last)) {
+            if (!sl || !v.window.open(*pool_, sl->path, sl->desc.channels, sl->headStart + sl->headFrames, v.last,
+                                      StreamWindow::kDefaultBlocks, v.loop ? v.first : StreamWindow::kNoLoop)) {
                 cStreamRefused_.fetch_add(1, std::memory_order_relaxed);
                 continue;
             }

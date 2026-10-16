@@ -83,15 +83,30 @@ public:
     StreamWindow(const StreamWindow&) = delete;
     StreamWindow& operator=(const StreamWindow&) = delete;
 
+    /// open()'s @p loopFirst for a voice that does not loop.
+    static constexpr uint32_t kNoLoop = 0xFFFFFFFFu;
+
     /**
      * @brief Take @p blocks from @p pool to carry frames from @p streamStart on.
      *
      * Called when a voice starts, on the thread that struck the note. False
      * when the pool has nothing to give -- the caller then plays only the head
      * and counts a refusal, which is a short note rather than a glitch.
+     *
+     * A looping voice (@p loopFirst, the frame it wraps back to) does not end
+     * at @p sampleFrames: the window keeps streaming its laps one after
+     * another. Frame numbers past @p sampleFrames are the next lap's, the
+     * streamed part of the loop again -- from max(@p loopFirst, @p streamStart)
+     * -- so they only ever grow, and a lap is lapFrames() of them. The ring
+     * cannot go back, so without this a loop longer than head and ring ended
+     * one lap and a head later, the second time it left the head.
      */
     bool open(BlockPool& pool, const char* path, uint8_t channels,
-              uint32_t streamStart, uint32_t sampleFrames, uint8_t blocks = kDefaultBlocks);
+              uint32_t streamStart, uint32_t sampleFrames, uint8_t blocks = kDefaultBlocks,
+              uint32_t loopFirst = kNoLoop);
+
+    /// Streamed frames of one lap of a looping voice; 0 for one that does not loop.
+    uint32_t lapFrames() const { return lapFrames_; }
 
     /// Give the blocks back. Audio-safe; call it when the voice ends.
     void close(BlockPool& pool);
@@ -172,6 +187,12 @@ private:
     uint32_t sampleFrames_ = 0;
     uint32_t nextBlock_    = 0;         ///< block number the streaming thread fills next
     uint32_t idlePasses_   = 0;
+    uint32_t lapFirst_     = 0;         ///< file frame a lap's streamed part starts on
+    uint32_t lapFrames_    = 0;         ///< 0: no loop
+
+    /// Frames [first, first + n) of the stream into @p dst, a looping voice's
+    /// laps laid end to end. Streaming thread.
+    uint32_t readStream(ISampleSource& src, uint32_t first, uint32_t n, int16_t* dst) const;
 
     std::atomic<uint32_t> validUpTo_{0};
 };

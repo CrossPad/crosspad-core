@@ -954,3 +954,71 @@ TEST_CASE("SamplerEngine swaps a pad under the voice it is playing", "[sampleren
     REQUIRE_FALSE(rig.engine.padSounding(0));
     REQUIRE(rig.engine.counters().underruns == 0);
 }
+
+TEST_CASE("SamplerEngine keeps a loop going when it is longer than its head and its ring", "[samplerengine]") {
+    /* The common Loop pad: a bar of a few seconds. Its head is a fraction of
+     * it and the stream ring holds four blocks, so by the time the voice
+     * wraps the ring has moved on to the end of the file. The second lap
+     * has to stream the loop's body again. */
+    Rig rig;
+    rig.build();
+    rig.src.add("bar.wav", 20000, 1);             // 1024-frame head, ~19000 streamed
+    rig.assign(0, "bar.wav", 1024, PadMode::Loop);
+    rig.publish();
+
+    rig.engine.noteOn(0, 127);
+    for (int lap = 0; lap < 3; ++lap) {
+        rig.run(20000 / 64);                       // one lap of blocks
+        REQUIRE(rig.engine.padSounding(0));
+    }
+    CHECK(rig.engine.counters().underruns == 0);
+}
+
+TEST_CASE("SamplerEngine plays the streamed part of a long loop's second lap as written", "[samplerengine]") {
+    /* Not only sounding: the frames after the wrap are the file's own, the
+     * same values the first lap played at the same file positions. */
+    Rig rig;
+    rig.build();
+    rig.src.add("bar.wav", 9000, 1);
+    rig.assign(0, "bar.wav", 1024, PadMode::Loop);
+    rig.publish();
+
+    rig.engine.noteOn(0, 127);
+    std::vector<float> lap1, lap2;
+    std::vector<float> out(64 * 2);
+    for (uint32_t b = 0; b < 2 * 9000 / 64 + 8; ++b) {
+        std::fill(out.begin(), out.end(), 0.0f);
+        rig.engine.mix(out.data(), 64);
+        for (uint32_t i = 0; i < 64; ++i) {
+            const uint32_t f = b * 64 + i;
+            if (f < 9000) lap1.push_back(out[i * 2]);
+            else if (f < 18000) lap2.push_back(out[i * 2]);
+        }
+        rig.engine.serviceIo();
+    }
+    REQUIRE(lap1.size() == 9000);
+    REQUIRE(lap2.size() == 9000);
+    /* Past the attack ramp and away from the seam, sample for sample. */
+    for (uint32_t f = 2000; f < 8900; f += 97) {
+        REQUIRE_THAT(lap2[f], Catch::Matchers::WithinAbs(lap1[f], 1e-3));
+    }
+    CHECK(rig.engine.counters().underruns == 0);
+}
+
+TEST_CASE("SamplerEngine keeps a resampled stereo loop longer than its head going", "[samplerengine]") {
+    /* The interpolating path: a 48 kHz file in a 44.1 kHz engine steps by a
+     * fraction, so every frame is four taps, some of them across the seam
+     * where a lap ends and the next one's streamed part begins. */
+    Rig rig;
+    rig.build();
+    rig.src.add("bar48.wav", 15000, 2, 48000);
+    rig.assign(0, "bar48.wav", 1024, PadMode::Loop);
+    rig.publish();
+
+    rig.engine.noteOn(0, 127);
+    for (int lap = 0; lap < 3; ++lap) {
+        REQUIRE(rig.run(15000 * 44100 / 48000 / 64 + 1) > 0.0f);
+        REQUIRE(rig.engine.padSounding(0));
+    }
+    CHECK(rig.engine.counters().underruns == 0);
+}
