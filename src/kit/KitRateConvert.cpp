@@ -2,8 +2,10 @@
 #include "crosspad/kit/KitRateConvert.hpp"
 
 #include "crosspad/dsp/FftResampler.hpp"
+#include "crosspad/kit/KitInfo.hpp"
 #include "crosspad/kit/KitPathUtils.hpp"
 #include "crosspad/sampler/SampleStore.hpp"
+#include "KitJsonParser.hpp"
 #include "../util/JsonStdio.hpp"
 
 #include <algorithm>
@@ -34,7 +36,7 @@ constexpr uint64_t kSpaceMargin = 256 * 1024;    // beyond the files themselves
 constexpr uint64_t kMaxOutBytes = 0x7FFF0000u;   // a converted file's samples: under every 32-bit size it has
 constexpr long     kMaxJsonBytes = 1024 * 1024;  // a kit's JSON
 constexpr long     kMaxListBytes = 64 * 1024;    // the tidy's list
-constexpr size_t   kMaxListLines = 1024;
+constexpr long     kMaxScanBytes = 256 * 1024;   // another kit's JSON, searched as text
 constexpr uint16_t kFormatPcm = 1;
 constexpr uint16_t kFormatExtensible = 0xFFFE;
 const char* const kJournal = ".originals";
@@ -65,24 +67,52 @@ uint32_t scaleU32At(uint8_t* p, uint32_t inRate, uint32_t outRate) {
     return v;
 }
 
-bool pathExists(const std::string& p) {
+/* Paths are handled in fixed buffers: every one a kit names fits
+ * SampleStore::kMaxPath, and a buffer is no allocation to fail or to come
+ * out of internal RAM. */
+constexpr size_t kPath = 192;
+
+bool pathExists(const char* p) {
     struct stat st;
-    return stat(p.c_str(), &st) == 0;
+    return stat(p, &st) == 0;
 }
 
-uint32_t fileSize(const std::string& p) {
+bool isDirPath(const char* p) {
     struct stat st;
-    return stat(p.c_str(), &st) == 0 ? static_cast<uint32_t>(st.st_size) : 0;
+    return stat(p, &st) == 0 && S_ISDIR(st.st_mode);
 }
 
-std::string parentOf(const std::string& p) {
-    const auto s = p.rfind('/');
-    return s == std::string::npos ? std::string() : p.substr(0, s);
+uint32_t fileSize(const char* p) {
+    struct stat st;
+    return stat(p, &st) == 0 ? static_cast<uint32_t>(st.st_size) : 0;
 }
 
-std::string baseOf(const std::string& p) {
-    const auto s = p.rfind('/');
-    return s == std::string::npos ? p : p.substr(s + 1);
+const char* baseOf(const char* p) {
+    const char* s = std::strrchr(p, '/');
+    return s ? s + 1 : p;
+}
+
+/// @p p without its last component, in place.
+void cutLast(char* p) {
+    char* s = std::strrchr(p, '/');
+    if (s) *s = '\0';
+    else *p = '\0';
+}
+
+/// Joined into @p out; false when it does not fit.
+bool join(char* out, const char* a, const char* b, const char* c = nullptr) {
+    const size_t na = std::strlen(a), nb = std::strlen(b), nc = c ? std::strlen(c) : 0;
+    const size_t n = na + 1 + nb + (c ? 1 + nc : 0);
+    if (n >= kPath) return false;
+    std::memmove(out, a, na);
+    out[na] = '/';
+    std::memcpy(out + na + 1, b, nb);
+    if (c) {
+        out[na + 1 + nb] = '/';
+        std::memcpy(out + na + 2 + nb, c, nc);
+    }
+    out[n] = '\0';
+    return true;
 }
 
 /// FAT compares names without case: so does every path match here.
@@ -94,195 +124,243 @@ bool sameName(const char* a, const char* b) {
     return *a == *b;
 }
 
-/// "a/b/../c/./d" -> "a/c/d". A leading '/' is kept.
-std::string normalizePath(const std::string& p) {
-    std::vector<std::string> parts;
-    size_t i = 0;
-    while (i <= p.size()) {
-        const size_t j = std::min(p.find('/', i), p.size());
-        const std::string part = p.substr(i, j - i);
-        if (part == "..") {
-            if (!parts.empty()) parts.pop_back();
-        } else if (!part.empty() && part != ".") {
-            parts.push_back(part);
+/// "a/b/../c/./d" -> "a/c/d", in place. A leading '/' is kept; ".." above
+/// the top is dropped.
+void normalize(char* p) {
+    const bool abs = *p == '/';
+    char* top = p + (abs ? 1 : 0);
+    char* out = top;
+    const char* in = top;
+    while (*in) {
+        while (*in == '/') ++in;
+        const char* seg = in;
+        while (*in && *in != '/') ++in;
+        const size_t n = static_cast<size_t>(in - seg);
+        if (n == 0 || (n == 1 && seg[0] == '.')) continue;
+        if (n == 2 && seg[0] == '.' && seg[1] == '.') {
+            while (out > top && out[-1] != '/') --out;
+            if (out > top) --out;
+            continue;
         }
-        i = j + 1;
+        if (out > top) *out++ = '/';
+        std::memmove(out, seg, n);
+        out += n;
     }
-    std::string out = (!p.empty() && p[0] == '/') ? "/" : "";
-    for (size_t k = 0; k < parts.size(); ++k) out += (k ? "/" : "") + parts[k];
-    return out;
+    *out = '\0';
 }
 
-/// @p path is @p dir or below it -- @p path normalised, @p dir already so.
-bool isUnder(const std::string& path, const std::string& dir) {
-    return path.size() > dir.size() && path.compare(0, dir.size(), dir) == 0 && path[dir.size()] == '/';
+/// @p path is below @p dir: both normalised.
+bool isUnder(const char* path, const char* dir) {
+    const size_t n = std::strlen(dir);
+    return std::strncmp(path, dir, n) == 0 && path[n] == '/' && path[n + 1];
 }
 
-/// A sample of a kit, as a card path with every "." and ".." resolved: the
-/// only form any check below is made on.
-std::string sampleFsPath(const std::string& kitJsonPath, const char* sample) {
-    return normalizePath(kitFsPath(resolveKitSamplePath(kitJsonPath, sample)));
+/// A sample of a kit as a card path, every "." and ".." resolved: the only
+/// form any decision below is made on.
+bool samplePath(const std::string& kitJson, const std::string& sample, char* out) {
+    const std::string fs = kitFsPath(resolveKitSamplePath(kitJson, sample));
+    if (fs.empty() || fs.size() >= kPath) return false;
+    std::memcpy(out, fs.c_str(), fs.size() + 1);
+    normalize(out);
+    return *baseOf(out) != '\0';
 }
 
-bool hasWavSuffix(const std::string& p) {
-    return p.size() > 4 && sameName(p.c_str() + p.size() - 4, ".wav");
+bool hasWavSuffix(const char* p) {
+    const size_t n = std::strlen(p);
+    return n > 4 && sameName(p + n - 4, ".wav");
 }
 
-bool makeDirs(IKitConvertHost& host, const std::string& path, const std::string& floor) {
-    if (path.size() <= floor.size()) return true;
-    if (pathExists(path)) return true;
-    if (!makeDirs(host, parentOf(path), floor)) return false;
-    return host.makeDir(path) || pathExists(path);
+/// mkdir -p, but never at or above @p floor.
+bool makeDirs(IKitConvertHost& host, const char* path, const char* floor) {
+    if (std::strlen(path) <= std::strlen(floor) || isDirPath(path)) return true;
+    char up[kPath];
+    std::snprintf(up, sizeof(up), "%s", path);
+    cutLast(up);
+    if (!makeDirs(host, up, floor)) return false;
+    return host.makeDir(path) || isDirPath(path);
 }
 
-/// Every sample string of a kit document: the pads' layers and a pitched
-/// kit's zones. @p fn(pad, layer object or null, the string).
-template <typename Fn>
-void forEachSample(JsonDocument& doc, Fn fn) {
-    JsonArray pads = doc["pads"].as<JsonArray>();
-    int padIdx = 0;
-    for (JsonObject pad : pads) {
-        JsonArray samples = pad["samples"].as<JsonArray>();
-        for (JsonVariant sv : samples) {
-            if (sv.is<const char*>()) {
-                fn(padIdx, sv, JsonObject(), sv.as<const char*>());
-            } else if (sv.is<JsonObject>()) {
-                JsonObject o = sv.as<JsonObject>();
-                const char* s = o["sample"] | "";
-                if (s[0]) fn(padIdx, sv, o, s);
-            }
-        }
-        ++padIdx;
+/// The kit as the model reads it -- the same parse every kit load does.
+bool readKit(IKitConvertHost& host, const char* fsPath, KitInfo& kit) {
+    FILE* f = std::fopen(fsPath, "r");
+    // What a save cut between its two renames leaves.
+    if (!f && errno == ENOENT) {
+        char bak[kPath];
+        std::snprintf(bak, sizeof(bak), "%s.bak", fsPath);
+        f = std::fopen(bak, "r");
     }
-    JsonArray zones = doc["instrument"]["zones"].as<JsonArray>();
-    for (JsonObject z : zones) {
-        const char* s = z["sample"] | "";
-        if (s[0]) fn(-1, JsonVariant(), z, s);
-    }
-}
-
-bool readJson(const std::string& fsPath, JsonDocument& doc, const JsonDocument* filter = nullptr) {
-    FILE* f = std::fopen(fsPath.c_str(), "r");
-    // What writeJson() leaves when a save is cut between its two renames.
-    if (!f && errno == ENOENT) f = std::fopen((fsPath + ".bak").c_str(), "r");
     if (!f) return false;
     // A kit is a few kB; a document of megabytes is not one, and parsing it
     // would take the PSRAM the UI lives in.
     const bool sane = std::fseek(f, 0, SEEK_END) == 0 && std::ftell(f) >= 0 &&
                       std::ftell(f) <= kMaxJsonBytes && std::fseek(f, 0, SEEK_SET) == 0;
-    if (!sane) { std::fclose(f); return false; }
-    JsonFileReader in(f);
-    const DeserializationError err = filter
-        ? deserializeJson(doc, in, DeserializationOption::Filter(*filter))
-        : deserializeJson(doc, in);
+    bool ok = false;
+    if (sane) {
+        JsonDocument doc(host.jsonAllocator() ? host.jsonAllocator()
+                                              : ArduinoJson::detail::DefaultAllocator::instance());
+        JsonFileReader in(f);
+        ok = !deserializeJson(doc, in) && kit_parse_metadata(kit, doc);
+        if (ok) kit_parse_pads(kit, doc);
+    }
     std::fclose(f);
-    return !err;
+    return ok;
 }
 
 /// Through `.tmp` and `.bak`, as PortableKitLoader saves a kit: a failed
 /// write costs the write, never the file already there.
-bool writeJson(const std::string& fsPath, const JsonDocument& doc) {
-    const std::string tmp = fsPath + ".tmp";
-    FILE* f = std::fopen(tmp.c_str(), "w");
-    if (!f) return false;
-    JsonFileWriter out{f};
-    serializeJson(doc, out);
-    if (!closeWritten(f)) { std::remove(tmp.c_str()); return false; }
-    const std::string bak = fsPath + ".bak";
+bool replaceFile(const char* tmp, const char* path) {
+    char bak[kPath];
+    std::snprintf(bak, sizeof(bak), "%s.bak", path);
     bool hadOld = false;
-    if (pathExists(fsPath)) {
-        std::remove(bak.c_str());
-        hadOld = std::rename(fsPath.c_str(), bak.c_str()) == 0;
+    if (pathExists(path)) {
+        std::remove(bak);
+        hadOld = std::rename(path, bak) == 0;
     }
-    if (std::rename(tmp.c_str(), fsPath.c_str()) != 0) {
-        if (hadOld) std::rename(bak.c_str(), fsPath.c_str());
-        std::remove(tmp.c_str());
+    if (std::rename(tmp, path) != 0) {
+        if (hadOld) std::rename(bak, path);
+        std::remove(tmp);
         return false;
     }
-    std::remove(bak.c_str());
+    std::remove(bak);
     return true;
 }
 
-/// Lines of a small text file; empty when it is not there.
-std::vector<std::string> readLines(const std::string& path) {
-    std::vector<std::string> out;
-    FILE* f = std::fopen(path.c_str(), "r");
-    if (!f) return out;
-    std::string line;
-    int c;
-    long read = 0;
-    while (read++ < kMaxListBytes && out.size() < kMaxListLines && (c = std::fgetc(f)) != EOF) {
-        if (c == '\n') { if (!line.empty()) out.push_back(line); line.clear(); }
-        else if (c != '\r') line += static_cast<char>(c);
+bool writeKit(IKitConvertHost& host, const char* fsPath, const KitInfo& kit) {
+    char tmp[kPath];
+    std::snprintf(tmp, sizeof(tmp), "%s.tmp", fsPath);
+    FILE* f = std::fopen(tmp, "w");
+    if (!f) return false;
+    {
+        JsonDocument doc(host.jsonAllocator() ? host.jsonAllocator()
+                                              : ArduinoJson::detail::DefaultAllocator::instance());
+        kit_serialize(kit, doc);
+        JsonFileWriter out{f};
+        serializeJson(doc, out);
     }
-    if (!line.empty() && out.size() < kMaxListLines) out.push_back(line);
+    if (!closeWritten(f)) { std::remove(tmp); return false; }
+    return replaceFile(tmp, fsPath);
+}
+
+/// A small text file whole (the tidy's list); empty when it is not there or
+/// is larger than any list this writes.
+std::string readText(const char* path, long cap) {
+    std::string out;
+    FILE* f = std::fopen(path, "r");
+    if (!f) return out;
+    if (std::fseek(f, 0, SEEK_END) == 0) {
+        const long n = std::ftell(f);
+        if (n > 0 && n <= cap && std::fseek(f, 0, SEEK_SET) == 0) {
+            out.resize(static_cast<size_t>(n));
+            out.resize(std::fread(&out[0], 1, out.size(), f));
+        }
+    }
     std::fclose(f);
     return out;
 }
 
 /// The list replaced whole, or removed when it is empty.
-bool writeLines(const std::string& path, const std::vector<std::string>& lines) {
-    if (lines.empty()) {
-        std::remove(path.c_str());
+bool writeText(const char* path, const std::string& text) {
+    if (text.empty()) {
+        std::remove(path);
         return !pathExists(path);
     }
-    const std::string tmp = path + ".tmp";
-    FILE* f = std::fopen(tmp.c_str(), "w");
+    char tmp[kPath];
+    std::snprintf(tmp, sizeof(tmp), "%s.tmp", path);
+    FILE* f = std::fopen(tmp, "w");
     if (!f) return false;
-    for (const auto& l : lines) std::fprintf(f, "%s\n", l.c_str());
-    if (!closeWritten(f)) { std::remove(tmp.c_str()); return false; }
-    std::remove(path.c_str());
-    return std::rename(tmp.c_str(), path.c_str()) == 0;
+    const bool wrote = std::fwrite(text.data(), 1, text.size(), f) == text.size();
+    if (!closeWritten(f) || !wrote) { std::remove(tmp); return false; }
+    std::remove(path);
+    return std::rename(tmp, path) == 0;
 }
 
-/// Directories under @p dir, hidden ones left out.
-std::vector<std::string> subDirs(const std::string& dir) {
-    std::vector<std::string> out;
-#ifdef _WIN32
-    std::error_code ec;
-    for (const auto& e : std::filesystem::directory_iterator(std::filesystem::u8path(dir), ec)) {
-        const std::string n = e.path().filename().u8string();
-        if (!n.empty() && n[0] != '.' && e.is_directory(ec)) out.push_back(n);
+/// Whether @p line is one of the '\n'-ended lines of @p text, as FAT
+/// compares names.
+bool hasLine(const std::string& text, const char* line) {
+    const size_t n = std::strlen(line);
+    for (size_t at = 0; at < text.size();) {
+        size_t e = text.find('\n', at);
+        if (e == std::string::npos) e = text.size();
+        size_t k = 0;
+        while (k < n && e - at == n && std::tolower(static_cast<unsigned char>(text[at + k])) ==
+                                           std::tolower(static_cast<unsigned char>(line[k]))) ++k;
+        if (e - at == n && k == n) return true;
+        at = e + 1;
     }
-#else
-    DIR* d = opendir(dir.c_str());
-    if (!d) return out;
-    std::vector<std::string> names;
-    while (dirent* e = readdir(d)) {
-        if (e->d_name[0] != '.') names.emplace_back(e->d_name);
-    }
-    closedir(d);
-    for (auto& n : names) {
-        struct stat st;
-        if (stat((dir + "/" + n).c_str(), &st) == 0 && S_ISDIR(st.st_mode)) out.push_back(std::move(n));
-    }
-#endif
-    return out;
+    return false;
 }
 
-/// Every kit JSON under @p dirFs, found as the kit scan finds them: a folder
-/// with kit.json or <folder>.json is a kit and is not looked into further.
-template <typename Fn>
-void forEachKitJson(const std::string& dirFs, Fn fn, int depth = 0) {
-    if (depth > 8) return;
-    for (const std::string& name : subDirs(dirFs)) {
-        const std::string sub = dirFs + "/" + name;
-        const std::string a = sub + "/kit.json";
-        const std::string b = sub + "/" + name + ".json";
-        if (pathExists(a) || pathExists(a + ".bak")) fn(a);
-        else if (pathExists(b) || pathExists(b + ".bak")) fn(b);
-        else forEachKitJson(sub, fn, depth + 1);
-    }
-}
-
-void removeEmptyDir(const std::string& path) {
+void removeEmptyDir(const char* path) {
 #ifdef _WIN32
     std::error_code ec;
     if (std::filesystem::is_empty(std::filesystem::u8path(path), ec)) {
         std::filesystem::remove(std::filesystem::u8path(path), ec);
     }
 #else
-    rmdir(path.c_str());   // fails, harmlessly, while anything is in it
+    rmdir(path);   // fails, harmlessly, while anything is in it
+#endif
+}
+
+/// @p needle in @p hay, ignoring ASCII case.
+bool containsCi(const char* hay, size_t n, const char* needle) {
+    const size_t m = std::strlen(needle);
+    for (size_t i = 0; m && i + m <= n; ++i) {
+        size_t k = 0;
+        while (k < m && std::tolower(static_cast<unsigned char>(hay[i + k])) ==
+                            std::tolower(static_cast<unsigned char>(needle[k]))) ++k;
+        if (k == m) return true;
+    }
+    return false;
+}
+
+/// Every kit JSON under @p dir (a buffer of kPath, extended and restored as
+/// the walk goes), found as the kit scan finds them: a folder with kit.json
+/// or <folder>.json is a kit and is not looked into further.
+template <typename Fn>
+void forEachKitJson(char* dir, Fn& fn, int depth = 0) {
+#ifdef _WIN32
+    if (depth > 8) return;
+    std::error_code ec;
+    const std::string here = dir;
+    for (const auto& e : std::filesystem::directory_iterator(std::filesystem::u8path(here), ec)) {
+        const std::string name = e.path().filename().u8string();
+        if (name.empty() || name[0] == '.' || !e.is_directory(ec)) continue;
+        const std::string sub = here + "/" + name;
+        if (sub.size() + name.size() + 7 >= kPath) continue;
+        std::string json = sub + "/kit.json";
+        if (!pathExists(json.c_str())) json = sub + "/" + name + ".json";
+        if (pathExists(json.c_str())) {
+            fn(json.c_str());
+        } else {
+            std::snprintf(dir, kPath, "%s", sub.c_str());
+            forEachKitJson(dir, fn, depth + 1);
+            std::snprintf(dir, kPath, "%s", here.c_str());
+        }
+    }
+#else
+    if (depth > 8) return;
+    DIR* d = opendir(dir);
+    if (!d) return;
+    const size_t len = std::strlen(dir);
+    while (dirent* e = readdir(d)) {
+        if (e->d_name[0] == '.') continue;
+        if (len + 2 + 2 * std::strlen(e->d_name) + 6 >= kPath) continue;
+        std::snprintf(dir + len, kPath - len, "/%s", e->d_name);
+        if (isDirPath(dir)) {
+            char json[kPath];
+            const size_t sub = std::strlen(dir);
+            join(json, dir, "kit.json");
+            if (!pathExists(json)) {
+                join(json, dir, e->d_name);
+                std::strcat(json, ".json");      // room checked above
+            }
+            if (pathExists(json)) fn(json);
+            else forEachKitJson(dir, fn, depth + 1);
+            dir[sub] = '\0';
+        }
+        dir[len] = '\0';
+    }
+    closedir(d);
 #endif
 }
 
@@ -311,18 +389,13 @@ void setText(char* dst, size_t cap, const char* s) {
 
 // ── Small pieces ────────────────────────────────────────────────────────────
 
-std::string rateFolderName(uint32_t rate) {
-    const uint32_t k = rate / 1000;
-    uint32_t frac = rate % 1000;
-    std::string s = std::to_string(k) + "k";
-    if (frac) {
-        char buf[8];
-        std::snprintf(buf, sizeof(buf), "%03u", static_cast<unsigned>(frac));
-        std::string f = buf;
-        while (!f.empty() && f.back() == '0') f.pop_back();
-        s += f;
-    }
-    return s;
+const char* rateFolderName(uint32_t rate, char* buf) {
+    std::snprintf(buf, kRateFolderMax, "%uk%03u", static_cast<unsigned>(rate / 1000 % 10000),
+                  static_cast<unsigned>(rate % 1000));
+    char* end = buf + std::strlen(buf);
+    while (end[-1] == '0' && end[-2] != 'k') *--end = '\0';
+    if (end[-1] == '0' && end[-2] == 'k') end[-1] = '\0';
+    return buf;
 }
 
 uint32_t scaleFrame(uint32_t frame, uint32_t inRate, uint32_t outRate) {
@@ -373,7 +446,7 @@ bool WavLayout::parse(FILE* f) {
             c.offset = pos + 8;
             c.size = std::min(size, avail);
             c.afterData = haveData;
-            chunks.push_back(c);
+            if (chunkCount < kMaxChunks) chunks[chunkCount++] = c;   // more are not copied
         }
         if (size > avail) break;                // runs past the file: nothing after it
         pos += 8 + size + (size & 1);           // chunks are word aligned
@@ -384,7 +457,7 @@ bool WavLayout::parse(FILE* f) {
     return true;
 }
 
-bool wavChunkScaled(const char id[4]) {
+static bool wavChunkScaled(const char id[4]) {
     return idIs(id, "smpl") || idIs(id, "cue ") || idIs(id, "LIST") || idIs(id, "bext") || idIs(id, "fact");
 }
 
@@ -454,17 +527,17 @@ bool IKitConvertHost::writeIo(FILE* f, const void* src, size_t bytes) {
 
 bool IKitConvertHost::syncFile(FILE* f) { return std::fflush(f) == 0; }
 
-uint64_t IKitConvertHost::freeBytes(const std::string& fsDir) {
+uint64_t IKitConvertHost::freeBytes(const char* fsDir) {
     (void)fsDir;
     return UINT64_MAX;
 }
 
-bool IKitConvertHost::makeDir(const std::string& fsPath) {
+bool IKitConvertHost::makeDir(const char* fsPath) {
 #ifdef _WIN32
     std::error_code ec;
     return std::filesystem::create_directory(std::filesystem::u8path(fsPath), ec);
 #else
-    return mkdir(fsPath.c_str(), 0755) == 0;
+    return mkdir(fsPath, 0755) == 0;
 #endif
 }
 
@@ -479,7 +552,7 @@ struct KitRateConverter::Io {
     FILE* src = nullptr;
     FILE* dst = nullptr;
     WavLayout lay;
-    std::string part;
+    char part[kPath] = {};
     FftResamplerStream rs[2];
     void* mem = nullptr;
     int16_t* in = nullptr;        ///< kChunkFrames interleaved frames
@@ -506,10 +579,9 @@ uint8_t KitRateConverter::Progress::percent() const {
     }
 }
 
-uint32_t KitRateConverter::addName(const std::string& s) {
+uint32_t KitRateConverter::addName(const char* s) {
     const uint32_t off = static_cast<uint32_t>(names_.size());
-    names_ += s;
-    names_ += '\0';
+    names_.append(s, std::strlen(s) + 1);
     return off;
 }
 
@@ -525,7 +597,6 @@ bool KitRateConverter::begin(IKitConvertHost& host, const std::string& kitJsonPa
     host_ = &host;
     g_allocHost = &host;
     kitJson_ = kitJsonPath;
-    kitDirFs_ = normalizePath(parentOf(kitFsPath(kitJsonPath)));
     target_ = targetRate;
     names_.clear();
     files_.clear();
@@ -535,65 +606,88 @@ bool KitRateConverter::begin(IKitConvertHost& host, const std::string& kitJsonPa
     progress_ = Progress();
     progress_.toRate = targetRate;
     cancel_.store(false, std::memory_order_relaxed);
-    if (kitJsonPath.empty() || kitDirFs_.empty() || targetRate == 0) return fail("no kit");
+    const std::string fs = kitFsPath(kitJsonPath);
+    if (fs.empty() || fs.size() >= kPath || targetRate == 0) return fail("no kit");
+    std::memcpy(kitDirFs_, fs.c_str(), fs.size() + 1);
+    cutLast(kitDirFs_);
+    normalize(kitDirFs_);
+    if (!kitDirFs_[0]) return fail("no kit");
     progress_.phase = Phase::Planning;
     return true;
 }
 
 bool KitRateConverter::planKit() {
-    JsonDocument doc(host_->jsonAllocator() ? host_->jsonAllocator()
-                                            : ArduinoJson::detail::DefaultAllocator::instance());
-    if (!readJson(kitFsPath(kitJson_), doc)) return fail("cannot read the kit");
-    if (std::strcmp(doc["engine"] | "", "pitched") == 0) return fail("pitched kit");
-
-    const std::string folder = rateFolderName(target_);
-    const std::string folderFs = kitDirFs_ + "/" + folder;
-    std::vector<uint32_t> rels;   // for the name check of borrowed files
-    forEachSample(doc, [&](int pad, JsonVariant, JsonObject, const char* s) {
-        if (pad < 0) return;
-        // Resolved, then every ".." taken out, before anything is decided on
-        // it: "../../x.wav" begins with the kit's folder as text and is not in it.
-        const std::string fs = sampleFsPath(kitJson_, s);
-        if (fs.empty() || baseOf(fs).empty()) return;
-        for (const FileJob& f : files_) if (sameName(name(f.src), fs.c_str())) return;
-        FileJob f;
-        std::string rel;
-        if (isUnder(fs, kitDirFs_)) {
-            f.inside = true;
-            rel = folder + "/" + fs.substr(kitDirFs_.size() + 1);
-        } else {
-            // Borrowed from elsewhere on the card: copied in, never touched.
-            const std::string base = baseOf(fs);
-            const auto dot = base.rfind('.');
-            const std::string stem = dot == std::string::npos ? base : base.substr(0, dot);
-            const std::string ext = dot == std::string::npos ? "" : base.substr(dot);
-            for (int n = 1;; ++n) {
-                rel = folder + "/_shared/" + (n == 1 ? base : stem + "_" + std::to_string(n) + ext);
-                bool taken = false;
-                for (uint32_t r : rels) taken = taken || sameName(name(r), rel.c_str());
-                if (!taken) break;
+    KitInfo* kit = new (std::nothrow) KitInfo();
+    if (!kit) return fail("not enough memory");
+    const bool read = readKit(*host_, kitFsPath(kitJson_).c_str(), *kit);
+    if (!read || kit->engine == KitEngine::Pitched) {
+        delete kit;
+        return fail(read ? "pitched kit" : "cannot read the kit");
+    }
+    char folderFs[kPath], src[kPath], rel[kPath], dst[kPath];
+    char folderBuf[kRateFolderMax];
+    const char* folder = rateFolderName(target_, folderBuf);
+    join(folderFs, kitDirFs_, folder);
+    for (const Pad& pad : kit->pads) {
+        for (const SampleSlot& slot : pad.samples) {
+            // Resolved, then every ".." taken out, before anything is decided
+            // on it: "../../x.wav" begins with the kit's folder as text and is
+            // not in it.
+            if (!samplePath(kitJson_, slot.sample, src)) continue;
+            bool known = false;
+            for (const FileJob& f : files_) known = known || sameName(name(f.src), src);
+            if (known) continue;
+            FileJob f;
+            f.inside = isUnder(src, kitDirFs_);
+            if (f.inside) {
+                std::snprintf(rel, sizeof(rel), "%s/%s", folder, src + std::strlen(kitDirFs_) + 1);
+            } else {
+                // Borrowed from elsewhere on the card: copied in, never
+                // touched. A name already taken gets a number.
+                const char* base = baseOf(src);
+                const char* dot = std::strrchr(base, '.');
+                const int stem = dot ? static_cast<int>(dot - base) : static_cast<int>(std::strlen(base));
+                for (int n = 1; n < 100; ++n) {
+                    if (n == 1) std::snprintf(rel, sizeof(rel), "%s/_shared/%s", folder, base);
+                    else std::snprintf(rel, sizeof(rel), "%s/_shared/%.*s_%d%s", folder, stem, base, n,
+                                       dot ? dot : "");
+                    bool taken = false;
+                    for (const FileJob& g : files_) taken = taken || sameName(name(g.rel), rel);
+                    if (!taken) break;
+                }
             }
+            // Whatever the names were, the file written is in the rate's folder.
+            if (!join(dst, kitDirFs_, rel)) continue;
+            normalize(dst);
+            if (!isUnder(dst, folderFs)) continue;
+            f.src = addName(src);
+            f.rel = addName(rel);
+            f.dst = addName(dst);
+            files_.push_back(f);
         }
-        // Whatever the names were, the file written is in the rate's folder.
-        const std::string dst = normalizePath(kitDirFs_ + "/" + rel);
-        if (!isUnder(dst, folderFs)) return;
-        f.src = addName(fs);
-        f.rel = addName(rel);
-        rels.push_back(f.rel);
-        f.dst = addName(dst);
-        files_.push_back(f);
-    });
+    }
+    delete kit;
     progress_.files = static_cast<uint16_t>(files_.size());
     return true;
 }
 
 bool KitRateConverter::planFile(FileJob& f) {
-    f.described = true;
     FILE* in = std::fopen(name(f.src), "rb");
     WavLayout lay;
     const bool ok = in && lay.parse(in);
     if (in) std::fclose(in);
-    if (!ok || !lay.pcm16()) {
+    if (ok && lay.pcm16() && lay.rate == target_) {
+        f.state = FileState::Skip;   // already at the rate: nothing to do, nothing wrong
+        f.rate = lay.rate;
+        return true;
+    }
+    // Converted, it has to fit every 32-bit size a WAV has, with room for its
+    // metadata (an 8 kHz file of 900 MB would be 5 GB at 44.1 kHz); and the
+    // store keys a sample on its path, so one too long for it, ".part" and
+    // all, is a pad that would never load.
+    const uint64_t outFrames = ok ? (static_cast<uint64_t>(lay.frames) * target_ + lay.rate / 2) / lay.rate : 0;
+    if (!ok || !lay.pcm16() || outFrames * lay.channels * 2 > kMaxOutBytes ||
+        std::strlen(name(f.dst)) + 6 >= SampleStore::kMaxPath) {
         f.state = FileState::Skip;
         ++progress_.skipped;
         return true;
@@ -602,25 +696,6 @@ bool KitRateConverter::planFile(FileJob& f) {
     f.frames = lay.frames;
     f.channels = static_cast<uint8_t>(lay.channels);
     f.srcBytes = lay.fileBytes;
-    if (lay.rate == target_) {
-        f.state = FileState::Skip;   // already at the rate: nothing to do, nothing wrong
-        return true;
-    }
-    // Converted, it has to fit every 32-bit size a WAV has, with room for its
-    // metadata: an 8 kHz file of 900 MB would be 5 GB at 44.1 kHz.
-    const uint64_t outFrames = (static_cast<uint64_t>(lay.frames) * target_ + lay.rate / 2) / lay.rate;
-    if (outFrames * lay.channels * 2 > kMaxOutBytes) {
-        f.state = FileState::Skip;
-        ++progress_.skipped;
-        return true;
-    }
-    // The store keys a sample on its path: one that does not fit is a pad
-    // that would never load. Room for ".part" too, while it is written.
-    if (std::strlen(name(f.dst)) + 6 >= SampleStore::kMaxPath) {
-        f.state = FileState::Skip;
-        ++progress_.skipped;
-        return true;
-    }
     ++progress_.toConvert;
 
     // Converted before (a run that was stopped, or cut): kept if it verifies.
@@ -640,15 +715,13 @@ bool KitRateConverter::planFile(FileJob& f) {
 
 bool KitRateConverter::planDone() {
     // The rate most of them were at, for the words on the screen.
-    uint32_t best = 0, bestCount = 0;
+    uint32_t bestCount = 0;
     for (const FileJob& a : files_) {
         if (!a.rate || a.rate == target_) continue;
         uint32_t n = 0;
         for (const FileJob& b : files_) n += b.rate == a.rate;
-        if (n > bestCount) { best = a.rate; bestCount = n; }
+        if (n > bestCount) { progress_.fromRate = a.rate; bestCount = n; }
     }
-    progress_.fromRate = best;
-
     uint64_t need = 0;
     for (const FileJob& f : files_) {
         if (f.state != FileState::Pending) continue;
@@ -683,9 +756,10 @@ void KitRateConverter::endFileIo() {
 
 void KitRateConverter::dropFile() {
     if (!io_) return;
-    const std::string part = io_->part;
+    char part[kPath];
+    std::memcpy(part, io_->part, sizeof(part));
     endFileIo();
-    if (!part.empty()) std::remove(part.c_str());
+    if (part[0]) std::remove(part);
 }
 
 /// Copy one metadata chunk from the source, scaled when it carries positions.
@@ -699,43 +773,53 @@ static bool copyChunk(IKitConvertHost& host, FILE* src, FILE* dst, const WavLayo
     std::memcpy(hdr, c.id, 4);
     wr32(hdr + 4, c.size);
     const uint8_t pad = 0;
-    if (wavChunkScaled(c.id)) {
-        if (c.size > kMaxScaledChunk) return true;               // dropped: too big to rewrite
-        uint8_t* buf = static_cast<uint8_t*>(host.alloc(c.size ? c.size : 1));
-        if (!buf) return false;
-        bool read = std::fseek(src, c.offset, SEEK_SET) == 0;
-        for (uint32_t at = 0; read && at < c.size; at += step) {
+    const bool scaled = wavChunkScaled(c.id);
+    if (wavChunkDropped(c.id) || (scaled && c.size > kMaxScaledChunk)) return true;
+    /* A chunk that carries positions is read whole, scaled, then written; any
+     * other goes through the piece buffer as it is. */
+    uint8_t* buf = scaled ? static_cast<uint8_t*>(host.alloc(c.size ? c.size : 1)) : piece;
+    if (!buf) return false;
+    bool ok = std::fseek(src, c.offset, SEEK_SET) == 0;
+    if (scaled) {
+        for (uint32_t at = 0; ok && at < c.size; at += step) {
             const uint32_t n = std::min(step, c.size - at);
-            read = host.readIo(src, buf + at, n) == n;
+            ok = host.readIo(src, buf + at, n) == n;
         }
-        bool ok = read;
-        if (read && scaleWavChunk(c.id, buf, c.size, inRate, outRate)) {
-            ok = host.writeIo(dst, hdr, 8);
-            for (uint32_t at = 0; ok && at < c.size; at += step)
-                ok = host.writeIo(dst, buf + at, std::min(step, c.size - at));
-            if (ok && (c.size & 1)) ok = host.writeIo(dst, &pad, 1);
-        }
-        host.release(buf);
-        return ok;
+        ok = ok && scaleWavChunk(c.id, buf, c.size, inRate, outRate);
     }
-    if (wavChunkDropped(c.id)) return true;
-    if (std::fseek(src, c.offset, SEEK_SET) != 0 || !host.writeIo(dst, hdr, 8)) return false;
-    for (uint32_t at = 0; at < c.size;) {
+    ok = ok && host.writeIo(dst, hdr, 8);
+    for (uint32_t at = 0; ok && at < c.size; at += step) {
         const uint32_t n = std::min(step, c.size - at);
-        if (host.readIo(src, piece, n) != n || !host.writeIo(dst, piece, n)) return false;
-        at += n;
+        if (!scaled) ok = host.readIo(src, piece, n) == n;
+        ok = ok && host.writeIo(dst, scaled ? buf + at : piece, n);
         host.giveWay();
     }
-    return !(c.size & 1) || host.writeIo(dst, &pad, 1);
+    if (ok && (c.size & 1)) ok = host.writeIo(dst, &pad, 1);
+    if (scaled) host.release(buf);
+    return ok;
+}
+
+bool KitRateConverter::copyChunks(bool afterData) {
+    Io& io = *io_;
+    const FileJob& f = files_[cursor_];
+    for (uint8_t i = 0; i < io.lay.chunkCount; ++i) {
+        if (io.lay.chunks[i].afterData != afterData) continue;
+        if (!copyChunk(*host_, io.src, io.dst, io.lay.chunks[i], f.rate, target_,
+                       reinterpret_cast<uint8_t*>(io.out), io.outCap * f.channels * 2))
+            return false;
+    }
+    return true;
 }
 
 bool KitRateConverter::startFile() {
     FileJob& f = files_[cursor_];
     ++progress_.fileIndex;
-    setText(progress_.current, sizeof(progress_.current), baseOf(name(f.src)).c_str());
+    setText(progress_.current, sizeof(progress_.current), baseOf(name(f.src)));
 
-    const std::string dst = name(f.dst);
-    if (!makeDirs(*host_, parentOf(dst), kitDirFs_)) return fail("cannot make the folder");
+    char dir[kPath];
+    std::snprintf(dir, sizeof(dir), "%s", name(f.dst));
+    cutLast(dir);
+    if (!makeDirs(*host_, dir, kitDirFs_)) return fail("cannot make the folder");
 
     io_ = new (std::nothrow) Io(host_->fft());
     if (!io_) return fail("not enough memory");
@@ -753,15 +837,12 @@ bool KitRateConverter::startFile() {
     }
 
     const uint32_t ch = f.channels;
-    const double ratio = static_cast<double>(target_) / f.rate;
     /* What one push can hand back: its own frames at the ratio, plus up to two
      * analysis blocks the flush finishes, plus the stream's slack. */
     const uint32_t block = kConvertFftMax / kConvertOversample;
-    io.outCap = static_cast<uint32_t>((kChunkFrames + 2 * block) * ratio) + 2 * FftResamplerStream::kStreamOutSlack;
-    const size_t samples = static_cast<size_t>(kChunkFrames) * ch      // in
-                         + static_cast<size_t>(kChunkFrames) * ch      // chIn
-                         + static_cast<size_t>(io.outCap) * ch         // chOut
-                         + static_cast<size_t>(io.outCap) * ch;        // out
+    io.outCap = static_cast<uint32_t>(static_cast<uint64_t>(kChunkFrames + 2 * block) * target_ / f.rate) +
+                2 * FftResamplerStream::kStreamOutSlack + 1;
+    const size_t samples = (static_cast<size_t>(kChunkFrames) * 2 + static_cast<size_t>(io.outCap) * 2) * ch;
     io.mem = host_->alloc(samples * sizeof(int16_t));
     if (!io.mem) return fail("not enough memory");
     int16_t* p = static_cast<int16_t*>(io.mem);
@@ -775,10 +856,10 @@ bool KitRateConverter::startFile() {
     }
     io.outTotal = resampledLength(f.frames, f.rate, target_);
 
-    io.part = dst + ".part";
-    std::remove(io.part.c_str());
-    io.dst = std::fopen(io.part.c_str(), "wb");
-    if (!io.dst) return fail("cannot write to the card");
+    std::snprintf(io.part, sizeof(io.part), "%s.part", name(f.dst));
+    std::remove(io.part);
+    io.dst = std::fopen(io.part, "wb");
+    if (!io.dst) { io.part[0] = '\0'; return fail("cannot write to the card"); }
 
     uint8_t h[36];
     std::memcpy(h, "RIFF", 4);
@@ -791,13 +872,7 @@ bool KitRateConverter::startFile() {
     wr32(h + 28, target_ * ch * 2);
     wr16(h + 32, static_cast<uint16_t>(ch * 2));
     wr16(h + 34, 16);
-    if (!host_->writeIo(io.dst, h, sizeof(h))) return fail("cannot write to the card");
-    for (const auto& c : io.lay.chunks) {
-        if (c.afterData) continue;
-        if (!copyChunk(*host_, io.src, io.dst, c, f.rate, target_, reinterpret_cast<uint8_t*>(io.out),
-                       io.outCap * ch * 2))
-            return fail("cannot write to the card");
-    }
+    if (!host_->writeIo(io.dst, h, sizeof(h)) || !copyChunks(false)) return fail("cannot write to the card");
     uint8_t d[8];
     std::memcpy(d, "data", 4);
     wr32(d + 4, io.outTotal * ch * 2);
@@ -808,19 +883,20 @@ bool KitRateConverter::startFile() {
     return true;
 }
 
-/// @p got frames per channel in io.chOut, interleaved and written -- never
-/// past the length the file is to have.
-static bool emit(IKitConvertHost& host, FILE* dst, int16_t* const* chOut,
-                 int16_t* out, uint32_t ch, uint32_t got, uint32_t& written, uint32_t total) {
-    if (written + got > total) got = total - written;
+/// @p got frames of each channel in io.chOut, interleaved and written --
+/// never past the length the file is to have.
+bool KitRateConverter::emit(uint32_t got) {
+    Io& io = *io_;
+    const uint32_t ch = files_[cursor_].channels;
+    if (io.outWritten + got > io.outTotal) got = io.outTotal - io.outWritten;
     for (uint32_t i = 0; i < got; ++i)
-        for (uint32_t c = 0; c < ch; ++c) out[i * ch + c] = chOut[c][i];
-    const uint8_t* b = reinterpret_cast<const uint8_t*>(out);
+        for (uint32_t c = 0; c < ch; ++c) io.out[i * ch + c] = io.chOut[c][i];
+    const uint8_t* b = reinterpret_cast<const uint8_t*>(io.out);
     const uint32_t bytes = got * ch * 2;
     for (uint32_t at = 0; at < bytes; at += kConvertPieceBytes) {
-        if (!host.writeIo(dst, b + at, std::min<uint32_t>(kConvertPieceBytes, bytes - at))) return false;
+        if (!host_->writeIo(io.dst, b + at, std::min<uint32_t>(kConvertPieceBytes, bytes - at))) return false;
     }
-    written += got;
+    io.outWritten += got;
     return true;
 }
 
@@ -841,8 +917,7 @@ bool KitRateConverter::stepFile() {
     uint32_t got = UINT32_MAX;
     for (uint32_t c = 0; c < ch; ++c) got = std::min(got, io.rs[c].push(io.chIn[c], n, io.chOut[c], io.outCap));
     if (!io.rs[0].ok() || (ch == 2 && !io.rs[1].ok())) return fail("resampler failed");
-    if (!emit(*host_, io.dst, io.chOut, io.out, ch, got, io.outWritten, io.outTotal))
-        return fail("cannot write to the card");
+    if (!emit(got)) return fail("cannot write to the card");
     io.inPos += n;
     progress_.framesDone += n;
     host_->giveWay();
@@ -855,48 +930,36 @@ bool KitRateConverter::finishFile() {
     const uint32_t ch = f.channels;
     uint32_t got = UINT32_MAX;
     for (uint32_t c = 0; c < ch; ++c) got = std::min(got, io.rs[c].flush(io.chOut[c], io.outCap));
-    if (!emit(*host_, io.dst, io.chOut, io.out, ch, got, io.outWritten, io.outTotal))
-        return fail("cannot write to the card");
+    bool ok = emit(got);
     // A stream that came up short: the rest is the silence past the end.
-    while (io.outWritten < io.outTotal) {
+    while (ok && io.outWritten < io.outTotal) {
         const uint32_t n = std::min(io.outCap, io.outTotal - io.outWritten);
         for (uint32_t c = 0; c < ch; ++c) std::memset(io.chOut[c], 0, n * sizeof(int16_t));
-        if (!emit(*host_, io.dst, io.chOut, io.out, ch, n, io.outWritten, io.outTotal))
-            return fail("cannot write to the card");
+        ok = emit(n);
     }
-    for (const auto& c : io.lay.chunks) {
-        if (!c.afterData) continue;
-        if (!copyChunk(*host_, io.src, io.dst, c, f.rate, target_, reinterpret_cast<uint8_t*>(io.out),
-                       io.outCap * ch * 2))
-            return fail("cannot write to the card");
-    }
-    const long end = std::ftell(io.dst);
+    ok = ok && copyChunks(true);
+    const long end = ok ? std::ftell(io.dst) : -1;
     uint8_t v[4];
     wr32(v, static_cast<uint32_t>(end) - 8);
-    bool ok = end > 0 && std::fseek(io.dst, 4, SEEK_SET) == 0 && host_->writeIo(io.dst, v, 4);
+    ok = end > 0 && std::fseek(io.dst, 4, SEEK_SET) == 0 && host_->writeIo(io.dst, v, 4);
     wr32(v, io.outTotal * ch * 2);
     ok = ok && std::fseek(io.dst, io.dataSizeAt, SEEK_SET) == 0 && host_->writeIo(io.dst, v, 4);
     ok = ok && host_->syncFile(io.dst);
     ok = std::fclose(io.dst) == 0 && ok;
     io.dst = nullptr;
-    std::fclose(io.src);
-    io.src = nullptr;
-    if (!ok) { dropFile(); return fail("cannot write to the card"); }
+    if (!ok) return fail("cannot write to the card");
 
     // Read back before it counts: a file the card did not keep is not swapped in.
-    FILE* chk = std::fopen(io.part.c_str(), "rb");
+    FILE* chk = std::fopen(io.part, "rb");
     WavLayout back;
     const bool parsed = chk && back.parse(chk);
     if (chk) std::fclose(chk);
     if (!parsed || !back.pcm16() || back.rate != target_ || back.channels != ch ||
-        back.frames != io.outTotal || back.riffBytes != back.fileBytes) {
-        dropFile();
+        back.frames != io.outTotal || back.riffBytes != back.fileBytes)
         return fail("verify failed");
-    }
-    const std::string dst = name(f.dst);
-    std::remove(dst.c_str());                    // a stale one that did not verify
-    if (std::rename(io.part.c_str(), dst.c_str()) != 0) { dropFile(); return fail("cannot write to the card"); }
-    io.part.clear();
+    std::remove(name(f.dst));                    // a stale one that did not verify
+    if (std::rename(io.part, name(f.dst)) != 0) return fail("cannot write to the card");
+    io.part[0] = '\0';
     endFileIo();
     f.state = FileState::Done;
     ++progress_.converted;
@@ -914,55 +977,55 @@ bool KitRateConverter::commit() {
     }
     if (!any) { progress_.phase = Phase::Done; return false; }
 
-    JsonDocument doc(host_->jsonAllocator() ? host_->jsonAllocator()
-                                            : ArduinoJson::detail::DefaultAllocator::instance());
+    /* The kit as the card has it now -- edits saved during the conversion
+     * included -- read, retargeted and saved the way every kit save is. */
     const std::string jsonFs = kitFsPath(kitJson_);
-    if (!readJson(jsonFs, doc)) return fail("cannot read the kit");
-
-    forEachSample(doc, [&](int pad, JsonVariant v, JsonObject o, const char* s) {
-        if (pad < 0) return;
-        const std::string fs = sampleFsPath(kitJson_, s);
-        for (const FileJob& f : files_) {
-            if (f.state != FileState::Done || !sameName(name(f.src), fs.c_str())) continue;
-            KitConvertEdit e;
-            e.pad = static_cast<uint8_t>(pad);
-            e.oldSample = s;
-            e.newSample = name(f.rel);
-            if (o.isNull()) {
-                v.set(e.newSample);
-            } else {
-                e.oldStart = o["start"] | static_cast<uint32_t>(0);
-                e.oldEnd = o["end"] | static_cast<uint32_t>(0);
-                e.start = scaleFrame(e.oldStart, f.rate, target_);
-                e.end = scaleFrame(e.oldEnd, f.rate, target_);
-                o["sample"] = e.newSample;
-                if (!o["start"].isNull()) o["start"] = e.start;
-                if (!o["end"].isNull()) o["end"] = e.end;
+    KitInfo* kit = new (std::nothrow) KitInfo();
+    if (!kit) return fail("not enough memory");
+    if (!readKit(*host_, jsonFs.c_str(), *kit)) { delete kit; return fail("cannot read the kit"); }
+    char src[kPath];
+    for (uint8_t p = 0; p < KIT_PADS; ++p) {
+        for (SampleSlot& slot : kit->pads[p].samples) {
+            if (!samplePath(kitJson_, slot.sample, src)) continue;
+            for (const FileJob& f : files_) {
+                if (f.state != FileState::Done || !sameName(name(f.src), src)) continue;
+                KitConvertEdit e;
+                e.pad = p;
+                e.oldSample = slot.sample;
+                e.oldStart = slot.start;
+                e.oldEnd = slot.end;
+                e.newSample = name(f.rel);
+                e.start = scaleFrame(slot.start, f.rate, target_);
+                e.end = scaleFrame(slot.end, f.rate, target_);
+                slot.sample = e.newSample;
+                slot.start = e.start;
+                slot.end = e.end;
+                edits_.push_back(std::move(e));
+                break;
             }
-            edits_.push_back(std::move(e));
-            return;
         }
-    });
-    if (edits_.empty()) { progress_.phase = Phase::Done; return false; }
+    }
+    if (edits_.empty()) { delete kit; progress_.phase = Phase::Done; return false; }
 
     // What the tidy is to remove, written before the kit stops naming it: a
     // cut between the two leaves a list whose files the kit still names, and
     // the tidy keeps those.
-    const std::string folderFs = kitDirFs_ + "/" + rateFolderName(target_);
-    const std::string journal = folderFs + "/" + kJournal;
-    std::vector<std::string> lines = readLines(journal);
+    char folderFs[kPath], journal[kPath];
+    char folder[kRateFolderMax];
+    join(folderFs, kitDirFs_, rateFolderName(target_, folder));
+    join(journal, folderFs, kJournal);
+    std::string list = readText(journal, kMaxListBytes);
     for (const FileJob& f : files_) {
         if (f.state != FileState::Done || !f.inside) continue;
-        const std::string rel = std::string(name(f.src)).substr(kitDirFs_.size() + 1);
-        bool listed = false;
-        for (const auto& l : lines) listed = listed || sameName(l.c_str(), rel.c_str());
-        if (!listed) lines.push_back(rel);
+        const char* rel = name(f.src) + std::strlen(kitDirFs_) + 1;
+        if (hasLine(list, rel)) continue;
+        list += rel;
+        list += '\n';
     }
-    if (!makeDirs(*host_, folderFs, kitDirFs_) || !writeLines(journal, lines)) {
-        edits_.clear();
-        return fail("cannot write to the card");
-    }
-    if (!writeJson(jsonFs, doc)) {
+    const bool saved = makeDirs(*host_, folderFs, kitDirFs_) && writeText(journal, list) &&
+                       writeKit(*host_, jsonFs.c_str(), *kit);
+    delete kit;
+    if (!saved) {
         edits_.clear();
         return fail("cannot save the kit");
     }
@@ -977,9 +1040,10 @@ bool KitRateConverter::step() {
 }
 
 bool KitRateConverter::stepOnce() {
+    const bool stop = cancel_.load(std::memory_order_relaxed);
     switch (progress_.phase) {
     case Phase::Planning:
-        if (cancel_.load(std::memory_order_relaxed)) { progress_.phase = Phase::Cancelled; return false; }
+        if (stop) break;
         if (!kitRead_) {
             kitRead_ = true;
             if (!planKit()) return false;
@@ -990,114 +1054,124 @@ bool KitRateConverter::stepOnce() {
         return planDone();
 
     case Phase::Converting:
-        if (cancel_.load(std::memory_order_relaxed)) {
-            dropFile();
-            progress_.phase = Phase::Cancelled;
-            return false;
-        }
+        if (stop) { dropFile(); break; }
         if (!io_) {
             while (cursor_ < files_.size() && files_[cursor_].state != FileState::Pending) ++cursor_;
             if (cursor_ >= files_.size()) { progress_.phase = Phase::Committing; return true; }
-            if (!startFile()) { dropFile(); return false; }
+            if (!startFile()) return false;
             if (!io_) ++cursor_;      // skipped: changed since the plan
             return true;
         }
-        if (!stepFile()) { dropFile(); return false; }
-        return true;
+        return stepFile() || progress_.phase != Phase::Failed;
 
     case Phase::Committing:
-        if (cancel_.load(std::memory_order_relaxed)) { progress_.phase = Phase::Cancelled; return false; }
+        if (stop) break;
         return commit();
 
     default:
         return false;
     }
+    progress_.phase = Phase::Cancelled;
+    return false;
 }
 
 // ── After the commit ────────────────────────────────────────────────────────
 
 bool kitTidyPending(const std::string& kitJsonPath, uint32_t targetRate) {
-    const std::string dir = parentOf(kitFsPath(kitJsonPath));
-    return pathExists(dir + "/" + rateFolderName(targetRate) + "/" + kJournal);
+    char dir[kPath], path[kPath];
+    std::snprintf(dir, sizeof(dir), "%s", kitFsPath(kitJsonPath).c_str());
+    cutLast(dir);
+    char folder[kRateFolderMax];
+    return join(path, dir, rateFolderName(targetRate, folder), kJournal) && pathExists(path);
 }
 
 KitTidyResult tidyKit(IKitConvertHost& host, const std::string& kitJsonPath,
                       const std::string& kitsRoot, uint32_t targetRate) {
     KitTidyResult r;
     const std::string jsonFs = kitFsPath(kitJsonPath);
-    const std::string kitDirFs = normalizePath(parentOf(jsonFs));
-    const std::string journal = kitDirFs + "/" + rateFolderName(targetRate) + "/" + kJournal;
-    std::vector<std::string> lines = readLines(journal);
-    if (lines.empty()) { r.ok = !pathExists(journal) || writeLines(journal, lines); return r; }
+    char kitDir[kPath], folderFs[kPath], journal[kPath], path[kPath];
+    if (jsonFs.size() >= kPath) return r;
+    std::memcpy(kitDir, jsonFs.c_str(), jsonFs.size() + 1);
+    cutLast(kitDir);
+    normalize(kitDir);
+    char folder[kRateFolderMax];
+    join(folderFs, kitDir, rateFolderName(targetRate, folder));
+    join(journal, folderFs, kJournal);
+    const std::string list = readText(journal, kMaxListBytes);
+    if (list.empty()) { r.ok = !pathExists(journal) || writeText(journal, list); return r; }
+
+    KitInfo* kit = new (std::nothrow) KitInfo();
+    if (!kit) return r;
+    if (!readKit(host, jsonFs.c_str(), *kit)) { delete kit; return r; }   // not ok: nothing removed
+
+    /* Another kit can reach into this one's folder only by an absolute path
+     * or one with "..", and either carries "/<folder>/". Those kits are read
+     * as text, and a file of this one they might name -- "/<folder>/" and its
+     * path in the kit, or its bare name after it -- is kept. No JSON, no path
+     * resolution per sample. */
+    const char* folderName = baseOf(kitDir);
+    char needle[kPath];
+    std::snprintf(needle, sizeof(needle), "/%s/", folderName);
+    std::string others;          // the texts of the kits that do
+    char walk[kPath];
+    std::snprintf(walk, sizeof(walk), "%s", kitFsPath(kitsRoot).c_str());
+    normalize(walk);
+    auto scan = [&](const char* other) {
+        if (sameName(other, jsonFs.c_str())) return;
+        const std::string text = readText(other, kMaxScanBytes);
+        if (containsCi(text.data(), text.size(), needle)) others += text;
+        host.giveWay();
+    };
+    forEachKitJson(walk, scan);
 
     /* The list is a file on the card, and a card is anyone's to write: a line
      * is an original only if it names a WAV in the kit's own folder -- not
      * above it, not the kit's JSON, not the converted files themselves. Any
      * other line is dropped from the list and nothing is done with it. */
-    const std::string folderFs = kitDirFs + "/" + rateFolderName(targetRate);
-    std::vector<std::string> paths;   // card paths of the originals
-    std::vector<bool> named(lines.size(), false);
-    std::vector<bool> refused(lines.size(), false);
-    for (size_t i = 0; i < lines.size(); ++i) {
-        paths.push_back(normalizePath(kitDirFs + "/" + lines[i]));
-        refused[i] = lines[i][0] == '/' || !isUnder(paths[i], kitDirFs) || isUnder(paths[i], folderFs) ||
-                     !hasWavSuffix(paths[i]);
-    }
-
-    ArduinoJson::Allocator* alloc = host.jsonAllocator() ? host.jsonAllocator()
-                                                         : ArduinoJson::detail::DefaultAllocator::instance();
-    const auto mark = [&](const std::string& fs) {
-        for (size_t i = 0; i < paths.size(); ++i) named[i] = named[i] || sameName(paths[i].c_str(), fs.c_str());
-    };
-    {
-        JsonDocument doc(alloc);
-        if (!readJson(jsonFs, doc)) return r;      // not ok: nothing removed
-        forEachSample(doc, [&](int, JsonVariant, JsonObject, const char* s) {
-            mark(sampleFsPath(kitJsonPath, s));
-        });
-    }
-
-    JsonDocument filter(alloc);
-    filter["pads"][0]["samples"] = true;
-    filter["instrument"]["zones"][0]["sample"] = true;
-    forEachKitJson(kitFsPath(kitsRoot), [&](const std::string& otherFs) {
-        if (sameName(otherFs.c_str(), jsonFs.c_str())) return;
-        JsonDocument doc(alloc);
-        if (!readJson(otherFs, doc, &filter)) return;
-        const std::string otherDirFs = parentOf(otherFs);
-        forEachSample(doc, [&](int, JsonVariant, JsonObject, const char* s) {
-            // A bare name or a path below the other kit stays in that kit's
-            // folder; only these two can reach into this one.
-            if (s[0] == '/') mark(normalizePath(kitFsPath(s)));
-            else if (std::strstr(s, "..")) mark(normalizePath(otherDirFs + "/" + s));
-        });
-        host.giveWay();
-    });
-
-    std::vector<std::string> left;
-    for (size_t i = 0; i < lines.size(); ++i) {
-        if (named[i] || refused[i]) { ++r.kept; continue; }
-        if (host.releaseFile(paths[i]) && (std::remove(paths[i].c_str()) == 0 || !pathExists(paths[i]))) {
-            ++r.removed;
-            const std::string dir = parentOf(paths[i]);
-            if (dir.size() > kitDirFs.size()) removeEmptyDir(dir);
-        } else {
-            ++r.pending;
-            left.push_back(lines[i]);
+    // What this kit's own JSON names, resolved once.
+    std::string named;
+    char src[kPath];
+    for (const Pad& pad : kit->pads) {
+        for (const SampleSlot& slot : pad.samples) {
+            if (!samplePath(kitJsonPath, slot.sample, src)) continue;
+            named += src;
+            named += '\n';
         }
     }
-    r.ok = writeLines(journal, left);
-    return r;
-}
+    delete kit;
 
-bool setKitKeepRate(IKitConvertHost& host, const std::string& kitJsonPath, bool keep) {
-    JsonDocument doc(host.jsonAllocator() ? host.jsonAllocator()
-                                          : ArduinoJson::detail::DefaultAllocator::instance());
-    const std::string fs = kitFsPath(kitJsonPath);
-    if (!readJson(fs, doc)) return false;
-    if (keep) doc["keep_rate"] = true;
-    else doc.remove("keep_rate");
-    return writeJson(fs, doc);
+    std::string left;
+    for (size_t at = 0; at < list.size();) {
+        size_t e = list.find('\n', at);
+        if (e == std::string::npos) e = list.size();
+        const std::string line = list.substr(at, e - at);
+        at = e + 1;
+        if (line.empty()) continue;
+        bool keep = line[0] == '/' || !join(path, kitDir, line.c_str());
+        if (!keep) {
+            normalize(path);
+            keep = !isUnder(path, kitDir) || isUnder(path, folderFs) || !hasWavSuffix(path) || hasLine(named, path);
+            if (!keep && !others.empty()) {
+                char ref[kPath];
+                std::snprintf(ref, sizeof(ref), "%s%s", needle, path + std::strlen(kitDir) + 1);
+                keep = containsCi(others.data(), others.size(), ref);
+                std::snprintf(ref, sizeof(ref), "%s%s", needle, baseOf(path));
+                keep = keep || containsCi(others.data(), others.size(), ref);
+            }
+        }
+        if (keep) { ++r.kept; continue; }
+        if (host.releaseFile(path) && (std::remove(path) == 0 || !pathExists(path))) {
+            ++r.removed;
+            cutLast(path);
+            if (std::strlen(path) > std::strlen(kitDir)) removeEmptyDir(path);
+        } else {
+            ++r.pending;
+            left += line;
+            left += '\n';
+        }
+    }
+    r.ok = writeText(journal, left);
+    return r;
 }
 
 } // namespace crosspad

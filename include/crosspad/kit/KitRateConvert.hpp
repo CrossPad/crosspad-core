@@ -44,8 +44,12 @@
 
 namespace crosspad {
 
-/// The folder of a kit that holds its samples at @p rate: "44k1", "48k", "22k05".
-std::string rateFolderName(uint32_t rate);
+/// Room rateFolderName() needs.
+inline constexpr size_t kRateFolderMax = 12;
+
+/// The folder of a kit that holds its samples at @p rate: "44k1", "48k",
+/// "22k05". Written into @p buf (kRateFolderMax), which it returns.
+const char* rateFolderName(uint32_t rate, char* buf);
 
 /// A frame position at @p inRate as the same moment at @p outRate, rounded.
 uint32_t scaleFrame(uint32_t frame, uint32_t inRate, uint32_t outRate);
@@ -66,7 +70,11 @@ struct WavLayout {
     uint32_t frames     = 0;
     uint32_t fileBytes  = 0;
     uint32_t riffBytes  = 0;   ///< the RIFF size field plus its 8-byte header
-    std::vector<Chunk> chunks; ///< everything but `fmt ` and `data`, in file order
+    /// Everything but `fmt ` and `data`, in file order; past kMaxChunks they
+    /// are not copied.
+    static constexpr uint8_t kMaxChunks = 16;
+    Chunk    chunks[kMaxChunks];
+    uint8_t  chunkCount = 0;
 
     /// 16-bit integer PCM, mono or stereo: what the sampler plays and what
     /// this converts. WAVE_FORMAT_EXTENSIBLE with a PCM subformat counts.
@@ -88,10 +96,6 @@ struct WavLayout {
  */
 bool scaleWavChunk(const char id[4], uint8_t* payload, uint32_t size,
                    uint32_t inRate, uint32_t outRate);
-
-/// Whether scaleWavChunk() changes a chunk of this kind (it must then be
-/// read whole; any other is copied a piece at a time).
-bool wavChunkScaled(const char id[4]);
 
 /**
  * @brief What the converter needs from the board.
@@ -123,9 +127,9 @@ public:
     virtual void giveWay() {}
 
     /// Free bytes on the volume holding @p fsDir; UINT64_MAX when unknown.
-    virtual uint64_t freeBytes(const std::string& fsDir);
+    virtual uint64_t freeBytes(const char* fsDir);
 
-    virtual bool makeDir(const std::string& fsPath);
+    virtual bool makeDir(const char* fsPath);
 
     /// The conversion has ended, whichever way: anything held for it (an FFT
     /// built for it, say) can go.
@@ -135,7 +139,7 @@ public:
     /// keeps open on it. False while something may still read it -- a voice
     /// of the outgoing kit streaming its tail -- and the file then stays for
     /// a later tidy.
-    virtual bool releaseFile(const std::string& fsPath) { (void)fsPath; return true; }
+    virtual bool releaseFile(const char* fsPath) { (void)fsPath; return true; }
 
     /// Where kit JSON documents live while they are edited; null = the
     /// library's default allocator.
@@ -241,11 +245,10 @@ private:
         uint8_t  channels = 0;
         FileState state = FileState::Pending;
         bool     inside = false; ///< in the kit's own folder: the tidy's to remove
-        bool     described = false;
     };
 
     const char* name(uint32_t off) const { return names_.c_str() + off; }
-    uint32_t addName(const std::string& s);
+    uint32_t addName(const char* s);
 
     bool stepOnce();
     bool planKit();
@@ -253,6 +256,8 @@ private:
     bool planDone();
     bool startFile();
     bool stepFile();
+    bool emit(uint32_t frames);
+    bool copyChunks(bool afterData);
     bool finishFile();
     void dropFile();
     bool commit();
@@ -261,7 +266,7 @@ private:
 
     IKitConvertHost* host_ = nullptr;
     std::string kitJson_;        ///< logical
-    std::string kitDirFs_;
+    char        kitDirFs_[192] = {};
     uint32_t    target_ = 0;
     std::string names_;
     std::vector<FileJob> files_;
@@ -299,8 +304,5 @@ KitTidyResult tidyKit(IKitConvertHost& host, const std::string& kitJsonPath,
 
 /// Whether a converted kit still has a tidy to finish (its list is on the card).
 bool kitTidyPending(const std::string& kitJsonPath, uint32_t targetRate);
-
-/// Write `"keep_rate": keep` into the kit's JSON, every other field as it was.
-bool setKitKeepRate(IKitConvertHost& host, const std::string& kitJsonPath, bool keep);
 
 } // namespace crosspad

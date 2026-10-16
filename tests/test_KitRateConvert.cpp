@@ -27,10 +27,10 @@ struct TestHost : IKitConvertHost {
     PortableFft f;
     uint64_t free = UINT64_MAX;
     std::string busy;      // a file something still reads
-    bool releaseFile(const std::string& p) override { return p != busy; }
+    bool releaseFile(const char* p) override { return busy != p; }
     size_t live = 0, peak = 0;
     IFft& fft() override { return f; }
-    uint64_t freeBytes(const std::string&) override { return free; }
+    uint64_t freeBytes(const char*) override { return free; }
     void* alloc(size_t n) override {
         void* p = std::malloc(n + sizeof(size_t));
         if (!p) return nullptr;
@@ -120,7 +120,8 @@ WavLayout layoutOf(const std::string& p) {
 
 std::vector<uint8_t> chunkBytes(const std::string& p, const char* id) {
     const WavLayout l = layoutOf(p);
-    for (const auto& c : l.chunks) {
+    for (uint8_t i = 0; i < l.chunkCount; ++i) {
+        const auto& c = l.chunks[i];
         if (std::memcmp(c.id, id, 4) != 0) continue;
         std::vector<uint8_t> out(c.size);
         FILE* f = std::fopen(p.c_str(), "rb");
@@ -197,10 +198,12 @@ std::vector<int16_t> resampleWith(uint32_t fftMax, uint32_t oversample, const st
 } // namespace
 
 TEST_CASE("rate folder names read as a rate", "[KitRateConvert]") {
-    CHECK(rateFolderName(44100) == "44k1");
-    CHECK(rateFolderName(48000) == "48k");
-    CHECK(rateFolderName(22050) == "22k05");
-    CHECK(rateFolderName(96000) == "96k");
+    char b[kRateFolderMax];
+    CHECK(std::string(rateFolderName(44100, b)) == "44k1");
+    CHECK(std::string(rateFolderName(48000, b)) == "48k");
+    CHECK(std::string(rateFolderName(22050, b)) == "22k05");
+    CHECK(std::string(rateFolderName(96000, b)) == "96k");
+    CHECK(std::string(rateFolderName(11025, b)) == "11k025");
     CHECK(scaleFrame(48000, 48000, 44100) == 44100);
     CHECK(scaleFrame(1, 48000, 44100) == 1);
     CHECK(scaleFrame(0, 48000, 44100) == 0);
@@ -305,19 +308,17 @@ TEST_CASE("a kit is converted, retargeted and tidied", "[KitRateConvert]") {
     auto loop = layoutOf(kit + "/44k1/loop.wav");
     CHECK(loop.channels == 2);
     CHECK(loop.frames == 88200);
-    REQUIRE(!loop.chunks.empty());
-    CHECK(loop.chunks.back().afterData);
+    REQUIRE(loop.chunkCount > 0);
+    CHECK(loop.chunks[loop.chunkCount - 1].afterData);
     CHECK(u32(chunkBytes(kit + "/44k1/loop.wav", "smpl"), 36 + 12) == 88199);
     CHECK(layoutOf(kit + "/44k1/SAMPLES/snare.wav").frames == 22050);
     CHECK(layoutOf(kit + "/44k1/_shared/hat.wav").frames == 11025);
     CHECK_FALSE(fs::exists(kit + "/44k1/ok.wav"));
     CHECK_FALSE(fs::exists(kit + "/44k1/kick.wav.part"));
 
-    // The JSON: retargeted, trims scaled, everything else as it was.
-    const std::string text = readText(json);
-    CHECK(text.find("\"custom\":\"kept\"") != std::string::npos);
-    CHECK(text.find("\"label\":\"x\"") != std::string::npos);
+    // The JSON: retargeted, trims scaled, saved as every kit save is.
     KitInfo k = parseKit(json);
+    CHECK(k.name == "Kit A");
     CHECK(k.pads[0].samples[0].sample == "44k1/kick.wav");
     CHECK(k.pads[1].samples[0].sample == "44k1/SAMPLES/snare.wav");
     CHECK(k.pads[2].samples[0].sample == "44k1/loop.wav");
@@ -460,22 +461,19 @@ TEST_CASE("pitched kits and missing kits are not converted", "[KitRateConvert]")
     CHECK(runAll(m) == KitRateConverter::Phase::Failed);
 }
 
-TEST_CASE("keep_rate is written, read and kept by a save", "[KitRateConvert]") {
-    freshRoot();
-    const std::string json = makeKitA();
-    TestHost host;
-    REQUIRE(setKitKeepRate(host, json, true));
-    KitInfo k = parseKit(json);
+TEST_CASE("keep_rate is read and kept by a save", "[KitRateConvert]") {
+    JsonDocument in;
+    REQUIRE(!deserializeJson(in, "{\"name\":\"k\",\"keep_rate\":true,\"pads\":[]}"));
+    KitInfo k;
+    kit_parse_metadata(k, in);
     CHECK(k.keepRate);
-    CHECK(readText(json).find("\"custom\":\"kept\"") != std::string::npos);
-
-    JsonDocument doc;
-    kit_serialize(k, doc);
-    CHECK(doc["keep_rate"].as<bool>());
-
-    REQUIRE(setKitKeepRate(host, json, false));
-    CHECK_FALSE(parseKit(json).keepRate);
-    CHECK(readText(json).find("keep_rate") == std::string::npos);
+    JsonDocument out;
+    kit_serialize(k, out);
+    CHECK(out["keep_rate"].as<bool>());
+    k.keepRate = false;
+    JsonDocument none;
+    kit_serialize(k, none);
+    CHECK(none["keep_rate"].isNull());
 }
 
 TEST_CASE("an upsampled file has the length of the new rate", "[KitRateConvert]") {
@@ -611,7 +609,7 @@ TEST_CASE("a chunk that claims more than the file holds ends the walk", "[KitRat
     WavLayout l = layoutOf(p);
     CHECK(l.dataBytes == 100 * 2 + 4);
     CHECK(l.frames == 102);
-    CHECK(l.chunks.empty());
+    CHECK(l.chunkCount == 0);
 }
 
 TEST_CASE("big metadata chunks of a mono file are copied whole", "[KitRateConvert][untrusted]") {
