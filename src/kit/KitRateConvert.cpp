@@ -689,8 +689,12 @@ void KitRateConverter::dropFile() {
 }
 
 /// Copy one metadata chunk from the source, scaled when it carries positions.
+/// @p piece holds @p pieceCap bytes: every read and write is a piece of at
+/// most that, and of kConvertPieceBytes.
 static bool copyChunk(IKitConvertHost& host, FILE* src, FILE* dst, const WavLayout::Chunk& c,
-                      uint32_t inRate, uint32_t outRate, uint8_t* piece) {
+                      uint32_t inRate, uint32_t outRate, uint8_t* piece, uint32_t pieceCap) {
+    const uint32_t step = std::min(pieceCap, kConvertPieceBytes);
+    if (step == 0) return false;
     uint8_t hdr[8];
     std::memcpy(hdr, c.id, 4);
     wr32(hdr + 4, c.size);
@@ -699,13 +703,16 @@ static bool copyChunk(IKitConvertHost& host, FILE* src, FILE* dst, const WavLayo
         if (c.size > kMaxScaledChunk) return true;               // dropped: too big to rewrite
         uint8_t* buf = static_cast<uint8_t*>(host.alloc(c.size ? c.size : 1));
         if (!buf) return false;
-        const bool read = std::fseek(src, c.offset, SEEK_SET) == 0 &&
-                          host.readIo(src, buf, c.size) == c.size;
+        bool read = std::fseek(src, c.offset, SEEK_SET) == 0;
+        for (uint32_t at = 0; read && at < c.size; at += step) {
+            const uint32_t n = std::min(step, c.size - at);
+            read = host.readIo(src, buf + at, n) == n;
+        }
         bool ok = read;
         if (read && scaleWavChunk(c.id, buf, c.size, inRate, outRate)) {
             ok = host.writeIo(dst, hdr, 8);
-            for (uint32_t at = 0; ok && at < c.size; at += kConvertPieceBytes)
-                ok = host.writeIo(dst, buf + at, std::min<uint32_t>(kConvertPieceBytes, c.size - at));
+            for (uint32_t at = 0; ok && at < c.size; at += step)
+                ok = host.writeIo(dst, buf + at, std::min(step, c.size - at));
             if (ok && (c.size & 1)) ok = host.writeIo(dst, &pad, 1);
         }
         host.release(buf);
@@ -714,7 +721,7 @@ static bool copyChunk(IKitConvertHost& host, FILE* src, FILE* dst, const WavLayo
     if (wavChunkDropped(c.id)) return true;
     if (std::fseek(src, c.offset, SEEK_SET) != 0 || !host.writeIo(dst, hdr, 8)) return false;
     for (uint32_t at = 0; at < c.size;) {
-        const uint32_t n = std::min<uint32_t>(kConvertPieceBytes, c.size - at);
+        const uint32_t n = std::min(step, c.size - at);
         if (host.readIo(src, piece, n) != n || !host.writeIo(dst, piece, n)) return false;
         at += n;
         host.giveWay();
@@ -787,7 +794,8 @@ bool KitRateConverter::startFile() {
     if (!host_->writeIo(io.dst, h, sizeof(h))) return fail("cannot write to the card");
     for (const auto& c : io.lay.chunks) {
         if (c.afterData) continue;
-        if (!copyChunk(*host_, io.src, io.dst, c, f.rate, target_, reinterpret_cast<uint8_t*>(io.out)))
+        if (!copyChunk(*host_, io.src, io.dst, c, f.rate, target_, reinterpret_cast<uint8_t*>(io.out),
+                       io.outCap * ch * 2))
             return fail("cannot write to the card");
     }
     uint8_t d[8];
@@ -858,7 +866,8 @@ bool KitRateConverter::finishFile() {
     }
     for (const auto& c : io.lay.chunks) {
         if (!c.afterData) continue;
-        if (!copyChunk(*host_, io.src, io.dst, c, f.rate, target_, reinterpret_cast<uint8_t*>(io.out)))
+        if (!copyChunk(*host_, io.src, io.dst, c, f.rate, target_, reinterpret_cast<uint8_t*>(io.out),
+                       io.outCap * ch * 2))
             return fail("cannot write to the card");
     }
     const long end = std::ftell(io.dst);

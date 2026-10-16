@@ -590,3 +590,32 @@ TEST_CASE("a chunk that claims more than the file holds ends the walk", "[KitRat
     CHECK(l.frames == 102);
     CHECK(l.chunks.empty());
 }
+
+TEST_CASE("big metadata chunks of a mono file are copied whole", "[KitRateConvert][untrusted]") {
+    // A mono file's sample buffers are smaller than a 4 kB piece: an unknown
+    // chunk was copied through one of them a 4 kB piece at a time.
+    freshRoot();
+    const std::string kit = g_root + "/kits/meta";
+    std::vector<uint8_t> ixml, info;
+    test::putTag(ixml, "iXML");
+    test::putU32(ixml, 10001);
+    for (int i = 0; i < 10001; ++i) ixml.push_back(static_cast<uint8_t>(i * 7));
+    ixml.push_back(0);                                  // pad byte
+    test::putTag(info, "LIST");
+    test::putU32(info, 9000);
+    test::putTag(info, "INFO");
+    for (int i = 0; i < 8996; ++i) info.push_back(static_cast<uint8_t>(i));
+    writeWav(kit + "/m.wav", 1, 48000, 48000, ixml, info);
+    writeText(kit + "/kit.json", "{\"pads\":[{\"samples\":[{\"sample\":\"m.wav\"}]}]}");
+    TestHost host;
+    KitRateConverter c;
+    REQUIRE(c.begin(host, kit + "/kit.json", 44100));
+    REQUIRE(runAll(c) == KitRateConverter::Phase::Done);
+    auto x = chunkBytes(kit + "/44k1/m.wav", "iXML");
+    REQUIRE(x.size() == 10001);
+    CHECK(x[10000] == static_cast<uint8_t>(10000 * 7));
+    auto l = chunkBytes(kit + "/44k1/m.wav", "LIST");
+    REQUIRE(l.size() == 9000);
+    CHECK(l[8999] == static_cast<uint8_t>(8995));
+    CHECK(layoutOf(kit + "/44k1/m.wav").frames == 44100);
+}
