@@ -132,9 +132,10 @@ public:
     virtual void endJob() {}
 
     /// The tidy is about to remove @p fsPath: close any handle the platform
-    /// keeps open on it. One a voice still reads from stays, and the file
-    /// with it, until a later tidy.
-    virtual void releaseFile(const std::string& fsPath) { (void)fsPath; }
+    /// keeps open on it. False while something may still read it -- a voice
+    /// of the outgoing kit streaming its tail -- and the file then stays for
+    /// a later tidy.
+    virtual bool releaseFile(const std::string& fsPath) { (void)fsPath; return true; }
 
     /// Where kit JSON documents live while they are edited; null = the
     /// library's default allocator.

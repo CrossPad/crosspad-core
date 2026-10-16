@@ -1077,8 +1077,7 @@ KitTidyResult tidyKit(IKitConvertHost& host, const std::string& kitJsonPath,
     std::vector<std::string> left;
     for (size_t i = 0; i < lines.size(); ++i) {
         if (named[i] || refused[i]) { ++r.kept; continue; }
-        host.releaseFile(paths[i]);
-        if (std::remove(paths[i].c_str()) == 0 || !pathExists(paths[i])) {
+        if (host.releaseFile(paths[i]) && (std::remove(paths[i].c_str()) == 0 || !pathExists(paths[i]))) {
             ++r.removed;
             const std::string dir = parentOf(paths[i]);
             if (dir.size() > kitDirFs.size()) removeEmptyDir(dir);

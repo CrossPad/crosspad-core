@@ -26,6 +26,8 @@ namespace {
 struct TestHost : IKitConvertHost {
     PortableFft f;
     uint64_t free = UINT64_MAX;
+    std::string busy;      // a file something still reads
+    bool releaseFile(const std::string& p) override { return p != busy; }
     size_t live = 0, peak = 0;
     IFft& fft() override { return f; }
     uint64_t freeBytes(const std::string&) override { return free; }
@@ -393,6 +395,27 @@ TEST_CASE("a stopped conversion leaves the kit as it was and resumes", "[KitRate
     CHECK(layoutOf(kit + "/44k1/loop.wav").frames == 88200);
     CHECK_FALSE(fs::exists(kit + "/44k1/loop.wav.part"));
     CHECK(parseKit(json).pads[0].samples[0].sample == "44k1/kick.wav");
+}
+
+TEST_CASE("an original something still reads waits for the next tidy", "[KitRateConvert]") {
+    freshRoot();
+    const std::string json = makeKitA();
+    const std::string kit = g_root + "/kits/kitA";
+    TestHost host;
+    KitRateConverter c;
+    REQUIRE(c.begin(host, json, 44100));
+    REQUIRE(runAll(c) == KitRateConverter::Phase::Done);
+    host.busy = kit + "/kick.wav";
+    KitTidyResult t = tidyKit(host, json, g_root + "/kits", 44100);
+    CHECK(t.removed == 2);           // snare, loop (no other kit here)
+    CHECK(t.pending == 1);
+    CHECK(fs::exists(kit + "/kick.wav"));
+    CHECK(kitTidyPending(json, 44100));
+    host.busy.clear();
+    t = tidyKit(host, json, g_root + "/kits", 44100);
+    CHECK(t.removed == 1);
+    CHECK_FALSE(fs::exists(kit + "/kick.wav"));
+    CHECK_FALSE(kitTidyPending(json, 44100));
 }
 
 TEST_CASE("a list written before the kit was retargeted removes nothing", "[KitRateConvert]") {
