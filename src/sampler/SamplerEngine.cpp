@@ -1121,7 +1121,7 @@ bool SamplerEngine::serviceIo()
             v.wantStream = false;
             const SampleStore::Slot* sl = v.slot;
             if (!sl || !v.window.open(*pool_, sl->path, sl->desc.channels, sl->headStart + sl->headFrames, v.last,
-                                      StreamWindow::kDefaultBlocks, v.loop ? v.first : StreamWindow::kNoLoop)) {
+                                      params_.streamBlocks, v.loop ? v.first : StreamWindow::kNoLoop)) {
                 cStreamRefused_.fetch_add(1, std::memory_order_relaxed);
                 continue;
             }

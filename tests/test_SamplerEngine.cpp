@@ -629,6 +629,32 @@ TEST_CASE("SamplerEngine takes nothing from the pool on the note thread", "[samp
     REQUIRE(rig.engine.counters().underruns == 0);
 }
 
+TEST_CASE("SamplerEngine opens a streaming voice's ring at Params::streamBlocks", "[samplerengine]") {
+    Rig rig;
+    rig.build();
+    rig.src.add("long.wav", 60000, 1);
+    rig.assign(0, "long.wav", 1024);
+    rig.publish();
+
+    rig.engine.noteOn(0, 127);
+    rig.engine.serviceIo();
+    REQUIRE(rig.pool.stats().blocksUsed == crosspad::StreamWindow::kDefaultBlocks);
+    rig.engine.allNotesOff();
+    rig.run(40);
+    rig.engine.serviceIo();
+    REQUIRE(rig.pool.stats().blocksUsed == 0);
+
+    SamplerEngine::Params p;
+    p.streamBlocks = 6;
+    rig.engine.setParams(p);
+    rig.engine.noteOn(0, 127);
+    rig.engine.serviceIo();
+    REQUIRE(rig.pool.stats().blocksUsed == 6);
+    // The deeper ring still plays the file through without a gap.
+    REQUIRE(rig.run(1000) > 0.0f);
+    REQUIRE(rig.engine.counters().underruns == 0);
+}
+
 TEST_CASE("SamplerEngine moves a fader on the voice already sounding", "[samplerengine]") {
     /* A level turned over a playing loop has to be heard on that loop, not on
      * the next hit -- that is what the Pad Mixer's fader means. */
