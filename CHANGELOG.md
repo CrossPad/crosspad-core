@@ -6,6 +6,16 @@ carries the same number) and consumers gate on it with
 `crosspad/RequireVersion.hpp`. This file starts at 1.45.0; earlier releases
 are described in their `chore: X.Y.Z` commits.
 
+## 1.69.0 — 2026-10-17
+
+### Added
+
+- `SamplerEngine::Params::streamBlocks`: blocks in a streaming voice's ring
+  (`StreamWindow::kDefaultBlocks`, 4, by default). The board sets six: with
+  four (279 ms of lookahead at 44.1 kHz stereo) a streamer stalled behind a
+  kit load's directory walks ran voices dry -- 10 underruns in 18 swaps at
+  20 hits/s; with six, 1 in 30.
+
 ## 1.68.0 — 2026-10-17
 
 Merge of the kit-rate line (1.66.0 there) into the touch-preload line

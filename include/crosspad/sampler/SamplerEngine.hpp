@@ -141,6 +141,18 @@ public:
         uint8_t maxStreamingVoices = 10;
 
         /**
+         * @brief Blocks in a streaming voice's ring, up to
+         *        StreamWindow::kMaxBlocks.
+         *
+         * A voice can wait one fewer of them for the card before it runs
+         * dry, so this is the longest stall of the streamer a voice survives.
+         * The default is the streamer's own pace; a port whose card is also
+         * the kit loader's and the UI's sets more, and sizes its pool's pages
+         * to a ring each so the ring stays one span (StreamWindow::open()).
+         */
+        uint8_t streamBlocks = StreamWindow::kDefaultBlocks;
+
+        /**
          * @brief A pad cuts its own sound when it is hit again.
          *
          * True because that is what this instrument does: the prebuilt engine
