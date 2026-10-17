@@ -90,6 +90,10 @@ struct KitInfo {
     /// back to the SMF default of 120, which is silently wrong for anything
     /// else, and the sequencer keeps whatever the previous kit was counting.
     uint16_t bpm = 0;
+    /// The kit is played at its samples' own rate on purpose: nobody is
+    /// offered to convert it to the engine's (JSON "keep_rate", see
+    /// KitRateConvert.hpp). Off unless the kit says so.
+    bool keepRate = false;
     Type        type          = Normal;
     int         total_samples = 0;
     bool        parsed        = false;

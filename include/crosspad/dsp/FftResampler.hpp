@@ -12,8 +12,8 @@
  *
  * Each block goes forward through @p fft, is brick-wall limited to
  * min(inRate, outRate)/2, spectrally zero-padded to 2x (an exact, alias-free
- * oversample), and read back at the output grid with cubic Hermite
- * interpolation. Arbitrary ratios such as 48000 -> 44100 are not a power of
+ * oversample; FftResamplerStream can go further, see its begin()), and read
+ * back at the output grid with cubic Hermite interpolation. Arbitrary ratios such as 48000 -> 44100 are not a power of
  * two, so the last step cannot be a plain decimation; doing it on the 2x
  * oversampled block keeps the interpolation error far below the 16-bit floor.
  *
@@ -82,11 +82,22 @@ public:
 
     /**
      * @brief Size the blocks and take the scratch.
+     *
+     * @p oversample is the spectral zero-pad factor the block is read back at
+     * (a power of two, 2 or more). The cubic read-out is the whole of the
+     * error above a few kHz, and each doubling takes it ~20 dB down: at 48 k
+     * -> 44.1 k a 19 kHz tone leaves -30 dB of images at 2, -50 at 4, -69 at
+     * 8 (test_KitRateConvert). The inverse transform grows with it, so the
+     * block shrinks to keep it inside fft.maxSize() -- which changes nothing
+     * audible -- and the scratch grows by 2N floats a doubling.
+     *
      * @return false on a zero rate, a backend too small for a block, a missing
-     *         allocator, or a failed allocation.
+     *         allocator, an oversample that is not a power of two, or a
+     *         failed allocation.
      */
     bool begin(IFft& fft, uint32_t inRate, uint32_t outRate,
-               void* (*alloc)(size_t), void (*free)(void*));
+               void* (*alloc)(size_t), void (*free)(void*),
+               uint32_t oversample = 2);
 
     /// @return frames written to @p out (never more than @p outCapacity).
     uint32_t push(const int16_t* in, uint32_t n, int16_t* out, uint32_t outCapacity);
@@ -125,6 +136,7 @@ private:
     uint32_t accLen_ = 0;
     uint32_t cutoff_ = 0;
     uint32_t inFill_ = 0;     ///< samples of inBuf_ that are assembled
+    uint32_t oversample_ = 2;
     double ratio_ = 1.0;
 
     int64_t p0_ = 0;          ///< input position of the block being assembled

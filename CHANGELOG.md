@@ -6,6 +6,33 @@ carries the same number) and consumers gate on it with
 `crosspad/RequireVersion.hpp`. This file starts at 1.45.0; earlier releases
 are described in their `chore: X.Y.Z` commits.
 
+## 1.68.0 — 2026-10-17
+
+Merge of the kit-rate line (1.66.0 there) into the touch-preload line
+(1.66.0 and 1.67.0 below): both sets of additions, one version.
+
+### Added
+
+- `crosspad/kit/KitRateConvert.hpp`: a kit's samples converted for good to
+  the engine's rate. `KitRateConverter` plans (every sample's header, the
+  free space, what a stopped run already wrote), writes each file into
+  `<kit>/<rate>/` (`44k1/`) through `.part` and a read-back, then retargets
+  the kit's JSON in one atomic save with the trims scaled; `tidyKit()`
+  removes the originals that nothing names any more, `.originals` keeping
+  the list across a power cut. Metadata keeps its meaning: `smpl` loops,
+  `cue `, `ltxt`, `bext`, `fact` are scaled, `PEAK` and padding dropped.
+  The board's I/O, memory and pacing behind `IKitConvertHost`.
+- `KitInfo::keepRate` (JSON `keep_rate`): the kit is played at its own rate
+  on purpose -- nothing offers to convert it. Read and written with the kit.
+- `FftResamplerStream::begin(..., oversample)`: the read-out's zero-pad
+  factor, 2 as before by default. The converter reads at 8x: images of a
+  19 kHz tone at -69 dB instead of -30.
+- `crosspad/audio/WavLayout.hpp`: the one RIFF/WAVE parser, with the
+  native engine's rules (a `fmt ` of 16 bytes or more before the `data`, at
+  most 64 chunk headers, the tag not looked at for 16-bit). The engine's
+  `describe()` and the kit rate converter both read their headers through
+  it, so a file one plays is a file the other accepts.
+
 ## 1.67.0 — 2026-10-16
 
 A pad's voice made ready while its velocity is still being measured.
