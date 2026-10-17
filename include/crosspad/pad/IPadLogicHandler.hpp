@@ -1,5 +1,6 @@
 #pragma once
 #include <cstdint>
+#include "crosspad/pad/PadPerformance.hpp"
 
 namespace crosspad {
 
@@ -28,6 +29,15 @@ public:
     /// Called when a pad is released (padIdx 0-15)
     virtual void onPadRelease(PadManager& padManager, uint8_t padIdx) = 0;
 
+    /// A finger is on @p padIdx and its velocity is still being measured
+    /// (@p touching), or it left without a hit (!@p touching) -- from a pad
+    /// controller that says so (STM PAD_TOUCH). A handler that plays sound
+    /// can get the note ready here and only set its level in onPadPress(),
+    /// which follows as always. Optional: nothing is lost by ignoring it.
+    virtual void onPadTouch(PadManager& padManager, uint8_t padIdx, bool touching) {
+        (void)padManager; (void)padIdx; (void)touching;
+    }
+
     /// Called when pad pressure changes — aftertouch (padIdx 0-15, pressure 0-127)
     virtual void onPadPressure(PadManager& padManager, uint8_t padIdx, uint8_t pressure) = 0;
 
@@ -37,6 +47,14 @@ public:
     /// notes has no use for it.
     virtual void onPadPan(PadManager& padManager, uint8_t padIdx, int8_t pan) {
         (void)padManager; (void)padIdx; (void)pan;
+    }
+
+    /// What a press of @p padIdx would sound as now, for the loop recorder to
+    /// keep with the hit; @p velocity becomes the one that would sound. A
+    /// handler with no performance mode keeps the default: plain, as struck.
+    virtual PadPerformance performance(uint8_t padIdx, uint8_t& velocity) const {
+        (void)padIdx; (void)velocity;
+        return {};
     }
 };
 

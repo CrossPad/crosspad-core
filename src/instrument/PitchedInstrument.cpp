@@ -127,7 +127,8 @@ CROSSPAD_COLD SampleBank* PitchedInstrument::installBank(SampleBank* bank, const
 }
 
 CROSSPAD_COLD bool PitchedInstrument::editZone(uint8_t zoneIdx, float rootMidi, uint32_t loopStart,
-                                 uint32_t loopEnd, uint32_t maxSpins, void (*yield)()) {
+                                 uint32_t loopEnd, uint32_t maxSpins, void (*yield)(),
+                                 uint32_t loopXfade, uint32_t start) {
     // Everything is checked before anything moves: a rejected edit must leave
     // the zone exactly as the renderer already knows it.
     SampleBank* bank = bank_.load(std::memory_order_acquire);
@@ -141,7 +142,7 @@ CROSSPAD_COLD bool PitchedInstrument::editZone(uint8_t zoneIdx, float rootMidi, 
     gateEnter(maxSpins, yield);
     beginMutation();
     allNotesOff();
-    const bool ok = bank->editZone(zoneIdx, rootMidi, loopStart, loopEnd);
+    const bool ok = bank->editZone(zoneIdx, rootMidi, loopStart, loopEnd, loopXfade, start);
     endMutation();
     gateExit();
     return ok;
@@ -295,7 +296,7 @@ void PitchedInstrument::noteOn(uint8_t midiNote, uint8_t velocity, uint8_t pad) 
     const double semis = static_cast<double>(midiNote) - z->rootMidi;
     const double ratio = std::pow(2.0, semis / 12.0) * static_cast<double>(z->rate);
     v.zone = z;
-    v.phase = static_cast<uint64_t>(z->loopStart) * kOne;
+    v.phase = static_cast<uint64_t>(z->start) * kOne;
     v.inc = static_cast<uint64_t>(ratio * static_cast<double>(kOne) + 0.5);
     if (v.inc == 0) v.inc = 1;
     v.order = nextOrder_++;
@@ -371,7 +372,6 @@ CROSSPAD_COLD void PitchedInstrument::onPrepare(uint32_t maxFrames, uint32_t sam
     maxFrames_ = maxFrames;
     if (sampleRate > 0) sampleRate_ = sampleRate;
     scratch_.assign(maxFrames, 0.0f);
-    panTmp_.assign(maxFrames, 0.0f);
     monoSum_.assign(maxFrames, 0.0f);
     scopeTap_.setSampleRate(sampleRate_);
 }
@@ -387,6 +387,15 @@ void PitchedInstrument::renderVoice(Voice& v, uint32_t frames) {
     const uint64_t loopSpanQ = looping
         ? (static_cast<uint64_t>(z.loopEnd - z.loopStart) * kOne) : 0;
     float* dst = scratch_.data();
+
+    // The loop's crossfade (Zone::loopXfade): from xfFrom to the loop end the
+    // voice fades out while the same stretch one loop span earlier -- the one
+    // that leads into loopStart -- fades in. The bank keeps it inside the loop
+    // and after sample 0, so the second read never leaves the PCM.
+    const uint32_t xf = looping ? z.loopXfade : 0;
+    const int64_t xfFrom = static_cast<int64_t>(z.loopEnd) - static_cast<int64_t>(xf);
+    const int64_t span = static_cast<int64_t>(z.loopEnd) - static_cast<int64_t>(z.loopStart);
+    const float xfInv = xf ? 1.0f / static_cast<float>(xf) : 0.0f;
 
     // Taps i-1..i+2 are in range for 1 <= i <= length-3; the loop takes the
     // unchecked read there (four loads, no branches) and the bounds-checked
@@ -408,6 +417,24 @@ void PitchedInstrument::renderVoice(Voice& v, uint32_t frames) {
             y = hermite4(t[0], t[1], t[2], t[3], frac);
         } else {
             y = hermite(z, i, frac);
+        }
+        if (xf && i >= xfFrom) {
+            // Equal power, so two stretches that do not move together do not
+            // dip in the middle: 1.5t - 0.5t^3 is sin(t pi/2) to within
+            // 0.25 dB, for three multiplies a curve.
+            const float t = (static_cast<float>(i - xfFrom) + frac) * xfInv;
+            const float u = 1.0f - t;
+            const float in = t * (1.5f - 0.5f * t * t);
+            const float out = u * (1.5f - 0.5f * u * u);
+            const int64_t j = i - span;
+            float y2;
+            if (j >= 1 && j <= lastFast) {
+                const int16_t* t2 = pcm + j - 1;
+                y2 = hermite4(t2[0], t2[1], t2[2], t2[3], frac);
+            } else {
+                y2 = hermite(z, j, frac);
+            }
+            y = y * out + y2 * in;
         }
         dst[n] = y * scale * v.env;
 
@@ -484,8 +511,7 @@ void PitchedInstrument::renderBlock(float* out, uint32_t frames) {
             if (captureScope) {
                 for (uint32_t n = 0; n < frames; ++n) mono[n] += scratch_[n];
             }
-            detail::accumulatePanned(scratch_.data(), out, frames, v.gainL, v.gainR,
-                                     panTmp_.data());
+            dsp::macPanned(out, scratch_.data(), frames, v.gainL, v.gainR);
         }
     }
 

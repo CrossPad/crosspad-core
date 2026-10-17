@@ -102,10 +102,27 @@ public:
         char       path[kMaxPath] = {};
         SampleDesc desc;
         const int16_t* head = nullptr;   ///< headFrames * desc.channels samples
+        uint32_t   headStart = 0;        ///< the file's frame the head begins on: the layer's trim start
         uint32_t   headFrames = 0;
-        bool       complete = false;     ///< the head is the whole sample
+        uint32_t   headBytes = 0;        ///< what the head took from the allocator
+        uint32_t   keyStart = 0;         ///< the start load() was asked for, which it matches on
+        bool       complete = false;     ///< the head runs to the end of the sample
         bool       used = false;
     };
+
+    /**
+     * @brief Where a layer trimmed to [@p start, @p end) starts playing in a
+     *        file of @p total frames.
+     *
+     * @p start, or 0 when it is past the file or not before the end (an @p end
+     * of 0 is the end of the file). The engine starts a note there and load()
+     * starts the head there, so the two always agree.
+     */
+    static uint32_t trimStart(uint32_t start, uint32_t end, uint32_t total)
+    {
+        const uint32_t last = (end == 0 || end > total) ? total : end;
+        return (start < total && start < last) ? start : 0;
+    }
 
     struct Stats {
         uint16_t slots = 0;
@@ -128,6 +145,17 @@ public:
     void unload();
 
     /**
+     * @brief Give back one slot's head, and the slot with it.
+     *
+     * What a kit swap does with a sample the outgoing kit played and the
+     * incoming one does not, while the rest of the kit goes on playing --
+     * unload() would take the incoming kit's heads with it. Only legal once
+     * nothing can read the slot any more; SamplerEngine::slotInUse() says
+     * when.
+     */
+    void unloadSlot(uint16_t i);
+
+    /**
      * @brief Drop every head **without freeing it**.
      *
      * For when the allocator took the memory back wholesale: the engine arena
@@ -146,16 +174,24 @@ public:
     /**
      * @brief Take a path into a slot, reading its head.
      *
-     * Loader thread. A path already held is returned as the slot it is in
-     * rather than read twice -- a kit that puts the same file on four pads
-     * pays for one head.
+     * Loader thread. A path already held from the same start is returned as
+     * the slot it is in rather than read twice -- a kit that puts the same
+     * file on four pads pays for one head.
+     *
+     * The head begins where the layer does (trimStart()), not at the file's
+     * first frame: a note starts in its head, and a trim that started past a
+     * head read from frame 0 played nothing at all -- the streamer fills from
+     * the end of the head forwards and the voice found its first frame
+     * nowhere (12.10.2026, every slice past 0.37 s at a 64 kB head). Slices of
+     * one file are therefore a head each.
      *
      * @param headFrames what HeadPlan resolved, in frames; the slot keeps
-     *        min(headFrames, length).
+     *        min(headFrames, what is left of the file from the start).
+     * @param start, end the layer's trim, in frames (end 0 = to the end).
      * @return the slot, or kNoSlot when the table is full, the file is
      *         unreadable or the head could not be allocated.
      */
-    uint16_t load(const char* path, uint32_t headFrames);
+    uint16_t load(const char* path, uint32_t headFrames, uint32_t start = 0, uint32_t end = 0);
 
     const Slot* slot(uint16_t i) const
     {
@@ -164,6 +200,24 @@ public:
 
     uint16_t slotCount() const { return count_; }
     Stats stats() const;
+
+    /**
+     * @brief Where the sound in slot @p i ends: one past its last frame above
+     *        the engine's silence level, or 0 while nobody has found out.
+     *
+     * Learned by playing it (SamplerEngine), because a head is all the store
+     * reads and the end of a streamed file is not known until a voice gets
+     * there. Forgotten with the slot.
+     */
+    uint32_t audibleEnd(uint16_t i) const
+    {
+        return i < kMaxSlots ? audibleEnd_[i].load(std::memory_order_relaxed) : 0;
+    }
+    /// Render thread: the first voice to find the end says so.
+    void learnAudibleEnd(uint16_t i, uint32_t frames)
+    {
+        if (i < kMaxSlots) audibleEnd_[i].store(frames, std::memory_order_relaxed);
+    }
 
     /// The source, for the streaming thread's own reads.
     ISampleSource* source() const { return src_; }
@@ -175,6 +229,7 @@ private:
     void*              ctx_   = nullptr;
 
     Slot     slots_[kMaxSlots];
+    std::atomic<uint32_t> audibleEnd_[kMaxSlots] = {};
     uint16_t count_ = 0;
     size_t   headBytes_ = 0;
     uint32_t readFailures_ = 0;

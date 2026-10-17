@@ -278,6 +278,13 @@ void PortableKitLoader::releaseRetiredKit() {
     if (id < static_cast<int>(kits_.size())) releaseParsedPads(kits_[id]);
 }
 
+void PortableKitLoader::clearCurrentKit() {
+    if (currentKitId_ < 0) return;
+    retiredKitId_ = currentKitId_;
+    currentKitId_ = -1;
+    releaseRetiredKit();
+}
+
 void PortableKitLoader::releaseParsedPads(KitInfo& kit) {
     if (!kit.parsed) return;
 

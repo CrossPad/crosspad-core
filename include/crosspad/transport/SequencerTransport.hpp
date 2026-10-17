@@ -45,9 +45,14 @@ public:
      * state has no row for does nothing -- caps() greys it on the bar. */
 
     /// From a stop: play on from where the last stop left the pattern.
+    /// Recording or overdubbing: out of the take, playing on without a break
+    /// -- PLAY is the other way out of REC and DUB, beside pressing them again
+    /// (a departure from the table, asked for on the board).
     void play() override
     {
-        if (state() != TransportState::Stopped) return;
+        const TransportState s = state();
+        if (s == TransportState::Recording || s == TransportState::Overdubbing) { seq_.playback(); return; }
+        if (s != TransportState::Stopped) return;
         if (!startWithSong(SyncTake::None)) seq_.playback();
     }
 

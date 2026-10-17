@@ -268,6 +268,57 @@ TEST_CASE("PadManager: the input tap sees played pads, not the sequencer's", "[p
 }
 
 namespace {
+
+// 16 levels of pitch on pad 6, for whatever is struck; reads back what the
+// recorder said a played-back press was.
+class LevelsLogic : public IPadLogicHandler {
+public:
+    void onActivate(PadManager&) override {}
+    void onDeactivate(PadManager&) override {}
+    void onPadPress(PadManager& pm, uint8_t pad, uint8_t) override { seen = pm.pressPerformance(pad); }
+    void onPadRelease(PadManager&, uint8_t) override {}
+    void onPadPressure(PadManager&, uint8_t, uint8_t) override {}
+    PadPerformance performance(uint8_t, uint8_t& velocity) const override {
+        velocity = 127;
+        PadPerformance p;
+        p.levels = PadLevels::Pitch;
+        p.source = 6;
+        return p;
+    }
+    PadPerformance seen;
+};
+
+} // namespace
+
+TEST_CASE("PadManager: what a press would sound as comes from the active logic", "[pad][levels]") {
+    test::CoreTestPlatform platform;
+    REQUIRE(platform.init());
+    auto& pm = platform.padManager;
+
+    uint8_t vel = 30;
+    REQUIRE(pm.performanceFor(3, vel).plain());     // the default logic has no mode
+    REQUIRE(vel == 30);
+
+    auto lv = std::make_shared<LevelsLogic>();
+    pm.registerPadLogic("Levels", lv);
+    pm.setActivePadLogic("Levels");
+    const PadPerformance p = pm.performanceFor(3, vel);
+    REQUIRE(p.levels == PadLevels::Pitch);
+    REQUIRE(p.source == 6);
+    REQUIRE(vel == 127);
+
+    /* A played-back press carries what was recorded; a finger's is plain. */
+    PadPerformance rec;
+    rec.levels = PadLevels::Velocity;
+    rec.source = 2;
+    pm.handlePadPress(9, 55, EventSource::SequencerCallback, rec);
+    REQUIRE(lv->seen.levels == PadLevels::Velocity);
+    REQUIRE(lv->seen.source == 2);
+    pm.handlePadPress(9, 55);
+    REQUIRE(lv->seen.plain());
+}
+
+namespace {
 /// Counts the strip lock: the audio render must never take it.
 struct LockCountingStrip : test::MockLedStrip {
     void lock() override { ++locks; }

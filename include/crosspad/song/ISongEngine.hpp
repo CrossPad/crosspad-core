@@ -141,6 +141,27 @@ public:
         return false;
     }
     virtual uint8_t editProgress() const { return 0; }
+    /// Blocks of stretched tracks (SongTrack::stretch) whose copy fitted to
+    /// the tempo is not made yet. They are made only while nothing plays;
+    /// until then such a block plays as it was recorded.
+    virtual uint32_t stretchWaiting() const { return 0; }
+    /// How far the block being fitted now is, 0..100.
+    virtual uint8_t stretchProgress() const { return 0; }
+    /// Undo and redo of the arrangement. Every change the song takes is a
+    /// step -- an edit committed, a merge, an import, a bounce, a new tempo --
+    /// and a burst of them (a fader pulled, a block nudged) is one. Only the
+    /// arrangement moves: the audio on the card stays, so a block undone back
+    /// finds its file. A new project starts with none. False with nothing to
+    /// go back (or forward) to, or while a job that writes the song runs.
+    virtual bool undo() { return false; }
+    virtual bool redo() { return false; }
+    virtual uint32_t undoSteps() const { return 0; }
+    virtual uint32_t redoSteps() const { return 0; }
+    /// Track @p track's level as it is heard, 0..1 a side, for a stereo
+    /// meter: an audio track's peak (fader and mute applied) in the last few
+    /// tens of ms the song has played, a seq track's the pads' since the last
+    /// ask. 0 while stopped. Polled by a screen; nothing is computed for it.
+    virtual void trackLevels(int track, float& left, float& right) { (void)track; left = right = 0.0f; }
     /// Write the open song as an Ableton Live 12 Set into its own folder --
     /// <name>.als beside song.json, and the "Ableton Project Info" folder
     /// that makes it a Live project, so the Set finds its clips in clips/
@@ -266,10 +287,68 @@ public:
     /// render to ask every block -- the first block it is not 0 in is the
     /// block the song started in, which is what a take lines up with.
     virtual uint32_t framesPlayed() const { return 0; }
+    /// Where playback is, in frames from the song's start: the next frame the
+    /// render plays, round a loop as it goes. Lock-free, for a render that
+    /// lines a take up with a song already playing (its next bar line).
+    virtual uint32_t positionFrames() const { return 0; }
     /// Blocks of silence played because the card fell behind, since play().
     virtual uint32_t underruns() const = 0;
     /// Clip opens the card refused since play(); each is a track gone quiet.
     virtual uint32_t openFailures() const = 0;
+
+    // ── Takes onto the seq track (Arrange's REC and DUB) ──────────────────
+    /// REC (SyncTake::Record) or DUB (Overdub) from @p fromBar, after
+    /// @p beats of count-in: the song plays with the sequencer locked to it
+    /// and every pad hit is kept where the song is, not in a scene. The take
+    /// ends at stop() or seqPunch(None). A REC then puts what it ran over on
+    /// the seq track as one block of its own notes -- from @p fromBar, in
+    /// whole bars, the seq blocks under it gone; a DUB adds its notes to the
+    /// blocks they fell under, and makes blocks where there were none. With
+    /// LOOP on over a region the take goes round it from its start: a REC's
+    /// first pass replaces the region and every pass after is dubbed in,
+    /// heard on the next lap. Past its last block the song runs on for as
+    /// long as the take does. The song's seq track takes it; with none one is
+    /// made, playing the kit, on the lowest free track. False when there is
+    /// no track for it, or the song is playing.
+    virtual bool recordSeq(uint32_t fromBar, SyncTake take, uint8_t beats)
+    {
+        (void)fromBar; (void)take; (void)beats;
+        return false;
+    }
+    /// While the song plays: punch a REC or DUB in from here, switch the
+    /// take running to the other, or punch out (None) -- what was taken so
+    /// far lands and the song plays on.
+    virtual bool seqPunch(SyncTake take) { (void)take; return false; }
+    /// The take onto the seq track running now, None without one.
+    virtual SyncTake seqTake() const { return SyncTake::None; }
+    /// A take can be punched in now: the song plays with the sequencer
+    /// locked to it (it has a seq track, or SYNC is on).
+    virtual bool seqPunchable() const { return false; }
+
+    // ── The seq view of a block ───────────────────────────────────────────
+    /// The seq view edits one block of a seq track at a time, in a scene of
+    /// the sequencer -- the track's own: the block sounding on @p bar of
+    /// @p track, its notes from their first bar for as long as they are,
+    /// into scene @p scene. With no block there the scene is emptied, and the
+    /// first notes put in it become a block on @p bar. Blocks of the track
+    /// that played its scene are given its notes first, as a take does.
+    /// False when the block's notes will not fit a scene (more bars or notes
+    /// than one holds).
+    virtual bool openSeqEdit(uint8_t track, uint32_t bar, uint8_t scene)
+    {
+        (void)track; (void)bar; (void)scene;
+        return false;
+    }
+    /// What the seq view changed in the scene since, as the block's own
+    /// notes: a new pattern on it (its copies keep theirs), its length
+    /// following the scene's where it was as long. Cheap when nothing
+    /// changed, so the seq view asks every refresh; a take still running in
+    /// the scene is handed over once it closes.
+    virtual void syncSeqEdit() {}
+    /// The last changes handed over, and the scene is the seq view's again.
+    virtual void closeSeqEdit() {}
+    /// The bar the block being edited starts on; -1 with none open.
+    virtual int32_t seqEditBar() const { return -1; }
 
     /// One line of the engine's own internals, for a host to read when the
     /// position advances and nothing is heard. Everything the outside can

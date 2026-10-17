@@ -32,6 +32,7 @@
 
 #define CROSSPAD_CMD_ADC_VALUES         0x20
 #define CROSSPAD_CMD_ADC_BUTTONS        0x21
+#define CROSSPAD_CMD_PAD_TOUCH          0x22  /* STM->ESP: [pad, touching] a press window opened (1) or closed without a hit (0); the note-on with its velocity follows a touch that became a hit */
 
 #define CROSSPAD_CMD_VOLTAGES_MV        0x35
 #define CROSSPAD_CMD_CHG_STATUS         0x36

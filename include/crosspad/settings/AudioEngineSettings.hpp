@@ -8,21 +8,27 @@ namespace crosspad {
 /**
  * @brief Audio engine config — applied at IAudioModule::setup().
  *
- * Restart-time only. Sample rate and frame count are not hot-swappable;
- * settings UI flags "reboot to apply" when these change.
+ * The sample rate is restart-time only. The frame count and the output queue
+ * are applied live where the platform offers IAudioBuffer, at boot elsewhere.
  *
  * Allowed sample rates: 44100, 48000, 96000.
- * Frame count: power-of-two from 32 to 512 (latency vs CPU tradeoff).
+ * Frame count: 32 to 512 (latency vs CPU tradeoff).
+ * Queue: frames between a render pass starting and its first frame reaching
+ * the converter; 0 is the platform's own default.
  */
 struct AudioEngineSettings {
     uint32_t sampleRate = 44100;
     uint32_t frameCount = 64;
+    uint32_t queueFrames = 0;
 
     static constexpr uint32_t kSampleRates[]    = {44100, 48000, 96000};
     static constexpr uint8_t  kSampleRatesCount = 3;
 
     static constexpr uint32_t kFrameCounts[]    = {32, 48, 64, 128, 256, 512};
     static constexpr uint8_t  kFrameCountsCount = 6;
+
+    /// Longest queue a settings file may ask for: 4096 frames, 93 ms at 44.1 kHz.
+    static constexpr uint32_t kMaxQueueFrames = 4096;
 
     static bool isValidSampleRate(uint32_t sr) {
         for (uint8_t i = 0; i < kSampleRatesCount; ++i) {

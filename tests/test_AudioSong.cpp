@@ -212,6 +212,59 @@ TEST_CASE("AudioSong: a track's kind survives a save", "[song][tracks]") {
     fs::remove_all(d);
 }
 
+TEST_CASE("AudioSong: how a track follows the tempo survives a save", "[song][tracks][stretch]") {
+    const auto d = freshProject("cp_song_stretch");
+    {
+        /* What 1.57 first wrote: true, for a stretch that keeps the pitch. */
+        std::ofstream(songFile(d)) << R"({"version":1,"bpm":90,"tracks":[
+            {"used":true,"stretch":true,"clips":[{"file":"a.wav","bar":0,"bars":4}]},
+            {"used":true,"stretch":"repitch","clips":[{"file":"b.wav","bar":0,"bars":2}]},
+            {"used":true,"clips":[]},
+            {"used":true,"kind":1,"scene":2,"stretch":true,"clips":[]}]})";
+    }
+    AudioSong a;
+    REQUIRE(a.load(d) == SongLoad::Loaded);
+    CHECK(a.tracks[0].stretch == StretchMode::KeepPitch);
+    CHECK(a.tracks[1].stretch == StretchMode::Repitch);
+    CHECK(a.tracks[2].stretch == StretchMode::Off);
+    CHECK(a.tracks[3].stretch == StretchMode::Off);   // a seq track has no audio to fit
+    REQUIRE(a.save());
+
+    AudioSong b;
+    REQUIRE(b.load(d) == SongLoad::Loaded);
+    CHECK(b.tracks[0].stretch == StretchMode::KeepPitch);
+    CHECK(b.tracks[1].stretch == StretchMode::Repitch);
+    CHECK(b.tracks[2].stretch == StretchMode::Off);
+    fs::remove_all(d);
+}
+
+TEST_CASE("AudioSong: a track's name and solo survive a save", "[song][tracks]") {
+    const auto d = freshProject("cp_song_names");
+    AudioSong a;
+    a.dir = d;
+    REQUIRE(a.addAudioTrack(0));
+    REQUIRE(a.addAudioTrack(1));
+    REQUIRE(a.addAudioTrack(2));
+    a.tracks[0].name = "Drums";
+    a.tracks[1].solo = true;
+    a.tracks[2].muted = true;
+    CHECK(a.silenced(0));          // another track is soloed
+    CHECK_FALSE(a.silenced(1));
+    CHECK(a.silenced(2));
+    REQUIRE(a.save());
+
+    AudioSong b;
+    REQUIRE(b.load(d) == SongLoad::Loaded);
+    CHECK(b.tracks[0].name == "Drums");
+    CHECK(b.tracks[1].name.empty());
+    CHECK(b.tracks[1].solo);
+    CHECK_FALSE(b.tracks[0].solo);
+    b.tracks[1].solo = false;
+    CHECK_FALSE(b.silenced(0));    // nothing soloed: only the mute counts
+    CHECK(b.silenced(2));
+    fs::remove_all(d);
+}
+
 TEST_CASE("AudioSong: a song written before tracks had kinds counts its clips", "[song][tracks]") {
     const auto d = freshProject("cp_song_legacy");
     {
@@ -418,4 +471,248 @@ TEST_CASE("AudioSong: a bounce leaves no seq block behind", "[song][seq]") {
     REQUIRE_FALSE(s.tracks[0].seqBlocks);
     REQUIRE(s.tracks[0].clips.size() == 1);
     REQUIRE(s.tracks[0].clips[0].file == "bounce.wav");
+}
+
+// ── a seq block's own notes ────────────────────────────────────────────────
+
+namespace {
+SeqNote note(uint32_t tick, uint8_t pad, uint8_t vel = 100, uint32_t len = 0, uint8_t perf = 0)
+{
+    SeqNote n;
+    n.tick = tick;
+    n.pad = pad;
+    n.vel = vel;
+    n.len = len;
+    n.perf = perf;
+    return n;
+}
+constexpr uint32_t kTpb = AudioSong::kSeqPpq * 4;   // ticks a bar in 4/4
+} // namespace
+
+TEST_CASE("AudioSong: a block's own notes survive a save, and only they make it a 2", "[song][seq][notes]") {
+    const auto d = freshProject("cp_song_notes");
+    AudioSong a = songAt120();
+    a.dir = d;
+    REQUIRE(a.addSeqTrack(0, SeqSource::Kit, 0));
+    REQUIRE(a.save());
+    {
+        std::ifstream f(songFile(d));
+        const std::string text((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
+        CHECK(text.find("\"version\":1") != std::string::npos);   // still readable by older firmware
+    }
+    REQUIRE(a.putSeqTake(0, 2, makeSeqPattern(2, {note(96, 3, 90, 48), note(0, 1), note(400, 15, 127, 0, 0x21)}), kSpb) >= 0);
+    REQUIRE(a.save());
+    {
+        std::ifstream f(songFile(d));
+        const std::string text((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
+        CHECK(text.find("\"version\":2") != std::string::npos);
+    }
+
+    AudioSong b;
+    REQUIRE(b.load(d) == SongLoad::Loaded);
+    REQUIRE(b.tracks[0].clips.size() == 1);
+    const SongClip& c = b.tracks[0].clips[0];
+    REQUIRE(c.bar == 2);
+    REQUIRE(c.bars == 2);
+    REQUIRE(c.notes);
+    REQUIRE(c.notes->bars == 2);
+    REQUIRE(c.notes->notes.size() == 3);
+    /* Sorted by tick, every field as it was. */
+    CHECK(c.notes->notes[0].tick == 0);
+    CHECK(c.notes->notes[0].pad == 1);
+    CHECK(c.notes->notes[1].tick == 96);
+    CHECK(c.notes->notes[1].len == 48);
+    CHECK(c.notes->notes[1].vel == 90);
+    CHECK(c.notes->notes[2].pad == 15);
+    CHECK(c.notes->notes[2].perf == 0x21);
+    fs::remove_all(d);
+}
+
+TEST_CASE("AudioSong: a REC take replaces the seq blocks under it", "[song][seq][notes]") {
+    AudioSong s = songAt120();
+    REQUIRE(s.addSeqTrack(0, SeqSource::Kit, 0));
+    const auto old = makeSeqPattern(1, {note(0, 1)});
+    s.putSeqTake(0, 0, makeSeqPattern(4, {note(0, 1), note(3 * kTpb, 2)}), kSpb);   // bars 0..3
+    s.putSeqTake(0, 6, old, kSpb);                                                  // bar 6
+    /* Bars 2..6: cuts the first block at 2, takes bar 6 out whole. */
+    const int i = s.putSeqTake(0, 2, makeSeqPattern(5, {note(0, 9)}), kSpb);
+    REQUIRE(i >= 0);
+    const auto& cs = s.tracks[0].clips;
+    REQUIRE(cs.size() == 2);
+    CHECK(cs[0].bar == 0);
+    CHECK(cs[0].bars == 2);
+    CHECK(cs[1].bar == 2);
+    CHECK(cs[1].bars == 5);
+    REQUIRE(cs[1].notes);
+    CHECK(cs[1].notes->notes.size() == 1);
+    CHECK(cs[1].notes->notes[0].pad == 9);
+}
+
+TEST_CASE("AudioSong: a take longer than a scene is laid as blocks the seq view opens", "[song][seq][notes]") {
+    AudioSong s = songAt120();
+    REQUIRE(s.addSeqTrack(0, SeqSource::Kit, 0));
+    /* 19 bars from bar 2: a hit in the first, one held from bar 8 over the
+     * line into bar 9, and one in the last. */
+    const int i = s.putSeqTakeNotes(0, 2, 19, {note(18 * kTpb + 5, 3), note(0, 1), note(7 * kTpb + kTpb / 2, 2, 100, kTpb)}, kSpb);
+    REQUIRE(i == 0);
+    const auto& cs = s.tracks[0].clips;
+    REQUIRE(cs.size() == 3);
+    CHECK(cs[0].bar == 2);
+    CHECK(cs[0].bars == AudioSong::kSeqBlockBars);
+    CHECK(cs[1].bar == 2 + AudioSong::kSeqBlockBars);
+    CHECK(cs[1].bars == AudioSong::kSeqBlockBars);
+    CHECK(cs[2].bar == 2 + 2 * AudioSong::kSeqBlockBars);
+    CHECK(cs[2].bars == 3);
+    REQUIRE(cs[0].notes->notes.size() == 2);
+    CHECK(cs[0].notes->notes[0].pad == 1);
+    CHECK(cs[0].notes->notes[1].len == kTpb / 2);       // ends on the line into the next block
+    CHECK(cs[1].notes->notes.empty());
+    REQUIRE(cs[2].notes->notes.size() == 1);
+    CHECK(cs[2].notes->notes[0].tick == 2 * kTpb + 5);
+    CHECK(cs[2].notes->notes[0].pad == 3);
+}
+
+TEST_CASE("AudioSong: a block of a take holds no more notes than a scene", "[song][seq][notes]") {
+    AudioSong s = songAt120();
+    REQUIRE(s.addSeqTrack(0, SeqSource::Kit, 0));
+    /* 64 hits a bar over the first four bars of eight: 256 in eight bars or
+     * in four is more than a scene holds, 128 in two is not. */
+    std::vector<SeqNote> dense;
+    for (uint32_t t = 0; t < 4 * 64; ++t) dense.push_back(note(t * (kTpb / 64), (uint8_t)(t % 16)));
+    s.putSeqTakeNotes(0, 0, 8, dense, kSpb);
+    const auto& cs = s.tracks[0].clips;
+    REQUIRE(cs.size() == 2);
+    CHECK(cs[0].bars == 2);
+    CHECK(cs[1].bar == 2);
+    CHECK(cs[1].bars == 6);                   // the rest, which fits
+    for (const auto& c : cs) CHECK(c.notes->notes.size() <= AudioSong::kSeqBlockNotes);
+    CHECK(cs[0].notes->notes.size() + cs[1].notes->notes.size() == dense.size());
+}
+
+TEST_CASE("AudioSong: DUB under no block lays blocks the seq view opens", "[song][seq][notes]") {
+    AudioSong s = songAt120();
+    REQUIRE(s.addSeqTrack(0, SeqSource::Kit, 0));
+    REQUIRE(s.dubSeqNotes(0, {note(kTpb, 1), note(12 * kTpb, 2)}));
+    const auto& cs = s.tracks[0].clips;
+    REQUIRE(cs.size() == 2);
+    CHECK(cs[0].bar == 1);
+    CHECK(cs[0].bars == AudioSong::kSeqBlockBars);
+    CHECK(cs[1].bar == 1 + AudioSong::kSeqBlockBars);
+    CHECK(cs[1].bars == 4);
+    REQUIRE(cs[1].notes->notes.size() == 1);
+    CHECK(cs[1].notes->notes[0].tick == 3 * kTpb);
+}
+
+TEST_CASE("AudioSong: a take over the middle of a block leaves its tail playing on", "[song][seq][notes]") {
+    AudioSong s = songAt120();
+    REQUIRE(s.addSeqTrack(0, SeqSource::Kit, 0));
+    const auto long8 = makeSeqPattern(8, {note(0, 1), note(5 * kTpb, 2)});
+    s.putSeqTake(0, 0, long8, kSpb);
+    s.putSeqTake(0, 2, makeSeqPattern(2, {note(0, 7)}), kSpb);
+    const auto& cs = s.tracks[0].clips;
+    REQUIRE(cs.size() == 3);
+    CHECK(cs[2].bar == 4);
+    CHECK(cs[2].from == 4);                   // the old notes from their bar four
+    CHECK(cs[2].notes == long8);              // shared, not copied
+}
+
+TEST_CASE("AudioSong: DUB adds into the block it falls in, and a copy keeps its own", "[song][seq][notes]") {
+    AudioSong s = songAt120();
+    REQUIRE(s.addSeqTrack(0, SeqSource::Kit, 0));
+    const auto first = makeSeqPattern(2, {note(0, 1)});
+    s.putSeqTake(0, 0, first, kSpb);
+    SongClip copy = s.tracks[0].clips[0];     // DUP: the same notes, elsewhere
+    copy.bar = 8;
+    s.addClip(0, copy);
+    /* Bar 1 beat 2 of the song: inside the first block. Bar 4: nothing there. */
+    REQUIRE(s.dubSeqNotes(0, {note(kTpb + 96, 4), note(4 * kTpb + 10, 5), note(5 * kTpb, 6)}));
+    const auto& cs = s.tracks[0].clips;
+    REQUIRE(cs.size() == 3);
+    REQUIRE(cs[0].notes != first);
+    REQUIRE(cs[0].notes->notes.size() == 2);
+    CHECK(cs[0].notes->notes[1].tick == kTpb + 96);
+    /* What fell under nothing is a block of its own over its bars. */
+    CHECK(cs[1].bar == 4);
+    CHECK(cs[1].bars == 2);
+    REQUIRE(cs[1].notes->notes.size() == 2);
+    CHECK(cs[1].notes->notes[0].tick == 10);
+    CHECK(cs[1].notes->notes[1].tick == kTpb);
+    /* The copy was not edited: it keeps the notes it had. */
+    CHECK(cs[2].bar == 8);
+    CHECK(cs[2].notes == first);
+}
+
+TEST_CASE("AudioSong: DUB into a block played from its middle lands on the right bar of it", "[song][seq][notes]") {
+    AudioSong s = songAt120();
+    REQUIRE(s.addSeqTrack(0, SeqSource::Kit, 0));
+    s.putSeqTake(0, 0, makeSeqPattern(4, {}), kSpb);
+    s.cutClip(0, 2, kSpb);                    // the second half plays bars 2..3 of the notes
+    REQUIRE(s.dubSeqNotes(0, {note(3 * kTpb, 8)}));
+    const auto& cs = s.tracks[0].clips;
+    REQUIRE(cs.size() == 2);
+    CHECK(cs[0].notes->notes.empty());        // the first half kept its own
+    REQUIRE(cs[1].notes->notes.size() == 1);
+    CHECK(cs[1].notes->notes[0].tick == 3 * kTpb);
+}
+
+TEST_CASE("AudioSong: blocks that played the scene adopt its notes", "[song][seq][notes]") {
+    AudioSong s = songAt120();
+    REQUIRE(s.addSeqTrack(1, SeqSource::Kit, 0));
+    /* No blocks yet: the scene over the whole song becomes one block of it. */
+    const auto scene = makeSeqPattern(2, {note(0, 3)});
+    CHECK(s.adoptSceneNotes(1, scene, 6) == 1);
+    REQUIRE(s.tracks[1].seqBlocks);
+    REQUIRE(s.tracks[1].clips.size() == 1);
+    CHECK(s.tracks[1].clips[0].bars == 6);
+    CHECK(s.tracks[1].clips[0].notes == scene);
+    CHECK(s.adoptSceneNotes(1, scene, 6) == 0);   // nothing left to adopt
+
+    /* An empty scene leaves no block of silence behind. */
+    AudioSong e = songAt120();
+    REQUIRE(e.addSeqTrack(0, SeqSource::Kit, 0));
+    e.seqBlocksExplicit(4);
+    CHECK(e.adoptSceneNotes(0, makeSeqPattern(1, {}), 4) == 1);
+    CHECK(e.tracks[0].clips.empty());
+}
+
+TEST_CASE("AudioSong: a region copy of a seq block shares its notes", "[song][seq][notes]") {
+    AudioSong s = songAt120();
+    REQUIRE(s.addSeqTrack(0, SeqSource::Kit, 0));
+    const auto p = makeSeqPattern(4, {note(0, 1)});
+    s.putSeqTake(0, 0, p, kSpb);
+    const auto got = s.copyRange(1, 3, kSpb);
+    REQUIRE(got.size() == 1);
+    CHECK(got[0].clip.notes == p);
+    CHECK(got[0].clip.from == 1);
+    s.insertBars(4, 2, kSpb);
+    s.pasteRange(got, 4);
+    const auto& cs = s.tracks[0].clips;
+    REQUIRE(cs.size() == 2);
+    CHECK(cs[1].bar == 4);
+    CHECK(cs[1].notes == p);
+}
+
+TEST_CASE("AudioSong: the song's kit and instrument survive a save, and a Pitch track is found", "[song][sounds]") {
+    const auto d = freshProject("cp_song_sounds");
+    AudioSong a = songAt120();
+    a.dir = d;
+    a.kit = "/crosspad/kits/DIPPER_-_DIPPER_kit/kit.json";
+    a.instrument = "pitch/instrument.json";
+    CHECK_FALSE(a.hasPitchTrack());
+    REQUIRE(a.addSeqTrack(1, SeqSource::Pitch, 0));
+    CHECK(a.hasPitchTrack());
+    REQUIRE(a.save());
+    AudioSong b;
+    REQUIRE(b.load(d) == SongLoad::Loaded);
+    CHECK(b.kit == a.kit);
+    CHECK(b.instrument == a.instrument);
+    CHECK(b.hasPitchTrack());
+    /* A song without them has none, and loading it clears what was there. */
+    AudioSong c = songAt120();
+    c.dir = d;
+    REQUIRE(c.save());
+    REQUIRE(b.load(d) == SongLoad::Loaded);
+    CHECK(b.kit.empty());
+    CHECK(b.instrument.empty());
+    fs::remove_all(d);
 }

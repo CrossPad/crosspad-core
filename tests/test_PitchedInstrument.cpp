@@ -490,6 +490,8 @@ TEST_CASE("PitchedInstrument: a 4-sample loop at ratio 16 wraps by modulo",
     constexpr uint32_t kLoopEnd = 12;      // span == kMinLoopSamples
     SampleBank* bank = makeBank(64, 60.0f, kLoopStart, kLoopEnd, rampFill);
     REQUIRE(bank->zoneCount() == 1);
+    // Begin inside the loop: what is asserted is the wrap, not the attack.
+    REQUIRE(bank->editZone(0, 60.0f, kLoopStart, kLoopEnd, SampleBank::kKeepXfade, kLoopStart));
 
     PitchedInstrument inst;
     inst.onPrepare(kFrames, kSr);
@@ -550,19 +552,32 @@ TEST_CASE("PitchedInstrument: editZone moves the loop the next note plays",
     REQUIRE(inst.editZone(0, 60.0f, 100, 200, 0, nullptr));
     REQUIRE(bank->zone(0).loopStart == 100);
     REQUIRE(bank->zone(0).loopEnd == 200);
+    REQUIRE(bank->zone(0).start == 0);           // the start is its own point
 
     // At its root the zone plays 1:1, so the frame index is the sample index:
-    // it starts at the loop start and wraps to it 100 samples later.
+    // it starts at the zone's start, runs into the loop, and wraps to the loop
+    // start -- not to where it began -- 200 samples in.
     inst.noteOn(60, 127, 0);
-    std::vector<float> a(kFrames * 2, 0.0f), b(kFrames * 2, 0.0f);
+    std::vector<float> a(kFrames * 2, 0.0f), b(kFrames * 2, 0.0f),
+                       c(kFrames * 2, 0.0f), d(kFrames * 2, 0.0f);
     inst.mix(a.data(), kFrames);
     inst.mix(b.data(), kFrames);
+    inst.mix(c.data(), kFrames);
+    inst.mix(d.data(), kFrames);
 
     const float scale = 1.0f / 32768.0f * kCenterGain;
-    REQUIRE(a[0] == Catch::Approx(100.0f * scale).margin(1e-6));
-    REQUIRE(a[2 * 63] == Catch::Approx(163.0f * scale).margin(1e-6));
-    REQUIRE(b[2 * 35] == Catch::Approx(199.0f * scale).margin(1e-6));
+    REQUIRE(a[0] == Catch::Approx(0.0f).margin(1e-6));
     REQUIRE(b[2 * 36] == Catch::Approx(100.0f * scale).margin(1e-6));
+    REQUIRE(d[2 * 7] == Catch::Approx(199.0f * scale).margin(1e-6));
+    REQUIRE(d[2 * 8] == Catch::Approx(100.0f * scale).margin(1e-6));
+
+    // A start inside the loop: the next note begins there.
+    REQUIRE(inst.editZone(0, 60.0f, 100, 200, 0, nullptr, SampleBank::kKeepXfade, 150));
+    REQUIRE(bank->zone(0).start == 150);
+    inst.noteOn(60, 127, 0);
+    std::vector<float> e(kFrames * 2, 0.0f);
+    inst.mix(e.data(), kFrames);
+    REQUIRE(e[0] == Catch::Approx(150.0f * scale).margin(1e-6));
 
     // A root edit lands too, and clears the loop when asked to.
     REQUIRE(inst.editZone(0, 72.0f, 0, 0, 0, nullptr));
@@ -827,5 +842,69 @@ TEST_CASE("PitchedInstrument: lastNoteHz follows the notes that sounded",
     inst.noteOn(69, 127, 0);
     inst.endMutation();
     REQUIRE(inst.lastNoteHz() == Catch::Approx(880.0f).margin(1e-3));
+    delete bank;
+}
+
+TEST_CASE("PitchedInstrument: a crossfaded loop wraps without a seam",
+          "[instrument][engine][loop]") {
+    // A ramp jumps by the whole loop span at a plain wrap -- the click a held
+    // note built from one sample makes every loop. With the crossfade the
+    // voice is already playing what precedes the loop start when it wraps.
+    constexpr uint32_t kStart = 1000, kEnd = 2000, kXf = 500;
+    auto maxStep = [](SampleBank* bank) {
+        PitchedInstrument inst;
+        inst.onPrepare(kFrames, kSr);
+        inst.setParams(params(4, 0.0f, 5000.0f));
+        inst.setBank(bank);
+        inst.noteOn(60, 127, 0);
+        std::vector<float> out(kFrames * 2, 0.0f);
+        float prev = 0.0f, worst = 0.0f;
+        bool first = true;
+        for (int b = 0; b < 100; ++b) {               // 6400 frames: past six wraps
+            std::fill(out.begin(), out.end(), 0.0f);
+            inst.mix(out.data(), kFrames);
+            for (uint32_t k = 0; k < kFrames; ++k) {
+                const float v = out[2 * k] * 32768.0f / kCenterGain;
+                if (!first) worst = std::max(worst, std::fabs(v - prev));
+                prev = v;
+                first = false;
+            }
+        }
+        return worst;
+    };
+
+    SampleBank* plain = makeBank(4000, 60.0f, kStart, kEnd, rampFill);
+    REQUIRE(maxStep(plain) > 900.0f);
+    delete plain;
+
+    SampleBank* faded = makeBank(4000, 60.0f, kStart, kEnd, rampFill);
+    REQUIRE(faded->editZone(0, 60.0f, kStart, kEnd, kXf));
+    REQUIRE(faded->zone(0).loopXfade == kXf);
+    REQUIRE(maxStep(faded) < 10.0f);
+    delete faded;
+}
+
+TEST_CASE("SampleBank: the crossfade and the start stay where they can play",
+          "[instrument][loop]") {
+    // Never longer than the loop, never reaching before sample 0.
+    REQUIRE(SampleBank::loopXfadeFor(1000, 2000, 500) == 500);
+    REQUIRE(SampleBank::loopXfadeFor(300, 2000, 500) == 300);
+    REQUIRE(SampleBank::loopXfadeFor(3000, 3400, 1000) == 400);
+    REQUIRE(SampleBank::loopXfadeFor(0, 0, 500) == 0);        // one-shot
+
+    // A start past the loop would never reach it: the loop start instead.
+    REQUIRE(SampleBank::startFor(4000, 1000, 2000, 500) == 500);
+    REQUIRE(SampleBank::startFor(4000, 1000, 2000, 2500) == 1000);
+    REQUIRE(SampleBank::startFor(4000, 0, 0, 2500) == 2500);  // one-shot: anywhere inside
+    REQUIRE(SampleBank::startFor(4000, 0, 0, 4000) == 0);
+
+    SampleBank* bank = makeBank(4000, 60.0f, 300, 2000, rampFill);
+    REQUIRE(bank->editZone(0, 60.0f, 300, 2000, 900, 100));
+    REQUIRE(bank->zone(0).loopXfade == 300);
+    REQUIRE(bank->zone(0).start == 100);
+    // Left out, both are kept, and cut again to the new loop.
+    REQUIRE(bank->editZone(0, 60.0f, 200, 2000));
+    REQUIRE(bank->zone(0).loopXfade == 200);
+    REQUIRE(bank->zone(0).start == 100);
     delete bank;
 }

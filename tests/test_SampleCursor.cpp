@@ -147,6 +147,47 @@ TEST_CASE("SampleCursor walks from the head into the stream without a seam", "[c
     w.close(pool);
 }
 
+TEST_CASE("SampleCursor reads a head that starts inside the file, then the stream after it", "[cursor][trim]") {
+    BlockPool pool;
+    BlockPool::Config pc;
+    pc.blockBytes = 1024; pc.pageBytes = 8192; pc.maxPages = 4;
+    pc.alloc = &heapAlloc; pc.free = &heapFree;
+    REQUIRE(pool.configure(pc));
+    REQUIRE(pool.reserve(8) >= 4);
+
+    /* A trim starting at frame 5000: the head holds 5000..5299. */
+    const uint32_t start = 5000, head = 300, total = 8000;
+    RampSource src(total, 1);
+    std::vector<int16_t> headBuf(head);
+    REQUIRE(src.read("x.wav", start, head, headBuf.data()) == head);
+
+    StreamWindow w;
+    REQUIRE(w.open(pool, "x.wav", 1, start + head, total, 4));
+    SampleCursor c;
+    c.bind(headBuf.data(), start, head, 1, total, &w);
+    REQUIRE(c.readableFrames() == start + head);
+
+    float l = 0, r = 0;
+    /* The first frame of the trim, at once and interpolated: the tap before
+     * it is the trim's edge, not a frame that is not here. */
+    REQUIRE(c.sample(start, l, r));
+    REQUIRE(l == static_cast<float>(start * 2));
+    REQUIRE(c.read(static_cast<uint64_t>(start) * kOne, l, r));
+    REQUIRE(l == static_cast<float>(start * 2));
+
+    uint32_t f = start;
+    while (f + 3 < total) {
+        if (!c.read(static_cast<uint64_t>(f) * kOne, l, r)) {
+            REQUIRE(w.service(src, f, 2) > 0);
+            continue;
+        }
+        REQUIRE(l == static_cast<float>(f * 2));
+        ++f;
+    }
+    REQUIRE(f + 3 >= total);
+    w.close(pool);
+}
+
 TEST_CASE("SampleCursor interpolates across a block boundary", "[cursor]") {
     BlockPool pool;
     BlockPool::Config pc;

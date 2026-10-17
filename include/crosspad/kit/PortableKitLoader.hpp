@@ -37,6 +37,7 @@ public:
 
     // ── IKitManager (memory) ───────────────────────────────────────
     void releaseRetiredKit() override;
+    void clearCurrentKit() override;
 
     // ── Non-virtual helpers ─────────────────────────────────────────────────
     /// One kit written while the board runs (the Slicer's), onto the end of

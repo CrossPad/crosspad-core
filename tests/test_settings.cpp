@@ -148,3 +148,23 @@ TEST_CASE("CrosspadSettings: enableRemote persists in NVS, missing key means on"
 
     settings->wireless.enableRemote = true;   // leave the singleton as found
 }
+
+TEST_CASE("CrosspadSettings: the output queue survives a reboot and a corrupt value does not", "[settings]") {
+    test::MemoryKVStore store;
+    store.init();
+    auto* settings = CrosspadSettings::getInstance();
+
+    settings->audioEngine.queueFrames = 256;
+    settings->saveTo(store);
+    settings->audioEngine.queueFrames = 0;
+    settings->loadFrom(store);
+    REQUIRE(settings->audioEngine.queueFrames == 256);
+
+    // Past the bound or negative: the platform's safe default, not a guess.
+    store.saveI32("cfg_audio_eng", "q_frames", 100000);
+    settings->loadFrom(store);
+    REQUIRE(settings->audioEngine.queueFrames == 0);
+    store.saveI32("cfg_audio_eng", "q_frames", -5);
+    settings->loadFrom(store);
+    REQUIRE(settings->audioEngine.queueFrames == 0);
+}

@@ -6,6 +6,145 @@ carries the same number) and consumers gate on it with
 `crosspad/RequireVersion.hpp`. This file starts at 1.45.0; earlier releases
 are described in their `chore: X.Y.Z` commits.
 
+## 1.68.0 — 2026-10-17
+
+Merge of the kit-rate line (1.66.0 there) into the touch-preload line
+(1.66.0 and 1.67.0 below): both sets of additions, one version.
+
+### Added
+
+- `crosspad/kit/KitRateConvert.hpp`: a kit's samples converted for good to
+  the engine's rate. `KitRateConverter` plans (every sample's header, the
+  free space, what a stopped run already wrote), writes each file into
+  `<kit>/<rate>/` (`44k1/`) through `.part` and a read-back, then retargets
+  the kit's JSON in one atomic save with the trims scaled; `tidyKit()`
+  removes the originals that nothing names any more, `.originals` keeping
+  the list across a power cut. Metadata keeps its meaning: `smpl` loops,
+  `cue `, `ltxt`, `bext`, `fact` are scaled, `PEAK` and padding dropped.
+  The board's I/O, memory and pacing behind `IKitConvertHost`.
+- `KitInfo::keepRate` (JSON `keep_rate`): the kit is played at its own rate
+  on purpose -- nothing offers to convert it. Read and written with the kit.
+- `FftResamplerStream::begin(..., oversample)`: the read-out's zero-pad
+  factor, 2 as before by default. The converter reads at 8x: images of a
+  19 kHz tone at -69 dB instead of -30.
+- `crosspad/audio/WavLayout.hpp`: the one RIFF/WAVE parser, with the
+  native engine's rules (a `fmt ` of 16 bytes or more before the `data`, at
+  most 64 chunk headers, the tag not looked at for 16-bit). The engine's
+  `describe()` and the kit rate converter both read their headers through
+  it, so a file one plays is a file the other accepts.
+
+## 1.67.0 — 2026-10-16
+
+A pad's voice made ready while its velocity is still being measured.
+
+### Added
+
+- `SamplerEngine::arm()` / `fire()` / `disarm()` and `kArmTimeoutMs`: a touch
+  claims and fills a voice (sample, trim, cursor, pitch, envelope start) and
+  leaves it Armed -- unheard, cutting and stealing nothing; the velocity
+  fires it (level, choke and own-pad cut, room under the caps, the layer
+  again where it splits by velocity or the sample was swapped). A touch that
+  leaves, a hit other than the armed one, a mutation or the timeout end it.
+  `Counters::armed/armFired/armCancelled/armExpired`.
+- `IPadLogicHandler::onPadTouch()` (default: nothing) and
+  `PadManager::handlePadTouch()`.
+- `CROSSPAD_CMD_PAD_TOUCH` 0x22 (STM->ESP `[pad, touching]`), decoded by
+  `Stm32MessageHandler` into `PadManager::handlePadTouch()`. An STM that does
+  not send it changes nothing.
+
+### Changed
+
+- `SamplerEngine::noteOn()` in steps it shares with `fire()` (layer, plan,
+  cut, room, fill, start); same order of effects, same output to the bit.
+
+## 1.66.0 — 2026-10-16
+
+The A/B switch of the audio kernels goes, now that the board has chosen
+(16.10.2026: PIE fastest, and exact where it must be).
+
+### Removed
+
+- `dsp::KernelMode`, `kernelMode()`, `setKernelMode()` and
+  `crosspad/dsp/AudioKernelsRef.hpp` (`dsp::ref::*`): a kernel runs PIE
+  where it is compiled in and its buffers are on 16 bytes, the portable loop
+  otherwise. Introduced in 1.64.0 for measuring and never released, so a
+  minor bump: nothing outside this line called them.
+- `SamplerEngine`'s frame-by-frame render (`renderVoiceRef`).
+- `dsp::macPanned()`'s scratch argument, and `PitchedInstrument`'s scratch
+  block for it.
+
+### Changed
+
+- `dsp::Biquad` lives in `AudioKernels.hpp`.
+- The host tests keep the old loops as a test-local oracle; what the old
+  sampler render and EQ chain played is kept as digests recorded through them.
+
+## 1.65.0 — 2026-10-16
+
+Merge of the note-latency line (1.63.1, 1.64.0 there) and the audio-SIMD
+line (1.64.0 below): both sets of additions, one version.
+
+### Added
+
+- `IAudioBuffer` (`crosspad/audio/IAudioBuffer.hpp`) and
+  `PlatformServices::audioBuffer`: the render block and how far ahead of the
+  DAC it renders, chosen live from the choices the platform offers.
+- `AudioEngineSettings::queueFrames` (NVS `cfg_audio_eng/q_frames`, JSON
+  `audioEngine.queueFrames`, 0 = the platform's default, at most 4096).
+- `SamplerEngine::setOverloaded()` and `Counters::sheds`: while the platform
+  says its render is over budget, a note takes the oldest voice's place
+  instead of adding one -- what `PitchedInstrument::setOverloaded()` does.
+
+### Fixed
+
+- A Loop pad longer than its head and stream ring keeps playing: the window
+  numbers a looping voice's laps one after another and streams the lap's
+  streamed part again; before, the voice went silent after one lap and one
+  head. `SampleCursor::span()` and the block render follow the laps too.
+
+## 1.64.0 — 2026-10-16
+
+### Added
+
+- `crosspad/dsp/AudioKernels.hpp`: the render's float loops -- `mac`,
+  `macPanned`, `scaleStereo`, `peakStereo`, `clampPeakStereo`,
+  `biquadStereo` -- branchless and one pass each, with the ESP32-S3's
+  128-bit float loads and stores (`EE.LDF.128` / `EE.STF.128`) where
+  `CROSSPAD_SIMD_PIE` is set (core's CMakeLists sets it for esp32s3).
+  `AudioKernelsRef.hpp` keeps the loops they replace; host tests hold the
+  kernels to their bits. `dsp::setKernelMode()` picks reference, portable or
+  PIE at run time -- a prototype's switch, for timing both on the board.
+  The dispatching functions are out of line (`src/dsp/AudioKernels.cpp`): one
+  copy of each kernel in an image, not three inlined into every caller.
+- `crosspad/dsp/AlignedVector.hpp`: a vector on 16 bytes, for buffers the
+  PIE kernels should take.
+- `SampleCursor::span()`: the frames `sample()` would read straight from one
+  run, and where they are.
+
+### Changed
+
+- `SamplerEngine` renders a voice's block in runs with its state in locals:
+  the same samples, bit for bit, in a fraction of the time.
+- `EqChain` runs both channels of a section in one pass; `PitchedInstrument`
+  adds a voice into the bus in one pass instead of four.
+- `PitchedInstrument.hpp` no longer defines `detail::accumulatePanned()` or
+  `CROSSPAD_HAS_ESP_DSP`; it is `dsp::macPanned()`.
+
+## 1.63.0 — 2026-10-13
+
+Merge of main's 1.55.0 line into the native-engine line (1.56.0..1.62.0, see
+their `feat`/`fix` commits): both sets of features, one version.
+
+### Changed
+
+- `PatternSequencer`: a recorded press carries its performance (`perf`) and
+  its unwrapped clock count (`elapsed`) both; `strike()` holds a note for
+  what is left of its length after the poll it sounds in, for a scene's
+  notes and a song block's alike.
+- The audition (`previewStart()`) pans through `SamplerKit::panGains()`, so
+  it plays centred at unity like a pad on the native-engine line, not 3 dB
+  under.
+
 ## 1.55.0 — 2026-10-12
 
 ### Added

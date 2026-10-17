@@ -57,6 +57,7 @@ TEST_CASE("SettingsIo: full settings round-trip", "[settings][io]") {
     src.masterFX.flanger.bypass = false;
     src.audioEngine.sampleRate = 96000;
     src.audioEngine.frameCount = 128;
+    src.audioEngine.queueFrames = 192;
     src.vibration.enable = false;
     src.vibration.outputMax = 199;
     src.stm.midiChannel = 9;
@@ -109,6 +110,7 @@ TEST_CASE("SettingsIo: full settings round-trip", "[settings][io]") {
     REQUIRE(dst.masterFX.delay.bypass == true);
     REQUIRE(dst.audioEngine.sampleRate == 96000);
     REQUIRE(dst.audioEngine.frameCount == 128);
+    REQUIRE(dst.audioEngine.queueFrames == 192);
     REQUIRE(dst.vibration.enable == false);
     REQUIRE(dst.vibration.outputMax == 199);
     REQUIRE(dst.stm.midiChannel == 9);

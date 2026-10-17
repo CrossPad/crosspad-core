@@ -116,11 +116,12 @@ SettingsIoResult settingsExportAll(const CrosspadSettings& s, const char* path) 
     JsonObject masterFX = out["masterFX"].to<JsonObject>();
     s.masterFX.toJson(masterFX);
 
-    // AudioEngineSettings has no toJson: two restart-time fields, validated on
-    // import against its own isValid* helpers.
+    // AudioEngineSettings has no toJson: three fields, validated on import
+    // against its own isValid* helpers and bounds.
     JsonObject audioEngine = out["audioEngine"].to<JsonObject>();
     audioEngine["sampleRate"] = s.audioEngine.sampleRate;
     audioEngine["frameCount"] = s.audioEngine.frameCount;
+    audioEngine["queueFrames"] = s.audioEngine.queueFrames;
 
     JsonObject vibration = out["vibration"].to<JsonObject>();
     s.vibration.toJson(vibration);
@@ -170,6 +171,8 @@ SettingsIoResult settingsImportAll(CrosspadSettings& s, const char* path) {
         // Not clampable — only the enumerated values boot the I2S clock.
         if (AudioEngineSettings::isValidSampleRate(sampleRate)) tmp->audioEngine.sampleRate = sampleRate;
         if (AudioEngineSettings::isValidFrameCount(frameCount)) tmp->audioEngine.frameCount = frameCount;
+        tmp->audioEngine.queueFrames = (uint32_t)jsonInt(engine["queueFrames"], (int)tmp->audioEngine.queueFrames,
+                                                          0, (int)AudioEngineSettings::kMaxQueueFrames);
     }
 
     if (in["vibration"].is<JsonObject>()) tmp->vibration.fromJson(in["vibration"]);

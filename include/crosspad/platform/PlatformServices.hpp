@@ -47,7 +47,9 @@ class ISampleTools;
 class IInputGain;
 class IInputPairs;
 class IOutputLevels;
+class IAudioBuffer;
 class IPadMix;
+class IPadPerformance;
 class PitchedInstrument;
 class IInstrumentHost;
 class Stm32MessageHandler;
@@ -93,9 +95,13 @@ struct PlatformServices {
     IInputGain*       inputGain       = nullptr;   ///< the inputs' preamp gain (mics, line-in)
     IInputPairs*      inputPairs      = nullptr;   ///< which inputs the ADCs hear; null when all always do
     IOutputLevels*    outputLevels    = nullptr;   ///< the speakers' and jacks' analog levels; null where the board has none
+    IAudioBuffer*     audioBuffer     = nullptr;   ///< block and output queue, chosen live; null where fixed
     /// Per-pad level and pan of whichever engine plays the pads now; the
     /// engine that takes over the pads registers itself here.
     IPadMix*          padMix          = nullptr;
+    /// The pads' 16 levels, for an app other than the one that has them (the
+    /// Sequencer records a part in it). Null where nothing offers one.
+    IPadPerformance*  padPerformance  = nullptr;
     IBleMidi*         bleMidi         = nullptr;  // defaults to NullBleMidi
 
     /// The varispeed sample engine, when the platform runs one. Portable apps

@@ -118,7 +118,10 @@ public:
     /// from @p fromBar. Frame 0 of the take is what came in with the song's
     /// first frame, the delay through the codecs taken off, so the take sits
     /// on the song's bars from @p fromBar on; nothing before it is kept.
-    /// stopRecording() stops the song with the take.
+    /// A song already playing -- started from the transport bar -- is not
+    /// started again: the take goes in at the next bar line it reaches, and
+    /// RecStatus::fromBar says which bar that was. stopRecording() stops the
+    /// song with the take.
     virtual bool     startRecordingWithSong(uint32_t fromBar) { (void)fromBar; return false; }
     /// The same after @p countInBeats of count-in (ISongEngine::playCountedIn):
     /// frame 0 is still the song's first, on the beat after the last click.
@@ -160,6 +163,17 @@ public:
     virtual bool requestRendered(const std::string& file, const std::string& out, const SampleFx& fx)
     {
         (void)file; (void)out; (void)fx;
+        return false;
+    }
+    /// @p file scaled so its loudest sample reaches @p peak (of full scale,
+    /// 0..1] into @p out, written beside it and swapped in as a rendered copy
+    /// is; an @p out already there is kept. Never turned down: a file within
+    /// 0.1 dB of @p peak, or above it, is its own answer and nothing is
+    /// written. jobResult() is the file the pad should play -- @p out or
+    /// @p file -- or why it failed.
+    virtual bool requestNormalized(const std::string& file, const std::string& out, float peak)
+    {
+        (void)file; (void)out; (void)peak;
         return false;
     }
     virtual ToolJob     job() const = 0;

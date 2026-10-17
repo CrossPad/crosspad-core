@@ -35,19 +35,60 @@ public:
     void bind(const int16_t* head, uint32_t headFrames, uint8_t channels,
               uint32_t totalFrames, const StreamWindow* window)
     {
+        bind(head, 0, headFrames, channels, totalFrames, window);
+    }
+
+    /// @p head holds the file's frames [@p headStart, @p headStart + @p headFrames):
+    /// a layer trimmed to start later than the file does has its head there.
+    void bind(const int16_t* head, uint32_t headStart, uint32_t headFrames, uint8_t channels,
+              uint32_t totalFrames, const StreamWindow* window)
+    {
         head_ = head;
+        headStart_ = headStart;
         headFrames_ = headFrames;
+        headEnd_ = headStart + headFrames;
         channels_ = channels < 1 ? 1 : (channels > 2 ? 2 : channels);
         totalFrames_ = totalFrames;
         window_ = window;
+        lapFrames_ = 0;
+        lapOffset_ = 0;
         /* A new sample behind the same cursor: whatever run was remembered
          * belonged to the old one. */
         forgetRun();
     }
 
+    /**
+     * @brief A voice that loops over more than its head: @p lapFrames is the
+     *        streamed part of one lap (StreamWindow::lapFrames()).
+     *
+     * The window numbers its laps one after another; the voice's position
+     * wraps. Past the head, a frame is the window's at that position plus
+     * the laps behind it (nextLap()), so the ring is only ever asked for
+     * frames ahead of where it has been.
+     */
+    void setLoop(uint32_t lapFrames) { lapFrames_ = lapFrames; lapOffset_ = 0; forgetRun(); }
+
+    /// The voice wrapped back to its loop's start.
+    void nextLap()
+    {
+        if (!lapFrames_) return;
+        lapOffset_ += lapFrames_;
+        forgetRun();
+    }
+
+    /// Where the voice at file frame @p i is in the window's numbering -- what
+    /// the streaming thread fills ahead of. A voice in the head on a later lap
+    /// is about to want that lap's first streamed frame.
+    uint32_t streamFrame(uint32_t i) const
+    {
+        if (!lapOffset_) return i;
+        return (i < headEnd_ ? headEnd_ : i) + lapOffset_;
+    }
+
     void clear()
     {
-        head_ = nullptr; window_ = nullptr; headFrames_ = totalFrames_ = 0;
+        head_ = nullptr; window_ = nullptr; headStart_ = headFrames_ = headEnd_ = totalFrames_ = 0;
+        lapFrames_ = lapOffset_ = 0;
         forgetRun();
     }
 
@@ -55,13 +96,13 @@ public:
     uint32_t headFrames() const { return headFrames_; }
     uint8_t  channels() const { return channels_; }
 
-    /// Frames that can be read right now: the head, plus whatever the streamer
-    /// has delivered. A voice must not step past this.
+    /// One past the last frame that can be read right now: the head, plus
+    /// whatever the streamer has delivered. A voice must not step past this.
     uint32_t readableFrames() const
     {
-        if (!window_) return headFrames_;
+        if (!window_) return headEnd_;
         const uint32_t v = window_->validUpTo();
-        return v > headFrames_ ? v : headFrames_;
+        return v > headEnd_ ? v : headEnd_;
     }
 
     /**
@@ -88,18 +129,21 @@ public:
      */
     bool sample(uint32_t i, float& left, float& right) const
     {
-        if (i + 1 < headFrames_) {
-            return one(head_ + static_cast<size_t>(i) * channels_, left, right);
+        if (i >= headStart_ && i + 1 < headEnd_) {
+            return one(head_ + static_cast<size_t>(i - headStart_) * channels_, left, right);
         }
-        if (window_) {
-            if (runPtr_ && i >= runFirst_ && i + 1 < runLast_) {
-                return one(runPtr_ + static_cast<size_t>(i - runFirst_) * channels_,
+        /* On a later lap only past the head: below it the window holds the
+         * previous lap's tail under these numbers, not this frame. */
+        if (window_ && (!lapOffset_ || i >= headEnd_)) {
+            const uint32_t w = i + lapOffset_;
+            if (runPtr_ && w >= runFirst_ && w + 1 < runLast_) {
+                return one(runPtr_ + static_cast<size_t>(w - runFirst_) * channels_,
                            left, right);
             }
             uint32_t first = 0, last = 0;
-            const int16_t* p = window_->run(i, first, last);
-            if (p && i + 1 < last) {
-                runPtr_ = p; runFirst_ = i; runLast_ = last;
+            const int16_t* p = window_->run(w, first, last);
+            if (p && w + 1 < last) {
+                runPtr_ = p; runFirst_ = w; runLast_ = last;
                 return one(p, left, right);
             }
             runPtr_ = nullptr;
@@ -110,13 +154,53 @@ public:
         return read(static_cast<uint64_t>(i) << 32, left, right);
     }
 
+    /**
+     * @brief The frames from @p i on that sample() would read straight out of
+     *        one run -- the head, or one block the streamer delivered.
+     *
+     * For a voice stepping a frame a frame to take a block's worth with a
+     * pointer walk, instead of asking sample() 64 times: @p p is set to frame
+     * @p i (frames are channels() samples apart) and the count, at most
+     * @p max, is returned. The same pointer, the same frames, the same run
+     * remembered, as sample() frame by frame. 0 where sample() would go its
+     * slow way -- a seam, the very end, a frame not delivered -- and the
+     * voice then asks sample() for that one frame.
+     */
+    uint32_t span(uint32_t i, uint32_t max, const int16_t*& p) const
+    {
+        uint32_t end = 0;   // the first frame at or past i that sample() serves some other way
+        if (i >= headStart_ && i + 1 < headEnd_) {
+            p = head_ + static_cast<size_t>(i - headStart_) * channels_;
+            end = headEnd_ - 1;
+        } else if (window_ && (!lapOffset_ || i >= headEnd_)) {
+            /* The window's numbering, as in sample(): a later lap is the
+             * laps behind it further on. */
+            const uint32_t w = i + lapOffset_;
+            if (!(runPtr_ && w >= runFirst_ && w + 1 < runLast_)) {
+                uint32_t first = 0, last = 0;
+                const int16_t* q = window_->run(w, first, last);
+                if (!q || w + 1 >= last) {
+                    runPtr_ = nullptr;
+                    return 0;
+                }
+                runPtr_ = q; runFirst_ = w; runLast_ = last;
+            }
+            p = runPtr_ + static_cast<size_t>(w - runFirst_) * channels_;
+            end = runLast_ - 1 - lapOffset_;
+        } else {
+            return 0;
+        }
+        const uint32_t n = end - i;
+        return n < max ? n : max;
+    }
+
     bool read(uint64_t phase, float& left, float& right) const
     {
         const int64_t i = static_cast<int64_t>(phase >> 32);
         const float f = static_cast<float>(static_cast<uint32_t>(phase)) * kFracNorm;
 
-        if (i >= 1 && i + 2 < static_cast<int64_t>(headFrames_)) {
-            return walk(head_ + (static_cast<size_t>(i) - 1) * channels_, f, left, right);
+        if (i >= static_cast<int64_t>(headStart_) + 1 && i + 2 < static_cast<int64_t>(headEnd_)) {
+            return walk(head_ + (static_cast<size_t>(i) - 1 - headStart_) * channels_, f, left, right);
         }
 
         /* Past the head, the same walk over the streamer's blocks -- as long
@@ -141,15 +225,16 @@ public:
          * move under a frame this voice has not passed yet (it keeps a block
          * of history for exactly this reason). The cursor is per voice and
          * only the render thread touches it. */
-        if (window_ && i >= 1) {
-            const uint32_t left4 = static_cast<uint32_t>(i) - 1;
-            if (runPtr_ && left4 >= runFirst_ && static_cast<uint32_t>(i) + 2 < runLast_) {
+        if (window_ && i >= 1 && (!lapOffset_ || i - 1 >= static_cast<int64_t>(headEnd_))) {
+            const uint32_t left4 = static_cast<uint32_t>(i) - 1 + lapOffset_;
+            const uint32_t w = static_cast<uint32_t>(i) + lapOffset_;
+            if (runPtr_ && left4 >= runFirst_ && w + 2 < runLast_) {
                 return walk(runPtr_ + static_cast<size_t>(left4 - runFirst_) * channels_,
                             f, left, right);
             }
             uint32_t first = 0, last = 0;
             const int16_t* p = window_->run(left4, first, last);
-            if (p && static_cast<uint32_t>(i) + 2 < last) {
+            if (p && w + 2 < last) {
                 /* `p` points at `left4`; remember where the run starts so the
                  * next frames can index off it without asking again. */
                 runPtr_   = p;
@@ -199,16 +284,19 @@ private:
     bool tap(int64_t j, float& l, float& r) const
     {
         if (totalFrames_ == 0) return false;
-        if (j < 0) j = 0;
-        if (j >= static_cast<int64_t>(totalFrames_)) j = static_cast<int64_t>(totalFrames_) - 1;
+        /* Before the head is before the trim: the frame a voice starts on is
+         * its edge, as frame 0 is the file's. */
+        if (j < static_cast<int64_t>(headStart_)) j = headStart_;
+        /* A loop's end is not an edge: the window carries the next lap on. */
+        if (!lapFrames_ && j >= static_cast<int64_t>(totalFrames_)) j = static_cast<int64_t>(totalFrames_) - 1;
 
         const int16_t* p = nullptr;
-        if (j < static_cast<int64_t>(headFrames_)) {
+        if (j < static_cast<int64_t>(headEnd_)) {
             if (!head_) return false;
-            p = head_ + static_cast<size_t>(j) * channels_;
+            p = head_ + static_cast<size_t>(j - headStart_) * channels_;
         } else {
             if (!window_) return false;
-            p = window_->frame(static_cast<uint32_t>(j));
+            p = window_->frame(static_cast<uint32_t>(j) + lapOffset_);
             if (!p) return false;
         }
         l = p[0];
@@ -234,8 +322,12 @@ private:
     mutable const int16_t* runPtr_   = nullptr;
     mutable uint32_t       runFirst_ = 0;
     mutable uint32_t       runLast_  = 0;
+    uint32_t headStart_ = 0;
     uint32_t headFrames_ = 0;
+    uint32_t headEnd_ = 0;            ///< headStart_ + headFrames_
     uint32_t totalFrames_ = 0;
+    uint32_t lapFrames_ = 0;          ///< streamed frames a lap; 0 = not a streaming loop
+    uint32_t lapOffset_ = 0;          ///< laps behind the voice, in the window's numbering
     uint8_t  channels_ = 1;
 };
 

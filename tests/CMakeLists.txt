@@ -73,6 +73,7 @@ set(CORE_SOURCES
     # Kit JSON and sample-path resolution
     ${CORE_DIR}/src/kit/KitJsonParser.cpp
     ${CORE_DIR}/src/kit/KitPathUtils.cpp
+    ${CORE_DIR}/src/kit/KitRateConvert.cpp
 
     # DSP (FFT seam + factory, pitch detection, rate conversion).
     # EspDspFft.cpp is here on purpose: without esp-dsp it compiles to nothing,
@@ -83,6 +84,7 @@ set(CORE_SOURCES
     ${CORE_DIR}/src/dsp/PitchDetector.cpp
     ${CORE_DIR}/src/dsp/FftResampler.cpp
     ${CORE_DIR}/src/dsp/ScopeTrigger.cpp
+    ${CORE_DIR}/src/dsp/TimeStretch.cpp
 
     # Pitched instrument engine
     ${CORE_DIR}/src/instrument/WavPcm.cpp
@@ -92,6 +94,11 @@ set(CORE_SOURCES
 
     # Audio file writing
     ${CORE_DIR}/src/audio/WavWriter.cpp
+    ${CORE_DIR}/src/audio/WavLayout.cpp
+
+    # Output EQ (its kernels: test_AudioKernels)
+    ${CORE_DIR}/src/audio/OutputEq.cpp
+    ${CORE_DIR}/src/dsp/AudioKernels.cpp
 
     # Audio song model
     ${CORE_DIR}/src/song/AudioSong.cpp

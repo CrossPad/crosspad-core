@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "crosspad/audio/OutputEq.hpp"
+#include "crosspad/dsp/AudioKernels.hpp"
 
 #include <cmath>
 #include <new>
@@ -164,23 +165,10 @@ void EqChain::process(float* io, uint32_t frames)
     const Set* set = &st->sets[live_.load(std::memory_order_acquire) & 1u];
     const uint8_t n = set->n;
     if (!n) return;
-    for (uint8_t b = 0; b < n; ++b) {
-        /* Copied out of the set once a band: the coefficients may well be in
-         * a pool the render reads slowly, and the inner loop must not. */
-        const Section s = set->s[b];
-        for (int ch = 0; ch < 2; ++ch) {
-            float z1 = st->z1[b][ch], z2 = st->z2[b][ch];
-            for (uint32_t f = 0; f < frames; ++f) {
-                const float x = io[f * 2 + ch];
-                const float y = s.b0 * x + z1;
-                z1 = s.b1 * x - s.a1 * y + z2;
-                z2 = s.b2 * x - s.a2 * y;
-                io[f * 2 + ch] = y;
-            }
-            st->z1[b][ch] = z1;
-            st->z2[b][ch] = z2;
-        }
-    }
+    /* A section at a time, both channels in one pass. The kernel takes the
+     * coefficients and the state into registers once: they may well be in a
+     * pool the render reads slowly, and the inner loop must not. */
+    for (uint8_t b = 0; b < n; ++b) dsp::biquadStereo(io, frames, set->s[b], st->z1[b], st->z2[b]);
 }
 
 } // namespace crosspad

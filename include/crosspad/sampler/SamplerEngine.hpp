@@ -26,8 +26,21 @@
  *   Finished --(streaming thread: give the blocks back)--> Free
  * ```
  *
- * Each arrow has exactly one writer, so the only atomic operation needed is
- * the claim, where two note sources could race for the same slot. In
+ * A hit whose velocity is not known yet takes a detour (arm(), fire()):
+ *
+ * ```
+ *   Free --(note thread: claim, fill all but the level)--> Armed
+ *   Armed --(the velocity: level, cut, room, publish)--> Playing
+ *   Armed --(a touch that never became a hit, or kArmTimeoutMs)--> Finished
+ * ```
+ *
+ * The render never sees an Armed voice. Whoever ends one -- fire(), disarm(),
+ * the streaming thread's timeout -- takes it with a compare-and-swap, so
+ * exactly one of them does.
+ *
+ * Each arrow has exactly one writer, so the only atomic operations needed are
+ * the claim, where two note sources could race for the same slot, and the
+ * end of an armed voice. In
  * particular **the render thread never gives a block back and never closes
  * anything** -- it marks the voice Finished and moves on, which is the same
  * rule the file port had to discover the hard way about `fclose()`.
@@ -94,10 +107,19 @@ public:
          * voices alive at twenty hits a second, where the audible part of a
          * hit is over in half a second.
          *
+         * Silence is judged on the file, not on what the pad's gain makes of
+         * it, and where it was found is kept (SampleStore::audibleEnd()): the
+         * next hit of that sample stops exactly there and never streams the
+         * tail at all. So the wait only matters for a sample's first hit, and
+         * it is long -- at 200 ms it took a rest inside a phrase for the end
+         * of the file and cut the phrase off there (DREAMSCAPE pad 4: a
+         * 221 ms rest at 1.05 s, 1.8 s of the sample never played,
+         * 09.10.2026).
+         *
          * Only one-shots. A loop is meant to carry on, and a held note is the
          * player's to release. 0 disables it.
          */
-        float   silenceMs = 200.0f;
+        float   silenceMs = 1500.0f;
         /**
          * @brief Voices that may be **streaming** at once.
          *
@@ -145,6 +167,11 @@ public:
         uint32_t streamRefused = 0;   ///< the pool had no blocks: the voice plays its head only
         uint32_t underruns     = 0;   ///< a voice reached frames the streamer had not delivered
         uint32_t voicesPeak    = 0;
+        uint32_t sheds         = 0;   ///< steals setOverloaded() forced below the cap (part of steals)
+        uint32_t armed         = 0;   ///< voices armed by a touch
+        uint32_t armFired      = 0;   ///< ... that its velocity started
+        uint32_t armCancelled  = 0;   ///< ... that a touch without a hit, or a hit other than the armed one, ended
+        uint32_t armExpired    = 0;   ///< ... that nothing ended within kArmTimeoutMs
         uint32_t rtMaxUs       = 0;   ///< set by the port, which owns the clock
         /**
          * @brief Longest noteOn() call in **wall time** -- work and waiting both.
@@ -188,6 +215,21 @@ public:
     /// The pool the voices stream through and the store they read.
     void bind(BlockPool* pool, SampleStore* store);
     void setParams(const Params& p);
+
+    /**
+     * @brief The render is over its budget: hold the polyphony where it is.
+     *
+     * Raised by the platform while its audio task's average pass is close to
+     * a block -- the signal PitchedInstrument::setOverloaded() gets. Until it
+     * is lowered, a note takes the place of the oldest sounding voice instead
+     * of adding one. maxVoices is a count, and what a voice costs is not: a
+     * file at another rate than the engine's, or a pitched pad, interpolates
+     * every frame -- ~70 us a voice on the S3 against ~20 at unit rate -- so
+     * sixteen of them are more than a block, and a render that never waits
+     * for its DMA starves the thread that plays and releases the notes.
+     */
+    void setOverloaded(bool on) { overloaded_.store(on, std::memory_order_relaxed); }
+    bool overloaded() const { return overloaded_.load(std::memory_order_relaxed); }
     void setNoteCallbacks(NoteCb on, NoteCb off, void* ctx);
 
     /**
@@ -222,6 +264,56 @@ public:
     void noteOff(uint8_t pad, uint8_t key = kOwnKey);
     void allNotesOff();
 
+    // ── A hit before its velocity ─────────────────────────────────────────
+    /**
+     * @brief How long an armed voice waits for its velocity.
+     *
+     * A safety net, not the way a touch ends: the pad's own controller says
+     * when a touch leaves without a hit (disarm()). Longer than any press
+     * window the STM can be set to (its debounce is a byte of milliseconds),
+     * so a slow window is never cut short -- and a voice armed by a message
+     * that was lost holds a slot for this long, nothing more.
+     */
+    static constexpr uint32_t kArmTimeoutMs = 300;
+
+    /**
+     * @brief A finger is on @p touch and its velocity is still being measured:
+     * get @p pad's voice ready.
+     *
+     * Everything a note-on does that does not depend on the velocity is done
+     * here -- the voice claimed, the sample and its trim bound, the cursor on
+     * its first frame, the pitch, the envelope at its start -- so that fire()
+     * only has to set the level and publish. Nothing is cut, stolen or heard:
+     * a touch that never becomes a hit leaves no trace.
+     *
+     * @p touch is the pad the finger is on, @p pad the one it will sound (16
+     * levels play one pad from all of them), @p transpose and @p key as for
+     * noteOn(). A second arm() for the same @p touch replaces the first.
+     * Note thread. False when there is nothing to arm (no kit, no sample, the
+     * loader holds the engine, no slot free) -- the hit then plays through
+     * noteOn() as it always did.
+     */
+    bool arm(uint8_t touch, uint8_t pad, int8_t transpose = 0, uint8_t key = kOwnKey);
+
+    /**
+     * @brief The velocity of @p touch's hit: start the voice armed for it.
+     *
+     * The rest of a note-on, at the level @p velocity gives: the pad's own
+     * voice and its choke group cut, room made under the caps, the layer
+     * chosen again if the pad splits by velocity or its sample was swapped
+     * since the arm. False when no voice is armed for @p touch, or when the
+     * hit is not the one that was armed (another sound pad, pitch or key --
+     * the mode changed under the finger); that armed voice is dropped and the
+     * caller plays the hit with noteOn().
+     */
+    bool fire(uint8_t touch, uint8_t pad, uint8_t velocity, int8_t transpose = 0, uint8_t key = kOwnKey);
+
+    /// The touch on @p touch ended without a hit: drop its armed voice, if any.
+    void disarm(uint8_t touch);
+
+    /// Voices armed and waiting for a velocity, for a status line.
+    uint8_t armedVoices() const;
+
     /**
      * @brief Silence one pad now, whatever its mode says.
      *
@@ -250,6 +342,21 @@ public:
     /// rebuild a pad without gating the render thread.
     bool padSounding(uint8_t pad) const;
     bool anySounding() const;
+
+    /**
+     * @brief Whether anything may still read slot @p slot of the store.
+     *
+     * A kit swapped under a performance points each pad at its new samples
+     * while the old ones may still be sounding; a voice keeps reading the
+     * head it started on until it ends. So an old head goes back only once
+     * this is false: no pad of the published kit names the slot, no voice
+     * holds it (the streaming thread has freed every one that did), and no
+     * note is inside noteOn() -- one that is may have read a pad from before
+     * the swap, and its voice is not visible yet.
+     *
+     * Loader thread, after the pads that named the slot have been rewritten.
+     */
+    bool slotInUse(uint16_t slot) const;
 
     // ── Audition: one file outside the kit ────────────────────────────────
     /// Streaming passes an audition may wait for its first block before it
@@ -354,7 +461,7 @@ public:
     uint8_t  voicesActive() const;
 
 private:
-    enum class VoiceState : uint8_t { Free = 0, Claiming, Playing, Finished };
+    enum class VoiceState : uint8_t { Free = 0, Claiming, Playing, Finished, Armed };
 
     struct Voice {
         std::atomic<uint8_t> state{static_cast<uint8_t>(VoiceState::Free)};
@@ -377,8 +484,13 @@ private:
 
         uint8_t  pad = 0, layer = 0, choke = 0;
         uint8_t  key = 0;        ///< the hit it belongs to: the pad, or what noteOn() was given
+        int8_t   transpose = 0;  ///< the semitones the hit added to the pad's own
+        uint8_t  touch = 0;      ///< Armed: the pad the finger is on
+        uint32_t armUs = 0;      ///< Armed: when, on the engine's clock
         uint32_t age = 0;        ///< order of starting, for the steal
         uint32_t quiet = 0;      ///< consecutive frames below silenceLevel
+        uint32_t loudEnd = 0;    ///< one past the last frame above it, 0 = none yet
+        uint16_t slotIdx = SampleStore::kNoSlot;   ///< where to say so
         /* What the streaming thread needs to open this voice's ring, left for
          * it by noteOn() rather than done there. */
         const SampleStore::Slot* slot = nullptr;
@@ -392,9 +504,36 @@ private:
         bool wantStream = false;
     };
 
+    /// What a note of one layer reads, decided before a voice is taken.
+    struct Plan {
+        const SampleStore::Slot* slot = nullptr;
+        uint16_t slotIdx = 0;
+        uint8_t  layer = 0;
+        uint32_t first = 0, last = 0;
+        bool     willStream = false;
+    };
+
     void   noteOnBody(uint8_t pad, uint8_t velocity, int8_t transpose, uint8_t key);
+    bool   armBody(uint8_t touch, uint8_t pad, int8_t transpose, uint8_t key);
+    bool   fireBody(Voice& v, uint8_t pad, uint8_t velocity, int8_t transpose, uint8_t key);
+    /// The layer a hit at @p velocity plays (round-robin moves on).
+    uint8_t pickLayer(const KitPad& kp, uint8_t pad, uint8_t velocity);
+    /// @p layer's sample and trim; false when it has no sample.
+    bool   plan(const KitPad& kp, uint8_t layer, Plan& p) const;
+    /// A new hit of @p key cuts the pad's own voice and its choke group.
+    void   cutFor(const KitPad& kp, uint8_t key);
+    /// Room under the streaming budget, the voice cap and the overload shed.
+    void   makeRoom(bool willStream);
+    /// Everything but the level: the sample, the trim, pitch, envelope start.
+    void   fill(Voice& v, const KitPad& kp, const Plan& p, uint8_t pad, int8_t transpose, uint8_t key);
+    /// The level, its age, and Playing -- the voice is heard from here.
+    void   start(Voice& v, const KitPad& kp, uint8_t velocity);
+    /// An Armed voice of @p touch, or nullptr.
+    Voice* armedFor(uint8_t touch);
+    /// Armed -> Finished, if nobody took it first.
+    bool   dropArmed(Voice& v);
     Voice* claimVoice();
-    void   stealOldest();
+    bool   stealOldest();
     /// The oldest voice that is reading the card. Used when the streaming
     /// budget is full and a resident voice would be the wrong one to lose.
     void   stealOldestStreaming();
@@ -403,6 +542,8 @@ private:
     /// `wantStream` flag alone is not this question.
     static bool streamsOrWillStream(const Voice& v);
     void   startFade(Voice& v);
+    /// A one-shot has run past its sound: tell the store where it ended.
+    void   learnEnd(const Voice& v);
     void   endVoice(Voice& v);
     bool   renderVoice(Voice& v, float* out, uint32_t frames);
 
@@ -470,10 +611,14 @@ private:
 
     NowFn  now_ = nullptr;
     std::atomic<uint32_t> cNoteOnMaxUs_{0};
+    /// Notes inside noteOn() right now; see slotInUse().
+    std::atomic<uint32_t> notesInFlight_{0};
     NoteCb onNote_ = nullptr, offNote_ = nullptr;
     void*  cbCtx_  = nullptr;
 
-    std::atomic<uint32_t> cNotes_{0}, cDropped_{0}, cSteals_{0};
+    std::atomic<uint32_t> cNotes_{0}, cDropped_{0}, cSteals_{0}, cSheds_{0};
+    std::atomic<uint32_t> cArmed_{0}, cArmFired_{0}, cArmCancelled_{0}, cArmExpired_{0};
+    std::atomic<bool> overloaded_{false};
     std::atomic<uint32_t> cStreamRefused_{0}, cUnderruns_{0}, cVoicesPeak_{0}, cSilenced_{0};
 };
 
