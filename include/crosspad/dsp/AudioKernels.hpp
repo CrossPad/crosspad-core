@@ -255,4 +255,9 @@ void clampPeakStereo(float* buf, uint32_t frames, float& pL, float& pR);
 /// @p z1 and @p z2 are the two channels' state, [left, right].
 void biquadStereo(float* io, uint32_t frames, const Biquad& c, float* z1, float* z2);
 
+/// A bus to int16 for the I2S and USB writes, the same bits as
+/// crosspad::floatToInt16: clamp to [-1, 1], times 32767, truncate; NaN is 0.
+/// @p n counts samples, not frames.
+void floatToInt16(const float* src, int16_t* dst, uint32_t n);
+
 } // namespace crosspad::dsp

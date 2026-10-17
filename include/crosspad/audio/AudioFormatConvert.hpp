@@ -40,9 +40,8 @@ inline float clampFloat(float v) {
 
 // ─── float → int16 ───────────────────────────────────────────────────────
 inline void floatToInt16(const float* src, int16_t* dst, uint32_t count) {
-    // Scalar loop is already auto-vectorized by GCC on Xtensa LX7 with -O2
-    // (FMA + clamp get fused). ESP-DSP doesn't expose a vector helper for
-    // float→int16 narrowing — keeping single-pass clamp+scale.
+    // The reference: the S3's render runs dsp::floatToInt16
+    // (dsp/AudioKernels.hpp), which is held to this one bit for bit.
     for (uint32_t i = 0; i < count; ++i) {
         float v = clampFloat(src[i]) * kFloatScaleToInt16;
         dst[i] = static_cast<int16_t>(v);
