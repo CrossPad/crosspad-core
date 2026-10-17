@@ -1,10 +1,12 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include <catch2/catch_test_macros.hpp>
 
+#include "crosspad/audio/AudioFormatConvert.hpp"
 #include "crosspad/audio/OutputEq.hpp"
 #include "crosspad/dsp/AlignedVector.hpp"
 #include "crosspad/dsp/AudioKernels.hpp"
 
+#include <algorithm>
 #include <cmath>
 #include <cstdint>
 #include <cstring>
@@ -281,4 +283,71 @@ TEST_CASE("AudioKernels: an aligned vector starts on 16 bytes", "[dsp][kernels]"
     }
     CHECK(quadAligned(128, AlignedVector<float>(128).data()));
     CHECK_FALSE(quadAligned(126, AlignedVector<float>(128).data()));
+}
+
+TEST_CASE("floatToInt16 kernel: the reference's int16, every length, NaN and all", "[audio][kernels]")
+{
+    const float nan = std::numeric_limits<float>::quiet_NaN();
+    const float inf = std::numeric_limits<float>::infinity();
+    std::vector<float> in(160);
+    std::vector<int16_t> got(160), want(160);
+
+    auto check = [&](uint32_t n) {
+        std::fill(got.begin(), got.end(), int16_t(0x5a5a));
+        std::fill(want.begin(), want.end(), int16_t(0x5a5a));
+        dsp::floatToInt16(in.data(), got.data(), n);
+        crosspad::floatToInt16(in.data(), want.data(), n);
+        REQUIRE(got == want);   // also the samples past n, which stay untouched
+    };
+
+    SECTION("random with salt, lengths 0..129") {
+        for (uint32_t n = 0; n <= 129; ++n) {
+            fill(in.data(), in.size(), 1000 + n);
+            check(n);
+        }
+    }
+
+    SECTION("the edges, one per lane position") {
+        const float edge[] = {1.0f, -1.0f, 0.0f, -0.0f, 1.00003f, -1.00003f, -1.00004f, 2.0f, -2.0f,
+                              1e-30f, -1e-30f, 1.0f / 32768, -1.0f / 32768, 1.0f / 32767, 3.0f / 65536,
+                              1e10f, -1e10f, 65535.0f, 65536.0f, 65537.0f, -65537.0f, 0.99996948f};
+        for (float e : edge) {
+            for (uint32_t pos = 0; pos < 24; ++pos) {
+                fill(in.data(), in.size(), 7 + pos);
+                in[pos] = e;
+                check(64);
+                check(21);
+            }
+        }
+    }
+
+    SECTION("NaN anywhere makes that sample 0 and leaves the rest as the reference has them") {
+        for (uint32_t pos = 0; pos < 70; ++pos) {
+            fill(in.data(), in.size(), 99 + pos);
+            in[pos] = (pos & 1) ? nan : -nan;
+            check(70);
+            check(64);
+            check(pos + 1);
+        }
+    }
+
+    SECTION("infinities, alone and in pairs") {
+        for (uint32_t pos = 0; pos < 40; ++pos) {
+            fill(in.data(), in.size(), 5 + pos);
+            in[pos] = inf;
+            check(64);
+            in[pos] = -inf;
+            check(64);
+            in[pos] = inf;
+            in[(pos + 3) % 40] = -inf;   // the sum is NaN though neither sample is
+            check(64);
+        }
+    }
+
+    SECTION("silence and a full-scale square") {
+        std::fill(in.begin(), in.end(), 0.0f);
+        check(128);
+        for (size_t i = 0; i < in.size(); ++i) in[i] = (i & 1) ? 1.0f : -1.0f;
+        check(128);
+    }
 }
