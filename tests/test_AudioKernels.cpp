@@ -351,3 +351,54 @@ TEST_CASE("floatToInt16 kernel: the reference's int16, every length, NaN and all
         check(128);
     }
 }
+
+namespace {
+
+uint32_t g_platformMacCalls = 0;
+
+void platformMac(float* dst, const float* src, float g, uint32_t n)
+{
+    ++g_platformMacCalls;
+    fast::mac(dst, src, g, n);
+}
+
+/* What a platform's int16 kernel is: the same loop, its own two steps. */
+void platformToInt16(const float* src, int16_t* dst, uint32_t n)
+{
+    fast::floatToInt16With(src, dst, n, [](float y) { return fast::truncSat(y); },
+                           [](int t) { return fast::clampS16(t); });
+}
+
+} // namespace
+
+TEST_CASE("setAudioKernels: a platform kernel runs, a null entry and nullptr keep the portable ones",
+          "[dsp][kernels]")
+{
+    std::vector<float> src(64), dst(64, 0.0f), want(64, 0.0f);
+    fill(src.data(), src.size(), 42);
+
+    AudioKernelTable table;
+    table.mac = platformMac;
+    table.floatToInt16 = platformToInt16;
+    setAudioKernels(&table);
+
+    g_platformMacCalls = 0;
+    dsp::mac(dst.data(), src.data(), 0.5f, 64);
+    oracle::mac(want.data(), src.data(), 0.5f, 64);
+    CHECK(g_platformMacCalls == 1);
+    CHECK(sameBits(dst.data(), want.data(), 64));
+
+    std::vector<int16_t> got(64), ref(64);
+    dsp::floatToInt16(src.data(), got.data(), 64);
+    crosspad::floatToInt16(src.data(), ref.data(), 64);
+    CHECK(got == ref);
+
+    std::vector<float> l(64, 0.0f), lw(64, 0.0f);
+    dsp::macPanned(l.data(), src.data(), 32, 0.25f, 0.75f);   // not in the table: the portable one
+    oracle::macPanned(src.data(), lw.data(), 32, 0.25f, 0.75f);
+    CHECK(sameBits(l.data(), lw.data(), 64));
+
+    setAudioKernels(nullptr);
+    dsp::mac(dst.data(), src.data(), 0.5f, 64);
+    CHECK(g_platformMacCalls == 1);
+}

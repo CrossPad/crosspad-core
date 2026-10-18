@@ -8,7 +8,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Build Systems
 
-This library is consumed two ways:
+This library is consumed three ways:
 
 **PlatformIO** (Arduino framework — ESP32-S3 project):
 - `library.json` controls which `.cpp` files are compiled via `srcFilter` (not all sources are built by default)
@@ -17,6 +17,9 @@ This library is consumed two ways:
 **ESP-IDF component** (pure ESP-IDF projects like P4):
 - `CMakeLists.txt` uses `GLOB_RECURSE` so new `.cpp` files are picked up automatically
 - Used as a git submodule under `components/crosspad-core/`
+
+**Plain CMake** (`add_subdirectory`, or a top-level build): the same `CMakeLists.txt`
+and source list build the static library target `crosspad-core`; `tests/` links it.
 
 There are no test or lint commands in this repo — it's a library compiled as part of consumer projects.
 
@@ -117,8 +120,6 @@ Platform projects initialize crosspad-core via a platform init function that:
 ## Dependencies
 
 - `ArduinoJson` (bblanchon) — settings serialization
-- `freertos` — task management (FreeRTOS types used in headers)
-- `esp_event` — EspEventBus implementation
 - C++17 standard library (`<functional>`, `<mutex>`, `<map>`, `<vector>`, `<string>`)
 
 ## Important Conventions

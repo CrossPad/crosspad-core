@@ -174,9 +174,12 @@ git submodule add <url> components/crosspad-core
 # Arduino (PlatformIO)
 git submodule add <url> lib/crosspad-core
 
-# Desktop simulator (CMake)
+# Any CMake project (desktop simulator, host tools)
 git submodule add <url> crosspad-core
-# Then GLOB_RECURSE crosspad-core/src/*.cpp in CMakeLists.txt
+# Then in CMakeLists.txt:
+#   add_subdirectory(crosspad-core)
+#   target_link_libraries(<your target> PRIVATE crosspad-core)
+# -DCROSSPAD_CORE_USE_LVGL=ON when the consumer builds with USE_LVGL.
 ```
 
 Platform-specific adapters (clock, LED, MIDI, audio, etc.) are implemented in each platform repo.
