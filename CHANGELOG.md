@@ -6,6 +6,122 @@ carries the same number) and consumers gate on it with
 `crosspad/RequireVersion.hpp`. This file starts at 1.45.0; earlier releases
 are described in their `chore: X.Y.Z` commits.
 
+## 2.0.0 — 2026-10-18
+
+The open-source baseline: core holds no ESP-IDF, FreeRTOS or board-revision
+code any more, and builds as a plain CMake library. Contains every release
+from 1.54.1 to 1.70.0 below (1.56.0..1.62.0 and 1.70.0 are described in their
+commits).
+
+### Removed
+
+- `EspEventBus`, `Drv2605Driver` and `EspDspFft` (now in
+  crosspad-platform-idf) and `FreeRtosEventBus` (now in crosspad-pc). Core
+  keeps the interfaces (`IEventBus`, `IVibration`, `IFft`) and `SyncEventBus`.
+- Board profiles: `crosspad/config/boards.h`, `crosspad/config/board/*.h`,
+  `CROSSPAD_BOARD`, `BOARD_CROSSPAD_V1`/`V2`/`PC` and the `board` group of
+  `features.schema.json`. The `BOARD_*_DEF` defaults keep their names and
+  values in `Configuration_adv.h`, each overridable with `-D`.
+- `CROSSPAD_HAS_ESP_DSP`, `CROSSPAD_HAS_ESP_DSP_FFT` and the PUBLIC
+  `CROSSPAD_USE_ESP_DSP=1` and `CROSSPAD_SIMD_PIE=1` definitions; a consumer
+  that uses esp-dsp itself defines its own. The ESP-IDF component requires
+  only ArduinoJson.
+- `CROSSPAD_DSP_PIE` and `dsp::pie::*` (the S3's EE.LDF.128 / EE.STF.128
+  loops) and the TRUNC.S / CLAMPS steps of `dsp::floatToInt16()`: the
+  ESP-IDF platform registers them with `dsp::setAudioKernels()`.
+- `crosspad/fw/FwCardActions.hpp`: the kit card's action table is in
+  crosspad-gui (`crosspad-gui/fw/FwCardActions.hpp`).
+- `Stm32Manager::checkDfuMode()`, `setResetCallback()`,
+  `setDfuButtonCheckCallback()` and their typedefs.
+- `PadAnimator::stop()` without a token (use `stopAll()`).
+
+### Changed
+
+- `dsp::mac()`, `macPanned()`, `scaleStereo()`, `peakStereo()`,
+  `clampPeakStereo()`, `biquadStereo()` and `floatToInt16()` keep their
+  names and results; each runs the kernel the platform registered, or the
+  portable one (`dsp::fast::*`).
+- `WavLayout::parse()` without a chunk list stops once it has the data;
+  the results are the same. `WavLayout::fileBytes` is 0 after an unclamped
+  `wavReadLayout()`.
+- `control::readMixerLevels()` takes the mixer non-const (the limiter
+  readings are taken) and needs its `getChannelTrim()`,
+  `getOutputCeiling()`, `takeOutputLimit()` and `kTapLimit`.
+- `IKitConvertHost::makeDir()` defaults to `IFileSystem::makeDir()`, and
+  `KitRateConverter` lists, stats and removes folders through
+  `getFileSystem()`.
+- `SampleToolsEngine`: a take with the song while the song already plays
+  goes in at its next bar line instead of restarting it
+  (`RecStatus::fromBar` is that bar).
+- `Stm32Manager::init()` takes an `IClock&` instead of a `CrosspadStatus*`.
+  `start()`/`stop()` no longer create or end a task: the platform calls
+  `tick()` every `Stm32Manager::kTickPeriodMs`.
+- `PadAnimator`: every starter (`startProgress()`, `showFrame()`,
+  `playSuccess()`, `playError()`, `playBootAnim()`, `startCharging()`)
+  returns an `AnimToken`; `stop(AnimToken)` stops only that animation and
+  returns `bool`. `showFrame()` always starts a new frame; repaint a running
+  one with `updateFrame(token, colors)`.
+- `IPadLogicHandler::onPadPan()` (and `PadManager::notifyPadPan()`) carry
+  -64..63, as every producer always sent, documented as -127..127 before.
+- `PadManager`: once `onDeactivate()` returns, no pad-logic callback is in
+  flight. Changing the active logic may therefore block for the length of a
+  callback on another thread; do not change it from inside a pad callback.
+- `IEventBus::unsubscribe()`: after it returns the handler is not running
+  and is never called again -- except a handler unsubscribing itself from
+  inside its call, which completes. Handlers may subscribe, unsubscribe and
+  post on the bus that called them.
+- An app's `destroyLVGL` may be called with `nullptr` when its root is
+  already gone.
+
+### Added
+
+- A plain CMake target `crosspad-core` from the same `CMakeLists.txt` as the
+  ESP-IDF component; `CROSSPAD_CORE_USE_LVGL` sets `USE_LVGL` for core and
+  its consumers alike.
+- `cmake/crosspad_app_registry.cmake` (`crosspad_generate_app_registry()`,
+  the `REGISTER_APP` scan) and `cmake/crosspad_git_rev.cmake`
+  (`crosspad_git_rev()`), shared by the CMake platforms.
+- `FftBackend` and `setFftBackend()`: a platform registers its accelerated
+  FFT; `createFft()` falls back to `PortableFft`.
+- `dsp::AudioKernelTable` and `dsp::setAudioKernels()`: a platform registers
+  its render kernels; `dsp::fast::floatToInt16With()`, `fast::truncSat()`
+  and `fast::clampS16()`, the int16 loop a platform instantiates with its
+  own steps.
+- `SongEngineSizes` and `ISongEnginePlatform::sizes()`: ring and card-access
+  sizes come from the platform.
+- `SampleToolsEngine` behind `ISampleToolsPlatform`: the Recorder's and
+  Slicer's engine, portable, with `requestNormalized()`.
+- `IFileSystem` (list, stat, make/remove directories, rename, unbuffered
+  reads), `PosixFileSystem` (the default), `getFileSystem()` and
+  `PlatformServices::fileSystem`; it replaces crosspad-gui's own.
+- `SubscriptionTable`: a subscriber list with the `unsubscribe()` contract,
+  for event-bus implementations.
+- `InfoRowTable`: the Settings -> Info rows.
+- `wavReadLayout()` and `WavLayout::blockAlign`: one RIFF walk for every
+  WAV reader -- the engine's rules in `WavLayout::parse()`, the lenient
+  ones (either chunk order, declared sizes unless clamped) here.
+- `FwDownloader` (with `IHttpStream`, `ISha256`, `FwBlocklist`): the
+  resumable, signature- and SHA-256-checked package download.
+- `crosspad/fw/FwPackage.hpp`: `fwPackageName()`, `FwPkgVerdict`,
+  `FwSlotState`, `FwSlotInfo`; the kit icon format constants
+  (`kFwIconSide`, `kFwIconBytes`, ...) in `FwCatalog.hpp`.
+- `crosspad/control/*`: the device-control verbs read into plain structs
+  once for every platform -- `KitStatus`, `KitList`, `LedState`,
+  `MixerLevels` (with `MixerTapLevel`, each channel's `trim`, each output's
+  `limit` and `ceiling`), `PitchedStatus`, `WaveStatus`, `PadInput`,
+  `AudioLevel`, `AppName`.
+- `IPadLogicHandler::kPanMin`, `kPanCentre`, `kPanMax`, `kPanWireCentre`
+  and `panFromWire()`.
+- `PadAnimator::AnimToken`, `kNoAnim`, `owns()`, `updateFrame()`,
+  `stopAll()`; `Stm32Manager::tick()` and `kTickPeriodMs`.
+
+### Fixed
+
+- `SyncEventBus` called handlers with its mutex held: a handler that
+  subscribed, unsubscribed or posted on the same bus deadlocked.
+- A pad press or touch racing an app's teardown could reach the handler
+  after `onDeactivate()`, starting or arming a note nothing would release.
+
 ## 1.69.0 — 2026-10-17
 
 ### Added
