@@ -23,6 +23,34 @@ The 1.x line's 1.71.0 on top of 2.0.0.
   `PadLedController::notifyNoteDimmed()` for a muted or waiting loop.
   The dimmed colour keeps the playing colour's hue at half its brightness,
   its brightest channel between an eighth and a quarter of full scale.
+- `transportSetHome()` / `transportGoHome()`: a home target the transport
+  returns to when the holder that claimed it is left stopped (the pattern on
+  the board and the simulator), so the top bar's REC/PLAY never stay greyed
+  after an app that claimed them.
+
+### Changed
+
+- `KitInfo::pads` is a lazy `KitPads`: a listed kit costs a pointer, not
+  `KIT_PADS` pads (1176 -> ~220 B a kit); the block, once there, keeps its
+  address for the kit's life.
+
+### Fixed
+
+- `PortableKitLoader::scanKits()` lists every kit on the card: it counts them
+  first and reserves the list once, at the count plus `kSpareKits`. Grown by
+  doubling from a guess, a card of 88 kits needed a 64 kB and a 128 kB block
+  at once; on a boot with the update check on WiFi that copy threw and the
+  list stopped at 64 kits. Short of one block that big, the spare goes first,
+  then whole kits, and the scan says how many it left out. `addKit()` takes
+  the slot of a kit removed since the scan once the spare room is used up.
+- The first take survives its STOP: the song opens at start, and the scenes
+  store keeps a take played before a song was open. A song with nothing in
+  it takes the loaded kit.
+- The pad input tap skips `EventSource::App`: an app playing the pads itself
+  (a kit preview) is not recorded into a take.
+- Sample tools: a take borrows lent arena memory and a reclaim ends it written
+  out; no new take while a cut one is closing; a take that got nothing leaves
+  no file.
 
 ## 2.0.0 — 2026-10-18
 

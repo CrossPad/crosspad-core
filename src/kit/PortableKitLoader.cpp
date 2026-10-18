@@ -64,42 +64,66 @@ std::string PortableKitLoader::toLogicalPath(const std::string& fsPath) const {
 // field: on the ESP32 that copy alone was a std::bad_alloc at boot (80 kits,
 // 412 kB of PSRAM left beside the sample engine).
 void PortableKitLoader::scanKits(const std::string& rootDir) {
-    // Growing by doubling means copying everything found so far, and on a card
-    // of 79 kits of ~1 kB that copy is one of the largest allocations of the
-    // boot: it threw bad_alloc on one boot in four, nobody caught it, and the
-    // board rebooted with "Discovered 0 kits". The card rarely changes between
-    // scans, so the last count is the best guess there is, and anything the
-    // memory still cannot take costs its own entry rather than the boot.
-    const size_t previous = kits_.size();
-    kits_.clear();
+    // One block of capacity * sizeof(KitInfo) (~1 kB a kit), reserved once at
+    // the count plus kSpareKits -- the room addKit() fills without moving the
+    // list. Grown by doubling, the block was copied into a bigger one with the
+    // old one held: 88 kits wanted 64 and 128 kB at once, which under the
+    // boot's update check threw and stopped the list at 64 kits. Short of one
+    // block that size the spare goes first, then whole kits, and what is left
+    // out is said.
+    std::vector<KitInfo>().swap(kits_);   // the old block back before the new one is asked for
     currentKitId_ = -1;
     try {
-        kits_.reserve(previous ? previous + 4 : 32);
+        std::string found;   // every kit's JSON on the card, NUL-separated
+        size_t count = 0;
         // rootDir is logical ("/crosspad/kits"); add the mount prefix for POSIX.
-        discoverKitsRecursive(toFsPath(rootDir), kits_);
-        // Trim the slack the guess left — PSRAM outside the engine arena is the
-        // UI's whole budget -- down to kSpareKits, the room addKit() fills
-        // without moving the list.
-        if (kits_.capacity() != kits_.size() + kSpareKits) {
-            std::vector<KitInfo> sized;
-            sized.reserve(kits_.size() + kSpareKits);
-            for (auto& k : kits_) sized.push_back(std::move(k));
-            kits_.swap(sized);
+        findKitJsons(toFsPath(rootDir), found, count);
+        size_t room = count + kSpareKits;
+        for (;;) {
+            try {
+                kits_.reserve(room);
+                break;
+            } catch (const std::bad_alloc&) {
+                room = room > count ? count : room / 2;
+            }
+        }
+        for (size_t at = 0; at < found.size() && kits_.size() < kits_.capacity();) {
+            const std::string jsonPath = found.c_str() + at;
+            at += jsonPath.size() + 1;
+            KitInfo kit;
+            kit.path = toLogicalPath(jsonPath);
+            if (!isKitKnown(kit.path) && readKitJson(jsonPath, kit, false)) kits_.push_back(std::move(kit));
+        }
+        if (kits_.capacity() < count) {
+            std::printf("PortableKitLoader: no memory for the whole kit list: %u of %u kits listed\n",
+                        static_cast<unsigned>(kits_.size()), static_cast<unsigned>(count));
         }
     } catch (const std::bad_alloc&) {
         // Keep what was found. A short kit list is a bad boot; no boot is worse.
+        std::printf("PortableKitLoader: kit scan stopped by bad_alloc at %u kits\n",
+                    static_cast<unsigned>(kits_.size()));
     }
 }
 
 int PortableKitLoader::addKit(const std::string& kitJsonPath) {
     const int known = findKitIdByPath(kitJsonPath);
     if (known >= 0) return known;
-    if (kits_.size() >= kits_.capacity()) return -1;
     KitInfo kit;
     kit.path = kitJsonPath;
     if (!readKitJson(toFsPath(kitJsonPath), kit, false)) return -1;
-    kits_.push_back(std::move(kit));
-    return static_cast<int>(kits_.size()) - 1;
+    if (kits_.size() < kits_.capacity()) {
+        kits_.push_back(std::move(kit));
+        return static_cast<int>(kits_.size()) - 1;
+    }
+    // No spare room left: the slot of a kit deleted since the scan. Nothing
+    // holds that id any more -- removeKit() never blanks the current or the
+    // retired kit.
+    for (size_t i = 0; i < kits_.size(); ++i) {
+        if (!kits_[i].path.empty()) continue;
+        kits_[i] = std::move(kit);
+        return static_cast<int>(i);
+    }
+    return -1;
 }
 
 // Not saveKit(): a kit this board has only ever listed carries sixteen empty
@@ -290,12 +314,10 @@ const std::vector<KitInfo>& PortableKitLoader::kits() const {
 
 // ── Kit discovery ───────────────────────────────────────────────────────────
 
-bool PortableKitLoader::discoverKitsRecursive(const std::string& dirPath,
-                                               std::vector<KitInfo>& out) {
+void PortableKitLoader::findKitJsons(const std::string& dirPath, std::string& found,
+                                     size_t& count) {
     std::vector<std::string> names;
-    if (!listSubdirs(dirPath, names)) return false;
-
-    bool found = false;
+    if (!listSubdirs(dirPath, names)) return;
 
     for (const std::string& name : names) {
         std::string entryPath = dirPath + "/" + name;
@@ -317,22 +339,14 @@ bool PortableKitLoader::discoverKitsRecursive(const std::string& dirPath,
         }
 
         if (!jsonPath.empty()) {
-            std::string logicalPath = toLogicalPath(jsonPath);
-            if (!isKitKnown(logicalPath)) {
-                KitInfo kit;
-                kit.path = logicalPath;
-                if (readKitJson(jsonPath, kit, false)) {
-                    out.push_back(std::move(kit));
-                    found = true;
-                }
-            }
+            found += jsonPath;
+            found += '\0';
+            ++count;
         } else {
             // No kit.json here; recurse.
-            found |= discoverKitsRecursive(entryPath, out);
+            findKitJsons(entryPath, found, count);
         }
     }
-
-    return found;
 }
 
 // ── JSON I/O ────────────────────────────────────────────────────────────────
