@@ -28,7 +28,11 @@ std::atomic<PeakFn>      s_peakStereo{fast::peakStereo};
 std::atomic<BiquadFn>    s_biquadStereo{fast::biquadStereo};
 std::atomic<ToInt16Fn>   s_floatToInt16{portableFloatToInt16};
 
-template <typename Fn> void install(std::atomic<Fn>& slot, Fn platform, Fn portable)
+/* Fn comes from the slot alone: MSVC counts a parameter's __restrict in the
+ * function type, so &fast::mac and the table's MacFn would not deduce alike. */
+template <typename Fn>
+void install(std::atomic<Fn>& slot, typename std::atomic<Fn>::value_type platform,
+             typename std::atomic<Fn>::value_type portable)
 {
     slot.store(platform ? platform : portable, std::memory_order_relaxed);
 }
