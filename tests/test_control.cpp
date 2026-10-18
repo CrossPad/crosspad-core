@@ -49,10 +49,12 @@ struct KitManagerScope {
 };
 
 struct FakeMixer {
-    struct Ch { bool active; const char* name; float l, r, vol; bool mute; uint32_t routes; };
-    struct Out { float l, r, vol; bool mute; };
+    struct Ch { bool active; const char* name; float l, r, vol; bool mute; uint32_t routes; float trim = 1.0f; };
+    struct Out { float l, r, vol; bool mute; float limit = 1.0f; float ceiling = 1.0f; };
     std::vector<Ch> ch;
     std::vector<Out> out;
+    float tapLimit = 1.0f;
+    static constexpr uint8_t kTapLimit = 0xFF;
 
     uint8_t maxChannels() const { return (uint8_t)ch.size(); }
     uint8_t numOutputs() const { return (uint8_t)out.size(); }
@@ -65,6 +67,15 @@ struct FakeMixer {
     void getOutputLevel(uint8_t o, float& l, float& r) const { l = out[o].l; r = out[o].r; }
     float getOutputVolume(uint8_t o) const { return out[o].vol; }
     bool isOutputMuted(uint8_t o) const { return out[o].mute; }
+    float getChannelTrim(uint8_t c) const { return ch[c].trim; }
+    float getOutputCeiling(uint8_t o) const { return out[o].ceiling; }
+    /// Read and reset, as the mixer's limiter readings are.
+    float takeOutputLimit(uint8_t o) {
+        float& v = o == kTapLimit ? tapLimit : out[o].limit;
+        const float got = v;
+        v = 1.0f;
+        return got;
+    }
 };
 
 std::vector<std::string> g_cached;
@@ -166,11 +177,17 @@ TEST_CASE("control: mixer levels skip idle channels and carry the route mask", "
              {false, "idle", 0.9f, 0.9f, 1.0f, false, 0},
              {true, nullptr, 0.0f, 0.0f, 0.8f, true, 0b010}};
     mx.out = {{0.1f, 0.2f, 1.0f, false}, {0.0f, 0.0f, 0.5f, true}, {0.3f, 0.3f, 0.7f, false}};
+    mx.ch[2].trim = 0.5f;
+    mx.out[2].limit = 0.625f;
+    mx.out[2].ceiling = 0.891f;
+    mx.tapLimit = 0.75f;
 
     std::vector<MixerChannelLevel> chans;
     std::vector<MixerOutputLevel> outs;
+    std::vector<MixerTapLevel> taps;
     readMixerLevels(mx, [&](const MixerChannelLevel& r) { chans.push_back(r); },
-                    [&](const MixerOutputLevel& r) { outs.push_back(r); });
+                    [&](const MixerOutputLevel& r) { outs.push_back(r); },
+                    [&](const MixerTapLevel& r) { taps.push_back(r); });
 
     REQUIRE(chans.size() == 2);
     CHECK(chans[0].ch == 0);
@@ -189,6 +206,19 @@ TEST_CASE("control: mixer levels skip idle channels and carry the route mask", "
     CHECK(outs[1].muted);
     CHECK(outs[1].volume == 0.5f);
     CHECK(outs[2].peakL == 0.3f);
+    CHECK(chans[0].trim == 1.0f);
+    CHECK(chans[1].trim == 0.5f);
+    CHECK(outs[0].limit == 1.0f);
+    CHECK(outs[2].limit == 0.625f);
+    CHECK(outs[2].ceiling == 0.891f);
+    REQUIRE(taps.size() == 1);
+    CHECK(taps[0].limit == 0.75f);
+
+    /* The limiter readings are taken: a second read starts again at 1. */
+    outs.clear();
+    readMixerLevels(mx, [](const MixerChannelLevel&) {}, [&](const MixerOutputLevel& r) { outs.push_back(r); });
+    CHECK(outs[2].limit == 1.0f);
+    CHECK(mx.tapLimit == 1.0f);
 }
 
 TEST_CASE("control: pitched status reads the engine and the bank apart", "[control]") {
