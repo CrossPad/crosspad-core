@@ -6,6 +6,21 @@ carries the same number) and consumers gate on it with
 `crosspad/RequireVersion.hpp`. This file starts at 1.45.0; earlier releases
 are described in their `chore: X.Y.Z` commits.
 
+## 1.70.1 — 2026-10-18
+
+### Fixed
+
+- `PortableKitLoader::scanKits()` lists every kit on the card: it counts them
+  first and reserves the list once, at the count plus `kSpareKits`. Grown by
+  doubling from a guess, a card of 88 kits needed a 64 kB and a 128 kB block
+  at once; on a boot with the update check on WiFi that copy threw and the
+  list stopped at 64 kits, with no room for a kit the Slicer made. Short of
+  one block that big, the spare goes first, then whole kits, and the scan
+  says how many it left out.
+- `PortableKitLoader::addKit()` takes the slot of a kit removed since the
+  scan once the spare room is used up, instead of answering -1 until a
+  restart.
+
 ## 1.69.0 — 2026-10-17
 
 ### Added
