@@ -12,10 +12,12 @@
 
 #include <ArduinoJson.h>
 
+#include <chrono>
 #include <cmath>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <random>
 #include <sstream>
 
 using namespace crosspad;
@@ -49,10 +51,25 @@ struct TestHost : IKitConvertHost {
 
 std::string g_root;
 
+/// This process's folder under the temp directory: ctest -j runs the cases
+/// side by side, and a shared one was emptied under the case still using it.
+/// Removed when the process ends.
+const std::string& processRoot() {
+    struct Root {
+        std::string path = (fs::temp_directory_path() /
+                            ("cp_kit441_" + std::to_string(std::random_device{}()) + "_" +
+                             std::to_string(std::chrono::steady_clock::now().time_since_epoch().count())))
+                               .string();
+        ~Root() { std::error_code ec; fs::remove_all(path, ec); }
+    };
+    static const Root root;
+    return root.path;
+}
+
 /// A fresh tree under the temp directory, used as the card: logical and
 /// filesystem paths are the same (no mount prefix).
 void freshRoot() {
-    g_root = (fs::temp_directory_path() / "cp_kit441").string();
+    g_root = processRoot();
     fs::remove_all(g_root);
     fs::create_directories(g_root);
     setKitPathFsPrefix("");
