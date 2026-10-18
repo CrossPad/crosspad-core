@@ -88,23 +88,34 @@ TEST_CASE("CrosspadSettings: out-of-range NVS values are clamped on load", "[set
     settings->masterFX.inVolume = 50;
 }
 
-TEST_CASE("CrosspadSettings: launcher style round-trips and defaults to the list", "[settings]") {
+TEST_CASE("CrosspadSettings: home view round-trips and defaults to the pad map", "[settings]") {
     auto* settings = CrosspadSettings::getInstance();
 
     test::MemoryKVStore empty;
     empty.init();
     settings->launcherStyle = LauncherStyle::Grid;
     settings->loadFrom(empty);
-    REQUIRE(settings->launcherStyle == LauncherStyle::List);
+    REQUIRE(settings->launcherStyle == LauncherStyle::Pads);
 
+    for (LauncherStyle v : { LauncherStyle::Grid, LauncherStyle::List, LauncherStyle::Pads }) {
+        test::MemoryKVStore store;
+        store.init();
+        settings->launcherStyle = v;
+        settings->saveTo(store);
+        settings->launcherStyle = v == LauncherStyle::Grid ? LauncherStyle::List : LauncherStyle::Grid;
+        settings->loadFrom(store);
+        REQUIRE(settings->launcherStyle == v);
+    }
+    settings->launcherStyle = LauncherStyle::Pads;
+}
+
+TEST_CASE("CrosspadSettings: the old launcher key does not move a board off the pad map", "[settings]") {
+    auto* settings = CrosspadSettings::getInstance();
     test::MemoryKVStore store;
     store.init();
-    settings->launcherStyle = LauncherStyle::Grid;
-    settings->saveTo(store);
-    settings->launcherStyle = LauncherStyle::List;
+    store.saveU8("cfg_display", "launcher", (uint8_t)LauncherStyle::Grid);
     settings->loadFrom(store);
-    REQUIRE(settings->launcherStyle == LauncherStyle::Grid);
-    settings->launcherStyle = LauncherStyle::List;
+    REQUIRE(settings->launcherStyle == LauncherStyle::Pads);
 }
 
 TEST_CASE("CrosspadSettings: touch sensitivity round-trips, defaults to low, clamps", "[settings]") {
