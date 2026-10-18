@@ -97,6 +97,9 @@ commits).
 - `SubscriptionTable`: a subscriber list with the `unsubscribe()` contract,
   for event-bus implementations.
 - `InfoRowTable`: the Settings -> Info rows.
+- `dsp/SpectrumBars.hpp`: a spectrum analyser's Hann window, log-frequency
+  bar mapping and dBFS levels (`dsp::spectrumHann()`, `spectrumMapBars()`,
+  `spectrumBarHz()`, `spectrumLevels()`), from crosspad-gui's scope view.
 - `wavReadLayout()` and `WavLayout::blockAlign`: one RIFF walk for every
   WAV reader -- the engine's rules in `WavLayout::parse()`, the lenient
   ones (either chunk order, declared sizes unless clamped) here.
