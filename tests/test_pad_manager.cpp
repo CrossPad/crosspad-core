@@ -394,6 +394,43 @@ TEST_CASE("PadManager: deactivation waits for a press in flight on another threa
     REQUIRE(logic->inFlightAtDeactivate == 0);
 }
 
+TEST_CASE("PadManager: deactivation waits for a touch in flight on another thread", "[pad][dispatch]") {
+    struct HeldTouchLogic : DummyPadLogic {
+        std::promise<void> entered, release, deactivated;
+        std::atomic<int> inFlight{0};
+        std::atomic<int> inFlightAtDeactivate{-1};
+        void onPadTouch(PadManager&, uint8_t, bool) override {
+            ++inFlight;
+            entered.set_value();
+            release.get_future().wait();
+            --inFlight;
+        }
+        void onDeactivate(PadManager&) override {
+            inFlightAtDeactivate = inFlight.load();
+            deactivated.set_value();
+        }
+    };
+    test::CoreTestPlatform platform;
+    REQUIRE(platform.init());
+    auto& pm = platform.padManager;
+    auto logic = std::make_shared<HeldTouchLogic>();
+    pm.registerPadLogic("touch", logic);
+    pm.setActivePadLogic("touch");
+
+    auto deactivated = logic->deactivated.get_future();
+    std::thread touch([&] { pm.handlePadTouch(3, true); });
+    logic->entered.get_future().wait();
+
+    std::thread teardown([&] { pm.setActivePadLogic(""); });
+    REQUIRE(deactivated.wait_for(std::chrono::milliseconds(200)) == std::future_status::timeout);
+
+    logic->release.set_value();
+    touch.join();
+    teardown.join();
+    REQUIRE(deactivated.wait_for(std::chrono::seconds(0)) == std::future_status::ready);
+    REQUIRE(logic->inFlightAtDeactivate == 0);
+}
+
 TEST_CASE("PadManager: no pad callback reaches a handler after its onDeactivate", "[pad][dispatch]") {
     struct CheckedLogic : DummyPadLogic {
         std::atomic<bool> deactivated{false};

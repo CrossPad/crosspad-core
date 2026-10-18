@@ -14,8 +14,8 @@ class PadManager;
  * Each application (sequencer, sampler, etc.) can implement this interface
  * to define custom behavior when pads are pressed, released, or receive pressure.
  *
- * Threads. The pad callbacks (onPadPress, onPadRelease, onPadPressure,
- * onPadPan) come from whatever feeds the pads -- the pad task, MIDI input,
+ * Threads. The pad callbacks (onPadPress, onPadRelease, onPadTouch,
+ * onPadPressure, onPadPan, and the performance() query) come from whatever feeds the pads -- the pad task, MIDI input,
  * the UI, test injection -- and may run on several threads at once.
  * onActivate() and onDeactivate() run on the thread that changes the active
  * logic (an app's start and teardown: the UI thread), outside PadManager's

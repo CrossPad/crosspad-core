@@ -10,7 +10,7 @@ namespace {
 thread_local int t_dispatchDepth = 0;
 } // namespace
 
-PadManager::DispatchScope::DispatchScope(PadManager& pm) : pm_(pm) {
+PadManager::DispatchScope::DispatchScope(const PadManager& pm) : pm_(pm) {
     std::lock_guard<std::mutex> lock(pm_.logicMutex_);
     if (!pm_.activePadLogic_) return;
     handler = pm_.activePadLogic_;
@@ -92,12 +92,8 @@ void PadManager::allNotesOff() {
 // ── Physical pad interaction ────────────────────────────────────────────
 
 PadPerformance PadManager::performanceFor(uint8_t padIdx, uint8_t& velocity) const {
-    std::shared_ptr<IPadLogicHandler> handler;
-    {
-        std::lock_guard<std::mutex> lock(logicMutex_);
-        handler = activePadLogic_;
-    }
-    return handler ? handler->performance(padIdx, velocity) : PadPerformance{};
+    const DispatchScope dispatch(*this);
+    return dispatch.handler ? dispatch.handler->performance(padIdx, velocity) : PadPerformance{};
 }
 
 void PadManager::handlePadPress(uint8_t padIdx, uint8_t velocity, EventSource source,
@@ -152,12 +148,9 @@ void PadManager::handlePadTouch(uint8_t padIdx, bool touching) {
     if (padIdx >= 16) return;
     if (inputSuppressed_) return;
 
-    std::shared_ptr<IPadLogicHandler> handler;
-    {
-        std::lock_guard<std::mutex> lock(logicMutex_);
-        handler = activePadLogic_;
-    }
-    if (handler) handler->onPadTouch(*this, padIdx, touching);
+    // The active pad logic, counted in flight until this call returns.
+    const DispatchScope dispatch(*this);
+    if (dispatch.handler) dispatch.handler->onPadTouch(*this, padIdx, touching);
 }
 
 void PadManager::handlePadRelease(uint8_t padIdx, EventSource source) {

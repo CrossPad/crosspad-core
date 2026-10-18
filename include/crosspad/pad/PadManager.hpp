@@ -258,20 +258,21 @@ private:
     // Pad-logic callbacks in flight on any thread (under logicMutex_). A
     // deactivation takes the handler out of dispatch, then waits for these
     // before onDeactivate(): see IPadLogicHandler.
-    int dispatchInFlight_ = 0;
-    std::condition_variable dispatchIdle_;
+    // Mutable: a const query of the handler (performanceFor) is a dispatch too.
+    mutable int dispatchInFlight_ = 0;
+    mutable std::condition_variable dispatchIdle_;
 
     // The active handler for one dispatch, counted in flight while it lives;
     // null (and not counted) when no pad logic is active.
     class DispatchScope {
     public:
-        explicit DispatchScope(PadManager& pm);
+        explicit DispatchScope(const PadManager& pm);
         ~DispatchScope();
         DispatchScope(const DispatchScope&) = delete;
         DispatchScope& operator=(const DispatchScope&) = delete;
         std::shared_ptr<IPadLogicHandler> handler;
     private:
-        PadManager& pm_;
+        const PadManager& pm_;
     };
     // Under logicMutex_ (released while waiting): returns once no pad-logic
     // callback runs on another thread.
