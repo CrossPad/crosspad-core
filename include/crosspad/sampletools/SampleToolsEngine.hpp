@@ -77,6 +77,7 @@ public:
     bool requestSaveRegion(const std::string& file, uint32_t start, uint32_t end) override;
     bool requestExportKit(const SliceKit& kit) override;
     bool requestRendered(const std::string& file, const std::string& out, const SampleFx& fx) override;
+    bool requestNormalized(const std::string& file, const std::string& out, float peak) override;
     ToolJob     job() const override;
     std::string jobResult() override;
     uint8_t     jobProgress() const override;

@@ -7,6 +7,7 @@
 #include "crosspad/kit/PortableKitLoader.hpp"
 #include "crosspad/platform/PlatformServices.hpp"
 #include "crosspad/sampletools/SampleToolsEngine.hpp"
+#include "crosspad/song/ISongEngine.hpp"
 
 #include <algorithm>
 #include <atomic>
@@ -134,6 +135,37 @@ std::vector<int16_t> readWavData(const std::string& path) {
     }
     return {};
 }
+
+/// A song engine that is already playing, at a position the test moves.
+struct PlayingSong final : ISongEngine {
+    AudioSong songModel;
+    std::recursive_mutex mutex;
+    std::atomic<uint32_t> position{0};
+    std::atomic<int> plays{0}, stops{0};
+    uint32_t spb = 1000;
+
+    bool requestProjects() override { return false; }
+    std::vector<std::string> projects() override { return {}; }
+    bool requestOpen(const std::string&) override { return false; }
+    SongOpState openState() const override { return SongOpState::Ready; }
+    AudioSong& song() override { return songModel; }
+    std::recursive_mutex& songMutex() override { return mutex; }
+    void commit() override {}
+    bool requestClips() override { return false; }
+    std::vector<ClipInfo> clips() override { return {}; }
+    uint32_t listGeneration() const override { return 0; }
+    bool bounceScene(uint8_t, uint8_t) override { return false; }
+    BounceStatus bounceStatus() override { return {}; }
+    void cancelBounce() override {}
+    uint32_t framesPerBar() override { return spb; }
+    bool play(uint32_t) override { ++plays; return true; }
+    void stop() override { ++stops; }
+    bool playing() const override { return true; }
+    double positionBars() const override { return (double)position.load() / spb; }
+    uint32_t positionFrames() const override { return position.load(); }
+    uint32_t underruns() const override { return 0; }
+    uint32_t openFailures() const override { return 0; }
+};
 
 void touch(const fs::path& p) { std::FILE* f = std::fopen(p.string().c_str(), "wb"); REQUIRE(f); std::fclose(f); }
 
@@ -488,4 +520,85 @@ TEST_CASE("SampleToolsEngine passes a handoff once", "[sampletools]") {
     CHECK(a == 10);
     CHECK(b == 20);
     CHECK_FALSE(r.tools->takeHandoff(f, a, b));
+}
+
+TEST_CASE("SampleToolsEngine brings a sample up to a peak, as a copy", "[sampletools]") {
+    Rig r;
+    const std::string src = (r.dir / "quiet.wav").string();
+    const std::string out = (r.dir / ".fx" / "quiet_n.wav").string();
+    fs::create_directories(r.dir / ".fx");
+    writeFlat(src, 3000, 8192);
+
+    CHECK_FALSE(r.tools->requestNormalized(src, out, 0.0f));
+    CHECK_FALSE(r.tools->requestNormalized(src, out, 1.5f));
+    CHECK_FALSE(r.tools->requestNormalized("", out, 1.0f));
+
+    REQUIRE(r.tools->requestNormalized(src, out, 1.0f));
+    REQUIRE(r.finished() == ToolJob::Ready);
+    CHECK(r.tools->jobResult() == out);
+    CHECK_FALSE(fs::exists(out + ".tmp"));
+    const auto pcm = readWavData(out);
+    REQUIRE(pcm.size() == 3000 * 2);
+    CHECK(std::all_of(pcm.begin(), pcm.end(), [](int16_t s) { return s >= 32766; }));
+
+    /* One already there is kept. */
+    writeFlat(src, 10, 100);
+    REQUIRE(r.tools->requestNormalized(src, out, 1.0f));
+    REQUIRE(r.finished() == ToolJob::Ready);
+    CHECK(readWavData(out).size() == 3000 * 2);
+
+    /* Never turned down: a file at the peak is its own answer, nothing written. */
+    const std::string loud = (r.dir / "loud.wav").string();
+    const std::string loudOut = (r.dir / ".fx" / "loud_n.wav").string();
+    writeFlat(loud, 500, 30000);
+    REQUIRE(r.tools->requestNormalized(loud, loudOut, 0.5f));
+    REQUIRE(r.finished() == ToolJob::Ready);
+    CHECK(r.tools->jobResult() == loud);
+    CHECK_FALSE(fs::exists(loudOut));
+
+    const std::string silent = (r.dir / "silent.wav").string();
+    writeFlat(silent, 500, 0);
+    REQUIRE(r.tools->requestNormalized(silent, (r.dir / ".fx" / "silent_n.wav").string(), 1.0f));
+    REQUIRE(r.finished() == ToolJob::Failed);
+    CHECK(r.tools->jobResult() == "the sample is silent");
+}
+
+TEST_CASE("SampleToolsEngine takes into a song already playing from its next bar line", "[sampletools][song]") {
+    Rig r;
+    PlayingSong song;
+    ISongEngine* before = getPlatformServices().songEngine;
+    getPlatformServices().songEngine = &song;
+
+    REQUIRE(r.tools->selectInput(RecInput::Line));
+    REQUIRE(r.tools->startRecordingWithSong(0));
+    REQUIRE(waitFor([&] { return !r.tools->recStatus().file.empty(); }));
+    std::this_thread::sleep_for(std::chrono::milliseconds(50));   // armed just after the file is named
+
+    /* The song is 100 frames short of bar 1 when the first block begins, so
+     * frame 0 of the take is input frame 100. */
+    constexpr uint32_t kSongAtStart = 900;
+    constexpr uint32_t kIntoBlock = 100;
+    constexpr int kBlocks = 40;
+    std::vector<int16_t> line(kBlock * 2);
+    std::vector<float> bus(kBlock * 2, 0.0f);
+    for (int b = 0; b < kBlocks; ++b) {
+        for (uint32_t i = 0; i < kBlock; ++i) line[i * 2] = line[i * 2 + 1] = (int16_t)(b * kBlock + i);
+        r.tools->rtBlockBegin();
+        r.tools->rtInput(1, line.data(), kBlock);
+        song.position = kSongAtStart + (uint32_t)(b + 1) * kBlock;
+        r.tools->rtBus(bus.data(), kBlock);
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    r.tools->stopRecording();
+    REQUIRE(waitFor([&] { return !r.tools->recStatus().recording; }));
+    const RecStatus st = r.tools->recStatus();
+    CHECK(st.error.empty());
+    CHECK(st.fromBar == 1);
+    CHECK(song.plays == 0);                          // the song was left playing, not restarted
+    const auto pcm = readWavData(st.file);
+    REQUIRE(pcm.size() == (kBlocks * kBlock - kIntoBlock) * 2);
+    CHECK(pcm[0] == (int16_t)kIntoBlock);
+    CHECK(pcm[pcm.size() - 1] == (int16_t)(kBlocks * kBlock - 1));
+
+    getPlatformServices().songEngine = before;
 }

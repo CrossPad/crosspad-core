@@ -21,6 +21,12 @@
 // started in -- that block's first input frame, moved on by the codecs'
 // delay, is the take's frame 0. Until then the worker throws the lead-in away
 // and keeps only the newest part of it in the ring.
+//
+// A song already playing -- PLAY on the transport bar, Arrange -- is not
+// started again (that restarted it from FROM, under the player's feet): the
+// take goes in at the next bar line the song reaches. The render works out
+// that line from where the song is (ISongEngine::positionFrames()) and how
+// far into its own block the line falls, which is all frame 0 needs.
 
 #include "crosspad/sampletools/SampleToolsEngine.hpp"
 
@@ -39,6 +45,7 @@
 #include <cctype>
 #include <cmath>
 #include <cstdarg>
+#include <cstdint>
 #include <cstdio>
 #include <cstring>
 #include <iterator>
@@ -68,6 +75,8 @@ constexpr uint32_t kIdlePollMs     = 3;
 /// in. Not measured yet, so 0: a take sits that much late, estimated 5-12 ms
 /// from the 4 x 64-frame DMA each way (sample-tools.md says how to measure).
 constexpr uint32_t kCodecDelayFrames = 0;
+/// rtPunch(): the song ends before the bar a take would go in at.
+constexpr uint32_t kNoPunchBar = UINT32_MAX;
 constexpr uint32_t kSyncKeep       = 16384;   // lead-in kept while the song primes, ~0.35 s
 constexpr int64_t  kSongStartMs    = 3000;    // a song not playing by then is not coming
 /// Longer than one render block: the render, which may be inside take() or
@@ -77,6 +86,12 @@ constexpr uint32_t kRtLeaveMs      = 10;
 constexpr uint32_t kDirServiceEvery = 32;
 /// The overview's columns are int16 peaks scaled to -127..127.
 constexpr int      kPeakScale      = 258;
+/// Normalize: a file whose loudest sample is within this gain of the asked
+/// peak (0.1 dB), or above it, is left as it is.
+constexpr float    kNormalizeSlack = 1.0116f;
+/// Normalize's progress: the peak pass is the first half, the write the rest.
+constexpr uint32_t kNormalizeScanPct = 49;
+constexpr uint32_t kNormalizeWritePct = 50;
 /// reclaimLentRing(): how long it waits, and in what steps.
 constexpr int      kLookTries      = 1000;    // x 1 ms: to read whether the ring is lent
 constexpr int      kAnswerTries    = 200;     // x 10 ms: for the worker to give it back
@@ -158,7 +173,7 @@ bool is_wav(const char* n)
 }
 
 enum class Prev : uint8_t { Idle, Priming, Running, Ended };
-enum class JobKind : uint8_t { None, List, Folder, Overview, SaveRegion, Export, Rendered };
+enum class JobKind : uint8_t { None, List, Folder, Overview, SaveRegion, Export, Rendered, Normalize };
 
 /// Stereo int16 frames, one writer and one reader, counters that only grow
 /// (so used() is right across the uint32 wrap). In 16 kB segments rather than
@@ -574,6 +589,16 @@ struct SampleToolsEngine::Impl {
         return request(JobKind::Rendered);
     }
 
+    bool requestNormalized(const std::string& file, const std::string& out, float peak) {
+        if (file.empty() || out.empty() || !(peak > 0.0f && peak <= 1.0f)) return false;
+        {
+            std::lock_guard<std::mutex> l(paramMutex_);
+            if (job_.load() == ToolJob::Busy) return false;
+            pFile_ = file; pDst_ = out; pPeak_ = peak;
+        }
+        return request(JobKind::Normalize);
+    }
+
     bool requestExportKit(const SliceKit& kit) {
         if (!valid_name(kit.name) || kit.starts.empty() || kit.starts.size() > SliceMath::kMaxSlices) return false;
         {
@@ -643,6 +668,7 @@ struct SampleToolsEngine::Impl {
     /// Render, after the mixer: the song's first block, while a take waits for it.
     void rtSync(uint32_t frames) {
         ISongEngine* se = getPlatformServices().songEngine;
+        if (punch_.load(std::memory_order_relaxed)) { rtPunch(se, frames); return; }
         const uint32_t played = se ? se->framesPlayed() : 0;
         if (!played) { syncSeenIdle_.store(true, std::memory_order_relaxed); return; }
         if (!syncSeenIdle_.load(std::memory_order_relaxed)) return;   // the playback from before this take
@@ -650,6 +676,32 @@ struct SampleToolsEngine::Impl {
          * first frame came in with that block's first input frame. */
         const uint32_t end = blockBegin_ + frames;
         syncFrame_.store(played < end ? end - played : 0, std::memory_order_relaxed);
+        syncWait_.store(false, std::memory_order_release);
+    }
+
+    /// Render: a take into the song playing now. The block just rendered
+    /// began on song frame `start`; frame 0 is the first bar line from there,
+    /// that many frames into this block's input -- or past the loop's end,
+    /// where the song wraps to.
+    void rtPunch(ISongEngine* se, uint32_t frames) {
+        const uint32_t spb = punchSpb_.load(std::memory_order_relaxed);
+        if (!se || !spb) return;
+        const uint32_t after = se->positionFrames();
+        const uint32_t start = after >= frames ? after - frames : 0;
+        uint32_t bar = (start + spb - 1) / spb;
+        uint32_t line = bar * spb;
+        const uint32_t lim = punchLim_.load(std::memory_order_relaxed);
+        if (lim && line >= lim) {
+            if (!punchLoop_.load(std::memory_order_relaxed)) {
+                punchBar_.store(kNoPunchBar, std::memory_order_relaxed);   // it ends first
+                syncWait_.store(false, std::memory_order_release);
+                return;
+            }
+            line = lim;
+            bar = punchWrap_.load(std::memory_order_relaxed);
+        }
+        punchBar_.store(bar, std::memory_order_relaxed);
+        syncFrame_.store(blockBegin_ + (line - start), std::memory_order_relaxed);
         syncWait_.store(false, std::memory_order_release);
     }
 
@@ -776,6 +828,22 @@ struct SampleToolsEngine::Impl {
         syncTake_ = recWithSong_;
         dropped_ = 0;
         skip_.store(syncTake_ ? UINT32_MAX : 0);
+        ISongEngine* se = getPlatformServices().songEngine;
+        /* Playing already, and not counting in: the take goes in at its next
+         * bar line and the song is left alone. */
+        bool punch = false;
+        if (syncTake_ && se && se->playing() && !se->countInBeatsLeft()) {
+            std::lock_guard<std::recursive_mutex> l(se->songMutex());
+            const AudioSong& song = se->song();
+            const uint32_t spb = se->framesPerBar();
+            const bool region = song.loop && song.hasRegion();
+            punchSpb_.store(spb);
+            punchLim_.store((region ? song.loopEnd : se->playEndBars()) * spb);
+            punchWrap_.store(region ? song.loopStart : 0);
+            punchLoop_.store(song.loop);
+            punch = spb != 0;
+        }
+        punch_.store(punch);
         if (syncTake_) {
             syncSeenIdle_.store(false);
             syncWait_.store(true, std::memory_order_release);
@@ -783,11 +851,11 @@ struct SampleToolsEngine::Impl {
         }
         recArmed_.store(true, std::memory_order_release);
         /* Armed first: the take is listening before the song can sound. Only
-         * a take with the song starts it -- SYNC off leaves the song alone. */
-        ISongEngine* se = getPlatformServices().songEngine;
+         * a take with the song starts it -- SYNC off leaves the song alone, and
+         * so does a take into a song already playing. */
         const bool played = syncTake_ && se &&
-                            (recCountIn_ ? se->playCountedIn(recFromBar_, SyncTake::None, recCountIn_)
-                                         : se->play(recFromBar_));
+                            (punch || (recCountIn_ ? se->playCountedIn(recFromBar_, SyncTake::None, recCountIn_)
+                                                   : se->play(recFromBar_)));
         if (syncTake_ && !played) {
             recArmed_.store(false, std::memory_order_release);
             p.sleepMs(kRtLeaveMs);    // the render may be inside take()
@@ -805,6 +873,7 @@ struct SampleToolsEngine::Impl {
         if (!syncTake_) return;
         syncTake_ = false;
         syncWait_.store(false, std::memory_order_release);
+        punch_.store(false);
         if (ISongEngine* se = getPlatformServices().songEngine) se->stop();
     }
 
@@ -836,6 +905,14 @@ struct SampleToolsEngine::Impl {
                 const uint32_t used = rRing_.used();
                 drop(used > kSyncKeep ? used - kSyncKeep : 0);
                 return nullptr;
+            }
+            if (punch_.load()) {
+                /* Into the playing song: the bar it went in at is the take's
+                 * bar, whatever FROM said. */
+                const uint32_t bar = punchBar_.load();
+                if (bar == kNoPunchBar) return "the song ends before its next bar";
+                std::lock_guard<std::mutex> l(statusMutex_);
+                rec_.fromBar = bar;
             }
             const uint32_t delay = codec_of(input_.load()) >= 0 ? kCodecDelayFrames : 0;
             skip = syncFrame_.load() + delay;
@@ -1039,6 +1116,7 @@ struct SampleToolsEngine::Impl {
             case JobKind::SaveRegion: doSaveRegion(); break;
             case JobKind::Export:     doExport();     break;
             case JobKind::Rendered:   doRendered();   break;
+            case JobKind::Normalize:  doNormalize();  break;
             default: finish(false, "nothing asked"); break;
         }
     }
@@ -1291,6 +1369,67 @@ struct SampleToolsEngine::Impl {
         finish(true, out);
     }
 
+    /// A sample brought up to the asked peak: one pass finds its loudest
+    /// sample, a second writes it scaled, beside and swapped in as a rendered
+    /// copy is. Never turned down -- one at or above the peak already is the
+    /// answer itself, and nothing is written.
+    void doNormalize() {
+        std::string file, out;
+        float peak;
+        {
+            std::lock_guard<std::mutex> l(paramMutex_);
+            file = pFile_; out = pDst_; peak = pPeak_;
+        }
+        if (fsx::exists(out)) { finish(true, out); return; }
+        ClipReader r;
+        if (!r.open(file, p.storageReady())) { finish(false, "cannot read " + base_of(file)); return; }
+        if (!r.frames) { r.close(); finish(false, "the sample is empty"); return; }
+        int32_t top = 0;
+        for (uint32_t f = 0; f < r.frames;) {
+            const uint32_t n = std::min(kChunk, r.frames - f);
+            r.read(f, io_, n);
+            for (uint32_t k = 0; k < n * 2; ++k) {
+                const int32_t v = io_[k] < 0 ? -(int32_t)io_[k] : io_[k];
+                if (v > top) top = v;
+            }
+            f += n;
+            progress_.store((uint8_t)((uint64_t)f * kNormalizeScanPct / r.frames));
+            giveWay();
+        }
+        if (!top) { r.close(); finish(false, "the sample is silent"); return; }
+        const float gain = peak * (float)INT16_MAX / (float)top;
+        if (gain < kNormalizeSlack) {
+            r.close();
+            finish(true, file);
+            return;
+        }
+        const std::string tmp = out + ".tmp";
+        WavWriter w;
+        bool ok = w.open(tmp.c_str(), r.rate ? r.rate : sampleRate_, 2);
+        for (uint32_t f = 0; ok && f < r.frames;) {
+            const uint32_t n = std::min(kChunk, r.frames - f);
+            r.read(f, io_, n);
+            for (uint32_t k = 0; k < n * 2; ++k) {
+                const float v = std::round((float)io_[k] * gain);
+                io_[k] = (int16_t)(v > (float)INT16_MAX ? (float)INT16_MAX : (v < (float)INT16_MIN ? (float)INT16_MIN : v));
+            }
+            ok = w.write(io_, n);
+            f += n;
+            progress_.store((uint8_t)(kNormalizeScanPct + (uint64_t)f * kNormalizeWritePct / r.frames));
+            giveWay();
+        }
+        ok = w.close() && ok;
+        r.close();
+        if (!ok || !fsx::rename(tmp, out)) {
+            fsx::remove(tmp);
+            finish(false, "card write failed");
+            return;
+        }
+        logf(false, "%s peak %ld, x%.2f (%+.1f dB) -> %s", base_of(file).c_str(), (long)top, (double)gain,
+             20.0 * std::log10((double)gain), out.c_str());
+        finish(true, out);
+    }
+
     void doExport() {
         SliceKit kit;
         {
@@ -1380,6 +1519,14 @@ struct SampleToolsEngine::Impl {
     std::atomic<bool>     syncWait_{false};                   // armed, the song not heard yet
     std::atomic<bool>     syncSeenIdle_{false};               // render saw the song silent since arming
     std::atomic<uint32_t> syncFrame_{0};                      // take frame its first frame came in with
+    /* A take into a song already playing (rtPunch): its bar, its loop's end
+     * and where it wraps to, and the bar frame 0 went in at. */
+    std::atomic<bool>     punch_{false};
+    std::atomic<bool>     punchLoop_{false};
+    std::atomic<uint32_t> punchSpb_{0};
+    std::atomic<uint32_t> punchLim_{0};
+    std::atomic<uint32_t> punchWrap_{0};
+    std::atomic<uint32_t> punchBar_{0};
     std::atomic<uint32_t> skip_{0};                           // frames before frame 0; UINT32_MAX = not known
     uint32_t              blockBegin_ = 0;                    // render: take frames when this block began
     bool                  syncTake_ = false;                  // worker
@@ -1424,6 +1571,7 @@ struct SampleToolsEngine::Impl {
     std::string           pFile_;
     std::string           pDst_;                              // Rendered: where the copy goes
     SampleFx              pFx_;
+    float                 pPeak_ = 1.0f;                      // Normalize: the loudest sample, of full scale
     uint32_t              pA_ = 0, pB_ = 0;
     uint16_t              pCols_ = 1;
     SliceKit              pKit_;
@@ -1495,6 +1643,10 @@ bool SampleToolsEngine::requestExportKit(const SliceKit& kit) { return impl_->re
 bool SampleToolsEngine::requestRendered(const std::string& file, const std::string& out, const SampleFx& fx)
 {
     return impl_->requestRendered(file, out, fx);
+}
+bool SampleToolsEngine::requestNormalized(const std::string& file, const std::string& out, float peak)
+{
+    return impl_->requestNormalized(file, out, peak);
 }
 ToolJob SampleToolsEngine::job() const { return impl_->job_.load(); }
 std::string SampleToolsEngine::jobResult() { return impl_->jobResult(); }
