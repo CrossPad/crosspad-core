@@ -184,7 +184,7 @@ SettingsIoResult settingsImportAll(CrosspadSettings& s, const char* path) {
     tmp->RGBbrightness = (uint8_t)jsonInt(in["RGBbrightness"], tmp->RGBbrightness, 0, 100);
     tmp->quickSettingsEnabled = in["quickSettingsEnabled"] | tmp->quickSettingsEnabled;
     tmp->launcherStyle = (LauncherStyle)jsonInt(in["launcherStyle"], (int)tmp->launcherStyle,
-                                                (int)LauncherStyle::Grid, (int)LauncherStyle::List);
+                                                (int)LauncherStyle::Grid, (int)LauncherStyle::Pads);
     tmp->touchSensitivity = (TouchSensitivity)jsonInt(in["touchSensitivity"], (int)tmp->touchSensitivity,
                                                       (int)TouchSensitivity::Low, (int)TouchSensitivity::High);
     tmp->AudioEngineEnabled = in["AudioEngineEnabled"] | tmp->AudioEngineEnabled;

@@ -25,9 +25,12 @@ namespace crosspad {
 
 static constexpr int CROSSPAD_MAX_PADS = 16;
 
-/// How the launcher shows the apps: the icon grid, or a list with a line
-/// about each. A setting, not a build choice -- both ship.
-enum class LauncherStyle : uint8_t { Grid, List };
+/// What the home screen is -- where the board opens and where closing the
+/// last app lands: the icon grid, a list with a line about each app, or the
+/// pad map, a picture of the 16 pads where hitting one opens its app (and
+/// MODE on the transport bar brings it up over any app). A setting, not a
+/// build choice -- all three ship.
+enum class LauncherStyle : uint8_t { Grid, List, Pads };
 
 /// How light a touch the screen answers to. Low is what the panel always ran
 /// at and stays the default; Medium and High take a lighter touch. The
@@ -114,7 +117,7 @@ private:
         perfStatsFlags = 0;
         RGBbrightness = 100;
         quickSettingsEnabled = true;
-        launcherStyle = LauncherStyle::List;
+        launcherStyle = LauncherStyle::Pads;
         touchSensitivity = TouchSensitivity::Low;
         AudioEngineEnabled = true;
         usbAudioEnabled = true;    // UAC2 by default; console/OTA need the CDC profile
