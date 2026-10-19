@@ -365,6 +365,18 @@ static inline uint8_t mapRange(uint8_t x, uint8_t in_min, uint8_t in_max,
     return (uint8_t)((int)(x - in_min) * (out_max - out_min) / (in_max - in_min) + out_min);
 }
 
+namespace {
+
+RgbColor dimmedOf(const RgbColor& c) {
+    const int peak = std::max({c.R, c.G, c.B});
+    if (peak == 0) return c;
+    const int want = std::clamp(peak / 2, (int)PadLedController::kDimmedMinPeak,
+                                (int)PadLedController::kDimmedMaxPeak);
+    return c.Dim(static_cast<uint8_t>(std::min(255, want * 255 / peak)));
+}
+
+} // namespace
+
 RgbColor PadLedController::calculatePadColor(uint8_t padIdx) {
     if (padIdx >= 16) return RgbColor(0, 0, 0);
 
@@ -406,7 +418,7 @@ RgbColor PadLedController::calculatePadColor(uint8_t padIdx) {
     if (state.isPressed) {
         color = state.pressedColor;
     } else if (state.isDimmed) {
-        color = state.playingColor.Dim(kDimmedLevel);
+        color = dimmedOf(state.playingColor);
     } else if (state.isPlaying && settings_ &&
                ((settings_->keypad.lightsOnNoteOn && !state.isPressed) ||
                 (settings_->keypad.lightsOnNoteOff && !state.isPressed))) {

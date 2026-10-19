@@ -21,6 +21,8 @@ The 1.x line's 1.71.0 on top of 2.0.0.
   `SamplerEngine::setBarClock()`, `loopState()`, `Params::muteMs`, counters
   `loopsQueued`/`loopsLaunched`; `MetronomeNode::framesToBar()`;
   `PadLedController::notifyNoteDimmed()` for a muted or waiting loop.
+  The dimmed colour keeps the playing colour's hue at half its brightness,
+  its brightest channel between an eighth and a quarter of full scale.
 
 ## 2.0.0 — 2026-10-18
 
