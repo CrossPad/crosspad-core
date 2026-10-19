@@ -169,6 +169,10 @@ public:
 
         /// What counts as inaudible, as a fraction of full scale. -80 dBFS.
         float   silenceLevel = 1.0e-4f;
+
+        /// How long a Loop pad's mute and unmute take: short enough to land
+        /// on the hit, long enough not to click mid-waveform.
+        float   muteMs = 5.0f;
     };
 
     struct Counters {
@@ -204,6 +208,8 @@ public:
          * because the number means what its name suggests.
          */
         uint32_t noteOnMaxUs   = 0;
+        uint32_t loopsQueued   = 0;   ///< Loop pads started while the clock ran: waiting for the bar
+        uint32_t loopsLaunched = 0;   ///< ... that the bar started
     };
 
     /// Microseconds, for the one thing this engine times itself. The port
@@ -245,6 +251,20 @@ public:
     void setNoteCallbacks(NoteCb on, NoteCb off, void* ctx);
 
     /**
+     * @brief The clock a Loop pad launches on.
+     * True while it runs, with @p framesToBar the frames from the start of
+     * the block being rendered to the next bar line (0: the block starts on
+     * one). Asked by the note thread (is it running?) and once a block by the
+     * render, so it must be RT-safe. Unset, or false, means stopped.
+     */
+    using BarClockFn = bool (*)(void* ctx, uint32_t& framesToBar);
+    void setBarClock(BarClockFn fn, void* ctx);
+
+    /// Where a Loop pad is, for a status line and the LEDs.
+    enum class LoopState : uint8_t { Idle = 0, Queued, Playing, Muted };
+    LoopState loopState(uint8_t pad, uint8_t key = kOwnKey) const;
+
+    /**
      * @brief Close the note path so the loader can retire the current kit.
      *
      * Between these two, noteOn() does nothing, so no voice can take a fresh
@@ -265,6 +285,15 @@ public:
     void setPadMixGains(uint8_t pad, float gain, float balance);
 
     // ── Notes, from the event thread ──────────────────────────────────────
+    /*
+     * A Loop pad is a launch/mute toggle rather than a note: a hit starts it
+     * (on the next bar while the clock runs, at once while it is stopped), a
+     * hit while it sounds mutes it with the clock running -- the voice keeps
+     * its place and goes on streaming -- or stops it with the clock stopped,
+     * a hit while muted unmutes it where it is, and a hit while it waits for
+     * the bar cancels the launch. The clock stopping ends every loop. A
+     * release never reaches a loop; an armed hit on one toggles in fire().
+     */
     /// Play @p pad. @p transpose: semitones on top of the pad's own pitch, for
     /// this note only. @p key: which hit this is -- the retrigger and the
     /// release go by it, so 16 levels of pitch (every pad playing one pad's
@@ -480,6 +509,9 @@ private:
         std::atomic<uint32_t> playFrame{0};   ///< published for serviceIo()
         std::atomic<bool>     fading{false};  ///< asked to give its slot up
         std::atomic<bool>     releasing{false};
+        std::atomic<bool>     queued{false};  ///< a Loop launch waiting for the bar
+        std::atomic<bool>     muted{false};   ///< a Loop pad muted: silent, still running
+        float                 muteGain = 1.0f; ///< render: the mute ramp's level
         bool                  announced = false;   ///< onNote fired from the render pass
 
         SampleCursor cursor;
@@ -558,6 +590,10 @@ private:
     void   learnEnd(const Voice& v);
     void   endVoice(Voice& v);
     bool   renderVoice(Voice& v, float* out, uint32_t frames);
+    /// A hit on a Loop pad that already has its voice: mute, unmute, stop or
+    /// cancel. False when it has none and the hit starts one.
+    bool   loopToggle(uint8_t pad, uint8_t key);
+    bool   barClockRunning() const;
 
     /// The audition's half of serviceIo(); one pass at a time (pSvc_).
     void servicePreview();
@@ -626,11 +662,15 @@ private:
     /// Notes inside noteOn() right now; see slotInUse().
     std::atomic<uint32_t> notesInFlight_{0};
     NoteCb onNote_ = nullptr, offNote_ = nullptr;
+    BarClockFn barClock_ = nullptr;
+    void*      barClockCtx_ = nullptr;
+    bool       barWasRunning_ = false;   ///< render: the clock, last block
     void*  cbCtx_  = nullptr;
 
     std::atomic<uint32_t> cNotes_{0}, cDropped_{0}, cSteals_{0}, cSheds_{0};
     std::atomic<uint32_t> cArmed_{0}, cArmFired_{0}, cArmCancelled_{0}, cArmExpired_{0};
     std::atomic<bool> overloaded_{false};
+    std::atomic<uint32_t> cLoopsQueued_{0}, cLoopsLaunched_{0};
     std::atomic<uint32_t> cStreamRefused_{0}, cUnderruns_{0}, cVoicesPeak_{0}, cSilenced_{0};
 };
 
