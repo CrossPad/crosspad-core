@@ -3,6 +3,7 @@
 #include <catch2/matchers/catch_matchers_floating_point.hpp>
 
 #include "crosspad/sampler/SamplerEngine.hpp"
+#include "crosspad/sequencer/MetronomeNode.hpp"
 
 #include <cmath>
 #include <cstdlib>
@@ -1600,4 +1601,221 @@ TEST_CASE("SamplerEngine: abandonVoices() takes armed voices too", "[samplerengi
     CHECK(rig.engine.armedVoices() == 0);
     CHECK_FALSE(rig.engine.fire(0, 0, 100));
     rig.engine.endMutation();
+}
+
+// ── Loop pads: launch, mute, stop ───────────────────────────────────────────
+
+namespace {
+
+/// A bar clock the test moves by hand: running or not, and where in a bar.
+struct FakeBar {
+    bool     running = false;
+    uint32_t pos = 0;     ///< frames since the last bar line
+    uint32_t bar = 1000;  ///< frames in a bar
+
+    static bool fn(void* ctx, uint32_t& toBar) {
+        const auto* c = static_cast<const FakeBar*>(ctx);
+        if (!c->running) return false;
+        toBar = (c->bar - c->pos % c->bar) % c->bar;
+        return true;
+    }
+};
+
+/// Render @p blocks blocks of 64, advancing @p clock with them, and append
+/// the left channel to @p left.
+void runClocked(Rig& rig, FakeBar& clock, uint32_t blocks, std::vector<float>& left)
+{
+    constexpr uint32_t kFrames = 64;
+    std::vector<float> out(kFrames * 2);
+    for (uint32_t b = 0; b < blocks; ++b) {
+        std::fill(out.begin(), out.end(), 0.0f);
+        rig.engine.mix(out.data(), kFrames);
+        for (uint32_t i = 0; i < kFrames; ++i) left.push_back(out[i * 2]);
+        rig.engine.serviceIo();
+        if (clock.running) clock.pos += kFrames;
+    }
+}
+
+size_t firstSound(const std::vector<float>& v, size_t from = 0)
+{
+    for (size_t i = from; i < v.size(); ++i) if (v[i] != 0.0f) return i;
+    return v.size();
+}
+
+void loopRig(Rig& rig, FakeBar& clock)
+{
+    rig.build();
+    rig.src.add("loop.wav", 400, 1);
+    rig.assign(0, "loop.wav", 1024, PadMode::Loop);
+    rig.publish();
+    rig.engine.setBarClock(&FakeBar::fn, &clock);
+}
+
+} // namespace
+
+using LoopState = SamplerEngine::LoopState;
+
+TEST_CASE("SamplerEngine: a Loop pad hit with the clock stopped starts at once, and the next hit stops it", "[samplerengine][loop]") {
+    Rig rig;
+    FakeBar clock;
+    loopRig(rig, clock);
+    std::vector<float> left;
+
+    rig.engine.noteOn(0, 127);
+    REQUIRE(rig.engine.loopState(0) == LoopState::Playing);
+    runClocked(rig, clock, 1, left);
+    REQUIRE(firstSound(left) == 0);
+
+    rig.engine.noteOff(0);                    // a release never reaches a loop
+    runClocked(rig, clock, 10, left);
+    REQUIRE(rig.engine.loopState(0) == LoopState::Playing);
+
+    rig.engine.noteOn(0, 127);                // stopped clock: the hit stops it
+    runClocked(rig, clock, 10, left);         // the steal fade is 2 ms
+    REQUIRE(rig.engine.loopState(0) == LoopState::Idle);
+    REQUIRE_FALSE(rig.engine.padSounding(0));
+    REQUIRE(rig.engine.counters().loopsQueued == 0);
+}
+
+TEST_CASE("SamplerEngine: a Loop pad hit while the clock runs starts on the next bar line, to the frame", "[samplerengine][loop]") {
+    Rig rig;
+    FakeBar clock;
+    loopRig(rig, clock);
+    clock.running = true;
+    std::vector<float> left;
+    runClocked(rig, clock, 1, left);          // the render has seen the clock run
+    clock.pos = 37;                           // the hit lands 37 frames into a bar
+    left.clear();
+
+    rig.engine.noteOn(0, 127);
+    REQUIRE(rig.engine.loopState(0) == LoopState::Queued);
+    runClocked(rig, clock, 20, left);
+    REQUIRE(firstSound(left) == clock.bar - 37);
+    REQUIRE(rig.engine.loopState(0) == LoopState::Playing);
+    const auto c = rig.engine.counters();
+    REQUIRE(c.loopsQueued == 1);
+    REQUIRE(c.loopsLaunched == 1);
+}
+
+TEST_CASE("SamplerEngine: a hit on a waiting Loop launch cancels it unheard", "[samplerengine][loop]") {
+    Rig rig;
+    FakeBar clock;
+    loopRig(rig, clock);
+    clock.running = true;
+    clock.pos = 100;
+    std::vector<float> left;
+    rig.engine.noteOn(0, 127);
+    runClocked(rig, clock, 2, left);
+    REQUIRE(rig.engine.loopState(0) == LoopState::Queued);
+    rig.engine.noteOn(0, 127);
+    runClocked(rig, clock, 30, left);
+    REQUIRE(rig.engine.loopState(0) == LoopState::Idle);
+    REQUIRE_FALSE(rig.engine.padSounding(0));
+    REQUIRE(firstSound(left) == left.size());
+}
+
+TEST_CASE("SamplerEngine: muting a Loop pad keeps it running, and unmuting resumes it where it is", "[samplerengine][loop]") {
+    /* Two engines from the same start: one is muted and unmuted, the other
+     * plays through. Once the unmute's ramp is over the two must be the same
+     * frame for frame -- a restart would put the muted one 400-frame laps
+     * out of step with the other. */
+    Rig a, b;
+    FakeBar ca, cb;
+    loopRig(a, ca);
+    loopRig(b, cb);
+    ca.running = cb.running = true;
+    std::vector<float> la, lb;
+    runClocked(a, ca, 1, la);
+    runClocked(b, cb, 1, lb);
+    a.engine.noteOn(0, 127);
+    b.engine.noteOn(0, 127);
+    runClocked(a, ca, 20, la);                // launched on the bar, then 280 frames on
+    runClocked(b, cb, 20, lb);
+    REQUIRE(a.engine.loopState(0) == LoopState::Playing);
+
+    a.engine.noteOn(0, 127);                  // mute
+    REQUIRE(a.engine.loopState(0) == LoopState::Muted);
+    la.clear(); lb.clear();
+    runClocked(a, ca, 33, la);                // 2112 frames: not a whole number of laps
+    runClocked(b, cb, 33, lb);
+    REQUIRE(a.engine.padSounding(0));
+    for (size_t i = la.size() - 64; i < la.size(); ++i) REQUIRE(la[i] == 0.0f);
+
+    a.engine.noteOn(0, 127);                  // unmute: no restart, no wait for the bar
+    REQUIRE(a.engine.loopState(0) == LoopState::Playing);
+    la.clear(); lb.clear();
+    runClocked(a, ca, 12, la);
+    runClocked(b, cb, 12, lb);
+    REQUIRE(firstSound(la) == 0);
+    for (size_t i = 512; i < la.size(); ++i) REQUIRE(la[i] == lb[i]);   // past the 5 ms ramp
+    REQUIRE(a.engine.counters().loopsQueued == 1);
+}
+
+TEST_CASE("SamplerEngine: the clock stopping ends every Loop pad, muted or waiting", "[samplerengine][loop]") {
+    Rig rig;
+    FakeBar clock;
+    rig.build();
+    rig.src.add("loop.wav", 400, 1);
+    rig.src.add("hit.wav", 30000, 1);
+    rig.assign(0, "loop.wav", 1024, PadMode::Loop);
+    rig.assign(1, "loop.wav", 1024, PadMode::Loop);
+    rig.assign(2, "loop.wav", 1024, PadMode::Loop);
+    rig.assign(3, "hit.wav", 30000, PadMode::OneShot);
+    rig.publish();
+    rig.engine.setBarClock(&FakeBar::fn, &clock);
+    clock.running = true;
+    std::vector<float> left;
+    runClocked(rig, clock, 1, left);
+    rig.engine.noteOn(0, 127);
+    rig.engine.noteOn(1, 127);
+    runClocked(rig, clock, 20, left);
+    rig.engine.noteOn(1, 127);                // pad 1 muted
+    rig.engine.noteOn(2, 127);                // pad 2 waiting for the next bar
+    rig.engine.noteOn(3, 127);                // a one-shot, not a loop
+    REQUIRE(rig.engine.loopState(0) == LoopState::Playing);
+    REQUIRE(rig.engine.loopState(1) == LoopState::Muted);
+    REQUIRE(rig.engine.loopState(2) == LoopState::Queued);
+
+    clock.running = false;
+    runClocked(rig, clock, 10, left);
+    for (uint8_t p = 0; p < 3; ++p) {
+        REQUIRE(rig.engine.loopState(p) == LoopState::Idle);
+        REQUIRE_FALSE(rig.engine.padSounding(p));
+    }
+    REQUIRE(rig.engine.padSounding(3));       // the one-shot plays on
+}
+
+TEST_CASE("SamplerEngine: an armed hit on a Loop pad toggles like any other", "[samplerengine][loop]") {
+    Rig rig;
+    FakeBar clock;
+    loopRig(rig, clock);
+    clock.running = true;
+    std::vector<float> left;
+    runClocked(rig, clock, 1, left);
+    REQUIRE(rig.engine.arm(0, 0));
+    REQUIRE(rig.engine.fire(0, 0, 100));
+    REQUIRE(rig.engine.loopState(0) == LoopState::Queued);
+    runClocked(rig, clock, 20, left);
+    REQUIRE(rig.engine.loopState(0) == LoopState::Playing);
+    REQUIRE(rig.engine.arm(0, 0));            // the finger again: mute, the armed voice not needed
+    REQUIRE(rig.engine.fire(0, 0, 100));
+    REQUIRE(rig.engine.loopState(0) == LoopState::Muted);
+    runClocked(rig, clock, 2, left);
+    REQUIRE(rig.engine.armedVoices() == 0);
+    REQUIRE(rig.engine.voicesActive() == 1);
+}
+
+TEST_CASE("MetronomeNode: frames to the next bar line", "[metronome][loop]") {
+    crosspad::MetronomeNode m;
+    m.onPrepare(64, 44100);
+    m.setBpm(120.0f);
+    m.setBeatsPerBar(4);
+    const uint32_t bar = m.samplesPerBeat() * 4;
+    m.start();
+    std::vector<float> out(128, 0.0f);
+    m.mix(out.data(), 64);
+    REQUIRE(m.framesToBar() == bar - 64);
+    m.startCountIn(1);
+    m.mix(out.data(), 64);
+    REQUIRE(m.framesToBar() == m.samplesPerBeat() - 64);
 }

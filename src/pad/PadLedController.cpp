@@ -178,6 +178,18 @@ void PadLedController::notifyNotePlay(uint8_t padIdx, bool isPlaying) {
     updateLEDs();
 }
 
+void PadLedController::notifyNoteDimmed(uint8_t padIdx, bool dimmed) {
+    if (padIdx >= 16) return;
+    if (padStates_[padIdx].isDimmed == dimmed) return;
+    padStates_[padIdx].isDimmed = dimmed;
+    if (padStates_[padIdx].isPressed) return;
+    if (coalesceRefresh_) {
+        repaint_.store(true, std::memory_order_release);
+        return;
+    }
+    updateLEDs();
+}
+
 // ── Color management ────────────────────────────────────────────────────
 
 void PadLedController::setPadColor(uint8_t padIdx, RgbColor color) {
@@ -392,6 +404,8 @@ RgbColor PadLedController::calculatePadColor(uint8_t padIdx) {
     RgbColor color;
     if (state.isPressed) {
         color = state.pressedColor;
+    } else if (state.isDimmed) {
+        color = state.playingColor.Dim(kDimmedLevel);
     } else if (state.isPlaying && settings_ &&
                ((settings_->keypad.lightsOnNoteOn && !state.isPressed) ||
                 (settings_->keypad.lightsOnNoteOff && !state.isPressed))) {

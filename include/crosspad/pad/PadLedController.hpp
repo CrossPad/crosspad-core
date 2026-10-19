@@ -50,6 +50,10 @@ public:
     void notifyNoteOff(uint8_t padIdx, uint8_t velocity = 0);
     void notifyAftertouch(uint8_t padIdx, uint8_t pressure);
     void notifyNotePlay(uint8_t padIdx, bool isPlaying);
+    /// A Loop pad muted, or waiting for its bar: its playing colour, dimmed
+    /// to kDimmedLevel. Same threading as notifyNotePlay().
+    void notifyNoteDimmed(uint8_t padIdx, bool dimmed);
+    static constexpr uint8_t kDimmedLevel = 64;
 
     // Color management
     void setPadColor(uint8_t padIdx, RgbColor color);
