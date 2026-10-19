@@ -19,6 +19,8 @@ are described in their `chore: X.Y.Z` commits.
   `SamplerEngine::setBarClock()`, `loopState()`, `Params::muteMs`, counters
   `loopsQueued`/`loopsLaunched`; `MetronomeNode::framesToBar()`;
   `PadLedController::notifyNoteDimmed()` for a muted or waiting loop.
+  The dimmed colour keeps the playing colour's hue at half its brightness,
+  its brightest channel between an eighth and a quarter of full scale.
 
 ## 1.69.0 — 2026-10-17
 
