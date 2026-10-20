@@ -2,6 +2,8 @@
 #include "test_helpers.hpp"
 #include "crosspad/pad/IPadLogicHandler.hpp"
 
+#include <algorithm>
+
 using namespace crosspad;
 
 namespace {
@@ -355,4 +357,28 @@ TEST_CASE("PadLedController: coalesced, a voice's start is painted by update(), 
     REQUIRE(strip.refreshCount == frames + 1);
     leds.update();                      // nothing new: no frame
     REQUIRE(strip.refreshCount == frames + 1);
+}
+
+TEST_CASE("PadLedController: a dimmed Loop pad stays visible whatever its playing colour",
+          "[pad][led]") {
+    test::MockLedStrip strip;
+    crosspad::SyncEventBus bus;
+    crosspad::PadLedController leds;
+    leds.init(strip, bus, nullptr);
+    leds.begin();
+    const auto peakOf = [](crosspad::RgbColor c) { return std::max({c.R, c.G, c.B}); };
+
+    // A bright playing colour: half of it would be above the ceiling.
+    leds.setPadPlayingColor(0, 0, 200, 255);
+    leds.notifyNoteDimmed(0, true);
+    REQUIRE(peakOf(strip.pixels[0]) <= crosspad::PadLedController::kDimmedMaxPeak);
+    REQUIRE(peakOf(strip.pixels[0]) >= crosspad::PadLedController::kDimmedMaxPeak - 1);
+    REQUIRE(strip.pixels[0].R == 0);                       // the hue is kept
+
+    // A dark one (a kit's colour_pressed at 0x31): a quarter of it was 4 % of
+    // full scale, next to nothing on a WS2812. It is raised to the floor.
+    leds.setPadPlayingColor(1, 0, 0x25, 0x31);
+    leds.notifyNoteDimmed(1, true);
+    REQUIRE(peakOf(strip.pixels[1]) >= crosspad::PadLedController::kDimmedMinPeak - 1);
+    REQUIRE(peakOf(strip.pixels[1]) < 0x31);               // still dimmer than playing
 }
