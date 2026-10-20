@@ -5,6 +5,7 @@
 #include "crosspad/instrument/InstrumentPlayState.hpp"
 #include "crosspad/kit/IKitManager.hpp"
 #include "crosspad/platform/PlatformServices.hpp"
+#include "crosspad/sampler/ISecondKit.hpp"
 #include "crosspad/song/ISongEngine.hpp"
 
 #include <cstdio>
@@ -70,9 +71,41 @@ void SongSounds::songOpened()
     pending_.store(true, std::memory_order_release);
 }
 
+/// The song's second kit track's kit in the second kit engine, or none.
+void SongSounds::keepSecondKit()
+{
+    ISecondKit* k = getPlatformServices().secondKit;
+    ISongEngine* se = songs();
+    if (!k || !se || se->openState() != SongOpState::Ready) return;
+    std::string want;
+    {
+        std::lock_guard<std::recursive_mutex> l(se->songMutex());
+        const AudioSong& song = se->song();
+        const int t = song.seqTrackOnRoute(1);
+        if (t >= 0) want = song.tracks[t].kit;
+    }
+    k->hold(want);
+    if (k->state() == ISecondKit::State::Failed && want != secondKitSaid_) {
+        secondKitSaid_ = want;
+        host_.log(true, ("the second kit would not load: " + want).c_str());
+        char msg[kWarnChars];
+        std::snprintf(msg, sizeof(msg), "The second kit would not load: %s", want.c_str());
+        host_.warn(msg);
+    }
+}
+
 void SongSounds::step()
 {
-    if (!pending_.load(std::memory_order_acquire)) return;
+    keepSecondKit();
+    if (!pending_.load(std::memory_order_acquire)) {
+        /* A kit given to the song since it settled -- a kit track's kit set in
+         * Arrange -- is brought in as an opening song's is, from the next step. */
+        ISongEngine* se = songs();
+        if (!se || se->openState() != SongOpState::Ready) return;
+        std::lock_guard<std::recursive_mutex> l(se->songMutex());
+        if (se->song().kit != lastKit_) pending_.store(true, std::memory_order_release);
+        return;
+    }
     ISongEngine* se = songs();
     IKitManager* kits = getKitManager();
     if (!se || !kits) { pending_.store(false); return; }
@@ -103,6 +136,7 @@ void SongSounds::step()
         return;
     }
 
+    lastKit_ = kit;
     KitInfo* cur = kits->getCurrentKit();
     const std::string have = cur ? cur->path : std::string();
     if (kit != have && kit.empty() && cur && untouched) {
@@ -162,6 +196,12 @@ void SongSounds::kitLoaded()
     {
         std::lock_guard<std::recursive_mutex> l(se->songMutex());
         AudioSong& song = se->song();
+        /* A kit given to the song while this one loaded is the newer wish:
+         * step() waits out a load before it reads the song, so that kit is
+         * still to come. Written over, it was lost and the board kept the kit
+         * that happened to be loading. */
+        if (song.kit != lastKit_) return;
+        lastKit_ = cur->path;
         if (song.kit == cur->path) return;
         song.kit = cur->path;
         host_.log(false, (song.name + ": kit " + cur->path).c_str());

@@ -4,6 +4,7 @@
 #include "song_fakes.hpp"
 
 #include "crosspad/instrument/InstrumentPlayState.hpp"
+#include "crosspad/sampler/ISecondKit.hpp"
 #include "crosspad/song/SongSounds.hpp"
 
 #include <string>
@@ -16,6 +17,7 @@ namespace {
 constexpr const char* kCard = "/sdcard";
 constexpr const char* kKitA = "/crosspad/kits/A/kit.json";
 constexpr const char* kKitB = "/crosspad/kits/B/kit.json";
+constexpr const char* kKitC = "/crosspad/kits/C/kit.json";
 
 /// The platform side, as a list of what was asked of it.
 class FakeHost final : public ISongSoundsHost {
@@ -39,6 +41,27 @@ public:
     std::vector<int> loads;
     int unloads = 0;
     std::vector<std::string> warnings;
+};
+
+/// The second kit engine, as a list of what it was asked to hold.
+class FakeSecondKit final : public ISecondKit {
+public:
+    void hold(const std::string& kitPath) override { holds.push_back(kitPath); }
+    State state() const override { return st; }
+    std::string kit() const override { return holds.empty() ? std::string() : holds.back(); }
+    void noteOn(uint8_t, uint8_t) override {}
+    void noteOff(uint8_t) override {}
+    void takeLevel(float& left, float& right) override { left = right = 0.0f; }
+
+    std::vector<std::string> holds;
+    State st = State::Idle;
+};
+
+/// PlatformServices::secondKit for one test.
+struct SecondKitScope {
+    ISecondKit* was;
+    explicit SecondKitScope(ISecondKit* k) : was(getPlatformServices().secondKit) { getPlatformServices().secondKit = k; }
+    ~SecondKitScope() { getPlatformServices().secondKit = was; }
 };
 
 struct Rig {
@@ -295,4 +318,92 @@ TEST_CASE("song sounds: no song engine or kit manager ends the wait", "[song][so
     sounds.songOpened();
     sounds.step();
     REQUIRE_FALSE(sounds.pending());
+}
+
+TEST_CASE("song sounds: a kit picked while another loads is the one the song keeps", "[song][sounds]") {
+    Rig r;
+    test::setKits(r.kits, {kKitA, kKitB, kKitC});
+    r.kits.setCurrentKitId(0);
+    r.engine.song().kit = kKitB;
+    r.sounds.songOpened();
+    r.sounds.step();                       // the song's kit, B, starts loading
+    REQUIRE(r.host.loads == std::vector<int>{1});
+
+    r.engine.song().kit = kKitC;           // picked in Arrange while B loads
+    r.kits.setCurrentKitId(1);             // B is in
+    r.sounds.kitLoaded();
+    REQUIRE(r.engine.song().kit == kKitC); // the newer pick is not written over
+    REQUIRE(r.engine.commits == 0);
+
+    r.sounds.step();
+    REQUIRE(r.host.loads == std::vector<int>{1, 2});
+    r.kits.setCurrentKitId(2);
+    r.sounds.kitLoaded();
+    r.sounds.step();
+    REQUIRE(r.engine.song().kit == kKitC);
+    REQUIRE_FALSE(r.sounds.pending());
+}
+
+TEST_CASE("song sounds: a kit given to the song after it settled is loaded", "[song][sounds]") {
+    Rig r;
+    r.kits.setCurrentKitId(0);
+    r.engine.song().kit = kKitA;
+    r.sounds.songOpened();
+    r.sounds.step();
+    REQUIRE_FALSE(r.sounds.pending());
+    REQUIRE(r.host.loads.empty());
+
+    r.engine.song().kit = kKitB;           // a kit track given its kit in Arrange
+    r.sounds.step();
+    r.sounds.step();
+    REQUIRE(r.host.loads == std::vector<int>{1});
+}
+
+TEST_CASE("song sounds: a kit loaded from the browser is still the song's", "[song][sounds]") {
+    Rig r;
+    r.kits.setCurrentKitId(0);
+    r.engine.song().kit = kKitA;
+    r.sounds.songOpened();
+    r.sounds.step();
+    r.kits.setCurrentKitId(1);             // picked in the kit browser
+    r.sounds.kitLoaded();
+    REQUIRE(r.engine.song().kit == kKitB);
+    r.sounds.step();
+    r.sounds.step();
+    REQUIRE(r.host.loads.empty());         // and not taken back to A
+}
+
+TEST_CASE("song sounds: a second kit track's kit is held by the second kit engine", "[song][sounds]") {
+    Rig r;
+    FakeSecondKit k2;
+    SecondKitScope scope2{&k2};
+    r.sounds.step();                       // a song with no second kit track
+    REQUIRE(k2.holds == std::vector<std::string>{""});
+
+    REQUIRE(r.engine.song().addSeqTrack(0, SeqSource::Kit, 0));
+    REQUIRE(r.engine.song().addSeqTrack(1, SeqSource::Kit, 1, kKitB));
+    r.sounds.step();
+    REQUIRE(k2.holds.back() == kKitB);
+
+    r.engine.state = SongOpState::Busy;    // a song opening: left as it is
+    const size_t asked = k2.holds.size();
+    r.sounds.step();
+    REQUIRE(k2.holds.size() == asked);
+
+    r.engine.state = SongOpState::Ready;
+    r.engine.song().removeTrack(1);
+    r.sounds.step();
+    REQUIRE(k2.holds.back().empty());      // no second kit track: none held
+}
+
+TEST_CASE("song sounds: a second kit that would not load is said once", "[song][sounds]") {
+    Rig r;
+    FakeSecondKit k2;
+    SecondKitScope scope2{&k2};
+    REQUIRE(r.engine.song().addSeqTrack(0, SeqSource::Kit, 0));
+    REQUIRE(r.engine.song().addSeqTrack(1, SeqSource::Kit, 1, kKitB));
+    k2.st = ISecondKit::State::Failed;
+    r.sounds.step();
+    r.sounds.step();
+    REQUIRE(r.host.warnings == std::vector<std::string>{std::string("The second kit would not load: ") + kKitB});
 }

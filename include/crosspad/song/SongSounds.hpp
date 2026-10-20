@@ -50,8 +50,14 @@ public:
  * changes what the next step sees: an instrument given back reloads the kit,
  * for one, so the kit is compared only once that has happened.
  *
- * Reads the song engine, the kit manager and the instrument host from
- * PlatformServices.
+ * The song's kit is followed after it settles too: a kit given to the song
+ * later (Arrange's kit track) is loaded as an opening song's is, and a kit
+ * load that finishes after the song was given a newer one is not written
+ * over it -- the newer pick wins. A song's second kit track plays its own kit
+ * (AudioSong::seqRoute() 1), held every step in PlatformServices::secondKit.
+ *
+ * Reads the song engine, the kit manager, the instrument host and the second
+ * kit from PlatformServices.
  */
 class SongSounds {
 public:
@@ -68,10 +74,13 @@ public:
     /// The song engine's worker, as a song opens.
     void songOpened();
 
-    /// UI thread: one step towards the open song's sounds; nothing once there.
+    /// UI thread: one step towards the open song's sounds; nothing once there
+    /// but the second kit asked for again, which costs nothing while it holds
+    /// it, and a look at whether the song was given another kit since.
     void step();
 
-    /// UI thread, from a kit load that finished: the open song takes the kit.
+    /// UI thread, from a kit load that finished: the open song takes the kit,
+    /// unless it was given another one since the last step read it.
     void kitLoaded();
 
     /// The open song's folder from the card's root ("/SONGS/<name>") when its
@@ -97,6 +106,7 @@ private:
     std::string logical(const std::string& dir);
     bool foregroundIs(const char* a, const char* b = nullptr);
     void unloadKit();
+    void keepSecondKit();
 
     ISongSoundsHost& host_;
     /// A song opened and the board is not at it yet.
@@ -104,6 +114,11 @@ private:
     /// Moves with every song that opens: a kit missing from the card is said once a song.
     std::atomic<uint32_t> openGen_{0};
     uint32_t missingSaid_ = UINT32_MAX;   // UI thread
+    /// The song's kit as a step last read it: one that differs has been
+    /// given to the song since. UI thread.
+    std::string lastKit_;
+    /// A second kit that would not load, said once. UI thread.
+    std::string secondKitSaid_;
 };
 
 } // namespace crosspad
