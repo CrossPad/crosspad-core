@@ -57,6 +57,10 @@ void SongSounds::unloadKit()
 
 void SongSounds::start()
 {
+    /* The engine opens the last song the first time it is asked for it; asked
+     * here, at start, so that a kit picked or a take played is the song's from
+     * the start instead of being replaced when something else asks later. */
+    if (ISongEngine* se = songs()) (void)se->song();
     pending_.store(true);
 }
 
