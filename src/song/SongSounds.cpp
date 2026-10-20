@@ -57,6 +57,10 @@ void SongSounds::unloadKit()
 
 void SongSounds::start()
 {
+    /* The engine opens the last song the first time it is asked for it; asked
+     * here, at start, so that a kit picked or a take played is the song's from
+     * the start instead of being replaced when something else asks later. */
+    if (ISongEngine* se = songs()) (void)se->song();
     pending_.store(true);
 }
 
@@ -78,12 +82,13 @@ void SongSounds::step()
     if (host && host->state() == IInstrumentHost::State::Busy) return;
 
     std::string kit, inst;
-    bool pitch = false;
+    bool pitch = false, untouched = false;
     {
         std::lock_guard<std::recursive_mutex> l(se->songMutex());
         const AudioSong& song = se->song();
         kit = song.kit;
         pitch = song.hasPitchTrack();
+        untouched = song.usedTracks() == 0 && song.sets.empty() && song.instrument.empty();
         /* AudioSong::instrument as a path from the card's root. */
         inst = song.instrument.empty() || song.instrument[0] == '/'
              ? song.instrument : logical(song.dir) + "/" + song.instrument;
@@ -100,7 +105,11 @@ void SongSounds::step()
 
     KitInfo* cur = kits->getCurrentKit();
     const std::string have = cur ? cur->path : std::string();
-    if (kit != have) {
+    if (kit != have && kit.empty() && cur && untouched) {
+        /* A song with nothing in it yet -- a new one -- is started with what the
+         * player was playing: it takes the loaded kit instead of giving it back. */
+        kitLoaded();
+    } else if (kit != have) {
         if (!kit.empty()) {
             const int id = findKit(*kits, kit);
             if (id >= 0) {

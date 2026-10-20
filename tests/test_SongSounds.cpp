@@ -110,6 +110,7 @@ TEST_CASE("song sounds: a step waits for whatever is already moving", "[song][so
 TEST_CASE("song sounds: a song without a kit leaves none loaded, not under the Sampler", "[song][sounds]") {
     Rig r;
     r.kits.setCurrentKitId(0);
+    r.engine.song().tracks[1].inUse = true;   // an audio track: the song is made without a kit
     r.sounds.songOpened();
     r.host.foreground = "Sampler";
     r.sounds.step();
@@ -120,6 +121,19 @@ TEST_CASE("song sounds: a song without a kit leaves none loaded, not under the S
     r.sounds.step();
     REQUIRE(r.host.unloads == 1);
     REQUIRE(r.kits.getCurrentKit() == nullptr);
+    REQUIRE_FALSE(r.sounds.pending());
+}
+
+TEST_CASE("song sounds: a song with nothing in it takes the kit that is loaded", "[song][sounds]") {
+    Rig r;
+    r.kits.setCurrentKitId(0);
+    r.host.foreground = "Arrange";             // + NEW in Arrange
+    r.sounds.songOpened();
+    r.sounds.step();
+    REQUIRE(r.host.unloads == 0);
+    REQUIRE(r.kits.getCurrentKit() != nullptr);
+    REQUIRE(r.engine.song().kit == kKitA);
+    REQUIRE(r.engine.commits == 1);
     REQUIRE_FALSE(r.sounds.pending());
 }
 

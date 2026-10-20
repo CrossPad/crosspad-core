@@ -70,14 +70,19 @@ bool SongScenes::save(const char* why)
     return ok;
 }
 
-/// A song without scenes of its own: from before they were the song's, it
-/// gets the old shared ones; a card older still, its kit's; else none.
+/// A song without scenes of its own: a take played before any song was open
+/// stays and is its; from before they were the song's, it gets the old shared
+/// ones; a card older still, its kit's; else none.
 void SongScenes::adopt(const std::string& cardRoot, const std::string& path, bool hasSeqTrack)
 {
     const std::string legacy = cardRoot + kLegacyFile;
     const std::string mark = cardRoot + kAdoptedMark;
     const bool first = !getFileSystem().exists(mark.c_str());
-    if ((first || hasSeqTrack) && SequenceStore::load(seq_, legacy)) {
+    if (current_.empty() && seq_.dirty() && seq_.eventCount() > 0) {
+        seq_.markDirty();
+        setCurrent(path);
+        log(false, path + ": keeps the " + std::to_string(seq_.eventCount()) + " events played before it opened");
+    } else if ((first || hasSeqTrack) && SequenceStore::load(seq_, legacy)) {
         seq_.markDirty();
         setCurrent(path);
         log(false, path + ": adopted " + std::to_string(seq_.eventCount()) + " events from " + legacy);

@@ -5,6 +5,10 @@
 #include <vector>
 #include <crosspad/pad/Pad.hpp>
 
+#include <algorithm>
+#include <memory>
+#include <utility>
+
 #ifndef KIT_PADS
 #define KIT_PADS 16
 #endif
@@ -63,6 +67,66 @@ struct InstrumentSpec {
     }
 };
 
+/**
+ * @brief A kit's KIT_PADS pads, allocated the first time anything writes to
+ *        them or asks for their address.
+ *
+ * Most kits on a card are only listed: their pads are never parsed, yet a
+ * plain array made every list entry carry KIT_PADS Pads (960 B on the board),
+ * the bulk of a 1176 B KitInfo, and the list of a full card held ~150 kB of
+ * the UI's PSRAM. Unallocated, the pads read as defaults (a shared const set)
+ * and cost a pointer.
+ *
+ * Once allocated the block stays where it is for the life of this object,
+ * whatever is copied or assigned into it: PadManager keeps a pointer to the
+ * current kit's pads (loadPadConfig()). A move takes the block along.
+ */
+class KitPads {
+public:
+    KitPads() = default;
+    KitPads(const KitPads& o) {
+        if (o.p_) std::copy(o.p_.get(), o.p_.get() + KIT_PADS, alloc());
+    }
+    KitPads(KitPads&& o) noexcept = default;
+    KitPads& operator=(const KitPads& o) {
+        if (this == &o) return *this;
+        if (o.p_) std::copy(o.p_.get(), o.p_.get() + KIT_PADS, alloc());
+        else if (p_) std::fill(p_.get(), p_.get() + KIT_PADS, Pad());
+        return *this;
+    }
+    KitPads& operator=(KitPads&& o) noexcept {
+        if (this == &o) return *this;
+        if (!p_) p_ = std::move(o.p_);                        // nothing here was pointed at
+        else if (o.p_) std::move(o.p_.get(), o.p_.get() + KIT_PADS, p_.get());
+        else std::fill(p_.get(), p_.get() + KIT_PADS, Pad());
+        return *this;
+    }
+
+    bool allocated() const { return p_ != nullptr; }
+    static constexpr size_t size() { return KIT_PADS; }
+
+    Pad*       data()       { return alloc(); }
+    const Pad* data() const { return p_ ? p_.get() : defaults(); }
+    operator Pad*()             { return data(); }
+    operator const Pad*() const { return data(); }
+
+    Pad*       begin()       { return data(); }
+    Pad*       end()         { return data() + KIT_PADS; }
+    const Pad* begin() const { return data(); }
+    const Pad* end()   const { return data() + KIT_PADS; }
+
+private:
+    Pad* alloc() {
+        if (!p_) p_.reset(new Pad[KIT_PADS]);
+        return p_.get();
+    }
+    static const Pad* defaults() {
+        static const Pad kDefaults[KIT_PADS];
+        return kDefaults;
+    }
+    std::unique_ptr<Pad[]> p_;
+};
+
 struct KitInfo {
     enum Type : uint8_t {
         Normal  = 0,
@@ -102,7 +166,7 @@ struct KitInfo {
     KitEngine      engine = KitEngine::Sampler;
     InstrumentSpec instrument;
 
-    Pad pads[KIT_PADS];
+    KitPads pads;
 
     KitInfo() = default;
     explicit KitInfo(const std::string& kitPath) : path(kitPath) {}

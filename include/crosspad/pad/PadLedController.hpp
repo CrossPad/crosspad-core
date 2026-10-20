@@ -67,6 +67,12 @@ public:
     void notifyAftertouch(uint8_t padIdx, uint8_t pressure);
     /// A sample started or stopped sounding on the pad.
     void notifyNotePlay(uint8_t padIdx, bool isPlaying);
+    /// A Loop pad muted, or waiting for its bar: its playing colour's hue at
+    /// half that colour's brightness, its brightest channel held between
+    /// kDimmedMinPeak and kDimmedMaxPeak. Same threading as notifyNotePlay().
+    void notifyNoteDimmed(uint8_t padIdx, bool dimmed);
+    static constexpr uint8_t kDimmedMinPeak = 32;   ///< an eighth of full scale
+    static constexpr uint8_t kDimmedMaxPeak = 64;   ///< a quarter of full scale
 
     // ── Colours ─────────────────────────────────────────────────────────
     /// Give one pad a resting colour of its own; the global colours no

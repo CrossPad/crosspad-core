@@ -6,6 +6,24 @@ carries the same number) and consumers gate on it with
 `crosspad/RequireVersion.hpp`. This file starts at 1.45.0; earlier releases
 are described in their `chore: X.Y.Z` commits.
 
+## 2.1.0 — 2026-10-19
+
+The 1.x line's 1.71.0 on top of 2.0.0.
+
+### Added
+
+- A Loop pad is a launch/mute toggle (platform-idf#82): a hit starts it, on
+  the next bar line while the clock runs (to the frame, in the render) and at
+  once while it is stopped; a hit while it sounds mutes it with the clock
+  running -- the voice keeps advancing and streaming -- or stops it with the
+  clock stopped; a hit while muted unmutes it at its current phase; a hit on
+  a launch still waiting cancels it; the clock stopping ends every loop.
+  `SamplerEngine::setBarClock()`, `loopState()`, `Params::muteMs`, counters
+  `loopsQueued`/`loopsLaunched`; `MetronomeNode::framesToBar()`;
+  `PadLedController::notifyNoteDimmed()` for a muted or waiting loop.
+  The dimmed colour keeps the playing colour's hue at half its brightness,
+  its brightest channel between an eighth and a quarter of full scale.
+
 ## 2.0.0 — 2026-10-18
 
 The open-source baseline: core holds no ESP-IDF, FreeRTOS or board-revision

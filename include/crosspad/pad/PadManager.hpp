@@ -76,8 +76,9 @@ public:
     /// it always did. Nothing while input is suppressed.
     void handlePadTouch(uint8_t padIdx, bool touching);
     /// Called with every press a player makes -- whatever app's pad logic is
-    /// active, never for the loop recorder's playback (SequencerCallback) --
-    /// before it is handled. A platform whose pads come in by more ways than
+    /// active, never for the loop recorder's playback (SequencerCallback) nor
+    /// for an app playing the pads itself (App, a kit's preview) -- before it
+    /// is handled. A platform whose pads come in by more ways than
     /// it can stamp one by one gives it the loop recorder's input here.
     using InputTap = void (*)(void* ctx, uint8_t padIdx, uint8_t velocity);
     /// Install the InputTap (one at a time; nullptr removes it).

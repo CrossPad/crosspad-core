@@ -11,6 +11,7 @@ namespace crosspad {
 struct PadLedState {
     bool isPressed = false;
     bool isPlaying = false;
+    bool isDimmed = false;   ///< a Loop pad muted or waiting for its bar
     uint8_t velocity = 0;
     uint8_t pressure = 0;
     uint8_t midiNote = 0;

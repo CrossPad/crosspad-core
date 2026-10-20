@@ -100,7 +100,9 @@ void PadManager::handlePadPress(uint8_t padIdx, uint8_t velocity, EventSource so
                                 PadPerformance performance) {
     if (padIdx >= 16) return;
     if (inputSuppressed_) return;
-    if (inputTap_ && source != EventSource::SequencerCallback) inputTap_(inputTapCtx_, padIdx, velocity);
+    if (inputTap_ && source != EventSource::SequencerCallback && source != EventSource::App) {
+        inputTap_(inputTapCtx_, padIdx, velocity);
+    }
 
     // The active pad logic, counted in flight until this call returns.
     const DispatchScope dispatch(*this);

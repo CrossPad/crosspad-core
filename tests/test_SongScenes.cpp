@@ -104,6 +104,25 @@ TEST_CASE("song scenes: the first song adopts the old shared file, and saves its
     REQUIRE(fs::exists(card.legacy()));   // read, never moved or written
 }
 
+TEST_CASE("song scenes: a take played before the first song opened is that song's", "[song][scenes]") {
+    Card card("cp_scenes_early_take");
+    writeScenes(card.legacy(), 7);
+    Rig r;
+    REQUIRE(r.seq.addEventTicks(0, 0, 5, 100));
+    r.seq.markDirty();
+    const std::string a = card.song("a");
+    r.open(a);
+
+    r.scenes.sweep(card.str());
+    REQUIRE(r.scenes.currentFile() == a + "/sequences.json");
+    REQUIRE(r.seq.eventCount() == 1);
+    REQUIRE(r.seq.dirty());
+
+    r.scenes.sweep(card.str());   // the take goes into the song, not the old shared file
+    REQUIRE_FALSE(r.seq.dirty());
+    REQUIRE(firstPad(a + "/sequences.json") == 5);
+}
+
 TEST_CASE("song scenes: after the first, only a song with a seq track adopts", "[song][scenes]") {
     Card card("cp_scenes_later");
     writeScenes(card.legacy(), 7);
