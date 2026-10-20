@@ -112,11 +112,23 @@ public:
  * drive the same playback -- Arrange's song and the seq view of one of its
  * tracks, which plays that song too.
  *
- * A claim outlives the app's screen on purpose. Leaving the Sequencer does
- * not stop the pattern today and should not start doing so because the
- * buttons moved to the bar.
+ * A claim outlives the app's screen while its target plays. Leaving the
+ * Sequencer does not stop the pattern today and should not start doing so
+ * because the buttons moved to the bar; a holder left stopped goes back to
+ * the home target (transportGoHome()).
  */
 void transportClaim(ITransportTarget* target, bool stopPrevious = true);
+
+/// The target the transport belongs to when no app holds it in earnest --
+/// the pattern sequencer on the board -- claimed now. nullptr forgets it.
+void transportSetHome(ITransportTarget* target);
+
+/// Back to the home target if another one holds the transport and stands
+/// stopped; a holder that plays, records or counts in keeps it, so its STOP
+/// stays on the bar. The UI calls this as an app opens and closes: a screen
+/// with no transport of its own (the Sampler) records the pattern, not a
+/// song another app left stopped behind it.
+void transportGoHome();
 
 /// Give it back, if @p target is the one holding it. Does not stop anything:
 /// a target that wants silence stops itself first.
