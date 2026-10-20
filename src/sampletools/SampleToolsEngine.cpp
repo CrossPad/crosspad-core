@@ -468,7 +468,7 @@ struct SampleToolsEngine::Impl {
     // ── Input and recording ───────────────────────────────────────────────
     bool selectInput(RecInput in) {
         std::lock_guard<std::mutex> l(inputMutex_);
-        if (recArmed_.load() || recStartReq_.load()) return false;   // not mid-take
+        if (takeOpen()) return false;   // not mid-take
         releaseAdc();
         input_.store(in);
         const int c = codec_of(in);
@@ -492,7 +492,7 @@ struct SampleToolsEngine::Impl {
     }
 
     bool requestTake(bool withSong, uint32_t fromBar, uint8_t countInBeats) {
-        if (!listening_.load() || recArmed_.load() || recStartReq_.load() || !ensureWorker()) return false;
+        if (!listening_.load() || takeOpen() || !ensureWorker()) return false;
         if (!inputAvailable(input_.load())) return false;      // USB outside the USB audio profile
         {
             std::lock_guard<std::mutex> l(statusMutex_);
@@ -758,7 +758,7 @@ struct SampleToolsEngine::Impl {
 
     void worker() {
         while (!quit_.load()) {
-            const bool busy = recArmed_.load() || rBorrowed_.load() || takeCut_ || prev_.load() != Prev::Idle;
+            const bool busy = recArmed_.load() || rBorrowed_.load() || takeCut_.load() || prev_.load() != Prev::Idle;
             p.waitWake(busy ? kIdlePollMs : UINT32_MAX);
             if (quit_.load()) break;
             service();
@@ -782,7 +782,7 @@ struct SampleToolsEngine::Impl {
         if (recStartReq_.exchange(false)) beginTake();
         /* A lent ring the reclaim took (takeCut_, or rBorrowed_ with the render
          * already stopped) still ends its take here: the file is closed and kept. */
-        if (recArmed_.load() || rBorrowed_.load() || takeCut_) drainTake(false);
+        if (recArmed_.load() || rBorrowed_.load() || takeCut_.load()) drainTake(false);
         if (prevStopReq_.exchange(false)) endPreview();
         const uint32_t gen = prevGen_.load();
         if (gen != prevDone_.load()) {
@@ -811,6 +811,9 @@ struct SampleToolsEngine::Impl {
     }
 
     void beginTake() {
+        /* One writer: a take a reclaim cut is closed before another opens
+         * (takeOpen() refuses the request; this is the second line). */
+        if (rBorrowed_.load() || takeCut_.load()) drainTake(true);
         if (!p.storageReady() || !makeRecDir()) { failTake("no card"); return; }
         const std::string path = next_free(recDir(), "rec");
         if (path.empty()) { failTake("no free name"); return; }
@@ -886,6 +889,12 @@ struct SampleToolsEngine::Impl {
         syncWait_.store(false, std::memory_order_release);
         punch_.store(false);
         if (ISongEngine* se = getPlatformServices().songEngine) se->stop();
+    }
+
+    /// A take is under way or not yet closed -- one a reclaim cut is still
+    /// being written out with the render already stopped.
+    bool takeOpen() const {
+        return recArmed_.load() || recStartReq_.load() || rBorrowed_.load() || takeCut_.load();
     }
 
     /// Up to @p n frames of the take into io_, the ring held only for the
@@ -969,9 +978,9 @@ struct SampleToolsEngine::Impl {
             if (!writer_.write(io_, n)) { overflowWrite_ = true; break; }
             if (!stop && !overflow) break;     // one chunk a pass while the take runs
         }
-        if (!stop && !overflow && !overflowWrite_ && !syncError && !takeCut_) return;
+        if (!stop && !overflow && !overflowWrite_ && !syncError && !takeCut_.load()) return;
         releaseTakeRing();
-        takeCut_ = false;
+        takeCut_.store(false);
         const uint32_t frames = writer_.frames();
         const bool closed = writer_.close();
         std::string file;
@@ -1090,7 +1099,7 @@ struct SampleToolsEngine::Impl {
             rRing_.forget();
             rBorrowed_.store(false);
             recArmed_.store(false, std::memory_order_release);
-            takeCut_ = true;
+            takeCut_.store(true);
         }
         ringUse_.store(kRingFree);
         logf(true, "a lent ring was reclaimed under it");
@@ -1591,7 +1600,7 @@ struct SampleToolsEngine::Impl {
     FrameRing             pRing_;
     std::atomic<bool>     pBorrowed_{false};                  // pRing_.borrowed, for reclaimLentRing()
     std::atomic<bool>     rBorrowed_{false};                  // rRing_.borrowed, for reclaimLentRing()
-    bool                  takeCut_ = false;                   // worker: a reclaim took the take's ring
+    std::atomic<bool>     takeCut_{false};                    // a reclaim took the take's ring
     std::atomic<uint8_t>  ringUse_{kRingFree};                // see ringEnter()
     std::atomic<bool>     reclaimReq_{false};                 // reclaimLentRing() asks the worker
     ClipReader            pReader_;                           // worker
