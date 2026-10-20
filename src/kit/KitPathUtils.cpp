@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include <crosspad/kit/KitPathUtils.hpp>
-
-#include <sys/stat.h>
+#include <crosspad/platform/IFileSystem.hpp>
 
 namespace crosspad {
 
@@ -12,8 +11,7 @@ namespace {
 std::string g_fsPrefix;
 
 bool pathExists(const std::string& path) {
-    struct stat st;
-    return stat(path.c_str(), &st) == 0;
+    return getFileSystem().exists(path.c_str());
 }
 
 std::string parentDir(const std::string& path) {

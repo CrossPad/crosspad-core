@@ -9,7 +9,7 @@ namespace crosspad {
  * @brief No-op IImu stub for platforms without IMU hardware.
  *
  * Used as the default singleton on platforms that lack an IMU
- * (e.g. PC simulator, or Arduino when no LSM6DSO driver is compiled).
+ * (e.g. the PC simulator).
  */
 class NullImu : public IImu {
 public:

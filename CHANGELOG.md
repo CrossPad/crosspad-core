@@ -6,7 +6,95 @@ carries the same number) and consumers gate on it with
 `crosspad/RequireVersion.hpp`. This file starts at 1.45.0; earlier releases
 are described in their `chore: X.Y.Z` commits.
 
-## 1.71.0 — 2026-10-19
+## 2.2.0 — 2026-10-20
+
+UX 2000 from the 1.x line (Steve's 1.71.0 and 1.72.0 there, 5b0d106 on the
+board): two kit tracks in a song, the Chord Designer, and seq takes that fill
+their loop. STOP keeps 2.1.0's rule.
+
+### Added
+
+- `AudioSong`: up to two seq tracks (`kMaxSeqTracks` 2) -- two kit tracks, or
+  one Pitch track alone. `seqRoute()` says which engine a seq track plays
+  through: 0 the pads' (the song's kit, or the instrument), 1 the second kit
+  engine, for a kit track with a kit of its own (`SongTrack::kit`).
+  `freeSeqRoute()`, `seqTrackOnRoute()`; `addSeqTrack()` takes the kit (the
+  song's on route 0, the track's own on route 1). `armed` and
+  `armedSeqTrack()`: the seq track REC and DUB take onto. A file with two
+  seqs or a track's own kit is `version` 3; one with seqs that cannot all
+  play keeps those that can.
+- `PatternSequencer`: routes. `SongSpan::route`, a `RoutedSink` that gets the
+  route with every note, per-route held notes (the same pad on both kits),
+  `setSongRoutesMuted()` (a REC on one kit track leaves the other playing),
+  `setSceneRoute()` for the scene on its own clock. A sink that knows only
+  the pads plays route 0 and nothing else.
+- `ISecondKit` (`crosspad/sampler/ISecondKit.hpp`) and
+  `PlatformServices::secondKit`: the second kit, held by path, played by
+  note. `SecondKitPadLogic` (in `SeqTrackSound::kit2`): the fingers on it.
+- `IKitPicker` (`crosspad/kit/IKitPicker.hpp`) and
+  `PlatformServices::kitPicker`: the platform's kit browser, opened by an app
+  for a kit of its own -- handed back, not loaded.
+- `ISongEnginePlatform::setKitGain()` and `seqLevel()` (defaults keep a
+  one-kit platform as it was); `IKitManager::readKitCopy()` (a kit's copy,
+  the list and the current kit untouched).
+- `crosspad/music/ChordDesigner.hpp` (`crosspad::chords`): a progression of
+  up to sixteen chords -- root, quality (maj, min, 7, maj7, m7, 9, m9, 13,
+  dim, sus4), inversion -- voiced close, open or wide by `notes()`; twelve
+  genre presets (FUNK .. POP, INIT); the edits (root, sharp, quality,
+  inversion, add, append, remove, move) and `valid()` for a stored copy.
+  Absolute chords, not degrees: MusicTheory's progressions are untouched.
+- `PlaySettings::padSilent`: pads that make no sound, for a chord list
+  shorter than sixteen. `rebuildPadMap()` clears it; `InstrumentPadLogic`
+  plays nothing on such a pad (it used to fall back to the pad's own note).
+- `instrumentOpenRequest()` / `instrumentTakeOpenRequest()`
+  (`InstrumentPlayState.hpp`): an instrument another screen picked for Pitch
+  Play, taken once as it starts. For the kit browser's PITCH list.
+- `SamplerEngine::ringsWaiting()`: voices the last `serviceIo()` pass could
+  not give a ring. For a platform that grows its stream pool on demand.
+- `SongSounds` holds the song's second kit (`PlatformServices::secondKit`)
+  every step and says once when it would not load.
+
+### Changed
+
+- `SongEngine` lays every seq track on the sequencer's map on its route, takes
+  a REC or DUB onto the armed track, mutes and fades each route on its own,
+  meters each from its engine (`seqLevel()`), and plays the seq view of a
+  second kit's block on that kit (`setSceneRoute()`). A track's kit is part of
+  an undo step. Playing with the seq view open runs the scene it edits, so a
+  part recorded there with SYNC goes into its block, on either kit track.
+- A voice whose ring the pool cannot give is no longer refused at once: it
+  asks again on every `serviceIo()` pass while its head plays, and is
+  refused (`streamRefused`) only `kRingRetryFrames` before the head ends.
+- A seq track's bounce (`bounceSeqTrack()`) takes only the bars its blocks
+  play, first block to last, and the clip lands on the first block's bar:
+  the take runs in real time, and a one-bar block in a 64-bar song was 64
+  bars of waiting.
+- A REC shorter than the loop it was played in goes round to the loop's end
+  -- the region, or a looping song's end over bars the track has free --
+  as one block whose pattern is the shortest that holds the notes and
+  divides the loop: one bar played into four is that bar four times, not a
+  bar and silence. `AudioSong::putSeqTake()` takes the block's length.
+- The seq view's x2 lengthens a block its notes go round in once they
+  outgrow it, so x2 always lengthens the block in Arrange too.
+- `FrameRing` holds up to 64 segments (1 MB) and asks for those past its
+  minimum with `missingSegs` 0, which a platform may refuse sooner. The ring
+  sizes stay the platform's (`SongEngineSizes`); the board asks for a 1 MB
+  bounce ring, where card stalls of ~0.5 s failed 2-minute bounces "card too
+  slow" at 128 kB.
+- `SongSounds`: a kit given to the song after it settled (Arrange's kit
+  track) is loaded as an opening song's is, and a kit load that finishes
+  after the song was given a newer kit no longer writes over it -- the newer
+  pick wins.
+
+### Not taken from the 1.x line
+
+- "STOP is back to bar one at once" (`SongTransport::stop()`,
+  `SequencerTransport::stop()`): 2.1.0's rule stays -- a STOP that ends a
+  take rewinds, a STOP while playing stops in place and a second one rewinds.
+
+## 2.1.0 — 2026-10-19
+
+The 1.x line's 1.71.0 on top of 2.0.0.
 
 ### Added
 
@@ -21,6 +109,160 @@ are described in their `chore: X.Y.Z` commits.
   `PadLedController::notifyNoteDimmed()` for a muted or waiting loop.
   The dimmed colour keeps the playing colour's hue at half its brightness,
   its brightest channel between an eighth and a quarter of full scale.
+- `transportSetHome()` / `transportGoHome()`: a home target the transport
+  returns to when the holder that claimed it is left stopped (the pattern on
+  the board and the simulator), so the top bar's REC/PLAY never stay greyed
+  after an app that claimed them.
+
+### Changed
+
+- `SequencerTransport::stop()`: a STOP that ends a take -- recording,
+  overdubbing, or armed and counting in -- goes back to bar one, so PLAY plays
+  the take from its start. A STOP while only playing still stops in place,
+  and a second one rewinds.
+- `KitInfo::pads` is a lazy `KitPads`: a listed kit costs a pointer, not
+  `KIT_PADS` pads (1176 -> ~220 B a kit); the block, once there, keeps its
+  address for the kit's life.
+
+### Fixed
+
+- `PortableKitLoader::scanKits()` lists every kit on the card: it counts them
+  first and reserves the list once, at the count plus `kSpareKits`. Grown by
+  doubling from a guess, a card of 88 kits needed a 64 kB and a 128 kB block
+  at once; on a boot with the update check on WiFi that copy threw and the
+  list stopped at 64 kits. Short of one block that big, the spare goes first,
+  then whole kits, and the scan says how many it left out. `addKit()` takes
+  the slot of a kit removed since the scan once the spare room is used up.
+- The first take survives its STOP: the song opens at start, and the scenes
+  store keeps a take played before a song was open. A song with nothing in
+  it takes the loaded kit.
+- The pad input tap skips `EventSource::App`: an app playing the pads itself
+  (a kit preview) is not recorded into a take.
+- Sample tools: a take borrows lent arena memory and a reclaim ends it written
+  out; no new take while a cut one is closing; a take that got nothing leaves
+  no file.
+
+## 2.0.0 — 2026-10-18
+
+The open-source baseline: core holds no ESP-IDF, FreeRTOS or board-revision
+code any more, and builds as a plain CMake library. Contains every release
+from 1.54.1 to 1.70.0 below (1.56.0..1.62.0 and 1.70.0 are described in their
+commits).
+
+### Removed
+
+- `EspEventBus`, `Drv2605Driver` and `EspDspFft` (now in
+  crosspad-platform-idf) and `FreeRtosEventBus` (now in crosspad-pc). Core
+  keeps the interfaces (`IEventBus`, `IVibration`, `IFft`) and `SyncEventBus`.
+- Board profiles: `crosspad/config/boards.h`, `crosspad/config/board/*.h`,
+  `CROSSPAD_BOARD`, `BOARD_CROSSPAD_V1`/`V2`/`PC` and the `board` group of
+  `features.schema.json`. The `BOARD_*_DEF` defaults keep their names and
+  values in `Configuration_adv.h`, each overridable with `-D`.
+- `CROSSPAD_HAS_ESP_DSP`, `CROSSPAD_HAS_ESP_DSP_FFT` and the PUBLIC
+  `CROSSPAD_USE_ESP_DSP=1` and `CROSSPAD_SIMD_PIE=1` definitions; a consumer
+  that uses esp-dsp itself defines its own. The ESP-IDF component requires
+  only ArduinoJson.
+- `CROSSPAD_DSP_PIE` and `dsp::pie::*` (the S3's EE.LDF.128 / EE.STF.128
+  loops) and the TRUNC.S / CLAMPS steps of `dsp::floatToInt16()`: the
+  ESP-IDF platform registers them with `dsp::setAudioKernels()`.
+- `crosspad/fw/FwCardActions.hpp`: the kit card's action table is in
+  crosspad-gui (`crosspad-gui/fw/FwCardActions.hpp`).
+- `Stm32Manager::checkDfuMode()`, `setResetCallback()`,
+  `setDfuButtonCheckCallback()` and their typedefs.
+- `PadAnimator::stop()` without a token (use `stopAll()`).
+
+### Changed
+- `CrosspadSettings::launcherStyle` defaults to `LauncherStyle::List` (was Grid), in the constructor and in `load()`.
+
+- `dsp::mac()`, `macPanned()`, `scaleStereo()`, `peakStereo()`,
+  `clampPeakStereo()`, `biquadStereo()` and `floatToInt16()` keep their
+  names and results; each runs the kernel the platform registered, or the
+  portable one (`dsp::fast::*`).
+- `WavLayout::parse()` without a chunk list stops once it has the data;
+  the results are the same. `WavLayout::fileBytes` is 0 after an unclamped
+  `wavReadLayout()`.
+- `control::readMixerLevels()` takes the mixer non-const (the limiter
+  readings are taken) and needs its `getChannelTrim()`,
+  `getOutputCeiling()`, `takeOutputLimit()` and `kTapLimit`.
+- `IKitConvertHost::makeDir()` defaults to `IFileSystem::makeDir()`, and
+  `KitRateConverter` lists, stats and removes folders through
+  `getFileSystem()`.
+- `SampleToolsEngine`: a take with the song while the song already plays
+  goes in at its next bar line instead of restarting it
+  (`RecStatus::fromBar` is that bar).
+- `Stm32Manager::init()` takes an `IClock&` instead of a `CrosspadStatus*`.
+  `start()`/`stop()` no longer create or end a task: the platform calls
+  `tick()` every `Stm32Manager::kTickPeriodMs`.
+- `PadAnimator`: every starter (`startProgress()`, `showFrame()`,
+  `playSuccess()`, `playError()`, `playBootAnim()`, `startCharging()`)
+  returns an `AnimToken`; `stop(AnimToken)` stops only that animation and
+  returns `bool`. `showFrame()` always starts a new frame; repaint a running
+  one with `updateFrame(token, colors)`.
+- `IPadLogicHandler::onPadPan()` (and `PadManager::notifyPadPan()`) carry
+  -64..63, as every producer always sent, documented as -127..127 before.
+- `PadManager`: once `onDeactivate()` returns, no pad-logic callback is in
+  flight. Changing the active logic may therefore block for the length of a
+  callback on another thread; do not change it from inside a pad callback.
+- `IEventBus::unsubscribe()`: after it returns the handler is not running
+  and is never called again -- except a handler unsubscribing itself from
+  inside its call, which completes. Handlers may subscribe, unsubscribe and
+  post on the bus that called them.
+- An app's `destroyLVGL` may be called with `nullptr` when its root is
+  already gone.
+
+### Added
+
+- A plain CMake target `crosspad-core` from the same `CMakeLists.txt` as the
+  ESP-IDF component; `CROSSPAD_CORE_USE_LVGL` sets `USE_LVGL` for core and
+  its consumers alike.
+- `cmake/crosspad_app_registry.cmake` (`crosspad_generate_app_registry()`,
+  the `REGISTER_APP` scan) and `cmake/crosspad_git_rev.cmake`
+  (`crosspad_git_rev()`), shared by the CMake platforms.
+- `FftBackend` and `setFftBackend()`: a platform registers its accelerated
+  FFT; `createFft()` falls back to `PortableFft`.
+- `dsp::AudioKernelTable` and `dsp::setAudioKernels()`: a platform registers
+  its render kernels; `dsp::fast::floatToInt16With()`, `fast::truncSat()`
+  and `fast::clampS16()`, the int16 loop a platform instantiates with its
+  own steps.
+- `SongEngineSizes` and `ISongEnginePlatform::sizes()`: ring and card-access
+  sizes come from the platform.
+- `SampleToolsEngine` behind `ISampleToolsPlatform`: the Recorder's and
+  Slicer's engine, portable, with `requestNormalized()`.
+- `IFileSystem` (list, stat, make/remove directories, rename, unbuffered
+  reads), `PosixFileSystem` (the default), `getFileSystem()` and
+  `PlatformServices::fileSystem`; it replaces crosspad-gui's own.
+- `SubscriptionTable`: a subscriber list with the `unsubscribe()` contract,
+  for event-bus implementations.
+- `InfoRowTable`: the Settings -> Info rows.
+- `dsp/SpectrumBars.hpp`: a spectrum analyser's Hann window, log-frequency
+  bar mapping and dBFS levels (`dsp::spectrumHann()`, `spectrumMapBars()`,
+  `spectrumBarHz()`, `spectrumLevels()`), from crosspad-gui's scope view.
+- `wavReadLayout()` and `WavLayout::blockAlign`: one RIFF walk for every
+  WAV reader -- the engine's rules in `WavLayout::parse()`, the lenient
+  ones (either chunk order, declared sizes unless clamped) here.
+- `FwDownloader` (with `IHttpStream`, `ISha256`, `FwBlocklist`): the
+  resumable, signature- and SHA-256-checked package download.
+- `crosspad/fw/FwPackage.hpp`: `fwPackageName()`, `FwPkgVerdict`,
+  `FwSlotState`, `FwSlotInfo`; the kit icon format constants
+  (`kFwIconSide`, `kFwIconBytes`, ...) in `FwCatalog.hpp`.
+- `crosspad/control/*`: the device-control verbs read into plain structs
+  once for every platform -- `KitStatus`, `KitList`, `LedState`,
+  `MixerLevels` (with `MixerTapLevel`, each channel's `trim`, each output's
+  `limit` and `ceiling`), `PitchedStatus`, `WaveStatus`, `PadInput`,
+  `AudioLevel`, `AppName`.
+- `IPadLogicHandler::kPanMin`, `kPanCentre`, `kPanMax`, `kPanWireCentre`
+  and `panFromWire()`.
+- `PadAnimator::AnimToken`, `kNoAnim`, `owns()`, `updateFrame()`,
+  `stopAll()`; `Stm32Manager::tick()` and `kTickPeriodMs`.
+
+### Fixed
+
+- `SyncEventBus` called handlers with its mutex held: a handler that
+  subscribed, unsubscribed or posted on the same bus deadlocked.
+- A pad press or touch racing an app's teardown could reach the handler
+  after `onDeactivate()`, starting or arming a note nothing would release.
+- `MetronomeNode`: during the block that took a transport move,
+  `positionSamples()` and `countInSamples()` still returned the old position.
 
 ## 1.69.0 — 2026-10-17
 

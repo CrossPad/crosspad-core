@@ -12,7 +12,7 @@
  * Not the arranged audio song (SongTransport, Arrange's): this one is the
  * sequencer's own song mode, a row of "scene x repeats" blocks it walks on
  * the bar line. The Song screen claims it, so PLAY on the bar plays the song
- * and not the scene that happens to be selected (UX 2000 section 3.2).
+ * and not the scene that happens to be selected.
  *
  * A song is arranged, not recorded into: REC and DUB are greyed, and the
  * takes are made in the Sequencer.

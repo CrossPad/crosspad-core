@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 /**
  * @file SysExProtocol.h
  * @brief CrossPad SysEx protocol constants — single source of truth

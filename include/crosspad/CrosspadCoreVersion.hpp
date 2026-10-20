@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
 
 /**
@@ -11,8 +12,8 @@
 
 #include <cstdint>
 
-#define CROSSPAD_CORE_VERSION_MAJOR 1
-#define CROSSPAD_CORE_VERSION_MINOR 71
+#define CROSSPAD_CORE_VERSION_MAJOR 2
+#define CROSSPAD_CORE_VERSION_MINOR 2
 #define CROSSPAD_CORE_VERSION_PATCH 0
 
 /* Built from the triple rather than written out, so a bump cannot leave the

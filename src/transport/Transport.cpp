@@ -16,6 +16,7 @@ namespace {
  * by the UI thread on every repaint. The pointed-at target outlives the claim
  * by contract: whoever claims releases before it goes. */
 std::atomic<ITransportTarget*> s_target{nullptr};
+std::atomic<ITransportTarget*> s_home{nullptr};
 
 std::atomic<bool> s_tempoFromHost{false};
 /* The last tempo asked for, which a commit hands the song. */
@@ -38,6 +39,22 @@ void transportClaim(ITransportTarget* target, bool stopPrevious)
      * the transport is not asking for that. */
     if (prev && stopPrevious && prev->state() != TransportState::Stopped) prev->stop();
     s_target.store(target, std::memory_order_release);
+}
+
+void transportSetHome(ITransportTarget* target)
+{
+    s_home.store(target, std::memory_order_release);
+    if (target) transportClaim(target);
+}
+
+void transportGoHome()
+{
+    ITransportTarget* home = s_home.load(std::memory_order_acquire);
+    ITransportTarget* cur = s_target.load(std::memory_order_acquire);
+    if (!home || cur == home) return;
+    if (cur && cur->state() != TransportState::Stopped) return;
+    /* Only from the holder just looked at: a claim made meanwhile wins. */
+    s_target.compare_exchange_strong(cur, home, std::memory_order_acq_rel);
 }
 
 void transportRelease(ITransportTarget* target)

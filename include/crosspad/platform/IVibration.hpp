@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
 #include <cstdint>
 #include "crosspad/platform/VibrationPreset.hpp"
@@ -9,9 +10,8 @@ class VibrationSettings;
 /**
  * @brief Abstract vibration/haptics interface
  *
- * Implementations:
- *   - Drv2605Driver (core): portable DRV2605/LRA driver using II2cDevice
- *   - NullVibration (core): no-op stub for platforms without haptics
+ * On CrossPad a DRV2605 haptic driver runs the motor. A platform without
+ * haptics provides NullVibration, which does nothing.
  *
  * The interface does NOT manage initialization, I2C setup, or background tasks —
  * those remain in the platform layer.
@@ -39,7 +39,7 @@ public:
     virtual void applySettings(const VibrationSettings& settings) = 0;
 };
 
-/// Platform-injected singleton (same pattern as getClock())
+/// The platform's vibration driver; never null.
 IVibration& getVibration();
 
 } // namespace crosspad

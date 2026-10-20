@@ -7,14 +7,8 @@
  * @file Transport.hpp
  * @brief One transport for the whole instrument.
  *
- * Before this there were eight hand-rolled button rows and six unrelated
- * state models: the sequencer's `SequencerMode` + `SequencerState`, the song
- * engine's `playing()` + `SyncTake`, the looper's `LoopState`, the recorder's
- * `RecStatus::recording`, the host's mirrored `kTransport*` bits, and
- * `MidiClock::running()`. Every app re-derived "is it playing?" its own way
- * and no two of them agreed on what PLAY meant.
- *
- * So: one state, one set of four commands, and a **target** an app registers.
+ * One state, one set of four commands (play, stop, record, overdub), and a
+ * **target** an app registers.
  * Whoever holds the claim is what PLAY starts. Two things never play at once,
  * because a new claim stops the one before it.
  *
@@ -68,17 +62,22 @@ class ITransportTarget {
 public:
     virtual ~ITransportTarget() = default;
 
+    /// Start playing.
     virtual void play() = 0;
+    /// Stop.
     virtual void stop() = 0;
-    /// Default to nothing rather than to play: a target that cannot record
-    /// should do nothing when asked, and say so through caps().
+    /// Start recording. Default to nothing rather than to play: a target that
+    /// cannot record should do nothing when asked, and say so through caps().
     virtual void record() {}
+    /// Start overdubbing. Default: nothing, as for record().
     virtual void overdub() {}
 
     /// What is happening, asked whenever the bar repaints. Must be cheap and
     /// safe to call from the UI thread.
     virtual TransportState state() const = 0;
 
+    /// Which commands the target honours: kTransportCan* bits. Default:
+    /// play and stop.
     virtual uint8_t caps() const { return kTransportCanPlay | kTransportCanStop; }
 
     /// For the bar's label, e.g. "PATTERN", "SONG", "LOOP". Never null.
@@ -112,31 +111,51 @@ public:
  * drive the same playback -- Arrange's song and the seq view of one of its
  * tracks, which plays that song too.
  *
- * A claim outlives the app's screen on purpose. Leaving the Sequencer does
- * not stop the pattern today and should not start doing so because the
- * buttons moved to the bar.
+ * A claim outlives the app's screen while its target plays: leaving an app
+ * does not stop what it plays. A holder left stopped goes back to the home
+ * target (transportGoHome()).
  */
 void transportClaim(ITransportTarget* target, bool stopPrevious = true);
+
+/// The target the transport belongs to when no app holds it in earnest --
+/// the pattern sequencer on the board -- claimed now. nullptr forgets it.
+void transportSetHome(ITransportTarget* target);
+
+/// Back to the home target if another one holds the transport and stands
+/// stopped; a holder that plays, records or counts in keeps it, so its STOP
+/// stays on the bar. The UI calls this as an app opens and closes: a screen
+/// with no transport of its own (the Sampler) records the pattern, not a
+/// song another app left stopped behind it.
+void transportGoHome();
 
 /// Give it back, if @p target is the one holding it. Does not stop anything:
 /// a target that wants silence stops itself first.
 void transportRelease(ITransportTarget* target);
 
+/// The target holding the transport, or null.
 ITransportTarget* transportTarget();
 
-/* The four commands. Each is a no-op with no target, or where caps() says
- * the target cannot do it -- so a bar may call them without checking. */
+/// PLAY on the holder. Like the other three commands, a no-op with no target
+/// or where caps() says the target cannot do it, so a bar may call them
+/// without checking.
 void transportPlay();
+/// STOP on the holder (see transportPlay()).
 void transportStop();
+/// RECORD on the holder (see transportPlay()).
 void transportRecord();
+/// OVERDUB on the holder (see transportPlay()).
 void transportOverdub();
 
-/// Stopped with no target, so a bar can paint before anything has claimed.
+/// The holder's state; Stopped with no target, so a bar can paint before
+/// anything has claimed.
 TransportState transportState();
+/// The holder's caps(); 0 with no target.
 uint8_t        transportCaps();
+/// The holder's name(); "" with no target.
 const char*    transportName();
 /// 0 with no target, or where the target has no tempo of its own.
 float          transportBpm();
+/// The holder's position(); bar 1, beat 1 with no target.
 TransportPos   transportPosition();
 /// Where the next PLAY starts, @p bars on (or back). A no-op unless the target
 /// is stopped and says kTransportCanLocate.
@@ -176,6 +195,7 @@ void  transportSetTempoFromHost(bool host);
 /// player's; no transport command flips it. A count-in counts either way.
 /// False before a sequencer is published.
 bool  transportClick();
+/// Turn the metronome on or off.
 void  transportSetClick(bool on);
 
 } // namespace crosspad

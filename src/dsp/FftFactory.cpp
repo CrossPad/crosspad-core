@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "crosspad/dsp/FftFactory.hpp"
 
-#include "crosspad/dsp/EspDspFft.hpp"
 #include "crosspad/dsp/PortableFft.hpp"
 
 #include <mutex>
@@ -25,25 +24,27 @@ PortableFft& portable() {
 }
 
 IFft* g_current = nullptr;
+FftBackend g_backend = nullptr;
 
 } // namespace
+
+void setFftBackend(FftBackend backend) {
+    std::lock_guard<std::mutex> lock(factoryMutex());
+    g_backend = backend;
+}
 
 IFft& createFft(const FftMemory& mem) {
     std::lock_guard<std::mutex> lock(factoryMutex());
 
-#if CROSSPAD_HAS_ESP_DSP_FFT
-    // Built with the memory of the *first* caller; a later caller's allocator
-    // is ignored, since the table esp-dsp keeps is a single global anyway.
-    static EspDspFft esp(mem);
-    // Retried on every call: a table that failed once failed for want of
-    // memory, and that condition passes. See FftFactory.hpp.
-    if (esp.available()) {
-        g_current = &esp;
-        return esp;
+    // Asked on every call: a backend that could not serve once failed for
+    // want of memory, and that condition passes. See FftFactory.hpp.
+    if (g_backend) {
+        if (IFft* fft = g_backend(mem)) {
+            g_current = fft;
+            return *fft;
+        }
     }
-#endif
 
-    (void)mem;
     g_current = &portable();
     return portable();
 }

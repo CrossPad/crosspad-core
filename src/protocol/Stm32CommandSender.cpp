@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 #include "crosspad/protocol/SysExStm32CommandSender.hpp"
 #include "crosspad/protocol/I2cStm32CommandSender.hpp"
 #include "crosspad/protocol/IStm32Transport.hpp"

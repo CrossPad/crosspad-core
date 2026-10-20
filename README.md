@@ -16,7 +16,7 @@ Zero platform-specific code — every hardware dependency is behind a pure virtu
 include/crosspad/
   app/         App registry, lifecycle, flags, manager base
   audio/       Ring buffer, peak metering, scope tap (waveform view)
-  dsp/         FFT seam (portable + esp-dsp) and factory, pitch detection, rate conversion (whole or streaming), scope trigger
+  dsp/         FFT seam (portable + esp-dsp) and factory, pitch detection, rate conversion (whole or streaming), scope trigger, spectrum bars
   event/       Event bus interface and implementations
   instrument/  Pitched sample engine: WAV reader (whole or chunked), sample bank, streaming kit loader, voices
   kit/         Kit loading interface
@@ -107,9 +107,8 @@ Flags: `Midi`, `AudioOut`, `AudioIn`, `Synth`, `Pads`, `Leds`, `Encoder`, `Displ
 
 ### Event System
 
-Three implementations of `IEventBus`:
-- **EspEventBus** — ESP-IDF event loop (ESP32 / Arduino-ESP32)
-- **FreeRtosEventBus** — FreeRTOS queue-based (PC with FreeRTOS)
+`IEventBus` is implemented by each platform (ESP-IDF: `EspEventBus` in
+crosspad-platform-idf; PC: `FreeRtosEventBus` in crosspad-pc). Core ships one:
 - **SyncEventBus** — synchronous immediate dispatch
 
 Event types: NoteOn, NoteOff, PadPressed, PadReleased, AppChanged, TempoChanged, SamplePlayback, and more.
@@ -175,9 +174,12 @@ git submodule add <url> components/crosspad-core
 # Arduino (PlatformIO)
 git submodule add <url> lib/crosspad-core
 
-# Desktop simulator (CMake)
+# Any CMake project (desktop simulator, host tools)
 git submodule add <url> crosspad-core
-# Then GLOB_RECURSE crosspad-core/src/*.cpp in CMakeLists.txt
+# Then in CMakeLists.txt:
+#   add_subdirectory(crosspad-core)
+#   target_link_libraries(<your target> PRIVATE crosspad-core)
+# -DCROSSPAD_CORE_USE_LVGL=ON when the consumer builds with USE_LVGL.
 ```
 
 Platform-specific adapters (clock, LED, MIDI, audio, etc.) are implemented in each platform repo.

@@ -19,8 +19,14 @@
  *  - the data runs to its stated size or the end of the file, whichever
  *    comes first -- a read past the end is the end of the sample.
  *
- * Past the data the walk goes on, for the metadata chunks a rewrite of the
- * file carries over; nothing there changes what is played.
+ * Past the data the walk goes on when the caller asks for the chunk list, for
+ * the metadata chunks a rewrite of the file carries over; nothing there
+ * changes what is played, so without a list it stops at the data.
+ *
+ * wavReadLayout() is the same walk for a reader that takes what the engine
+ * refuses -- the pitched loader's WavPcmReader, a waveform, the simulator's
+ * player: `fmt ` and `data` in either order, no limit on the chunk headers,
+ * and declared sizes trusted unless it is asked to clamp them.
  */
 
 #include <cstdint>
@@ -39,11 +45,12 @@ struct WavLayout {
     static constexpr int kMaxChunkHeaders = 64;
 
     uint16_t format = 0, channels = 0, bits = 0;
+    uint16_t blockAlign = 0;   ///< bytes per frame, as the `fmt ` chunk states it
     uint32_t rate = 0;
     uint32_t dataOffset = 0;   ///< of the first sample
     uint32_t dataBytes  = 0;   ///< clamped to what the file holds
     uint32_t frames     = 0;
-    uint32_t fileBytes  = 0;
+    uint32_t fileBytes  = 0;   ///< 0 when the walk did not ask (wavReadLayout() unclamped)
     uint32_t riffBytes  = 0;   ///< the RIFF size field plus its 8-byte header
     /// Chunks written to the caller's list (parse()): everything but `fmt `
     /// and `data`, in file order, as many as it holds. A caller that only
@@ -64,5 +71,22 @@ struct WavLayout {
     /// The same, over stdio from @p f's start.
     bool parse(FILE* f, Chunk* list = nullptr, uint8_t cap = 0);
 };
+
+/**
+ * @brief Walk the chunk list of @p f, from its start, for `fmt ` and `data`,
+ *        in either order (see the file comment).
+ *
+ * Unknown chunks (LIST, fact, ...) are skipped with RIFF's odd-size pad byte.
+ * The walk stops as soon as it has both, without reading or seeking over the
+ * samples.
+ *
+ * @param clampToFile clamp the data to the bytes the file holds, as parse()
+ *        does. It costs a seek to the end of the file, which on FAT walks the
+ *        file's cluster chain; false trusts the sizes the file declares.
+ * @param out the fields parsed so far, also when the walk fails.
+ * @return false if @p f is not RIFF/WAVE, or lacks a data chunk or a `fmt `
+ *         chunk of at least 16 bytes. The stream position is left unspecified.
+ */
+bool wavReadLayout(FILE* f, WavLayout& out, bool clampToFile);
 
 } // namespace crosspad

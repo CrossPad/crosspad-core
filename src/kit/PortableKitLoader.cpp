@@ -2,18 +2,12 @@
 #include <crosspad/kit/PortableKitLoader.hpp>
 #include <new>
 #include <crosspad/kit/KitPathUtils.hpp>
+#include <crosspad/platform/IFileSystem.hpp>
 #include "KitJsonParser.hpp"
 #include "../util/JsonStdio.hpp"
 
 #include <ArduinoJson.h>
 
-#ifdef _WIN32
-#include <filesystem>
-#else
-#include <sys/stat.h>
-#include <dirent.h>
-#include <unistd.h>
-#endif
 #include <cerrno>
 #include <cstdio>
 #include <memory>
@@ -23,94 +17,21 @@ namespace crosspad {
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
 
-#ifdef _WIN32
-// Windows has no dirent.h (the PC simulator built with MSVC).
 static bool pathExists(const std::string& path) {
-    std::error_code ec;
-    return std::filesystem::exists(std::filesystem::u8path(path), ec);
+    return getFileSystem().exists(path.c_str());
 }
 
 static bool isDir(const std::string& path) {
-    std::error_code ec;
-    return std::filesystem::is_directory(std::filesystem::u8path(path), ec);
+    return getFileSystem().isDir(path.c_str());
 }
 
-static bool makeDir(const std::string& path) {
-    std::error_code ec;
-    return std::filesystem::create_directory(std::filesystem::u8path(path), ec);
+/// The folders in a directory, hidden ones ('.') left out. Read whole before
+/// the caller recurses, so a deep tree holds one directory open.
+static bool listSubdirs(const std::string& path, std::vector<std::string>& out) {
+    return getFileSystem().forEach(path, [&](const char* name, bool dir) {
+        if (dir && name[0] != '.') out.emplace_back(name);
+    });
 }
-
-/// Entry names in a directory, hidden ones ('.') left out.
-static bool listNames(const std::string& path, std::vector<std::string>& out) {
-    std::error_code ec;
-    std::filesystem::directory_iterator it(std::filesystem::u8path(path), ec);
-    if (ec) return false;
-    for (const auto& ent : it) {
-        std::string name = ent.path().filename().u8string();
-        if (!name.empty() && name[0] != '.') out.push_back(std::move(name));
-    }
-    return true;
-}
-
-/// A file, or a folder with everything under it.
-static bool removeTree(const std::string& path) {
-    std::error_code ec;
-    std::filesystem::remove_all(std::filesystem::u8path(path), ec);
-    return !ec;
-}
-#else
-static bool pathExists(const std::string& path) {
-    struct stat st;
-    return stat(path.c_str(), &st) == 0;
-}
-
-static bool isDir(const std::string& path) {
-    struct stat st;
-    return stat(path.c_str(), &st) == 0 && S_ISDIR(st.st_mode);
-}
-
-static bool makeDir(const std::string& path) {
-    return mkdir(path.c_str(), 0755) == 0;
-}
-
-/// Entry names in a directory, hidden ones ('.') left out. The directory is
-/// closed before the caller recurses, so a deep tree holds one handle.
-static bool listNames(const std::string& path, std::vector<std::string>& out) {
-    DIR* dir = opendir(path.c_str());
-    if (!dir) return false;
-    struct dirent* ent;
-    while ((ent = readdir(dir)) != nullptr) {
-        if (ent->d_name[0] != '.') out.emplace_back(ent->d_name);
-    }
-    closedir(dir);
-    return true;
-}
-
-/// A file, or a folder with everything under it.
-///
-/// Its own listing, not listNames(): that one leaves out every name beginning
-/// with a dot, and a kit keeps the copies rendered for its pads in ".fx" --
-/// skipped, they stay behind and the folder will not come off. The directory is
-/// read into a vector and closed before anything under it is unlinked, because
-/// removing entries from an open DIR is not something FATFS promises.
-static bool removeTree(const std::string& path) {
-    if (!isDir(path)) return std::remove(path.c_str()) == 0;
-    std::vector<std::string> names;
-    if (DIR* dir = opendir(path.c_str())) {
-        struct dirent* ent;
-        while ((ent = readdir(dir)) != nullptr) {
-            const std::string n = ent->d_name;
-            if (n != "." && n != "..") names.push_back(n);
-        }
-        closedir(dir);
-    } else {
-        return false;
-    }
-    bool ok = true;
-    for (const std::string& n : names) ok = removeTree(path + "/" + n) && ok;
-    return rmdir(path.c_str()) == 0 && ok;
-}
-#endif
 
 static std::string parentDir(const std::string& path) {
     auto pos = path.rfind('/');
@@ -121,7 +42,7 @@ static std::string parentDir(const std::string& path) {
 static bool mkdirRecursive(const std::string& path) {
     if (path.empty() || isDir(path)) return true;
     mkdirRecursive(parentDir(path));
-    return makeDir(path) || isDir(path);
+    return getFileSystem().makeDir(path.c_str());
 }
 
 // ── IKitManager (persistence) ───────────────────────────────────────────────
@@ -138,45 +59,75 @@ std::string PortableKitLoader::toLogicalPath(const std::string& fsPath) const {
     return fsPath;
 }
 
+// scanKits() exists beside listKits() because the vector listKits() returns
+// is one contiguous block of kits x sizeof(KitInfo) plus a string copy per
+// field: on the ESP32 that copy alone was a std::bad_alloc at boot (80 kits,
+// 412 kB of PSRAM left beside the sample engine).
 void PortableKitLoader::scanKits(const std::string& rootDir) {
-    // Growing by doubling means copying everything found so far, and on a card
-    // of 79 kits of ~1 kB that copy is one of the largest allocations of the
-    // boot: it threw bad_alloc on one boot in four, nobody caught it, and the
-    // board rebooted with "Discovered 0 kits". The card rarely changes between
-    // scans, so the last count is the best guess there is, and anything the
-    // memory still cannot take costs its own entry rather than the boot.
-    const size_t previous = kits_.size();
-    kits_.clear();
+    // One block of capacity * sizeof(KitInfo) (~1 kB a kit), reserved once at
+    // the count plus kSpareKits -- the room addKit() fills without moving the
+    // list. Grown by doubling, the block was copied into a bigger one with the
+    // old one held: 88 kits wanted 64 and 128 kB at once, which under the
+    // boot's update check threw and stopped the list at 64 kits. Short of one
+    // block that size the spare goes first, then whole kits, and what is left
+    // out is said.
+    std::vector<KitInfo>().swap(kits_);   // the old block back before the new one is asked for
     currentKitId_ = -1;
     try {
-        kits_.reserve(previous ? previous + 4 : 32);
+        std::string found;   // every kit's JSON on the card, NUL-separated
+        size_t count = 0;
         // rootDir is logical ("/crosspad/kits"); add the mount prefix for POSIX.
-        discoverKitsRecursive(toFsPath(rootDir), kits_);
-        // Trim the slack the guess left — PSRAM outside the engine arena is the
-        // UI's whole budget -- down to kSpareKits, the room addKit() fills
-        // without moving the list.
-        if (kits_.capacity() != kits_.size() + kSpareKits) {
-            std::vector<KitInfo> sized;
-            sized.reserve(kits_.size() + kSpareKits);
-            for (auto& k : kits_) sized.push_back(std::move(k));
-            kits_.swap(sized);
+        findKitJsons(toFsPath(rootDir), found, count);
+        size_t room = count + kSpareKits;
+        for (;;) {
+            try {
+                kits_.reserve(room);
+                break;
+            } catch (const std::bad_alloc&) {
+                room = room > count ? count : room / 2;
+            }
+        }
+        for (size_t at = 0; at < found.size() && kits_.size() < kits_.capacity();) {
+            const std::string jsonPath = found.c_str() + at;
+            at += jsonPath.size() + 1;
+            KitInfo kit;
+            kit.path = toLogicalPath(jsonPath);
+            if (!isKitKnown(kit.path) && readKitJson(jsonPath, kit, false)) kits_.push_back(std::move(kit));
+        }
+        if (kits_.capacity() < count) {
+            std::printf("PortableKitLoader: no memory for the whole kit list: %u of %u kits listed\n",
+                        static_cast<unsigned>(kits_.size()), static_cast<unsigned>(count));
         }
     } catch (const std::bad_alloc&) {
         // Keep what was found. A short kit list is a bad boot; no boot is worse.
+        std::printf("PortableKitLoader: kit scan stopped by bad_alloc at %u kits\n",
+                    static_cast<unsigned>(kits_.size()));
     }
 }
 
 int PortableKitLoader::addKit(const std::string& kitJsonPath) {
     const int known = findKitIdByPath(kitJsonPath);
     if (known >= 0) return known;
-    if (kits_.size() >= kits_.capacity()) return -1;
     KitInfo kit;
     kit.path = kitJsonPath;
     if (!readKitJson(toFsPath(kitJsonPath), kit, false)) return -1;
-    kits_.push_back(std::move(kit));
-    return static_cast<int>(kits_.size()) - 1;
+    if (kits_.size() < kits_.capacity()) {
+        kits_.push_back(std::move(kit));
+        return static_cast<int>(kits_.size()) - 1;
+    }
+    // No spare room left: the slot of a kit deleted since the scan. Nothing
+    // holds that id any more -- removeKit() never blanks the current or the
+    // retired kit.
+    for (size_t i = 0; i < kits_.size(); ++i) {
+        if (!kits_[i].path.empty()) continue;
+        kits_[i] = std::move(kit);
+        return static_cast<int>(i);
+    }
+    return -1;
 }
 
+// Not saveKit(): a kit this board has only ever listed carries sixteen empty
+// pads, so serialising its KitInfo would take every sample out of the kit.
 bool PortableKitLoader::saveKitInfo(int id, const KitInfo& meta) {
     if (id < 0 || id >= static_cast<int>(kits_.size())) return false;
     KitInfo& entry = kits_[id];
@@ -207,6 +158,13 @@ bool PortableKitLoader::saveKitInfo(int id, const KitInfo& meta) {
     return true;
 }
 
+bool PortableKitLoader::readKitCopy(const std::string& kitJsonPath, KitInfo& out) {
+    out = KitInfo{};
+    if (kitJsonPath.empty()) return false;
+    out.path = kitJsonPath;
+    return readKitJson(toFsPath(kitJsonPath), out, true);
+}
+
 bool PortableKitLoader::removeKit(int id) {
     if (id < 0 || id >= static_cast<int>(kits_.size())) return false;
     if (id == currentKitId_ || id == retiredKitId_) return false;
@@ -221,7 +179,8 @@ bool PortableKitLoader::removeKit(int id) {
         if (kits_[i].path.compare(0, under.size(), under) == 0) return false;
     }
 
-    if (!removeTree(toFsPath(dir))) return false;
+    /* Everything under it, ".fx" -- the copies rendered for its pads -- too. */
+    if (!getFileSystem().removeTree(toFsPath(dir))) return false;
     kits_[id] = KitInfo{};     // blanked, not erased: every id and pointer holds
     return true;
 }
@@ -269,6 +228,9 @@ KitLoadResult PortableKitLoader::loadKit(KitInfo& kit) {
     return result;
 }
 
+// Kept out of loadKit(): freeing from the loader thread pulled the samples
+// vector out from under a GUI thread parked mid-callback, which surfaced as a
+// null dereference at samples[i].end. The reader thread calls this instead.
 void PortableKitLoader::releaseRetiredKit() {
     if (retiredKitId_ < 0) return;
     const int id = retiredKitId_;
@@ -359,17 +321,13 @@ const std::vector<KitInfo>& PortableKitLoader::kits() const {
 
 // ── Kit discovery ───────────────────────────────────────────────────────────
 
-bool PortableKitLoader::discoverKitsRecursive(const std::string& dirPath,
-                                               std::vector<KitInfo>& out) {
+void PortableKitLoader::findKitJsons(const std::string& dirPath, std::string& found,
+                                     size_t& count) {
     std::vector<std::string> names;
-    if (!listNames(dirPath, names)) return false;
-
-    bool found = false;
+    if (!listSubdirs(dirPath, names)) return;
 
     for (const std::string& name : names) {
         std::string entryPath = dirPath + "/" + name;
-
-        if (!isDir(entryPath)) continue;
 
         std::string kitJsonPath = entryPath + "/kit.json";
         std::string altJsonPath = entryPath + "/" + name + ".json";
@@ -388,22 +346,14 @@ bool PortableKitLoader::discoverKitsRecursive(const std::string& dirPath,
         }
 
         if (!jsonPath.empty()) {
-            std::string logicalPath = toLogicalPath(jsonPath);
-            if (!isKitKnown(logicalPath)) {
-                KitInfo kit;
-                kit.path = logicalPath;
-                if (readKitJson(jsonPath, kit, false)) {
-                    out.push_back(std::move(kit));
-                    found = true;
-                }
-            }
+            found += jsonPath;
+            found += '\0';
+            ++count;
         } else {
             // No kit.json here; recurse.
-            found |= discoverKitsRecursive(entryPath, out);
+            findKitJsons(entryPath, found, count);
         }
     }
-
-    return found;
 }
 
 // ── JSON I/O ────────────────────────────────────────────────────────────────

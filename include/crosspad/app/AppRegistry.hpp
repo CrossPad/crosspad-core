@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
 
 /**
@@ -35,8 +36,8 @@ public:
     /// Get the number of registered apps
     size_t getAppCount() const { return appCount; }
 
-    /// Registrations that did not fit. Anything but zero is a bug in the
-    /// making: the app is simply not on the board.
+    /// Registrations that did not fit in the registry; such an app does not
+    /// appear on the board. Zero when every app fits.
     size_t getDroppedCount() const { return dropped_; }
 
     /// Find an app by name (returns nullptr if not found)

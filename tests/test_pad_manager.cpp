@@ -1,8 +1,13 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 #include <catch2/catch_test_macros.hpp>
 #include "test_helpers.hpp"
 #include "crosspad/pad/IPadLogicHandler.hpp"
 
 #include <algorithm>
+#include <atomic>
+#include <chrono>
+#include <future>
+#include <thread>
 
 using namespace crosspad;
 
@@ -262,6 +267,11 @@ TEST_CASE("PadManager: the input tap sees played pads, not the sequencer's", "[p
         CHECK(seen.count == 0);
     }
 
+    SECTION("an app's own playback (a kit's preview) is not tapped") {
+        pm.handlePadPress(4, 100, EventSource::App);
+        CHECK(seen.count == 0);
+    }
+
     SECTION("a suppressed press is not tapped") {
         pm.setInputSuppressed(true);
         pm.handlePadPress(1, 100);
@@ -327,6 +337,156 @@ struct LockCountingStrip : test::MockLedStrip {
     int locks = 0;
 };
 } // namespace
+
+TEST_CASE("PadManager: pad pan is the wire value minus its centre", "[pad][pan]") {
+    STATIC_REQUIRE(IPadLogicHandler::panFromWire(0) == IPadLogicHandler::kPanMin);
+    STATIC_REQUIRE(IPadLogicHandler::panFromWire(IPadLogicHandler::kPanWireCentre)
+                   == IPadLogicHandler::kPanCentre);
+    STATIC_REQUIRE(IPadLogicHandler::panFromWire(127) == IPadLogicHandler::kPanMax);
+
+    struct PanLogic : DummyPadLogic {
+        void onPadPan(PadManager&, uint8_t pad, int8_t pan) override { lastPad = pad; lastPan = pan; }
+        uint8_t lastPad = 0xFF;
+        int8_t lastPan = 1;
+    };
+    test::CoreTestPlatform platform;
+    REQUIRE(platform.init());
+    auto& pm = platform.padManager;
+    auto logic = std::make_shared<PanLogic>();
+    pm.registerPadLogic("pan", logic);
+    pm.setActivePadLogic("pan");
+
+    pm.notifyPadPan(5, IPadLogicHandler::panFromWire(0));
+    REQUIRE(logic->lastPad == 5);
+    REQUIRE(logic->lastPan == IPadLogicHandler::kPanMin);
+    REQUIRE(pm.getPadPan(5) == IPadLogicHandler::kPanMin);
+}
+
+TEST_CASE("PadManager: deactivation waits for a press in flight on another thread", "[pad][dispatch]") {
+    struct HeldPressLogic : DummyPadLogic {
+        std::promise<void> entered, release, deactivated;
+        std::atomic<int> inFlight{0};
+        std::atomic<int> inFlightAtDeactivate{-1};
+        void onPadPress(PadManager&, uint8_t, uint8_t) override {
+            ++inFlight;
+            entered.set_value();
+            release.get_future().wait();
+            --inFlight;
+        }
+        void onDeactivate(PadManager&) override {
+            inFlightAtDeactivate = inFlight.load();
+            deactivated.set_value();
+        }
+    };
+    test::CoreTestPlatform platform;
+    REQUIRE(platform.init());
+    auto& pm = platform.padManager;
+    auto logic = std::make_shared<HeldPressLogic>();
+    pm.registerPadLogic("held", logic);
+    pm.setActivePadLogic("held");
+
+    auto deactivated = logic->deactivated.get_future();
+    std::thread press([&] { pm.handlePadPress(0, 100); });
+    logic->entered.get_future().wait();
+
+    std::thread teardown([&] { pm.setActivePadLogic(""); });
+    // The press is held: the teardown must not reach onDeactivate.
+    REQUIRE(deactivated.wait_for(std::chrono::milliseconds(200)) == std::future_status::timeout);
+
+    logic->release.set_value();
+    press.join();
+    teardown.join();
+    REQUIRE(deactivated.wait_for(std::chrono::seconds(0)) == std::future_status::ready);
+    REQUIRE(logic->inFlightAtDeactivate == 0);
+}
+
+TEST_CASE("PadManager: deactivation waits for a touch in flight on another thread", "[pad][dispatch]") {
+    struct HeldTouchLogic : DummyPadLogic {
+        std::promise<void> entered, release, deactivated;
+        std::atomic<int> inFlight{0};
+        std::atomic<int> inFlightAtDeactivate{-1};
+        void onPadTouch(PadManager&, uint8_t, bool) override {
+            ++inFlight;
+            entered.set_value();
+            release.get_future().wait();
+            --inFlight;
+        }
+        void onDeactivate(PadManager&) override {
+            inFlightAtDeactivate = inFlight.load();
+            deactivated.set_value();
+        }
+    };
+    test::CoreTestPlatform platform;
+    REQUIRE(platform.init());
+    auto& pm = platform.padManager;
+    auto logic = std::make_shared<HeldTouchLogic>();
+    pm.registerPadLogic("touch", logic);
+    pm.setActivePadLogic("touch");
+
+    auto deactivated = logic->deactivated.get_future();
+    std::thread touch([&] { pm.handlePadTouch(3, true); });
+    logic->entered.get_future().wait();
+
+    std::thread teardown([&] { pm.setActivePadLogic(""); });
+    REQUIRE(deactivated.wait_for(std::chrono::milliseconds(200)) == std::future_status::timeout);
+
+    logic->release.set_value();
+    touch.join();
+    teardown.join();
+    REQUIRE(deactivated.wait_for(std::chrono::seconds(0)) == std::future_status::ready);
+    REQUIRE(logic->inFlightAtDeactivate == 0);
+}
+
+TEST_CASE("PadManager: no pad callback reaches a handler after its onDeactivate", "[pad][dispatch]") {
+    struct CheckedLogic : DummyPadLogic {
+        std::atomic<bool> deactivated{false};
+        std::atomic<int> inFlight{0};
+        std::atomic<int> violations{0};
+        std::atomic<int> presses{0};
+        void onPadPress(PadManager&, uint8_t, uint8_t) override {
+            ++inFlight;
+            if (deactivated) ++violations;
+            ++presses;
+            --inFlight;
+        }
+        void onPadRelease(PadManager&, uint8_t) override {
+            ++inFlight;
+            if (deactivated) ++violations;
+            --inFlight;
+        }
+        void onDeactivate(PadManager&) override {
+            if (inFlight != 0) ++violations;
+            deactivated = true;
+        }
+    };
+    test::CoreTestPlatform platform;
+    REQUIRE(platform.init());
+    auto& pm = platform.padManager;
+    auto logic = std::make_shared<CheckedLogic>();
+    pm.registerPadLogic("checked", logic);
+
+    constexpr int kToggles = 300;
+    std::atomic<bool> done{false};
+    std::thread pads([&] {
+        for (uint8_t i = 0; !done; i = (uint8_t)((i + 1) % 16)) {
+            pm.handlePadPress(i, 100);
+            pm.handlePadRelease(i);
+        }
+    });
+    // Only this thread changes the logic, so "deactivated" is cleared before
+    // the handler can be dispatched to again.
+    for (int t = 0; t < kToggles; ++t) {
+        logic->deactivated = false;
+        pm.setActivePadLogic("checked");
+        while (logic->presses.load() <= t) std::this_thread::yield();
+        pm.setActivePadLogic("");
+    }
+    done = true;
+    pads.join();
+
+    REQUIRE(logic->presses.load() >= kToggles);
+    REQUIRE(logic->violations == 0);
+}
 
 TEST_CASE("PadLedController: coalesced, a voice's start is painted by update(), not by its caller",
           "[pad][led]") {

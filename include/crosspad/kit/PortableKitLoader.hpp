@@ -34,6 +34,7 @@ public:
     void                 scanKits(const std::string& rootDir) override;
     KitLoadResult loadKit(KitInfo& kit) override;
     bool saveKit(const KitInfo& kit) override;
+    bool readKitCopy(const std::string& kitJsonPath, KitInfo& out) override;
 
     // ── IKitManager (memory) ───────────────────────────────────────
     void releaseRetiredKit() override;
@@ -44,8 +45,9 @@ public:
     /// the list without a rescan. @p kitJsonPath is logical
     /// ("/crosspad/kits/<name>/kit.json"). Only into the spare room a scan
     /// leaves (kSpareKits): growing the vector would move every KitInfo, and
-    /// the GUI holds getCurrentKit() across card reads. Returns the new id,
-    /// or -1 when there is no room -- a rescan (reboot, card reinsert) finds it.
+    /// the GUI holds getCurrentKit() across card reads. Once that is used up,
+    /// into the slot of a kit removed since the scan. Returns the new id, or
+    /// -1 when there is neither -- a rescan (reboot, card reinsert) finds it.
     int  addKit(const std::string& kitJsonPath) override;
     bool saveKitInfo(int id, const KitInfo& meta) override;
     bool removeKit(int id) override;
@@ -83,9 +85,9 @@ protected:
     /// Strip rootPrefix from a filesystem path to get the logical path.
     std::string toLogicalPath(const std::string& fsPath) const;
 
-    /// Recursively scan dirPath for kit.json files, appending to out.
-    bool discoverKitsRecursive(const std::string& dirPath,
-                               std::vector<KitInfo>& out);
+    /// Recursively scan dirPath for kit JSON files: each one's path onto
+    /// @p found, NUL-terminated, and counted in @p count.
+    void findKitJsons(const std::string& dirPath, std::string& found, size_t& count);
 
     /// Read and parse a kit JSON file.
     bool readKitJson(const std::string& path, KitInfo& kit, bool parsePads);

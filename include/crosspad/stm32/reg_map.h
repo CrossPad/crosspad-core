@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 /*
  * STM32 I2C1 slave register map — the single mirror of
  * CrossPad_STM32_r20/app/inc/reg_map.h. Keep in sync with the firmware side.
@@ -119,7 +120,7 @@ extern "C" {
 #define PWR_STATE_SLEEP_PENDING     0x01   /* STOP1 entry */
 #define PWR_STATE_SHIP_PENDING      0x02   /* BATFET off (hard power down) */
 #define PWR_STATE_WOKE              0x03   /* woke from STOP1, backlight off — the ESP redraws, then sets brightness */
-#define PWR_STATE_LIGHT             0x04   /* LIGHT sleep (backlight off, slow scan; ESP zasilony — ściemnij ARGB/display) */
+#define PWR_STATE_LIGHT             0x04   /* LIGHT sleep (backlight off, slow scan; ESP powered — dim ARGB/display) */
 #define PWR_STATE_CHARGE            0x05   /* charger-idle while off (ESP minimally repowered for the charge UI) */
 #define PWR_ACK_MAGIC               0x55
 

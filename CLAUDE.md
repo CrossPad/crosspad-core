@@ -8,7 +8,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Build Systems
 
-This library is consumed two ways:
+This library is consumed three ways:
 
 **PlatformIO** (Arduino framework — ESP32-S3 project):
 - `library.json` controls which `.cpp` files are compiled via `srcFilter` (not all sources are built by default)
@@ -17,6 +17,9 @@ This library is consumed two ways:
 **ESP-IDF component** (pure ESP-IDF projects like P4):
 - `CMakeLists.txt` uses `GLOB_RECURSE` so new `.cpp` files are picked up automatically
 - Used as a git submodule under `components/crosspad-core/`
+
+**Plain CMake** (`add_subdirectory`, or a top-level build): the same `CMakeLists.txt`
+and source list build the static library target `crosspad-core`; `tests/` links it.
 
 There are no test or lint commands in this repo — it's a library compiled as part of consumer projects.
 
@@ -44,7 +47,7 @@ Every hardware/platform dependency is behind a pure virtual interface (`I` prefi
 
 | Interface | Purpose | ESP32-S3 Implementation |
 |-----------|---------|------------------------|
-| `IEventBus` | Async event dispatch | `EspEventBus` (esp_event) |
+| `IEventBus` | Async event dispatch | `EspEventBus` (esp_event, in crosspad-platform-idf) |
 | `ILedStrip` | LED hardware control | `NeoPixelLedStrip` (NeoPixelBus) |
 | `IKeyValueStore` | Persistent settings | Arduino Preferences / NVS |
 | `IStm32Transport` | UART to STM32 | `ArduinoStm32Transport` (Serial1) |
@@ -72,14 +75,14 @@ Global singletons are accessed via free functions: `crosspad::getEventBus()`, `c
 - `PadManager`: central orchestrator for 16 pads — handles press/release, MIDI mapping, chord notes, delegates to `PadLedController` and `PadAnimator`
 - `IPadLogicHandler`: apps register custom pad behavior; `PadManager` swaps active handler on app switch
 - `PadLedController`: per-pad color state machine (default/pressed/playing colors, brightness)
-- `PadAnimator`: LED animations (progress bar, boot, success, error) using `ILedStrip` + `IClock`
+- `PadAnimator`: LED animations (progress bar, boot, success, error, still frames) using `ILedStrip` + `IClock`. One runs at a time and every start takes the pads; each start returns an `AnimToken` -- `owns(token)`, `updateFrame(token, …)` and `stop(token)` act only on the caller's own animation, `stopAll()` is for system paths (soft-off, sleep)
 
 ### STM32 Protocol (`protocol/`, `stm32/`)
 - SysEx framing over UART (manufacturer ID 0x7D)
 - `SysExFramer`: state machine assembling frames → callback dispatch
 - `Stm32CommandSender`: builds commands (power off, brightness, routing matrix, keep-alive, DFU)
 - `Stm32MessageHandler`: parses incoming messages (pad events, encoder, battery status)
-- `Stm32Manager`: FreeRTOS maintenance task (keep-alive, routing updates)
+- `Stm32Manager`: maintenance pass (keep-alive, routing updates, amp gate) the platform runs every `kTickPeriodMs` from its own task
 
 ### Settings (`settings/`)
 - `CrosspadSettings` singleton: keypad, routing (STM/ESP), wireless, audio (per-pad × 16 + preview + master FX), vibration, UI brightness
@@ -107,7 +110,7 @@ Headers use `#pragma once`. C-compatible headers (like `SysExProtocol.h`) use `.
 ## Consumer Integration Pattern
 
 Platform projects initialize crosspad-core via a platform init function that:
-1. Creates `EspEventBus` (static, with task params)
+1. Creates its `IEventBus` (ESP-IDF: `EspEventBus` in crosspad-platform-idf, static, with task params)
 2. Creates platform clock, MIDI output, LED strip implementations
 3. Constructs `PadLedController` and `PadAnimator`
 4. Constructs `PadManager` wired to all of the above
@@ -117,8 +120,6 @@ Platform projects initialize crosspad-core via a platform init function that:
 ## Dependencies
 
 - `ArduinoJson` (bblanchon) — settings serialization
-- `freertos` — task management (FreeRTOS types used in headers)
-- `esp_event` — EspEventBus implementation
 - C++17 standard library (`<functional>`, `<mutex>`, `<map>`, `<vector>`, `<string>`)
 
 ## Important Conventions

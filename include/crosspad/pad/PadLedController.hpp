@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
 #include <atomic>
 #include <cstdint>
@@ -14,41 +15,57 @@ namespace crosspad {
  * @brief Portable pad LED state and color controller.
  *
  * Manages per-pad color state, feedback modes, brightness, and LED updates.
- * Replaces the platform-specific KeypadRGBDriver. Uses ILedStrip for hardware
- * abstraction — the ILedStrip implementation handles pad→LED index remapping.
+ * Uses ILedStrip for hardware abstraction -- the ILedStrip implementation
+ * handles pad-to-LED index remapping. Apps normally reach it through
+ * PadManager, which forwards the colour, brightness and feedback calls.
  */
 class PadLedController {
 public:
     PadLedController() = default;
 
+    /// Wire the controller to the LED strip, event bus and settings. The
+    /// platform calls it once at start-up.
     void init(ILedStrip& ledStrip, IEventBus& eventBus,
               CrosspadSettings* settings, uint8_t padCount = 16);
-    void begin(); // subscribe EventBus, initial LED update
+    /// Start the strip, follow EventType::SamplePlayback for the playing
+    /// state, and paint the pads. The platform calls it once, after init().
+    void begin();
 
+    /// Paint what changed since the last tick when coalesced refresh is on.
+    /// PadManager::update() calls it.
     void update();
 
-    // Coalesced LED refresh: when enabled, updateLEDs()/updateSingleLED() only
-    // write the pixel buffer and set a dirty flag; the actual ILedStrip
-    // refresh() happens at most once per update() tick. On hardware refresh()
-    // is an RMT transmission that interferes with the I2S audio DMA (random
-    // output clicks), so audio platforms should enable this — but ONLY when
-    // something ticks update() periodically, otherwise LEDs never repaint.
-    // Off by default (refresh() fires immediately, the historical behavior).
-    // Coalesced, notifyNotePlay() -- called from the audio render through
-    // PadManager::handleSamplePlay() -- touches neither the pixels nor the
-    // strip lock: it records the state and update() paints it.
+    /// Coalesced LED refresh: when on, LED changes only update the pixel
+    /// buffer, and the strip is refreshed at most once per update() tick.
+    /// Platforms that play audio turn it on, because on hardware a strip
+    /// refresh disturbs the audio output; it needs update() ticked
+    /// periodically, or the LEDs never repaint. Off by default: the strip is
+    /// refreshed at once.
+    ///
+    /// When on, notifyNotePlay() -- called from the audio render through
+    /// PadManager::handleSamplePlay() -- touches neither the pixels nor the
+    /// strip lock: it records the state and update() paints it.
     void setCoalescedRefresh(bool on) { coalesceRefresh_ = on; }
+    /// Whether coalesced refresh is on.
     bool getCoalescedRefresh() const { return coalesceRefresh_; }
 
-    // MIDI event handling
+    // ── MIDI input (by note) ────────────────────────────────────────────
+    /// Light the pad whose LED state carries @p note.
     void handleNoteOn(uint8_t channel, uint8_t note, uint8_t velocity);
+    /// Release the pad whose LED state carries @p note.
     void handleNoteOff(uint8_t channel, uint8_t note);
+    /// Pressure for the pad whose LED state carries @p note.
     void handleAftertouch(uint8_t channel, uint8_t note, uint8_t pressure);
 
-    // Direct pad state control
+    // ── Pad state (by pad index) ────────────────────────────────────────
+    /// The pad is held, at @p velocity: repaint it.
     void notifyNoteOn(uint8_t padIdx, uint8_t velocity);
+    /// The pad is released: repaint it.
     void notifyNoteOff(uint8_t padIdx, uint8_t velocity = 0);
+    /// Live pressure (0-127) on the pad; in KeypadFeedbackMode::AFTERTOUCH
+    /// a held pad's brightness follows it.
     void notifyAftertouch(uint8_t padIdx, uint8_t pressure);
+    /// A sample started or stopped sounding on the pad.
     void notifyNotePlay(uint8_t padIdx, bool isPlaying);
     /// A Loop pad muted, or waiting for its bar: its playing colour's hue at
     /// half that colour's brightness, its brightest channel held between
@@ -57,53 +74,79 @@ public:
     static constexpr uint8_t kDimmedMinPeak = 32;   ///< an eighth of full scale
     static constexpr uint8_t kDimmedMaxPeak = 64;   ///< a quarter of full scale
 
-    // Color management
+    // ── Colours ─────────────────────────────────────────────────────────
+    /// Give one pad a resting colour of its own; the global colours no
+    /// longer change that pad until clearPadColor().
     void setPadColor(uint8_t padIdx, RgbColor color);
+    /// The colour of one pad while it is held.
     void setPadPressedColor(uint8_t padIdx, RgbColor color);
+    /// The colour of one pad while its sample sounds.
     void setPadPlayingColor(uint8_t padIdx, RgbColor color);
+    /// setPadColor() from 8-bit red, green and blue.
     void setPadColor(uint8_t padIdx, uint8_t r, uint8_t g, uint8_t b);
+    /// setPadPressedColor() from 8-bit red, green and blue.
     void setPadPressedColor(uint8_t padIdx, uint8_t r, uint8_t g, uint8_t b);
+    /// setPadPlayingColor() from 8-bit red, green and blue.
     void setPadPlayingColor(uint8_t padIdx, uint8_t r, uint8_t g, uint8_t b);
+    /// Resting colour of every pad without a colour of its own.
     void setDefaultColor(RgbColor color);
+    /// Held colour of every pad without a colour of its own.
     void setPressedColor(RgbColor color);
+    /// Playing colour of every pad without a colour of its own.
     void setPlayingColor(RgbColor color);
-    // Drop a pad's custom-color override, returning it to default-managed state
-    // (default/pressed/playing colors back to the globals, hasCustomColor=false).
+    /// Drop a pad's own colour: its resting, pressed and playing colours go
+    /// back to the global ones, and the global setters change it again.
     void clearPadColor(uint8_t padIdx);
 
-    // Color getters
+    /// The pad's resting colour.
     RgbColor getPadColor(uint8_t padIdx);
+    /// The pad's colour while held.
     RgbColor getPressedColor(uint8_t padIdx);
+    /// The pad's colour while its sample sounds.
     RgbColor getPlayingColor(uint8_t padIdx);
 
-    // Mode management
+    // ── Modes ───────────────────────────────────────────────────────────
+    /// Record the animation mode; KeypadAnimationMode::NONE also calls
+    /// stopAnimation(). Animations themselves run in PadAnimator.
     void setAnimationMode(KeypadAnimationMode mode);
+    /// How the pads light when pressed (see KeypadFeedbackMode).
     void setFeedbackMode(KeypadFeedbackMode mode);
+    /// The current feedback mode.
     KeypadFeedbackMode getFeedbackMode();
 
-    // Brightness
+    /// LED brightness, 0-255. The lower of this and the LED brightness in
+    /// Settings applies.
     void setBrightness(uint8_t brightness);
+    /// The brightness set with setBrightness().
     uint8_t getBrightness();
 
-    // Stop animation — real animations run in PadAnimator; this clears the
-    // isAnimating_ flag/pad state and is invoked via the PadAnimator
-    // completion callback (see CrosspadPlatform.cpp).
+    /// Clear the animating state and repaint the pads' own colours. The
+    /// platform calls it when a PadAnimator animation ends.
     void stopAnimation();
 
-    // Animation flag (set by PadAnimator via callback)
+    /// Set while a PadAnimator animation owns the pads; normal LED updates
+    /// pause meanwhile. The platform wires it to the animator's state
+    /// callback.
     void setAnimating(bool v) { isAnimating_ = v; }
+    /// Whether an animation owns the pads.
     bool getAnimating() const { return isAnimating_; }
 
-    // Callbacks
+    // ── Callbacks ───────────────────────────────────────────────────────
+    /// Called on every pad press and release (notifyNoteOn()/notifyNoteOff()).
     void setNoteOnCallback(KeypadNoteOnCallback callback);
+    /// Called on every pressure change.
     void setAftertouchCallback(KeypadAftertouchCallback callback);
+    /// Set the per-pad animation-complete callback. Animations run in
+    /// PadAnimator; for the end of one, use PadAnimator::setCompletionCallback().
     void setAnimationCompleteCallback(KeypadAnimationCompleteCallback callback);
+    /// The function that colours every pad in KeypadFeedbackMode::APP_DEFINED.
     void setCustomColorCallback(KeypadCustomColorCallback callback);
 
-    // Lookup
+    /// The pad whose LED state carries @p note, or -1.
     int getPadFromMidiNote(uint8_t note);
 
-    // Full LED refresh (public so glue code / PadAnimator can trigger restore)
+    /// Repaint every pad now. Public so the platform and PadAnimator can
+    /// restore the pads after an animation.
     void updateLEDs();
 
 private:
@@ -149,7 +192,7 @@ private:
     void applyBrightness(RgbColor& color);
 };
 
-/// Platform-injected singleton accessor
+/// The platform's PadLedController.
 PadLedController& getPadLedController();
 
 } // namespace crosspad

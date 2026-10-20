@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 #include <cstdio>
 #include "crosspad/settings/CrosspadSettings.hpp"
 
@@ -26,9 +27,13 @@ void CrosspadSettings::loadFrom(IKeyValueStore& store) {
     themeColorIndex   = store.readU8("cfg_display", "theme_clr", 0);
     perfStatsFlags    = store.readU8("cfg_display", "perf_stats", 0);
     quickSettingsEnabled = store.readBool("cfg_display", "drawer_en", true);
-    launcherStyle = (LauncherStyle)readU8In(store, "cfg_display", "launcher",
-                                            (uint8_t)LauncherStyle::Grid,
-                                            (uint8_t)LauncherStyle::Grid, (uint8_t)LauncherStyle::List);
+    /* A key of its own, not "launcher": every board that ever saved its
+     * settings holds a Grid or List there from when the board ignored it and
+     * always opened on the pad map. Reading that would move those boards off
+     * the map the day the setting started to count. */
+    launcherStyle = (LauncherStyle)readU8In(store, "cfg_display", "home_view",
+                                            (uint8_t)LauncherStyle::Pads,
+                                            (uint8_t)LauncherStyle::Grid, (uint8_t)LauncherStyle::Pads);
     touchSensitivity = (TouchSensitivity)readU8In(store, "cfg_display", "touch_sens",
                                                   (uint8_t)TouchSensitivity::Low,
                                                   (uint8_t)TouchSensitivity::Low,
@@ -190,7 +195,7 @@ void CrosspadSettings::saveTo(IKeyValueStore& store) {
     store.saveU8("cfg_display", "theme_clr", themeColorIndex);
     store.saveU8("cfg_display", "perf_stats", perfStatsFlags);
     store.saveBool("cfg_display", "drawer_en", quickSettingsEnabled);
-    store.saveU8("cfg_display", "launcher", (uint8_t)launcherStyle);
+    store.saveU8("cfg_display", "home_view", (uint8_t)launcherStyle);
     store.saveU8("cfg_display", "touch_sens", (uint8_t)touchSensitivity);
 
     // Recorder

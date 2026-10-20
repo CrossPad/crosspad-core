@@ -284,10 +284,41 @@ TEST_CASE("sequencer transport: waiting -- REC and STOP cancel, PLAY and DUB do 
     REQUIRE(r.engine.stops == 1);
     REQUIRE(r.engine.records == 0);
 
+    /* An armed take cancelled is a take ended: back to bar one, like one
+     * recorded. */
     put(r, SequencerState::WaitNote, SequencerMode::Record);
     const int before = r.engine.rewinds;
     r.transport.stop();
     REQUIRE(r.engine.stops == 2);
+    REQUIRE(r.engine.rewinds == before + 1);
+
+    /* Waiting to play (a song-synced start) is no take: it stops in place. */
+    put(r, SequencerState::WaitForSync, SequencerMode::Playback);
+    r.transport.stop();
+    REQUIRE(r.engine.stops == 3);
+    REQUIRE(r.engine.rewinds == before + 1);
+}
+
+TEST_CASE("sequencer transport: a STOP that ends a take goes back to bar one", "[transport]")
+{
+    /* A first take: one bar played into a four-bar loop, STOP in bar 2.
+     * Resumed from there, PLAY gave three silent bars before the take came
+     * round, and it looked as if nothing had been recorded. */
+    for (auto mode : {SequencerMode::Record, SequencerMode::Overdub, SequencerMode::OverdubWait}) {
+        Rig r(4);
+        put(r, SequencerState::Running, mode);
+        const int before = r.engine.rewinds;
+        r.transport.stop();
+        REQUIRE(r.engine.stops == 1);
+        REQUIRE(r.engine.rewinds == before + 1);
+    }
+
+    /* Playing, STOP still stops in place; the second one rewinds. */
+    Rig r(4);
+    put(r, SequencerState::Running, SequencerMode::Playback);
+    const int before = r.engine.rewinds;
+    r.transport.stop();
+    REQUIRE(r.engine.stops == 1);
     REQUIRE(r.engine.rewinds == before);
 }
 

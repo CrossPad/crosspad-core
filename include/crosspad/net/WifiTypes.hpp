@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
 #include <cstdint>
 
@@ -50,7 +51,7 @@ inline uint8_t wifiRssiBars(int8_t rssi) {
     return 1;
 }
 
-/// How the four WiFi bars look (spec §3): `lit` bars solid, the rest dimmed;
+/// How the four WiFi bars look: `lit` bars solid, the rest dimmed;
 /// `firstRed` paints bar 1 red over the dimmed set after a failure.
 struct WifiBarsLook {
     bool visible;

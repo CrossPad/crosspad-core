@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 #include "crosspad/protocol/Stm32MessageHandler.hpp"
 #include "crosspad/status/CrosspadStatus.hpp"
 #include "crosspad/pad/PadManager.hpp"

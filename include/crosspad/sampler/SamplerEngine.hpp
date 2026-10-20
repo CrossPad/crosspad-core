@@ -474,6 +474,23 @@ public:
      */
     bool serviceIo();
 
+    /**
+     * @brief Voices still waiting for a ring after the last serviceIo() pass.
+     *
+     * A voice whose ring the pool could not give keeps asking, pass after
+     * pass, while it plays its head -- until kRingRetryFrames before the
+     * head runs out, when it is refused for good (Counters::streamRefused).
+     * That is the platform's time to grow the pool (BlockPool::reserve(), on
+     * a worker or the streaming thread), so a pool can start small and hold
+     * only the rings that are playing.
+     */
+    uint8_t ringsWaiting() const { return ringsWaiting_.load(std::memory_order_acquire); }
+
+    /// How close to the end of its head a voice still waits for a ring: the
+    /// first block has to be read before the head runs out. 4096 frames is
+    /// 93 ms at 44.1 kHz.
+    static constexpr uint32_t kRingRetryFrames = 4096;
+
     /// No streaming pass is in the voices or the audition right now. What a
     /// teardown waits for before the pool's pages go.
     bool ioIdle() const;
@@ -672,6 +689,7 @@ private:
     std::atomic<bool> overloaded_{false};
     std::atomic<uint32_t> cLoopsQueued_{0}, cLoopsLaunched_{0};
     std::atomic<uint32_t> cStreamRefused_{0}, cUnderruns_{0}, cVoicesPeak_{0}, cSilenced_{0};
+    std::atomic<uint8_t> ringsWaiting_{0};
 };
 
 } // namespace crosspad

@@ -189,3 +189,28 @@ TEST_CASE("Transport metronome is one switch no command flips", "[transport][cli
     crosspad::getPlatformServices().sequencer = nullptr;
     REQUIRE_FALSE(crosspad::transportClick());
 }
+
+TEST_CASE("A stopped holder hands the transport back home; a playing one keeps it", "[transport]") {
+    Fake pattern("PATTERN", kAll);
+    Fake song("SONG", crosspad::kTransportCanPlay | crosspad::kTransportCanStop);
+    crosspad::transportSetHome(&pattern);
+    REQUIRE(crosspad::transportTarget() == &pattern);
+
+    crosspad::transportClaim(&song);          // the Song app opens
+    crosspad::transportPlay();
+    crosspad::transportGoHome();              // left while it plays: STOP stays on the bar
+    REQUIRE(crosspad::transportTarget() == &song);
+
+    crosspad::transportStop();
+    crosspad::transportGoHome();              // stopped: the next screen records the pattern
+    REQUIRE(crosspad::transportTarget() == &pattern);
+    REQUIRE(song.stops == 1);
+    REQUIRE((crosspad::transportCaps() & crosspad::kTransportCanRecord) != 0);
+
+    crosspad::transportGoHome();              // already home: nothing changes
+    REQUIRE(crosspad::transportTarget() == &pattern);
+    REQUIRE(pattern.stops == 0);
+
+    crosspad::transportSetHome(nullptr);
+    crosspad::transportRelease(&pattern);
+}

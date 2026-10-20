@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 #include <catch2/catch_test_macros.hpp>
 #include <cstring>
 #include "crosspad/fw/HttpDate.hpp"
@@ -68,6 +69,18 @@ TEST_CASE("Semver order: pre-release below release, describe builds in between",
     CHECK(v("1.0.1") < v("v1.0.1-284-gd676096"));
     CHECK(v("v1.0.1-284-gd676096") < v("1.0.2-rc1"));
     CHECK(v("v1.3.0") == v("1.3.0"));
+}
+
+TEST_CASE("Semver orders the simulator's release tags", "[fw]") {
+    // crosspad-pc tags: v0.3.0-CR, v0.3.1-RC, v0.3.1-RC1, ...
+    CHECK(v("0.3.1-RC") < v("0.3.1-RC1"));
+    CHECK(v("0.3.1-RC1") < v("0.3.1-RC2"));
+    CHECK(v("0.3.1-RC9") < v("0.3.1-RC10"));
+    CHECK(v("0.3.1-RC10") < v("0.3.1"));
+    CHECK(v("v0.3.0-CR") < v("0.3.0"));
+    CHECK(v("0.3.0") < v("0.3.1-RC"));
+    CHECK(v("1.0.0-beta1") < v("1.0.0-rc1"));    // a different tag, not the same number
+    CHECK_FALSE(v("1.0.0-rc1") == v("1.0.0-beta1"));
 }
 
 TEST_CASE("compareVersionText puts unparseable text lowest", "[fw]") {

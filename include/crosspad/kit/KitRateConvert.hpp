@@ -7,9 +7,9 @@
  *
  * The sampler plays a file at any rate by stepping its phase, so a 48 kHz kit
  * on a 44.1 kHz engine interpolates every voice: 66-73 us a voice against
- * 18-21 at the engine's own rate (hardware, 16.10.2026) -- the difference between
- * a storm the render keeps up with and one it does not. Converting the files
- * removes that cost for good.
+ * 18-21 at the engine's own rate (measured on the board, 16.10.2026) -- the
+ * difference between a storm the render keeps up with and one it does not.
+ * Converting the files removes that cost for good.
  *
  * **Nothing the user has is ever lost on the way.** The converted files are
  * written beside the originals, in a folder of the kit named for the rate

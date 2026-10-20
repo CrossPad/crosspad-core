@@ -58,4 +58,13 @@ InstrumentPlayState& instrumentPlayState();
 /// sees a whole change rather than half of one.
 void instrumentPlayStatePublished();
 
+/// An instrument another screen chose for Pitch Play to open -- the kit
+/// browser's PITCH list. Set just before Pitch Play is opened; it takes the
+/// path as it starts, in place of the one it played last. Logical, as
+/// IInstrumentHost::requestOpen() wants it. UI thread.
+void instrumentOpenRequest(const std::string& path);
+
+/// Takes it: true once per instrumentOpenRequest().
+bool instrumentTakeOpenRequest(std::string& path);
+
 } // namespace crosspad

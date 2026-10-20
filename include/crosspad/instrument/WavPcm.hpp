@@ -17,6 +17,8 @@
  * frames that are there instead of the frames it claims.
  */
 
+#include "crosspad/audio/WavLayout.hpp"
+
 #include <cstdint>
 #include <cstdio>
 

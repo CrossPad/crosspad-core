@@ -14,18 +14,15 @@
  * @brief The pattern sequencer, as something the transport can drive.
  *
  * The first ITransportTarget, and the one the bar starts out holding: a board
- * at the launcher with nothing open still has PLAY mean "play the pattern",
- * which is what it meant on the 2000.
+ * at the launcher with nothing open still has PLAY mean "play the pattern".
  *
  * Nothing here decides anything -- the controller already owns the modes and
  * the engine owns the clock. This translates between the five SequencerState
- * values and the five the bar paints from, and it carries the four rules the
- * Sequencer screen's own PLAY/STOP/REC/DUB buttons used to carry before the
- * transport moved to the top bar. Those rules were lost for a build: the bar
- * called plain playback()/record() and a song-synced start, a counted-in
- * take, the second REC that closes a take, and stopping the song with the
- * pattern all stopped happening. They belong here, where every transport --
- * the bar, a MIDI host, a verb -- gets them, rather than in one screen.
+ * values and the five the bar paints from, and it carries the four rules of
+ * the Sequencer's PLAY/STOP/REC/DUB: a song-synced start, a counted-in take,
+ * the second REC that closes a take, and stopping the song with the pattern.
+ * They live here, where every transport -- the bar, a MIDI host, a verb --
+ * gets them, rather than in one screen.
  */
 
 namespace crosspad {
@@ -57,13 +54,19 @@ public:
     }
 
     /// Stops in place, cancels an armed take, and the song too when it is the
-    /// one running the sequencer. Stopped already, it goes back to bar one.
+    /// one running the sequencer. Stopped already, it goes back to bar one --
+    /// and so does a take it ends, recorded or armed, so PLAY plays the take
+    /// from its start rather than from where the STOP fell in the loop.
     void stop() override
     {
         if (state() == TransportState::Stopped) { seq_.rewind(); return; }
+        const SequencerMode m = seq_.getMode();
+        const bool take = m == SequencerMode::Record || m == SequencerMode::Overdub ||
+                          m == SequencerMode::OverdubWait;
         ISongEngine* se = getPlatformServices().songEngine;
         if (se && se->playing() && songSync()) se->stop();
         seq_.stop();
+        if (take) seq_.rewind();
     }
 
     /// Arms a take from a stop (counted in with PRE on), punches in while

@@ -28,20 +28,21 @@
  * route rounded the product and the sum separately, madd.s rounds once) the
  * difference is at most half an ulp of each sum.
  *
- * Which kernel runs: PIE where it is compiled in and the buffers are on 16
- * bytes, the portable one otherwise. The board measured the old loops, the
+ * Which kernel runs: the portable one here, unless the platform registered
+ * its own with setAudioKernels() -- the ESP-IDF platform registers the PIE
+ * loops for the S3, which fall back to these for a buffer not on 16 bytes.
+ * No vendor or ISA code is in core, so core and its consumers never disagree
+ * on what an inline function holds. The board measured the old loops, the
  * portable kernels and PIE against each other in the real render (16.10.2026)
- * and PIE won where it exists; that switch is gone.
+ * and PIE won where it exists.
  */
 
+#include "crosspad/audio/AudioFormatConvert.hpp"
+
+#include <algorithm>
+#include <climits>
 #include <cmath>
 #include <cstdint>
-
-#if defined(CROSSPAD_SIMD_PIE) && defined(__XTENSA__)
-#define CROSSPAD_DSP_PIE 1
-#else
-#define CROSSPAD_DSP_PIE 0
-#endif
 
 namespace crosspad::dsp {
 
@@ -59,61 +60,6 @@ inline bool quadAligned(uint32_t n, const void* a, const void* b = nullptr)
 /// Larger of two, as the reference loops pick it: @p cur unless @p v is
 /// greater -- a NaN never wins. One olt.s and one movt.s on Xtensa.
 inline float maxOf(float cur, float v) { return v > cur ? v : cur; }
-
-#if CROSSPAD_DSP_PIE
-namespace pie {
-/* Four floats, lowest address in the last operand. The memory clobber keeps
- * GCC from moving a plain load or store of the same buffer across them. */
-#define CP_LDF4(p, x0, x1, x2, x3) \
-    asm volatile("ee.ldf.128.ip %0, %1, %2, %3, %4, 16" \
-                 : "=f"(x3), "=f"(x2), "=f"(x1), "=f"(x0), "+r"(p) :: "memory")
-#define CP_STF4(p, x0, x1, x2, x3) \
-    asm volatile("ee.stf.128.ip %1, %2, %3, %4, %0, 16" \
-                 : "+r"(p) : "f"(x3), "f"(x2), "f"(x1), "f"(x0) : "memory")
-
-inline void mac(float* dst, const float* src, float g, uint32_t n)
-{
-    const float* d = dst;
-    for (uint32_t i = 0; i < n; i += 4) {
-        float s0, s1, s2, s3, d0, d1, d2, d3;
-        CP_LDF4(src, s0, s1, s2, s3);
-        CP_LDF4(d, d0, d1, d2, d3);
-        d0 += s0 * g; d1 += s1 * g; d2 += s2 * g; d3 += s3 * g;
-        CP_STF4(dst, d0, d1, d2, d3);
-    }
-}
-
-/* Four mono frames against eight interleaved ones a turn. */
-inline void macPanned(float* out, const float* mono, uint32_t frames, float gl, float gr)
-{
-    const float* o = out;
-    for (uint32_t i = 0; i < frames; i += 4) {
-        float m0, m1, m2, m3, l0, r0, l1, r1, l2, r2, l3, r3;
-        CP_LDF4(mono, m0, m1, m2, m3);
-        CP_LDF4(o, l0, r0, l1, r1);
-        CP_LDF4(o, l2, r2, l3, r3);
-        l0 += m0 * gl; r0 += m0 * gr; l1 += m1 * gl; r1 += m1 * gr;
-        l2 += m2 * gl; r2 += m2 * gr; l3 += m3 * gl; r3 += m3 * gr;
-        CP_STF4(out, l0, r0, l1, r1);
-        CP_STF4(out, l2, r2, l3, r3);
-    }
-}
-
-inline void scaleStereo(float* buf, uint32_t frames, float gl, float gr)
-{
-    const float* s = buf;
-    for (uint32_t i = 0; i < frames; i += 2) {
-        float l0, r0, l1, r1;
-        CP_LDF4(s, l0, r0, l1, r1);
-        l0 *= gl; r0 *= gr; l1 *= gl; r1 *= gr;
-        CP_STF4(buf, l0, r0, l1, r1);
-    }
-}
-
-#undef CP_LDF4
-#undef CP_STF4
-} // namespace pie
-#endif // CROSSPAD_DSP_PIE
 
 namespace fast {
 
@@ -221,13 +167,64 @@ inline void biquadStereo(float* io, uint32_t frames, const Biquad& c, float* z1,
     z1[0] = z1l; z1[1] = z1r; z2[0] = z2l; z2[1] = z2r;
 }
 
+/// float to int32 as a saturating truncation does it: toward zero, the ends
+/// of the range past it, NaN to INT32_MAX. One TRUNC.S on the S3.
+inline int truncSat(float y)
+{
+    if (y != y || y >= 2147483648.0f) return INT32_MAX;
+    if (y <= -2147483648.0f) return INT32_MIN;
+    return static_cast<int>(y);
+}
+
+/// To the int16 range. One CLAMPS on the S3.
+inline int clampS16(int t) { return std::min(std::max(t, -32768), 32767); }
+
+/**
+ * @brief floatToInt16() with the two per-sample steps a platform may do in one
+ *        instruction each: @p truncSat and @p clampS16 behave as the portable
+ *        functions of those names. The kernel and the platform's S3 version
+ *        are this one loop.
+ *
+ * A sample is a multiply, the truncation, the clamp, a max for the -32767 the
+ * reference stops at (the clamp goes to -32768), and the store. A NaN has no
+ * cheap per-sample answer -- a saturating truncation makes it INT32_MAX, as it
+ * does an overflow -- so the block's sum asks once: a NaN in makes it NaN, and
+ * that block, which the render never produces, goes through the reference.
+ * Eight a turn, two sums, is what the FPU's latency wants.
+ */
+template <typename TruncSat, typename ClampS16>
+inline void floatToInt16With(const float* src, int16_t* dst, uint32_t n,
+                             TruncSat truncSat, ClampS16 clampS16)
+{
+    constexpr uint32_t kLanes = 8;
+    const float* s = src;
+    int16_t* d = dst;
+    float sumEven = 0.0f, sumOdd = 0.0f;
+    for (uint32_t k = n / kLanes; k; --k, s += kLanes, d += kLanes) {
+#if defined(__GNUC__) && !defined(__clang__)
+#pragma GCC unroll 8
+#endif
+        for (uint32_t j = 0; j < kLanes; ++j) {
+            const float x = s[j];
+            (j & 1 ? sumOdd : sumEven) += x;
+            d[j] = static_cast<int16_t>(std::max(clampS16(truncSat(x * kFloatScaleToInt16)),
+                                                 -static_cast<int>(kFloatScaleToInt16)));
+        }
+    }
+    const float sum = sumEven + sumOdd;
+    const uint32_t body = n - n % kLanes;
+    if (sum != sum) crosspad::floatToInt16(src, dst, body);
+    crosspad::floatToInt16(src + body, dst + body, n - body);
+}
+
 } // namespace fast
 
 // ── Dispatch ─────────────────────────────────────────────────────────────────
 //
-// Out of line (src/dsp/AudioKernels.cpp, built -O2 on the board): one copy of
-// each kernel in the image, not three inlined into every caller -- the image
-// is PSRAM too. A call is a few cycles against a few hundred for the block.
+// Out of line (src/dsp/AudioKernels.cpp): one copy of each kernel in the
+// image, not three inlined into every caller -- the image is PSRAM too. A
+// call is one relaxed load and an indirect call, a few cycles against a few
+// hundred for the block.
 
 /// dst[i] += src[i] * g over @p n samples. @p dst and @p src must not overlap.
 void mac(float* dst, const float* src, float g, uint32_t n);
@@ -259,5 +256,23 @@ void biquadStereo(float* io, uint32_t frames, const Biquad& c, float* z1, float*
 /// crosspad::floatToInt16: clamp to [-1, 1], times 32767, truncate; NaN is 0.
 /// @p n counts samples, not frames.
 void floatToInt16(const float* src, int16_t* dst, uint32_t n);
+
+/**
+ * @brief A platform's versions of the dispatched kernels. Each must give the
+ *        results the portable one documents; a null entry keeps the portable
+ *        one. clampPeakStereo() is peakStereo() plus the portable clamp.
+ */
+struct AudioKernelTable {
+    void (*mac)(float* dst, const float* src, float g, uint32_t n) = nullptr;
+    void (*macPanned)(float* out, const float* mono, uint32_t frames, float gl, float gr) = nullptr;
+    void (*scaleStereo)(float* buf, uint32_t frames, float gl, float gr) = nullptr;
+    void (*peakStereo)(const float* buf, uint32_t frames, float& pL, float& pR) = nullptr;
+    void (*biquadStereo)(float* io, uint32_t frames, const Biquad& c, float* z1, float* z2) = nullptr;
+    void (*floatToInt16)(const float* src, int16_t* dst, uint32_t n) = nullptr;
+};
+
+/// Register the platform's kernels, before audio starts; the table is copied.
+/// nullptr puts every portable kernel back.
+void setAudioKernels(const AudioKernelTable* table);
 
 } // namespace crosspad::dsp

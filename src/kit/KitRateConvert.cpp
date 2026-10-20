@@ -4,6 +4,7 @@
 #include "crosspad/dsp/FftResampler.hpp"
 #include "crosspad/kit/KitInfo.hpp"
 #include "crosspad/kit/KitPathUtils.hpp"
+#include "crosspad/platform/IFileSystem.hpp"
 #include "crosspad/sampler/SampleStore.hpp"
 #include "KitJsonParser.hpp"
 #include "../util/JsonStdio.hpp"
@@ -14,15 +15,6 @@
 #include <cstdlib>
 #include <cstring>
 #include <new>
-
-#include <sys/stat.h>
-
-#ifdef _WIN32
-#include <filesystem>
-#else
-#include <dirent.h>
-#include <unistd.h>
-#endif
 
 namespace crosspad {
 
@@ -68,20 +60,17 @@ uint32_t scaleU32At(uint8_t* p, uint32_t inRate, uint32_t outRate) {
  * SampleStore::kMaxPath, and a buffer is no allocation to fail or to come
  * out of internal RAM. */
 constexpr size_t kPath = 192;
+/// Folders deep the tidy looks for kits; past it a kit may be missed, which
+/// is doubt: nothing is removed.
+constexpr int kMaxKitDepth = 16;
 
-bool pathExists(const char* p) {
-    struct stat st;
-    return stat(p, &st) == 0;
-}
+bool pathExists(const char* p) { return getFileSystem().exists(p); }
 
-bool isDirPath(const char* p) {
-    struct stat st;
-    return stat(p, &st) == 0 && S_ISDIR(st.st_mode);
-}
+bool isDirPath(const char* p) { return getFileSystem().isDir(p); }
 
 uint32_t fileSize(const char* p) {
-    struct stat st;
-    return stat(p, &st) == 0 ? static_cast<uint32_t>(st.st_size) : 0;
+    FileStat st;
+    return getFileSystem().stat(p, &st) == FsStat::Found ? static_cast<uint32_t>(st.size) : 0;
 }
 
 const char* baseOf(const char* p) {
@@ -309,14 +298,7 @@ bool hasLine(const std::string& text, const char* line) {
 }
 
 void removeEmptyDir(const char* path) {
-#ifdef _WIN32
-    std::error_code ec;
-    if (std::filesystem::is_empty(std::filesystem::u8path(path), ec)) {
-        std::filesystem::remove(std::filesystem::u8path(path), ec);
-    }
-#else
-    rmdir(path);   // fails, harmlessly, while anything is in it
-#endif
+    getFileSystem().removeDir(path);   // fails, harmlessly, while anything is in it
 }
 
 /// The JSON of the kit in folder @p dir, as the kit scan finds it
@@ -340,40 +322,19 @@ bool kitJsonIn(const char* dir, const char* folder, char* json, bool& doubt) {
 /// been missed.
 template <typename Fn>
 void forEachKitJson(char* dir, Fn& fn, bool& doubt, int depth = 0) {
-    if (depth > 16) { doubt = true; return; }
-#ifdef _WIN32
-    std::error_code ec;
-    const std::string here = dir;
-    std::filesystem::directory_iterator it(std::filesystem::u8path(here), ec);
-    if (ec) { doubt = true; return; }
-    for (const auto& e : it) {
-        const std::string name = e.path().filename().u8string();
-        if (name.empty() || name[0] == '.' || !e.is_directory(ec)) continue;
-        if (here.size() + 1 + name.size() >= kPath) { doubt = true; continue; }
-        std::snprintf(dir, kPath, "%s/%s", here.c_str(), name.c_str());
-        char json[kPath];
-        if (kitJsonIn(dir, name.c_str(), json, doubt)) fn(json);
-        else forEachKitJson(dir, fn, doubt, depth + 1);
-        std::snprintf(dir, kPath, "%s", here.c_str());
-    }
-#else
-    DIR* d = opendir(dir);
-    if (!d) { doubt = true; return; }
+    if (depth > kMaxKitDepth) { doubt = true; return; }
     const size_t len = std::strlen(dir);
-    while (dirent* e = readdir(d)) {
-        if (e->d_name[0] == '.') continue;
-        if (len + 1 + std::strlen(e->d_name) >= kPath) { doubt = true; continue; }
+    const bool listed = getFileSystem().forEach(dir, [&](const char* name, bool isDir) {
+        if (name[0] == '.' || !isDir) return;
+        if (len + 1 + std::strlen(name) >= kPath) { doubt = true; return; }
         dir[len] = '/';
-        std::memcpy(dir + len + 1, e->d_name, std::strlen(e->d_name) + 1);
-        if (isDirPath(dir)) {
-            char json[kPath];
-            if (kitJsonIn(dir, e->d_name, json, doubt)) fn(json);
-            else forEachKitJson(dir, fn, doubt, depth + 1);
-        }
+        std::memcpy(dir + len + 1, name, std::strlen(name) + 1);
+        char json[kPath];
+        if (kitJsonIn(dir, name, json, doubt)) fn(json);
+        else forEachKitJson(dir, fn, doubt, depth + 1);
         dir[len] = '\0';
-    }
-    closedir(d);
-#endif
+    });
+    if (!listed) doubt = true;
 }
 
 /// FftResamplerStream takes plain function pointers; the conversion running
@@ -489,14 +450,7 @@ uint64_t IKitConvertHost::freeBytes(const char* fsDir) {
     return UINT64_MAX;
 }
 
-bool IKitConvertHost::makeDir(const char* fsPath) {
-#ifdef _WIN32
-    std::error_code ec;
-    return std::filesystem::create_directory(std::filesystem::u8path(fsPath), ec);
-#else
-    return mkdir(fsPath, 0755) == 0;
-#endif
-}
+bool IKitConvertHost::makeDir(const char* fsPath) { return getFileSystem().makeDir(fsPath); }
 
 // ── The converter ───────────────────────────────────────────────────────────
 

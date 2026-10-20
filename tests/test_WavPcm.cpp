@@ -232,3 +232,120 @@ TEST_CASE("WavPcmReader: a rejected file still reports what was parsed",
 
     std::filesystem::remove(p);
 }
+
+namespace {
+
+struct OpenFile {
+    FILE* f;
+    explicit OpenFile(const std::string& p) : f(std::fopen(p.c_str(), "rb")) { REQUIRE(f != nullptr); }
+    ~OpenFile() { std::fclose(f); }
+};
+
+/// A WAVE_FORMAT_EXTENSIBLE fmt chunk (40 bytes) for @p bits-bit samples in
+/// containers of @p containerBytes bytes.
+void putExtensibleFmt(std::vector<uint8_t>& body, uint16_t channels, uint16_t bits,
+                      uint16_t containerBytes, uint32_t rate) {
+    const uint16_t blockAlign = static_cast<uint16_t>(channels * containerBytes);
+    test::putTag(body, "fmt ");
+    test::putU32(body, 40);
+    test::putU16(body, 0xFFFE);
+    test::putU16(body, channels);
+    test::putU32(body, rate);
+    test::putU32(body, rate * blockAlign);
+    test::putU16(body, blockAlign);
+    test::putU16(body, static_cast<uint16_t>(containerBytes * 8));
+    test::putU16(body, 22);                       // cbSize
+    test::putU16(body, bits);                     // valid bits
+    test::putU32(body, 3);                        // channel mask
+    for (int i = 0; i < 16; ++i) body.push_back(static_cast<uint8_t>(i));   // subformat GUID
+}
+
+} // namespace
+
+TEST_CASE("wavReadLayout: extensible fmt, odd LIST chunk, 24-bit frames", "[instrument][wav]") {
+    std::vector<uint8_t> body;
+    putExtensibleFmt(body, 2, 24, 3, 48000);
+    test::putTag(body, "LIST");
+    test::putU32(body, 3);                        // odd: one pad byte follows
+    body.insert(body.end(), {'a', 'b', 'c', 0});
+    test::putTag(body, "data");
+    test::putU32(body, 6 * 10);
+    body.insert(body.end(), 6 * 10, 0x11);
+    const std::string p = test::tempPath("cp_wav_layout_ext.wav");
+    test::writeRiff(p, body);
+
+    OpenFile f(p);
+    WavLayout l;
+    REQUIRE(wavReadLayout(f.f, l, false));
+    CHECK(l.format == 0xFFFE);
+    CHECK(l.channels == 2);
+    CHECK(l.rate == 48000);
+    CHECK(l.blockAlign == 6);
+    CHECK(l.bits == 24);
+    CHECK(l.dataOffset == 12 + (8 + 40) + (8 + 4) + 8);
+    CHECK(l.dataBytes == 60);
+
+    std::filesystem::remove(p);
+}
+
+TEST_CASE("wavReadLayout: a data chunk ahead of the fmt chunk", "[instrument][wav]") {
+    std::vector<uint8_t> body;
+    test::putDataChunk(body, std::vector<int16_t>(7, 3));   // 14 bytes
+    test::putFmtChunk(body, 1, 16, 22050);
+    const std::string p = test::tempPath("cp_wav_layout_order.wav");
+    test::writeRiff(p, body);
+
+    OpenFile f(p);
+    WavLayout l;
+    REQUIRE(wavReadLayout(f.f, l, true));
+    CHECK(l.dataOffset == 12 + 8);
+    CHECK(l.dataBytes == 14);
+    CHECK(l.rate == 22050);
+    CHECK(l.blockAlign == 2);
+
+    WavLayout engine;                            // the engine frames a data chunk only after its fmt
+    CHECK_FALSE(engine.parse(f.f));
+
+    std::filesystem::remove(p);
+}
+
+TEST_CASE("wavReadLayout: declared sizes are trusted unless clamped", "[instrument][wav]") {
+    std::vector<int16_t> s(100, 5);
+    const std::string p = writeWavLyingData("cp_wav_layout_lie.wav", 1000, s);
+
+    OpenFile f(p);
+    WavLayout l;
+    REQUIRE(wavReadLayout(f.f, l, false));
+    CHECK(l.dataBytes == 1000);
+    REQUIRE(wavReadLayout(f.f, l, true));
+    CHECK(l.dataBytes == 200);
+
+    std::filesystem::remove(p);
+}
+
+TEST_CASE("wavReadLayout: refuses what is not a WAV, keeps what it parsed", "[instrument][wav]") {
+    WavLayout l;
+    CHECK_FALSE(wavReadLayout(nullptr, l, true));
+
+    std::vector<uint8_t> body;
+    test::putFmtChunk(body, 2, 16, 44100);       // no data chunk
+    const std::string p = test::tempPath("cp_wav_layout_nodata.wav");
+    test::writeRiff(p, body);
+    {
+        OpenFile f(p);
+        CHECK_FALSE(wavReadLayout(f.f, l, false));
+        CHECK(l.channels == 2);
+        CHECK(l.rate == 44100);
+    }
+
+    FILE* w = std::fopen(p.c_str(), "wb");
+    REQUIRE(w != nullptr);
+    std::fputs("RIFX....WAVEfmt ", w);
+    std::fclose(w);
+    {
+        OpenFile f(p);
+        CHECK_FALSE(wavReadLayout(f.f, l, false));
+        CHECK_FALSE(wavReadLayout(f.f, l, true));
+    }
+    std::filesystem::remove(p);
+}
