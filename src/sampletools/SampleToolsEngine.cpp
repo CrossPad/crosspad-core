@@ -758,7 +758,7 @@ struct SampleToolsEngine::Impl {
 
     void worker() {
         while (!quit_.load()) {
-            const bool busy = recArmed_.load() || prev_.load() != Prev::Idle;
+            const bool busy = recArmed_.load() || rBorrowed_.load() || takeCut_ || prev_.load() != Prev::Idle;
             p.waitWake(busy ? kIdlePollMs : UINT32_MAX);
             if (quit_.load()) break;
             service();
@@ -774,10 +774,15 @@ struct SampleToolsEngine::Impl {
          * on. */
         if (reclaimReq_.load()) {
             if (pBorrowed_.load()) endPreview();
+            /* A take on lent memory ends here, written out: the kit is
+             * changing under the Recorder, and what was played is kept. */
+            if (rBorrowed_.load()) drainTake(true);
             reclaimReq_.store(false);
         }
         if (recStartReq_.exchange(false)) beginTake();
-        if (recArmed_.load()) drainTake(false);
+        /* A lent ring the reclaim took (takeCut_, or rBorrowed_ with the render
+         * already stopped) still ends its take here: the file is closed and kept. */
+        if (recArmed_.load() || rBorrowed_.load() || takeCut_) drainTake(false);
         if (prevStopReq_.exchange(false)) endPreview();
         const uint32_t gen = prevGen_.load();
         if (gen != prevDone_.load()) {
@@ -810,10 +815,16 @@ struct SampleToolsEngine::Impl {
         const std::string path = next_free(recDir(), "rec");
         if (path.empty()) { failTake("no free name"); return; }
         if (!writer_.open(path.c_str(), sampleRate_, 2)) { failTake("card write failed"); return; }
-        /* Never lent: a take outlives kit changes, and the memory a platform
-         * lends it may want back at any of them -- the reclaim would have to
-         * end the recording. */
-        if (!rRing_.alloc(kRecRingFrames, kRecMinFrames, false)) {
+        /* Lent memory first: with a kit loaded the general heap keeps too
+         * little above the UI's reserve for any ring. A reclaim (another kit)
+         * then ends the take through reclaimLentRing(). */
+        bool ok = false;
+        if (ringEnter() || ringEnter()) {
+            ok = rRing_.alloc(kRecRingFrames, kRecMinFrames, true);
+            rBorrowed_.store(ok && rRing_.borrowed());
+            ringLeave();
+        }
+        if (!ok) {
             writer_.close();
             fsx::remove(path);
             failTake("not enough memory");
@@ -859,7 +870,7 @@ struct SampleToolsEngine::Impl {
         if (syncTake_ && !played) {
             recArmed_.store(false, std::memory_order_release);
             p.sleepMs(kRtLeaveMs);    // the render may be inside take()
-            rRing_.release();
+            releaseTakeRing();
             writer_.close();
             fsx::remove(path);
             failTake("the song cannot play: no blocks, or a bounce running");
@@ -877,9 +888,25 @@ struct SampleToolsEngine::Impl {
         if (ISongEngine* se = getPlatformServices().songEngine) se->stop();
     }
 
+    /// Up to @p n frames of the take into io_, the ring held only for the
+    /// copy; 0 once a reclaim took a lent ring (the take is cut there).
+    uint32_t popTake(uint32_t n) {
+        if (!ringEnter()) return 0;
+        const uint32_t got = rRing_.pop(io_, n);
+        ringLeave();
+        return got;
+    }
+
+    void releaseTakeRing() {
+        if (!ringEnter()) return;             // lost to a reclaim: already forgotten
+        rRing_.release();
+        rBorrowed_.store(false);
+        ringLeave();
+    }
+
     void drop(uint32_t n) {
         while (n) {
-            const uint32_t got = rRing_.pop(io_, std::min(kChunk, n));
+            const uint32_t got = popTake(std::min(kChunk, n));
             if (!got) break;
             dropped_ += got;
             n -= got;
@@ -937,13 +964,14 @@ struct SampleToolsEngine::Impl {
         const bool beforeZero = syncTake_ && (skip_.load() == UINT32_MAX || dropped_ < skip_.load());
         for (;;) {
             if (syncError || beforeZero) break;
-            const uint32_t n = rRing_.pop(io_, kChunk);
+            const uint32_t n = popTake(kChunk);
             if (!n) break;
             if (!writer_.write(io_, n)) { overflowWrite_ = true; break; }
             if (!stop && !overflow) break;     // one chunk a pass while the take runs
         }
-        if (!stop && !overflow && !overflowWrite_ && !syncError) return;
-        rRing_.release();
+        if (!stop && !overflow && !overflowWrite_ && !syncError && !takeCut_) return;
+        releaseTakeRing();
+        takeCut_ = false;
         const uint32_t frames = writer_.frames();
         const bool closed = writer_.close();
         std::string file;
@@ -1037,13 +1065,14 @@ struct SampleToolsEngine::Impl {
         }
     }
 
-    /* Who has the preview ring's memory: 0 nobody, 1 this worker (a push, an
-     * alloc, a release -- microseconds, never across a card access), 2 lost:
-     * reclaimLentRing() gave up waiting for the worker and the platform took
-     * its memory back under a lent ring. The worker then forgets it rather
-     * than writes or frees it. 3: reclaimLentRing() is reading whether the
-     * ring is lent -- a moment; the worker waits it out. False: the ring was
-     * lost, and is now forgotten and empty. */
+    /* Who has the lent rings' memory -- the preview's and the take's: 0
+     * nobody, 1 this worker (a push, a pop, an alloc, a release --
+     * microseconds, never across a card access), 2 lost: reclaimLentRing()
+     * gave up waiting for the worker and the platform took its memory back
+     * under a lent ring. The worker then forgets them rather than writes or
+     * frees them. 3: reclaimLentRing() is reading whether a ring is lent -- a
+     * moment; the worker waits it out. False: a ring was lost, and is now
+     * forgotten and empty. */
     static constexpr uint8_t kRingFree = 0, kRingWorker = 1, kRingLost = 2, kRingLooked = 3;
     bool ringEnter() {
         uint8_t e = kRingFree;
@@ -1056,8 +1085,15 @@ struct SampleToolsEngine::Impl {
         pRing_.forget();
         pBorrowed_.store(false);
         prev_.store(Prev::Idle, std::memory_order_release);
+        if (rBorrowed_.load()) {
+            /* The take stops where its ring went; what reached the card stays. */
+            rRing_.forget();
+            rBorrowed_.store(false);
+            recArmed_.store(false, std::memory_order_release);
+            takeCut_ = true;
+        }
         ringUse_.store(kRingFree);
-        logf(true, "preview ring was reclaimed under it");
+        logf(true, "a lent ring was reclaimed under it");
         return false;
     }
     void ringLeave() { ringUse_.store(kRingFree); }
@@ -1080,25 +1116,26 @@ struct SampleToolsEngine::Impl {
             logf(true, "reclaim: could not look at the preview ring for 1 s");
             return;
         }
-        const bool lent = pBorrowed_.load();
+        const bool lent = pBorrowed_.load() || rBorrowed_.load();
         ringUse_.store(kRingFree);
         if (!lent) return;
         reclaimReq_.store(true);
         p.wake();
         for (int i = 0; i < kAnswerTries && reclaimReq_.load(); ++i) p.sleepMs(kAnswerPollMs);
-        if (!reclaimReq_.load() || !pBorrowed_.load()) return;
+        if (!reclaimReq_.load() || !(pBorrowed_.load() || rBorrowed_.load())) return;
         prev_.store(Prev::Idle, std::memory_order_release);
-        p.sleepMs(kRtLeaveMs);        // the render may be inside mix()
+        if (rBorrowed_.load()) recArmed_.store(false, std::memory_order_release);
+        p.sleepMs(kRtLeaveMs);        // the render may be inside mix() or take()
         for (int i = 0; i < kDropTries; ++i) {
             uint8_t e = kRingFree;
             if (ringUse_.compare_exchange_strong(e, kRingLost)) {
-                if (!pBorrowed_.load()) ringUse_.store(kRingFree);   // given back meanwhile
-                logf(true, "reclaim: worker busy on the card, preview ring dropped");
+                if (!pBorrowed_.load() && !rBorrowed_.load()) ringUse_.store(kRingFree);   // given back meanwhile
+                logf(true, "reclaim: worker busy on the card, lent ring dropped");
                 return;
             }
             p.sleepMs(1);
         }
-        logf(true, "reclaim: preview ring still in use after 1 s");
+        logf(true, "reclaim: lent ring still in use after 1 s");
     }
 
     // ── Jobs ──────────────────────────────────────────────────────────────
@@ -1553,6 +1590,8 @@ struct SampleToolsEngine::Impl {
     SampleFx              prevFx_;
     FrameRing             pRing_;
     std::atomic<bool>     pBorrowed_{false};                  // pRing_.borrowed, for reclaimLentRing()
+    std::atomic<bool>     rBorrowed_{false};                  // rRing_.borrowed, for reclaimLentRing()
+    bool                  takeCut_ = false;                   // worker: a reclaim took the take's ring
     std::atomic<uint8_t>  ringUse_{kRingFree};                // see ringEnter()
     std::atomic<bool>     reclaimReq_{false};                 // reclaimLentRing() asks the worker
     ClipReader            pReader_;                           // worker

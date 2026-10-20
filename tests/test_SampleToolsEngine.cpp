@@ -508,6 +508,32 @@ TEST_CASE("SampleToolsEngine auditions a region on its channel", "[sampletools]"
     for (uint32_t i = 0; i < 1000; ++i) REQUIRE(heard[at + i * 2] == (float)(int16_t)(1000 + i) / 32768.0f);
 }
 
+TEST_CASE("SampleToolsEngine records on lent memory and ends the take when it is reclaimed", "[sampletools]") {
+    Rig r;
+    r.platform.lend = true;                         // a kit holds the platform's memory
+    REQUIRE(r.tools->selectInput(RecInput::Line));
+    REQUIRE(r.tools->startRecording());
+    REQUIRE(waitFor([&] { return !r.tools->recStatus().file.empty(); }));
+    REQUIRE(r.platform.lentOut.load() > 0);
+    std::this_thread::sleep_for(std::chrono::milliseconds(50));   // armed just after the file is named
+    std::vector<int16_t> line(kBlock * 2, 777);
+    constexpr int kBlocks = 20;
+    for (int b = 0; b < kBlocks; ++b) {
+        r.tools->rtBlockBegin();
+        r.tools->rtInput(1, line.data(), kBlock);
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    const int freedBefore = r.platform.freed.load();
+    r.tools->reclaimLentRing();                     // another kit: the memory goes back
+    REQUIRE(waitFor([&] { return !r.tools->recStatus().recording; }));
+    CHECK(r.platform.freed.load() > freedBefore);
+    const RecStatus st = r.tools->recStatus();
+    CHECK(st.error.empty());
+    CHECK(st.frames == kBlocks * kBlock);           // written out, ending at the reclaim
+    REQUIRE(fs::exists(st.file));
+    CHECK(readWavData(st.file).size() == kBlocks * kBlock * 2);
+}
+
 TEST_CASE("SampleToolsEngine gives a lent preview ring back", "[sampletools]") {
     Rig r;
     r.platform.lend = true;
