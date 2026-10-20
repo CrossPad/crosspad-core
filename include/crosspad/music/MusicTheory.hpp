@@ -61,6 +61,11 @@ struct PlaySettings {
     uint8_t padChordNotes[16][6];  // up to 6 chord notes per pad (0xFF = unused)
     uint8_t padChordCount[16];     // how many chord notes per pad
     uint8_t padChordTypeIdx[16];   // which chord type index was used per pad
+    /* Pads that make no sound at all, one bit a pad: a chord list
+     * (crosspad/music/ChordDesigner.hpp) shorter than sixteen leaves the rest
+     * silent rather than playing their own notes. rebuildPadMap() clears it;
+     * whoever puts chords on the pads afterwards sets it. */
+    uint16_t padSilent;
 };
 
 // ============================================================================

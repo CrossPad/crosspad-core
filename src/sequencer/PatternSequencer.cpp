@@ -240,9 +240,9 @@ uint32_t PatternSequencer::unswung(uint32_t pos) const
     return pos;
 }
 
-void PatternSequencer::fireWindow(uint32_t from, uint32_t to)
+void PatternSequencer::fireWindow(uint32_t from, uint32_t to, uint8_t route)
 {
-    if ((!sink_ && !performedSink_) || from >= to) return;
+    if (!hasSink() || from >= to) return;
     for (uint16_t i = 0; i < counts_[activeSeq_]; ++i) {
         const Event& e = events_[activeSeq_][i];
         if (e.fresh) continue;
@@ -250,55 +250,59 @@ void PatternSequencer::fireWindow(uint32_t from, uint32_t to)
          * and the swing is applied on the way out. */
         const uint32_t at = swung(e.pos);
         if (at < from || at >= to) continue;
-        strike(e.pad, e.vel, e.perf, e.len, to - at);
+        strike(route, e.pad, e.vel, e.perf, e.len, to - at);
     }
 }
 
-void PatternSequencer::strike(uint8_t pad, uint8_t vel, uint8_t perf, uint32_t len, uint32_t gone)
+void PatternSequencer::strike(uint8_t route, uint8_t pad, uint8_t vel, uint8_t perf, uint32_t len,
+                              uint32_t gone)
 {
-    const uint16_t bit = pad < 16 ? (uint16_t)(1u << pad) : 0;
+    /* Held per route: pad 3 of one kit holding says nothing about pad 3 of
+     * the other. */
+    const uint8_t slot = (uint8_t)(route * 16 + pad);
+    const uint32_t bit = pad < 16 && route < kRoutes ? (1u << slot) : 0;
     /* A pad a note still holds lets go before it is struck again. */
     if (held_ & bit) {
-        emit(pad, 0, false);
-        held_ &= (uint16_t)~bit;
+        emit(route, pad, 0, false);
+        held_ &= ~bit;
     }
-    emit(pad, vel, true, perf);
+    emit(route, pad, vel, true, perf);
     if (!bit) return;
     if (len > gone) {
         /* Held for as long as it was played: a chord, a sample on HOLD.
          * Counted from where it sounds: the rest of this window is already
          * part of its length, the next poll's elapsed is not. */
         held_ |= bit;
-        relLeft_[pad] = len - gone;
-        pendingRelease_ &= (uint16_t)~bit;
+        relLeft_[slot] = len - gone;
+        pendingRelease_ &= ~bit;
     } else {
         pendingRelease_ |= bit;   // a hit, or over inside this poll
     }
 }
 
 void PatternSequencer::fireNotes(const std::vector<SongNote>& notes, uint32_t loop,
-                                 uint32_t from, uint32_t to)
+                                 uint32_t from, uint32_t to, uint8_t route)
 {
-    if ((!sink_ && !performedSink_) || from >= to) return;
+    if (!hasSink() || from >= to) return;
     for (const SongNote& n : notes) {
         const uint32_t at = swung(n.pos, loop);
         if (at < from || at >= to) continue;
-        strike(n.pad, n.vel, n.perf, n.len, to - at);
+        strike(route, n.pad, n.vel, n.perf, n.len, to - at);
     }
 }
 
 void PatternSequencer::releaseHeld(uint32_t samples)
 {
     if (!held_) return;
-    for (uint8_t pad = 0; pad < 16; ++pad) {
-        const uint16_t bit = (uint16_t)(1u << pad);
+    for (uint8_t slot = 0; slot < kRoutes * 16; ++slot) {
+        const uint32_t bit = 1u << slot;
         if (!(held_ & bit)) continue;
-        if (relLeft_[pad] > samples) {
-            relLeft_[pad] -= samples;
+        if (relLeft_[slot] > samples) {
+            relLeft_[slot] -= samples;
             continue;
         }
-        emit(pad, 0, false);
-        held_ &= (uint16_t)~bit;
+        emit(slot / 16, slot % 16, 0, false);
+        held_ &= ~bit;
     }
 }
 
@@ -317,17 +321,24 @@ void PatternSequencer::eraseWindow(uint32_t from, uint32_t to)
     markDirty();
 }
 
-void PatternSequencer::emit(uint8_t pad, uint8_t vel, bool on, uint8_t perf)
+void PatternSequencer::emit(uint8_t route, uint8_t pad, uint8_t vel, bool on, uint8_t perf)
 {
     if (presses_) {
-        if (pressCount_ < kMaxPresses) presses_[pressCount_++] = { pad, vel, on, perf };
+        if (pressCount_ < kMaxPresses) presses_[pressCount_++] = { pad, vel, on, perf, route };
     } else {
-        sinkPress(pad, vel, on, perf);
+        sinkPress(route, pad, vel, on, perf);
     }
 }
 
-void PatternSequencer::sinkPress(uint8_t pad, uint8_t vel, bool on, uint8_t perf)
+void PatternSequencer::sinkPress(uint8_t route, uint8_t pad, uint8_t vel, bool on, uint8_t perf)
 {
+    if (routedSink_) {
+        routedSink_(sinkCtx_, route, pad, vel, on, PadPerformance::unpack(perf));
+        return;
+    }
+    /* A sink that knows only the pads plays route 0; another kit's notes
+     * have nothing here to sound through. */
+    if (route) return;
     if (performedSink_)  performedSink_(sinkCtx_, pad, vel, on, PadPerformance::unpack(perf));
     else if (sink_)      sink_(sinkCtx_, pad, vel, on);
 }
@@ -345,7 +356,8 @@ void PatternSequencer::poll()
         n = pressCount_;
         presses_ = nullptr;
     }
-    for (uint16_t i = 0; i < n; ++i) sinkPress(presses[i].pad, presses[i].vel, presses[i].on, presses[i].perf);
+    for (uint16_t i = 0; i < n; ++i)
+        sinkPress(presses[i].route, presses[i].pad, presses[i].vel, presses[i].on, presses[i].perf);
 }
 
 void PatternSequencer::pollLocked()
@@ -355,9 +367,9 @@ void PatternSequencer::pollLocked()
      * pressed is not a silent bug: the LED stays lit and every "is this pad
      * pressed" reader answers yes for good -- which is what stopped the
      * sampler's waveform settling on one pad. */
-    if (pendingRelease_ && (sink_ || performedSink_)) {
-        for (uint8_t pad = 0; pad < 16; ++pad) {
-            if (pendingRelease_ & (1u << pad)) emit(pad, 0, false);
+    if (pendingRelease_ && hasSink()) {
+        for (uint8_t slot = 0; slot < kRoutes * 16; ++slot) {
+            if (pendingRelease_ & (1u << slot)) emit(slot / 16, slot % 16, 0, false);
         }
         pendingRelease_ = 0;
     }
@@ -398,10 +410,10 @@ void PatternSequencer::pollLocked()
     if (mapOn_) fireSong(elapsed, loop);
     if (now >= lastPos_) {
         if (replacing) eraseWindow(lastPos_, now);
-        if (!mapOn_) fireWindow(lastPos_, now);
+        if (!mapOn_) fireWindow(lastPos_, now, sceneRoute());
     } else {
         if (replacing) eraseWindow(lastPos_, loop);
-        if (!mapOn_) fireWindow(lastPos_, loop);
+        if (!mapOn_) fireWindow(lastPos_, loop, sceneRoute());
         /* The loop has come round: what was recorded during the pass just
          * ended is now part of the pattern and plays from here on. */
         for (uint8_t s = 0; s < kNumSequences; ++s)
@@ -419,7 +431,7 @@ void PatternSequencer::pollLocked()
             applyScene(pendingSeq_);
         }
 
-        if (!mapOn_) fireWindow(0, now);
+        if (!mapOn_) fireWindow(0, now, sceneRoute());
 
         if (!loop_) stop();
     }
@@ -448,14 +460,14 @@ void PatternSequencer::fireSong(uint32_t samples, uint32_t loop)
 {
     if (!loop) return;
     uint32_t pos = mapPos_;
-    const bool muted = mapMuted_.load(std::memory_order_relaxed);
+    const uint8_t muted = mapMuted_.load(std::memory_order_relaxed);
     while (samples) {
         /* Up to the song's wrap, then on from where it wraps to. */
         const bool wraps = mapWrapFrom_ > pos;
         const uint32_t step = wraps ? std::min(samples, mapWrapFrom_ - pos) : samples;
         const uint32_t end = pos + step;
         for (const SongSpan& s : map_) {
-            if (muted) break;
+            if (muted & (1u << s.route)) continue;
             const uint32_t x = std::max(pos, s.a), y = std::min(end, s.b);
             if (x >= y) continue;
             /* A block's own notes go round their own length; the scene's
@@ -466,8 +478,8 @@ void PatternSequencer::fireSong(uint32_t samples, uint32_t loop)
             uint32_t left = y - x;
             while (left) {
                 const uint32_t run = std::min(left, len - at);
-                if (s.notes) fireNotes(*s.notes, len, at, at + run);
-                else         fireWindow(at, at + run);
+                if (s.notes) fireNotes(*s.notes, len, at, at + run, s.route);
+                else         fireWindow(at, at + run, s.route);
                 left -= run;
                 at = 0;
             }
@@ -973,7 +985,7 @@ void PatternSequencer::stop()
      * scene lock, and released after it, like poll() does -- a release lost
      * to a pass in flight leaves the pad held for good. Inside poll() (a song
      * that ends) the releases join the pass's own. */
-    uint16_t held = 0;
+    uint32_t held = 0;
     {
         std::lock_guard<std::recursive_mutex> lock(editMutex_);
         /* A stopped song is over; the next plain Play plays the scene, and
@@ -992,8 +1004,8 @@ void PatternSequencer::stop()
         pendingRelease_ = 0;
         held_ = 0;
         if (presses_) {
-            for (uint8_t pad = 0; pad < 16; ++pad) {
-                if (held & (1u << pad)) emit(pad, 0, false);
+            for (uint8_t slot = 0; slot < kRoutes * 16; ++slot) {
+                if (held & (1u << slot)) emit(slot / 16, slot % 16, 0, false);
             }
             held = 0;
         }
@@ -1002,8 +1014,8 @@ void PatternSequencer::stop()
     }
     /* Whatever is still held goes down with the transport, or it stays held
      * until the next pass that never comes. */
-    for (uint8_t pad = 0; pad < 16; ++pad) {
-        if (held & (1u << pad)) sinkPress(pad, 0, false, 0);
+    for (uint8_t slot = 0; slot < kRoutes * 16; ++slot) {
+        if (held & (1u << slot)) sinkPress(slot / 16, slot % 16, 0, false, 0);
     }
 }
 

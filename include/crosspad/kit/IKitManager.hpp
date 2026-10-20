@@ -59,6 +59,17 @@ public:
     /// Serialize kit metadata + pads back to JSON on disk.
     virtual bool saveKit(const KitInfo& kit) = 0;
 
+    /// @p kitJsonPath's kit, pads and all, into @p out -- a copy of the
+    /// caller's, the list and the current kit untouched: what a song's second
+    /// kit is loaded from. Card I/O, so a worker's. False when it will not
+    /// read, and where an implementation cannot do it.
+    virtual bool readKitCopy(const std::string& kitJsonPath, KitInfo& out)
+    {
+        (void)kitJsonPath;
+        (void)out;
+        return false;
+    }
+
     /// Take a kit.json written since the last scan into the list, so it is
     /// there without a restart; its id, or -1 when the list is full or the
     /// file will not parse. A path already in the list returns its id.

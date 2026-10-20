@@ -171,6 +171,7 @@ SongLoad AudioSong::load(const std::string& projectDir)
     syncSeq = false;
     kit.clear();
     instrument.clear();
+    armed = -1;
     loopStart = loopEnd = 0;
     for (auto& t : tracks) t = SongTrack{};
     sets.clear();
@@ -212,6 +213,7 @@ SongLoad AudioSong::load(const std::string& projectDir)
         tracks[t].source = (tr["src"]  | 0) == 1 ? SeqSource::Pitch : SeqSource::Kit;
         tracks[t].scene  = (uint8_t)(tr["scene"] | 0u);
         tracks[t].seqBlocks = tracks[t].kind == TrackKind::Seq && (tr["blocks"] | false);
+        tracks[t].kit    = tracks[t].kind == TrackKind::Seq ? (tr["kit"] | "") : "";
         /* true keeps the pitch (what 1.57 first wrote), "repitch" moves it. */
         const char* stretch = tr["stretch"].is<const char*>() ? tr["stretch"].as<const char*>() : nullptr;
         tracks[t].stretch = tracks[t].kind != TrackKind::Audio            ? StretchMode::Off
@@ -243,17 +245,30 @@ SongLoad AudioSong::load(const std::string& projectDir)
             tracks[t].inUse = !tracks[t].clips.empty() || tracks[t].kind == TrackKind::Seq;
         ++t;
     }
-    /* Two seq tracks cannot both play: the sequencer has one scene running.
-     * A file that claims them (hand-edited, or written by firmware that
-     * allowed more) keeps the first and the rest become plain audio tracks --
-     * their clips, if any, still play. */
-    for (int i = 0, seq = 0; i < kTracks; ++i) {
-        if (tracks[i].kind != TrackKind::Seq) continue;
-        if (++seq > kMaxSeqTracks) {
-            tracks[i].kind = TrackKind::Audio;
-            tracks[i].seqBlocks = false;
-            dropSeqBlocks(i);
+    armed = (int8_t)(doc["armed"] | -1);
+    /* Two seq tracks play only through two engines: a kit track each, or a
+     * Pitch track alone. A file that claims more (hand-edited, or written by
+     * firmware that allowed more) keeps the ones that fit, in order, and the
+     * rest become plain audio tracks -- their clips, if any, still play. */
+    bool route[2] = {false, false};
+    bool pitch = false;
+    for (int i = 0, seqs = 0; i < kTracks; ++i) {
+        SongTrack& tr = tracks[i];
+        if (tr.kind != TrackKind::Seq) continue;
+        const int r = tr.source == SeqSource::Kit && !tr.kit.empty() ? 1 : 0;
+        if (tr.source == SeqSource::Pitch ? seqs == 0 : !pitch && !route[r]) {
+            ++seqs;
+            route[r] = true;
+            pitch = pitch || tr.source == SeqSource::Pitch;
+            /* The second kit's track never plays the scene over the whole
+             * song: the scene that sounds is the first one's. */
+            if (r == 1) tr.seqBlocks = true;
+            continue;
         }
+        tr.kind = TrackKind::Audio;
+        tr.seqBlocks = false;
+        tr.kit.clear();
+        dropSeqBlocks(i);
     }
     /* A row shorter or longer than the grid is padded or cut rather than
      * refused: a set edited by hand should not cost somebody their song. */
@@ -283,8 +298,10 @@ bool AudioSong::save() const
     bool notes = false;
     for (const auto& t : tracks)
         for (const auto& c : t.clips) notes = notes || (t.kind == TrackKind::Seq && c.notes);
+    bool ownKit = false;
+    for (const auto& t : tracks) ownKit = ownKit || (t.kind == TrackKind::Seq && !t.kit.empty());
     JsonDocument doc;
-    doc["version"] = notes ? kVersion : 1;
+    doc["version"] = seqTracks() > 1 || ownKit ? kVersion : notes ? 2 : 1;
     doc["bpm"]  = bpm;
     doc["bpb"]  = beatsPerBar;
     doc["loop"] = loop;
@@ -294,6 +311,7 @@ bool AudioSong::save() const
     if (!instrument.empty()) doc["instrument"] = instrument;
     doc["loop_start"] = loopStart;
     doc["loop_end"] = loopEnd;
+    if (armed >= 0) doc["armed"] = armed;
     JsonArray trs = doc["tracks"].to<JsonArray>();
     for (const auto& t : tracks) {
         JsonObject o = trs.add<JsonObject>();
@@ -307,6 +325,7 @@ bool AudioSong::save() const
             o["src"]   = t.source == SeqSource::Pitch ? 1 : 0;
             o["scene"] = t.scene;
             if (t.seqBlocks) o["blocks"] = true;
+            if (!t.kit.empty()) o["kit"] = t.kit;
         }
         if (t.kind == TrackKind::Audio && t.stretch == StretchMode::KeepPitch) o["stretch"] = true;
         if (t.kind == TrackKind::Audio && t.stretch == StretchMode::Repitch)   o["stretch"] = "repitch";
@@ -429,6 +448,38 @@ int AudioSong::seqTracks() const
     return n;
 }
 
+int AudioSong::seqRoute(int track) const
+{
+    if (track < 0 || track >= kTracks) return -1;
+    const SongTrack& t = tracks[track];
+    if (!t.inUse || t.kind != TrackKind::Seq) return -1;
+    return t.source == SeqSource::Kit && !t.kit.empty() ? 1 : 0;
+}
+
+int AudioSong::seqTrackOnRoute(int route) const
+{
+    for (int t = 0; t < kTracks; ++t)
+        if (seqRoute(t) == route) return t;
+    return -1;
+}
+
+int AudioSong::freeSeqRoute(SeqSource source) const
+{
+    if (source == SeqSource::Pitch) return seqTracks() == 0 ? 0 : -1;
+    if (hasPitchTrack()) return -1;
+    if (seqTrackOnRoute(0) < 0) return 0;
+    if (seqTrackOnRoute(1) < 0) return 1;
+    return -1;
+}
+
+int AudioSong::armedSeqTrack() const
+{
+    if (seqRoute(armed) >= 0) return armed;
+    for (int t = 0; t < kTracks; ++t)
+        if (seqRoute(t) >= 0) return t;
+    return -1;
+}
+
 bool AudioSong::hasPitchTrack() const
 {
     for (const auto& t : tracks)
@@ -462,15 +513,22 @@ bool AudioSong::addAudioTrack(int track)
     return true;
 }
 
-bool AudioSong::addSeqTrack(int track, SeqSource source, uint8_t scene)
+bool AudioSong::addSeqTrack(int track, SeqSource source, uint8_t scene, const std::string& ownKit)
 {
     if (track < 0 || track >= kTracks || tracks[track].inUse) return false;
-    if (!seqSlotFree()) return false;
+    const int route = freeSeqRoute(source);
+    if (route < 0 || (route == 1 && ownKit.empty())) return false;
     tracks[track] = SongTrack{};
     tracks[track].inUse  = true;
     tracks[track].kind   = TrackKind::Seq;
     tracks[track].source = source;
     tracks[track].scene  = scene;
+    if (route == 1) {
+        tracks[track].kit = ownKit;
+        tracks[track].seqBlocks = true;
+    } else if (source == SeqSource::Kit && !ownKit.empty()) {
+        kit = ownKit;
+    }
     return true;
 }
 
@@ -483,6 +541,7 @@ bool AudioSong::bounceSeqTrack(int track, const SongClip* clip)
      * is left as it was -- it says which app wrote this, and a track bounced
      * by mistake is one DEL and one new seq track away from where it was. */
     tracks[track].kind = TrackKind::Audio;
+    tracks[track].kit.clear();
     if (clip) {
         tracks[track].clips.clear();
         if (!clip->file.empty() && clip->bars) tracks[track].clips.push_back(*clip);
@@ -669,12 +728,14 @@ std::vector<std::pair<uint32_t, SeqPatternPtr>> seqBlocksOf(uint32_t bars, std::
 
 } // namespace
 
-int AudioSong::putSeqTake(int track, uint32_t bar, const SeqPatternPtr& pattern, uint32_t spBar)
+int AudioSong::putSeqTake(int track, uint32_t bar, const SeqPatternPtr& pattern, uint32_t spBar, uint32_t bars)
 {
     if (track < 0 || track >= kTracks || !pattern) return -1;
     auto& tr = tracks[track];
     if (!tr.inUse || tr.kind != TrackKind::Seq) return -1;
-    const uint32_t end = bar + pattern->bars;
+    if (!bars) bars = pattern->bars;
+    bars = std::min<uint32_t>(bars, 0xFFFF);
+    const uint32_t end = bar + bars;
     cutClip(track, bar, spBar);
     cutClip(track, end, spBar);
     auto& cs = tr.clips;
@@ -684,7 +745,7 @@ int AudioSong::putSeqTake(int track, uint32_t bar, const SeqPatternPtr& pattern,
     tr.seqBlocks = true;
     SongClip c;
     c.bar = bar;
-    c.bars = pattern->bars;
+    c.bars = (uint16_t)bars;
     c.notes = pattern;
     return addClip(track, c);
 }

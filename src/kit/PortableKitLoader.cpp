@@ -158,6 +158,13 @@ bool PortableKitLoader::saveKitInfo(int id, const KitInfo& meta) {
     return true;
 }
 
+bool PortableKitLoader::readKitCopy(const std::string& kitJsonPath, KitInfo& out) {
+    out = KitInfo{};
+    if (kitJsonPath.empty()) return false;
+    out.path = kitJsonPath;
+    return readKitJson(toFsPath(kitJsonPath), out, true);
+}
+
 bool PortableKitLoader::removeKit(int id) {
     if (id < 0 || id >= static_cast<int>(kits_.size())) return false;
     if (id == currentKitId_ || id == retiredKitId_) return false;

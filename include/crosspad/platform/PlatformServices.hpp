@@ -52,6 +52,8 @@ class IPadMix;
 class IPadPerformance;
 class PitchedInstrument;
 class IInstrumentHost;
+class ISecondKit;
+class IKitPicker;
 class Stm32MessageHandler;
 
 /**
@@ -113,6 +115,14 @@ struct PlatformServices {
     /// Lends that engine to an app with an instrument of its own, and keeps
     /// the app's instrument library. Null where the platform has none.
     IInstrumentHost*  instrumentHost  = nullptr;
+
+    /// The kit a song's second kit track plays, in an engine of its own
+    /// beside the pads' one. Null where the platform has only the one.
+    ISecondKit*       secondKit       = nullptr;
+
+    /// The kit browser, for an app that picks a kit of its own (a song's
+    /// kit tracks). Null where the platform has none.
+    IKitPicker*       kitPicker       = nullptr;
 
     /// Decoder of the CrossPad SysEx catalog (STM32 frames and host frames
     /// alike). A portable app hangs its host-protocol callback here

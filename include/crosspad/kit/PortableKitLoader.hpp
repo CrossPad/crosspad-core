@@ -34,6 +34,7 @@ public:
     void                 scanKits(const std::string& rootDir) override;
     KitLoadResult loadKit(KitInfo& kit) override;
     bool saveKit(const KitInfo& kit) override;
+    bool readKitCopy(const std::string& kitJsonPath, KitInfo& out) override;
 
     // ── IKitManager (memory) ───────────────────────────────────────
     void releaseRetiredKit() override;

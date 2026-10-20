@@ -18,4 +18,25 @@ void instrumentPlayStatePublished()
     ++instrumentPlayState().generation;
 }
 
+namespace {
+std::string& openRequest()
+{
+    static std::string path;
+    return path;
+}
+} // namespace
+
+void instrumentOpenRequest(const std::string& path)
+{
+    openRequest() = path;
+}
+
+bool instrumentTakeOpenRequest(std::string& path)
+{
+    if (openRequest().empty()) return false;
+    path = openRequest();
+    openRequest().clear();
+    return true;
+}
+
 } // namespace crosspad

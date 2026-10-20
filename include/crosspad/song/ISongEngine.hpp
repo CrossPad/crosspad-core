@@ -201,9 +201,11 @@ public:
     /// pads to a clip in the open project, placed after the last block of
     /// @p track. Poll bounceStatus().
     virtual bool bounceScene(uint8_t scene, uint8_t track) = 0;
-    /// Arrange's BOUNCE: the seq track @p track, its scene looped over the
-    /// whole song (playEndBars()), into one clip on that same track from bar
-    /// one. The caller turns the track into audio once it is Done.
+    /// Arrange's BOUNCE: the seq track @p track as it plays, into one clip on
+    /// that same track -- a track cut into blocks from its first block's bar
+    /// to its last one's end, one playing its scene everywhere over the whole
+    /// song (playEndBars()). The caller turns the track into audio once it is
+    /// Done.
     virtual bool bounceSeqTrack(uint8_t track) { (void)track; return false; }
     virtual BounceStatus bounceStatus() = 0;
     virtual void cancelBounce() = 0;

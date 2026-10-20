@@ -3,6 +3,7 @@
 
 #include "crosspad/instrument/InstrumentPadLogic.hpp"
 #include "crosspad/pad/PadManager.hpp"
+#include "crosspad/song/SecondKitPadLogic.hpp"
 
 #include <atomic>
 #include <cstdint>
@@ -26,6 +27,10 @@ struct SeqTrackSound {
     InstrumentPadLogic pitch;
     /// The song is playing (or bouncing) a Pitch seq track.
     std::atomic<bool> routePitch{false};
+    /// The fingers on the second kit track's kit, while that track is armed
+    /// in Arrange (AudioSong::seqRoute() 1; its notes reach the kit through
+    /// the sequencer's routed sink).
+    SecondKitPadLogic kit2;
 
     /// The sequencer's note: true when it went to the track's instrument and
     /// must not reach the pads as well.

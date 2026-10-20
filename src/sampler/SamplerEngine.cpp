@@ -1195,6 +1195,7 @@ bool SamplerEngine::serviceIo()
      * millisecond away, and a teardown tries again. */
     if (vSvc_.exchange(true, std::memory_order_acquire)) return false;
     ISampleSource* src = store_->source();
+    uint8_t waiting = 0;
     for (auto& v : voices_) {
         const uint8_t st = v.state.load(std::memory_order_acquire);
         if (st == static_cast<uint8_t>(VoiceState::Finished)) {
@@ -1218,14 +1219,22 @@ bool SamplerEngine::serviceIo()
         }
         if (st != static_cast<uint8_t>(VoiceState::Playing)) continue;
         if (!src) continue;
-        /* Open the ring the note asked for, here rather than there. A refusal
-         * is a voice that plays its resident head and stops -- a short note
-         * rather than a glitch -- and it is counted. */
+        /* Open the ring the note asked for, here rather than there. No ring
+         * now is asked again on the next pass while the head still plays --
+         * the platform grows the pool meanwhile (ringsWaiting()). Out of
+         * time, it is a voice that plays its resident head and stops -- a
+         * short note rather than a glitch -- and it is counted. */
         if (v.wantStream && !v.window.isOpen()) {
-            v.wantStream = false;
             const SampleStore::Slot* sl = v.slot;
-            if (!sl || !v.window.open(*pool_, sl->path, sl->desc.channels, sl->headStart + sl->headFrames, v.last,
-                                      params_.streamBlocks, v.loop ? v.first : StreamWindow::kNoLoop)) {
+            const uint32_t headEnd = sl ? sl->headStart + sl->headFrames : 0;
+            if (sl && v.window.open(*pool_, sl->path, sl->desc.channels, headEnd, v.last,
+                                    params_.streamBlocks, v.loop ? v.first : StreamWindow::kNoLoop)) {
+                v.wantStream = false;
+            } else if (sl && v.playFrame.load(std::memory_order_acquire) + kRingRetryFrames < headEnd) {
+                ++waiting;
+                continue;
+            } else {
+                v.wantStream = false;
                 cStreamRefused_.fetch_add(1, std::memory_order_relaxed);
                 continue;
             }
@@ -1233,6 +1242,7 @@ bool SamplerEngine::serviceIo()
         if (!v.window.isOpen()) continue;
         v.window.service(*src, v.playFrame.load(std::memory_order_acquire));
     }
+    ringsWaiting_.store(waiting, std::memory_order_release);
     vSvc_.store(false, std::memory_order_release);
     return true;
 }

@@ -213,6 +213,7 @@ const char* MusicTheory::chordShortName(uint8_t idx) const {
 
 // rebuildPadMap — MIDI note per pad, from the scale/chord settings.
 void MusicTheory::rebuildPadMap(PlaySettings& ps) const {
+    ps.padSilent = 0;
     const ScaleDef& scale = scales[ps.scaleIndex < SCALE_COUNT ? ps.scaleIndex : 0];
     uint8_t safeScaleIdx = ps.scaleIndex < SCALE_COUNT ? ps.scaleIndex : 0;
 

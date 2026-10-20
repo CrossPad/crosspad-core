@@ -55,6 +55,13 @@ public:
     /// mode the pads are in by then. A release carries a plain one.
     using PerformedSink = void (*)(void* ctx, uint8_t pad, uint8_t velocity, bool on,
                                    PadPerformance performance);
+    /// The same, with the route it plays through: a song's two kit tracks
+    /// each play their own kit (SongSpan::route), so the note has to say
+    /// which. Route 0 is the pads' kit; a sink without routes plays only it.
+    using RoutedSink = void (*)(void* ctx, uint8_t route, uint8_t pad, uint8_t velocity, bool on,
+                                PadPerformance performance);
+    /// Routes a note can play through: the pads' kit and a second kit track's.
+    static constexpr uint8_t kRoutes = 2;
     /// What a hit coming in would sound as (PadManager::performanceFor());
     /// @p velocity becomes the one that would sound.
     using PerformanceSource = PadPerformance (*)(void* ctx, uint8_t pad, uint8_t& velocity);
@@ -80,8 +87,13 @@ public:
     /// half of the contract the interface already assumes: the engine reports
     /// where it got to, the controller holds it.
     void setController(SequencerController* c) { controller_ = c; }
-    void setSink(NoteSink fn, void* ctx) { sink_ = fn; performedSink_ = nullptr; sinkCtx_ = ctx; }
-    void setSink(PerformedSink fn, void* ctx) { performedSink_ = fn; sink_ = nullptr; sinkCtx_ = ctx; }
+    void setSink(NoteSink fn, void* ctx) { sink_ = fn; performedSink_ = nullptr; routedSink_ = nullptr; sinkCtx_ = ctx; }
+    void setSink(PerformedSink fn, void* ctx) { performedSink_ = fn; sink_ = nullptr; routedSink_ = nullptr; sinkCtx_ = ctx; }
+    void setSink(RoutedSink fn, void* ctx) { routedSink_ = fn; sink_ = nullptr; performedSink_ = nullptr; sinkCtx_ = ctx; }
+    /// The route the scene plays through on the clock's loop (no song map):
+    /// the seq view of a block on a second kit track plays that track's kit.
+    void setSceneRoute(uint8_t route) { sceneRoute_.store(route < kRoutes ? route : 0, std::memory_order_relaxed); }
+    uint8_t sceneRoute() const { return sceneRoute_.load(std::memory_order_relaxed); }
     /// Asked at every hit: a take keeps what the hit sounded as, not only
     /// which pad it was. Without one every hit is plain.
     void setPerformanceSource(PerformanceSource fn, void* ctx) { perfSource_ = fn; perfCtx_ = ctx; }
@@ -177,6 +189,7 @@ public:
         uint32_t a = 0, b = 0, scene = 0;
         SongNotes notes;
         uint32_t loop = 0;
+        uint8_t  route = 0;   ///< the kit it plays (RoutedSink): its track's
     };
     /// Play only what is under @p spans of the song it is laid on, instead
     /// of looping the scene on the click: a seq track cut into blocks
@@ -191,8 +204,12 @@ public:
     void clearSongMap();
     /// The map plays nothing while muted, and keeps counting: Arrange's REC
     /// replaces what is under the take, so it is not heard under it either.
-    void setSongMapMuted(bool muted) { mapMuted_.store(muted, std::memory_order_relaxed); }
-    bool songMapMuted() const { return mapMuted_.load(std::memory_order_relaxed); }
+    void setSongMapMuted(bool muted) { mapMuted_.store(muted ? 0xFF : 0, std::memory_order_relaxed); }
+    bool songMapMuted() const { return mapMuted_.load(std::memory_order_relaxed) != 0; }
+    /// The same a route at a time, a bit each: a REC on one kit track keeps
+    /// what is under it quiet while the other track plays on.
+    void setSongRoutesMuted(uint8_t mask) { mapMuted_.store(mask, std::memory_order_relaxed); }
+    uint8_t songRoutesMuted() const { return mapMuted_.load(std::memory_order_relaxed); }
 
     // ── A take onto the song (Arrange's REC and DUB) ──────────────────────
 
@@ -404,15 +421,16 @@ private:
     void     closeOpenNotes();
     /// Count the held notes down by @p samples and let go of the ones done.
     void     releaseHeld(uint32_t samples);
-    void     fireWindow(uint32_t from, uint32_t to);
+    void     fireWindow(uint32_t from, uint32_t to, uint8_t route);
     /// The song map's turn: @p samples more of the song, fired through it.
     void     fireSong(uint32_t samples, uint32_t loop);
     /// Strike @p pad as a note recorded at @p len samples is struck: let go
     /// first if a note still holds it, then held for what is left of @p len
     /// after the @p gone samples of this poll it sounds in, or a hit.
-    void     strike(uint8_t pad, uint8_t vel, uint8_t perf, uint32_t len, uint32_t gone);
+    void     strike(uint8_t route, uint8_t pad, uint8_t vel, uint8_t perf, uint32_t len, uint32_t gone);
     /// A block's own notes due in [@p from, @p to) of their @p loop.
-    void     fireNotes(const std::vector<SongNote>& notes, uint32_t loop, uint32_t from, uint32_t to);
+    void     fireNotes(const std::vector<SongNote>& notes, uint32_t loop, uint32_t from, uint32_t to,
+                       uint8_t route);
     /// Where the song was when @p h was struck, and the lap it was in.
     uint32_t songPosOf(const Hit& h, uint32_t loop, uint16_t& lap) const;
     /// A hit of a take onto the song: kept open until its release.
@@ -430,9 +448,10 @@ private:
     /// -- collected and played once the lock is let go. The sink runs pad
     /// logic that can wait on the sample player; holding the lock through it
     /// held every UI read of the pattern for as long.
-    void     emit(uint8_t pad, uint8_t vel, bool on, uint8_t perf = 0);
+    void     emit(uint8_t route, uint8_t pad, uint8_t vel, bool on, uint8_t perf = 0);
     /// Play one collected press through whichever sink is set.
-    void     sinkPress(uint8_t pad, uint8_t vel, bool on, uint8_t perf);
+    void     sinkPress(uint8_t route, uint8_t pad, uint8_t vel, bool on, uint8_t perf);
+    bool     hasSink() const { return sink_ || performedSink_ || routedSink_; }
     void     addEvent(uint8_t seq, uint32_t pos, uint8_t pad, uint8_t vel, uint8_t perf);
     /// Drop every event of @p pad from @p seq.
     void     erasePad(uint8_t seq, uint8_t pad);
@@ -460,7 +479,9 @@ private:
     MetronomeNode* clock_   = nullptr;
     NoteSink       sink_    = nullptr;
     PerformedSink  performedSink_ = nullptr;
+    RoutedSink     routedSink_ = nullptr;
     void*          sinkCtx_ = nullptr;
+    std::atomic<uint8_t> sceneRoute_{0};
     PerformanceSource perfSource_ = nullptr;
     void*          perfCtx_ = nullptr;
 
@@ -488,7 +509,7 @@ private:
     std::atomic<uint32_t> editGen_{0};
     std::atomic<bool> erasing_{false};
     mutable std::recursive_mutex editMutex_;
-    struct Press { uint8_t pad; uint8_t vel; bool on; uint8_t perf; };
+    struct Press { uint8_t pad; uint8_t vel; bool on; uint8_t perf; uint8_t route; };
     /// A poll fires at most a whole scene, releases each of those notes, and
     /// every pad held from before it.
     static constexpr uint16_t kMaxPresses = 2 * kMaxEvents + 32;
@@ -513,7 +534,7 @@ private:
     std::atomic<uint32_t> mapPos_{0};
     uint32_t mapWrapFrom_ = 0;
     uint32_t mapWrapTo_ = 0;
-    std::atomic<bool> mapMuted_{false};
+    std::atomic<uint8_t> mapMuted_{0};   ///< a bit a route
 
     /* beginSongTake(): the notes taken, the ones still held, and the laps. */
     struct TakeOpen { uint32_t pos; uint32_t start; uint8_t vel; uint8_t perf; uint16_t lap; bool on; };
@@ -529,10 +550,11 @@ private:
     /// Pads fired on the previous poll, released at the start of the next one.
     /// One poll of gate -- shorter than any human tap, long enough that the
     /// press and the release are not the same instant. A hit's, not a note's.
-    uint16_t pendingRelease_ = 0;
+    /// A bit per pad of each route: route * 16 + pad.
+    uint32_t pendingRelease_ = 0;
     /// Pads a note with a length holds down, and the samples each has left.
-    uint16_t held_ = 0;
-    uint32_t relLeft_[16] = {};
+    uint32_t held_ = 0;
+    uint32_t relLeft_[kRoutes * 16] = {};
     /// Presses recorded and not yet released, one per pad.
     Open     open_[16] = {};
 };

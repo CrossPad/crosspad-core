@@ -116,8 +116,9 @@ enum class SongLoad : uint8_t { New, Loaded, Unreadable };
 /// each block holds its own (SongClip::notes). A track from before that plays
 /// the pattern sequencer's scene: with no blocks over the whole song, with
 /// blocks (seqBlocksExplicit(), then cut and copied by bars) only under them.
-/// One track at a time may be a seq (@c kMaxSeqTracks), and a bounce turns it
-/// into audio, which is how that slot is freed for the next idea.
+/// Two tracks may be seqs at once, each playing a kit of its own
+/// (AudioSong::seqRoute()), or one a Pitch track; a bounce turns one into
+/// audio, which is how a slot is freed for the next idea.
 enum class TrackKind : uint8_t { Audio = 0, Seq = 1 };
 
 /// What a seq track's notes play through: the Sampler's kit (sixteen pads,
@@ -150,6 +151,10 @@ struct SongTrack {
     /// stretched or repitched (SongEngine renders it while stopped; until then
     /// the block plays as recorded). Off, a block keeps its speed, as always.
     StretchMode stretch = StretchMode::Off;
+    /// A Kit seq track's own kit (a kit.json as the kit list names it), played
+    /// through the second kit engine. Empty, the track plays the song's kit
+    /// (AudioSong::kit) through the pads' -- which the first kit track does.
+    std::string kit;
     /// A track the player has made. All four exist in this struct from the
     /// start; this is what tells an empty track waiting for a recording from
     /// one nobody has asked for, which is what "2 / 4 tracks" counts and what
@@ -171,10 +176,11 @@ struct SongTrack {
 class AudioSong {
 public:
     static constexpr int kTracks = 4;
-    /// 2: seq blocks carry notes of their own. Written only by a song that has
-    /// some, so the rest stay readable by firmware from before -- which
-    /// refuses a 2 rather than open it and drop the notes on its next save.
-    static constexpr int kVersion = 2;
+    /// 2: seq blocks carry notes of their own. 3: two seq tracks, a track
+    /// with a kit of its own. Each written only by a song that needs it, so
+    /// the rest stay readable by firmware from before -- which refuses a newer
+    /// one rather than open it and drop what it cannot hold on its next save.
+    static constexpr int kVersion = 3;
     /// Ticks to the quarter of a seq block's notes: PatternSequencer::kPpq.
     static constexpr uint16_t kSeqPpq = 96;
     /// The most one seq block a take lays holds: what one scene of the
@@ -206,6 +212,10 @@ public:
     /// say what is loaded, not how the song is arranged.
     std::string kit;
     std::string instrument;
+    /// The seq track REC and DUB take onto, and whose kit the pads play in
+    /// Arrange (Arrange's ARM); -1, or a track that is no seq, is the first
+    /// seq track (armedSeqTrack()). Not part of undo, as the sounds are not.
+    int8_t      armed = -1;
     /// The loop region, in bars, [loopStart, loopEnd): with loop on, playback
     /// goes round it instead of the whole song. loopEnd <= loopStart = none.
     uint32_t    loopStart = 0;
@@ -250,16 +260,32 @@ public:
     uint32_t samplesPerBar(uint32_t sampleRate) const;
 
     // ── tracks a player makes ──────────────────────────────────────────────
-    /// Tracks that may hold a seq at once. The sequencer plays one scene, so
-    /// a second seq track would have nothing of its own to play.
-    static constexpr int kMaxSeqTracks = 1;
+    /// Tracks that may hold a seq at once: two kit tracks, each through a
+    /// kit engine of its own (seqRoute()), or one Pitch track -- the pitched
+    /// engine and the kits' take turns owning one arena, so a Pitch track is
+    /// the only seq of its song.
+    static constexpr int kMaxSeqTracks = 2;
 
     /// Tracks in use: what Arrange counts, and what decides whether it still
     /// offers "+ ADD TRACK".
     int usedTracks() const;
-    /// Tracks that hold a seq -- 0 or 1.
+    /// Tracks that hold a seq -- 0 to kMaxSeqTracks.
     int seqTracks() const;
-    bool seqSlotFree() const { return seqTracks() < kMaxSeqTracks; }
+    bool seqSlotFree() const { return freeSeqRoute(SeqSource::Kit) >= 0; }
+    /// Which engine seq track @p track plays through, as the sequencer routes
+    /// its notes (PatternSequencer::SongSpan::route): 0 the pads' -- the
+    /// song's kit, or the Pitch instrument --, 1 the second kit engine, for a
+    /// kit track with a kit of its own (SongTrack::kit). -1 for no seq.
+    int seqRoute(int track) const;
+    /// The route a new seq track on @p source would take, or -1 when there is
+    /// no room for it: a Pitch track only in a song with no seq, a kit track
+    /// the route no kit track has, never beside a Pitch track.
+    int freeSeqRoute(SeqSource source) const;
+    /// The seq track on route @p route, or -1.
+    int seqTrackOnRoute(int route) const;
+    /// The track @c armed names when it is a seq track in use, else the first
+    /// seq track, else -1.
+    int armedSeqTrack() const;
     /// Some track is soloed.
     bool anySolo() const;
     /// The seq track in use plays Pitch Play's instrument.
@@ -273,9 +299,12 @@ public:
     /// Make @p track an empty audio track, in use and waiting for a clip.
     /// Returns false for a track already in use.
     bool addAudioTrack(int track);
-    /// Make @p track a seq on @p source playing @p scene. Returns false when
-    /// the track is in use or the one seq slot is taken.
-    bool addSeqTrack(int track, SeqSource source, uint8_t scene);
+    /// Make @p track a seq on @p source playing @p scene. A kit track takes
+    /// the route that is free (freeSeqRoute()): on 0 it plays the song's kit,
+    /// which @p kit, given, becomes; on 1 @p kit is its own and must be
+    /// given, and it plays only under blocks. Returns false when the track is
+    /// in use or there is no room for the seq.
+    bool addSeqTrack(int track, SeqSource source, uint8_t scene, const std::string& kit = {});
     /// Turn a seq track into an audio track: what BOUNCE does once the WAV is
     /// written. @p clip is the block the bounce made and becomes the track's
     /// only content; pass nullptr when whoever wrote the WAV has already
@@ -327,11 +356,11 @@ public:
     /// block of @p bars first. Returns the blocks changed.
     int adoptSceneNotes(int track, const SeqPatternPtr& scene, uint32_t bars);
     /// REC: @p pattern as one block on @p bar of seq track @p track, as long
-    /// as the pattern. The seq blocks that sounded there go -- one reaching
-    /// in from before is cut at @p bar, one reaching past the end plays on
-    /// from there. Returns the new block's index, -1 when @p track is not a
-    /// seq track in use.
-    int putSeqTake(int track, uint32_t bar, const SeqPatternPtr& pattern, uint32_t spBar);
+    /// as the pattern -- or @p bars long, the pattern going round in it. The
+    /// seq blocks that sounded there go -- one reaching in from before is cut
+    /// at @p bar, one reaching past the end plays on from there. Returns the
+    /// new block's index, -1 when @p track is not a seq track in use.
+    int putSeqTake(int track, uint32_t bar, const SeqPatternPtr& pattern, uint32_t spBar, uint32_t bars = 0);
     /// REC: @p notes -- ticks from @p bar -- over @p bars bars, laid with
     /// putSeqTake() as blocks the seq view opens: one per kSeqBlockBars bars
     /// from @p bar, halved while more than kSeqBlockNotes notes fall in it. A
