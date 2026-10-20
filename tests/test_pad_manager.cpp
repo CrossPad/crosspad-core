@@ -267,6 +267,11 @@ TEST_CASE("PadManager: the input tap sees played pads, not the sequencer's", "[p
         CHECK(seen.count == 0);
     }
 
+    SECTION("an app's own playback (a kit's preview) is not tapped") {
+        pm.handlePadPress(4, 100, EventSource::App);
+        CHECK(seen.count == 0);
+    }
+
     SECTION("a suppressed press is not tapped") {
         pm.setInputSuppressed(true);
         pm.handlePadPress(1, 100);
