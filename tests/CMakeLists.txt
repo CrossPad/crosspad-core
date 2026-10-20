@@ -73,6 +73,7 @@ set(CORE_SOURCES
     # Kit JSON and sample-path resolution
     ${CORE_DIR}/src/kit/KitJsonParser.cpp
     ${CORE_DIR}/src/kit/KitPathUtils.cpp
+    ${CORE_DIR}/src/kit/PortableKitLoader.cpp
     ${CORE_DIR}/src/kit/KitRateConvert.cpp
 
     # DSP (FFT seam + factory, pitch detection, rate conversion).
