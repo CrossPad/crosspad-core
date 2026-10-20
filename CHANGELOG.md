@@ -6,6 +6,92 @@ carries the same number) and consumers gate on it with
 `crosspad/RequireVersion.hpp`. This file starts at 1.45.0; earlier releases
 are described in their `chore: X.Y.Z` commits.
 
+## 2.2.0 — 2026-10-20
+
+UX 2000 from the 1.x line (Steve's 1.71.0 and 1.72.0 there, 5b0d106 on the
+board): two kit tracks in a song, the Chord Designer, and seq takes that fill
+their loop. STOP keeps 2.1.0's rule.
+
+### Added
+
+- `AudioSong`: up to two seq tracks (`kMaxSeqTracks` 2) -- two kit tracks, or
+  one Pitch track alone. `seqRoute()` says which engine a seq track plays
+  through: 0 the pads' (the song's kit, or the instrument), 1 the second kit
+  engine, for a kit track with a kit of its own (`SongTrack::kit`).
+  `freeSeqRoute()`, `seqTrackOnRoute()`; `addSeqTrack()` takes the kit (the
+  song's on route 0, the track's own on route 1). `armed` and
+  `armedSeqTrack()`: the seq track REC and DUB take onto. A file with two
+  seqs or a track's own kit is `version` 3; one with seqs that cannot all
+  play keeps those that can.
+- `PatternSequencer`: routes. `SongSpan::route`, a `RoutedSink` that gets the
+  route with every note, per-route held notes (the same pad on both kits),
+  `setSongRoutesMuted()` (a REC on one kit track leaves the other playing),
+  `setSceneRoute()` for the scene on its own clock. A sink that knows only
+  the pads plays route 0 and nothing else.
+- `ISecondKit` (`crosspad/sampler/ISecondKit.hpp`) and
+  `PlatformServices::secondKit`: the second kit, held by path, played by
+  note. `SecondKitPadLogic` (in `SeqTrackSound::kit2`): the fingers on it.
+- `IKitPicker` (`crosspad/kit/IKitPicker.hpp`) and
+  `PlatformServices::kitPicker`: the platform's kit browser, opened by an app
+  for a kit of its own -- handed back, not loaded.
+- `ISongEnginePlatform::setKitGain()` and `seqLevel()` (defaults keep a
+  one-kit platform as it was); `IKitManager::readKitCopy()` (a kit's copy,
+  the list and the current kit untouched).
+- `crosspad/music/ChordDesigner.hpp` (`crosspad::chords`): a progression of
+  up to sixteen chords -- root, quality (maj, min, 7, maj7, m7, 9, m9, 13,
+  dim, sus4), inversion -- voiced close, open or wide by `notes()`; twelve
+  genre presets (FUNK .. POP, INIT); the edits (root, sharp, quality,
+  inversion, add, append, remove, move) and `valid()` for a stored copy.
+  Absolute chords, not degrees: MusicTheory's progressions are untouched.
+- `PlaySettings::padSilent`: pads that make no sound, for a chord list
+  shorter than sixteen. `rebuildPadMap()` clears it; `InstrumentPadLogic`
+  plays nothing on such a pad (it used to fall back to the pad's own note).
+- `instrumentOpenRequest()` / `instrumentTakeOpenRequest()`
+  (`InstrumentPlayState.hpp`): an instrument another screen picked for Pitch
+  Play, taken once as it starts. For the kit browser's PITCH list.
+- `SamplerEngine::ringsWaiting()`: voices the last `serviceIo()` pass could
+  not give a ring. For a platform that grows its stream pool on demand.
+- `SongSounds` holds the song's second kit (`PlatformServices::secondKit`)
+  every step and says once when it would not load.
+
+### Changed
+
+- `SongEngine` lays every seq track on the sequencer's map on its route, takes
+  a REC or DUB onto the armed track, mutes and fades each route on its own,
+  meters each from its engine (`seqLevel()`), and plays the seq view of a
+  second kit's block on that kit (`setSceneRoute()`). A track's kit is part of
+  an undo step. Playing with the seq view open runs the scene it edits, so a
+  part recorded there with SYNC goes into its block, on either kit track.
+- A voice whose ring the pool cannot give is no longer refused at once: it
+  asks again on every `serviceIo()` pass while its head plays, and is
+  refused (`streamRefused`) only `kRingRetryFrames` before the head ends.
+- A seq track's bounce (`bounceSeqTrack()`) takes only the bars its blocks
+  play, first block to last, and the clip lands on the first block's bar:
+  the take runs in real time, and a one-bar block in a 64-bar song was 64
+  bars of waiting.
+- A REC shorter than the loop it was played in goes round to the loop's end
+  -- the region, or a looping song's end over bars the track has free --
+  as one block whose pattern is the shortest that holds the notes and
+  divides the loop: one bar played into four is that bar four times, not a
+  bar and silence. `AudioSong::putSeqTake()` takes the block's length.
+- The seq view's x2 lengthens a block its notes go round in once they
+  outgrow it, so x2 always lengthens the block in Arrange too.
+- `FrameRing` holds up to 64 segments (1 MB) and asks for those past its
+  minimum with `missingSegs` 0, which a platform may refuse sooner. The ring
+  sizes stay the platform's (`SongEngineSizes`); the board asks for a 1 MB
+  bounce ring, where card stalls of ~0.5 s failed 2-minute bounces "card too
+  slow" at 128 kB.
+- `SongSounds`: a kit given to the song after it settled (Arrange's kit
+  track) is loaded as an opening song's is, and a kit load that finishes
+  after the song was given a newer kit no longer writes over it -- the newer
+  pick wins.
+
+### Not taken from the 1.x line
+
+- "STOP is back to bar one at once" (`SongTransport::stop()`,
+  `SequencerTransport::stop()`): 2.1.0's rule stays -- a STOP that ends a
+  take rewinds, a STOP while playing stops in place and a second one rewinds.
+
 ## 2.1.0 — 2026-10-19
 
 The 1.x line's 1.71.0 on top of 2.0.0.
