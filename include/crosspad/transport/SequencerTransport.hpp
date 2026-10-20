@@ -54,13 +54,19 @@ public:
     }
 
     /// Stops in place, cancels an armed take, and the song too when it is the
-    /// one running the sequencer. Stopped already, it goes back to bar one.
+    /// one running the sequencer. Stopped already, it goes back to bar one --
+    /// and so does a take it ends, recorded or armed, so PLAY plays the take
+    /// from its start rather than from where the STOP fell in the loop.
     void stop() override
     {
         if (state() == TransportState::Stopped) { seq_.rewind(); return; }
+        const SequencerMode m = seq_.getMode();
+        const bool take = m == SequencerMode::Record || m == SequencerMode::Overdub ||
+                          m == SequencerMode::OverdubWait;
         ISongEngine* se = getPlatformServices().songEngine;
         if (se && se->playing() && songSync()) se->stop();
         seq_.stop();
+        if (take) seq_.rewind();
     }
 
     /// Arms a take from a stop (counted in with PRE on), punches in while

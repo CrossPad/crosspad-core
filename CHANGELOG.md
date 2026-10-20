@@ -30,6 +30,10 @@ The 1.x line's 1.71.0 on top of 2.0.0.
 
 ### Changed
 
+- `SequencerTransport::stop()`: a STOP that ends a take -- recording,
+  overdubbing, or armed and counting in -- goes back to bar one, so PLAY plays
+  the take from its start. A STOP while only playing still stops in place,
+  and a second one rewinds.
 - `KitInfo::pads` is a lazy `KitPads`: a listed kit costs a pointer, not
   `KIT_PADS` pads (1176 -> ~220 B a kit); the block, once there, keeps its
   address for the kit's life.
