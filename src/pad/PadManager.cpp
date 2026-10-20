@@ -68,7 +68,9 @@ void PadManager::handlePadPress(uint8_t padIdx, uint8_t velocity, EventSource so
                                 PadPerformance performance) {
     if (padIdx >= 16) return;
     if (inputSuppressed_) return;
-    if (inputTap_ && source != EventSource::SequencerCallback) inputTap_(inputTapCtx_, padIdx, velocity);
+    if (inputTap_ && source != EventSource::SequencerCallback && source != EventSource::App) {
+        inputTap_(inputTapCtx_, padIdx, velocity);
+    }
 
     // Get active pad logic handler (thread-safe read)
     std::shared_ptr<IPadLogicHandler> handler;
