@@ -959,6 +959,9 @@ struct SampleToolsEngine::Impl {
             return;
         }
         endSync();
+        /* Nothing came in: no file for it, or the recordings fill with empty
+         * takes every browser then lists. */
+        if (!frames) fsx::remove(file);
         logf(false, "took %s (%u frames)", file.c_str(), (unsigned)frames);
         std::lock_guard<std::mutex> l(statusMutex_);
         rec_.recording = false;

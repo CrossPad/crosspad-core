@@ -461,6 +461,20 @@ TEST_CASE("SampleToolsEngine records the pads bus, clipped to int16", "[sampleto
     CHECK(pcm.front() == 32767);
 }
 
+TEST_CASE("SampleToolsEngine leaves no file for a take that got nothing", "[sampletools]") {
+    Rig r;
+    REQUIRE(r.tools->selectInput(RecInput::Line));
+    REQUIRE(r.tools->startRecording());
+    REQUIRE(waitFor([&] { return !r.tools->recStatus().file.empty(); }));
+    const std::string file = r.tools->recStatus().file;
+    r.tools->stopRecording();                       // no block came in
+    REQUIRE(waitFor([&] { return !r.tools->recStatus().recording; }));
+    const RecStatus st = r.tools->recStatus();
+    CHECK(st.error.empty());
+    CHECK(st.frames == 0);
+    CHECK_FALSE(fs::exists(file));
+}
+
 TEST_CASE("SampleToolsEngine fails a take with no card", "[sampletools]") {
     Rig r;
     r.platform.storage = false;
