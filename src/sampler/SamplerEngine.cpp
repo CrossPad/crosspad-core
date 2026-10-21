@@ -433,7 +433,8 @@ void SamplerEngine::fill(Voice& v, const KitPad& kp, const Plan& p, uint8_t pad,
 
     v.env = 0.0f;
     v.envTarget = 1.0f;
-    const float attackFrames = params_.attackMs * 0.001f * static_cast<float>(sampleRate_);
+    const float attackMs = kp.attackMs >= 0.0f ? kp.attackMs : params_.attackMs;
+    const float attackFrames = attackMs * 0.001f * static_cast<float>(sampleRate_);
     v.envStep = attackFrames > 1.0f ? (1.0f / attackFrames) : 1.0f;
 
     v.quiet = 0;
@@ -773,6 +774,20 @@ bool SamplerEngine::renderVoice(Voice& v, float* out, uint32_t frames)
     const uint64_t firstQ = static_cast<uint64_t>(v.first) * kOne;
     const uint64_t spanQ = lastQ > firstQ ? (lastQ - firstQ) : kOne;
 
+    /* A one-shot whose trim ends inside its file -- a slice of one WAV --
+     * fades out from tailFrom (the file's frames) to its end: stopped there
+     * mid-wave it clicked. The Slicer used to write that fade into a file of
+     * each slice's own. */
+    uint32_t tailFrom = UINT32_MAX;
+    float tailStep = 0.0f;
+    if (!v.loop && v.slot && v.last < v.slot->desc.frames) {
+        const float outFrames = kTrimFadeMs * 0.001f * static_cast<float>(sampleRate_);
+        const uint32_t fileFrames =
+            static_cast<uint32_t>(static_cast<double>(outFrames) * static_cast<double>(v.inc) / static_cast<double>(kOne));
+        tailFrom = v.last > v.first + fileFrames ? v.last - fileFrames : v.first;
+        tailStep = outFrames > 1.0f ? (1.0f / outFrames) : 1.0f;
+    }
+
     /* A voice stepping exactly one frame a frame needs no interpolation: the
      * file is at the engine's rate and the pad has no pitch on it, which is
      * most of a kit. Decided once a block, not once a frame. */
@@ -803,6 +818,9 @@ bool SamplerEngine::renderVoice(Voice& v, float* out, uint32_t frames)
     auto play = [&](float l, float r, uint32_t at, float* o) -> bool {
         if (down > 0.0f) {
             env -= down;
+            if (env <= 0.0f) return false;
+        } else if (at >= tailFrom) {
+            env -= tailStep;
             if (env <= 0.0f) return false;
         } else if (env < 1.0f) {
             env += envStep;
@@ -857,11 +875,13 @@ bool SamplerEngine::renderVoice(Voice& v, float* out, uint32_t frames)
         uint32_t n = unitRate ? v.cursor.span(at, frames - i, p) : 0;
         if (n) {
             /* A pointer walk over the run, up to the frame whose step reaches
-             * the trim's end -- only that one can end the voice by its phase. */
-            const uint32_t toEnd = at < v.last ? v.last - at : 1;
+             * the trim's end -- only that one can end the voice by its phase.
+             * A run stops where the trim's fade starts, then at the end. */
+            const uint32_t stopAt = at < tailFrom && tailFrom < v.last ? tailFrom : v.last;
+            const uint32_t toEnd = at < stopAt ? stopAt - at : 1;
             if (n > toEnd) n = toEnd;
             float* o = out + static_cast<size_t>(i) * 2;
-            if (down == 0.0f && env == 1.0f && mute == muteTarget) {
+            if (down == 0.0f && env == 1.0f && mute == muteTarget && at < tailFrom) {
                 const float e = env * (1.0f / 32768.0f);
                 const float gl = gainL * mute, gr = gainR * mute;
                 const uint32_t done =

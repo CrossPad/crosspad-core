@@ -1501,41 +1501,39 @@ struct SampleToolsEngine::Impl {
             finish(false, "cannot make the kit's folder");
             return;
         }
-        const uint32_t total = end - starts.front();
-        const uint32_t attack = SliceMath::attackFrames(kit.attackMs, sampleRate_);
-        const double ratio = SliceMath::pitchRatio(kit.semitones);
-        uint32_t done = 0;
-        for (size_t i = 0; i < starts.size(); ++i) {
-            const uint32_t a = starts[i];
-            const uint32_t b = i + 1 < starts.size() ? starts[i + 1] : end;
-            char name[24];
-            std::snprintf(name, sizeof(name), "/SAMPLES/%u.wav", (unsigned)(i + 1));
-            if (b <= a || !copyRegion(r, a, b, dir + name, attack, ratio, done, total)) {
-                r.close();
-                finish(false, "card write failed");
-                return;
-            }
-            done += b - a;
+        /* A Slice kit: the loop once, as it is, and each pad a region of it.
+         * Pitch and attack are the kit's, played by the engine in real time;
+         * it used to be a file per slice with both written into it. */
+        const uint32_t base = starts.front();
+        static constexpr const char* kLoop = "loop.wav";
+        if (!copyRegion(r, base, end, dir + "/SAMPLES/" + kLoop, 0, 1.0, 0, end - base)) {
+            r.close();
+            finish(false, "card write failed");
+            return;
         }
         r.close();
 
         KitInfo info;
         info.name = kit.name;
         info.author = "CrossPad Slicer";
-        info.category = "user";               // the kit browser's USER list
+        info.category = "slice";
+        info.engine = KitEngine::Slice;
+        info.pitch = kit.semitones;
         info.description = "Sliced from " + base_of(kit.source);
-        if (kit.semitones) info.description += (kit.semitones > 0 ? ", +" : ", ") + std::to_string(kit.semitones) + " st";
         info.version = "1.0";
         /* Varispeed moves the tempo with the pitch. */
-        info.bpm = (uint16_t)std::lround((double)kit.bpm * ratio);
+        info.bpm = (uint16_t)std::lround((double)kit.bpm * SliceMath::pitchRatio(kit.semitones));
         info.path = std::string(kKitsLogical) + "/" + kit.name + "/kit.json";
         for (int pad = 0; pad < KIT_PADS; ++pad) {
             Pad& kp = info.pads[pad];
             kp.color = kp.color_pressed = slice_color(pad);
-            /* Chops of one loop cut each other off, as on an MPC: a hit
-             * replaces the one before instead of piling up on it. */
-            kp.choke_group = 1;
-            if (pad < (int)starts.size()) kp.AddSample(std::to_string(pad + 1) + ".wav", false);
+            if (pad >= (int)starts.size()) continue;
+            const uint32_t a = starts[pad];
+            const uint32_t b = pad + 1 < (int)starts.size() ? starts[pad + 1] : end;
+            kp.attack = kit.attackMs;
+            kp.AddSample(kLoop, false);
+            kp.samples.back().start = a - base;
+            kp.samples.back().end = b - base;
         }
         IKitManager* kits = getKitManager();
         if (!kits || !kits->saveKit(info)) {                 // to info.path, under the kit manager's root

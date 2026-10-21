@@ -7,11 +7,13 @@
 #include "crosspad/kit/PortableKitLoader.hpp"
 #include "crosspad/platform/PlatformServices.hpp"
 #include "crosspad/sampletools/SampleToolsEngine.hpp"
+#include "crosspad/sampletools/SliceMath.hpp"
 #include "crosspad/song/ISongEngine.hpp"
 
 #include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <cmath>
 #include <condition_variable>
 #include <cstdio>
 #include <cstdlib>
@@ -365,7 +367,7 @@ TEST_CASE("SampleToolsEngine renders a pad's copy once", "[sampletools]") {
     CHECK(readWavData(out).size() == 2000 * 2);
 }
 
-TEST_CASE("SampleToolsEngine writes slices out as a kit", "[sampletools]") {
+TEST_CASE("SampleToolsEngine writes slices out as a Slice kit: one WAV, a region a pad", "[sampletools][slice]") {
     Rig r;
     PortableKitLoader loader(r.dir.string());
     loader.kits().reserve(PortableKitLoader::kSpareKits);
@@ -381,6 +383,8 @@ TEST_CASE("SampleToolsEngine writes slices out as a kit", "[sampletools]") {
     kit.starts = {3000, 0, 1000};
     kit.end = 0;
     kit.bpm = 120;
+    kit.attackMs = 7;
+    kit.semitones = -2;
 
     CHECK_FALSE(r.tools->requestExportKit(SliceKit{src, "bad/name", {0}, 0, 0, 0, 0}));
     REQUIRE(r.tools->requestExportKit(kit));
@@ -390,16 +394,28 @@ TEST_CASE("SampleToolsEngine writes slices out as a kit", "[sampletools]") {
     CHECK(r.tools->jobResult() == "Chops");
 
     const fs::path kitDir = r.dir / "crosspad" / "kits" / "Chops";
-    CHECK(readWavData((kitDir / "SAMPLES" / "1.wav").string()).size() == 1000 * 2);
-    CHECK(readWavData((kitDir / "SAMPLES" / "2.wav").string()).size() == 2000 * 2);
-    CHECK(readWavData((kitDir / "SAMPLES" / "3.wav").string()).size() == 1000 * 2);
-    CHECK_FALSE(fs::exists(kitDir / "SAMPLES" / "4.wav"));
+    /* The loop once, as it is -- no attack, no pitch written into it. */
+    CHECK(readWavData((kitDir / "SAMPLES" / "loop.wav").string()).size() == 4000 * 2);
+    CHECK_FALSE(fs::exists(kitDir / "SAMPLES" / "1.wav"));
     REQUIRE(fs::exists(kitDir / "kit.json"));
     REQUIRE(loader.getKitCount() == 1);
     const KitInfo* listed = loader.getKit(0);
     CHECK(listed->name == "Chops");
     CHECK(listed->path == "/crosspad/kits/Chops/kit.json");
-    CHECK(listed->bpm == 120);
+    CHECK(listed->engine == KitEngine::Slice);
+    CHECK(listed->pitch == -2);
+    CHECK(listed->bpm == (uint16_t)std::lround(120.0 * SliceMath::pitchRatio(-2)));
+    KitInfo full("/crosspad/kits/Chops/kit.json");
+    REQUIRE(loader.readKitCopy(listed->path, full));
+    const uint32_t want[3][2] = {{0, 1000}, {1000, 3000}, {3000, 4000}};
+    for (int p = 0; p < 3; ++p) {
+        REQUIRE(full.pads[p].samples.size() == 1);
+        CHECK(full.pads[p].samples[0].sample == "loop.wav");
+        CHECK(full.pads[p].samples[0].start == want[p][0]);
+        CHECK(full.pads[p].samples[0].end == want[p][1]);
+        CHECK(full.pads[p].attack == 7);
+    }
+    CHECK(full.pads[3].samples.empty());
 
     REQUIRE(r.tools->requestExportKit(kit));
     REQUIRE(r.finished() == ToolJob::Failed);

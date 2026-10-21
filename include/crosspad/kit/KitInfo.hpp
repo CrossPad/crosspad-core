@@ -18,7 +18,11 @@ namespace crosspad {
 /// Which sample engine plays a kit. Absent/unknown "engine" in kit.json = Sampler.
 enum class KitEngine : uint8_t {
     Sampler = 0,
-    Pitched = 1
+    Pitched = 1,
+    /// One WAV cut into regions, a pad each ({sample, start, end}), played by
+    /// the sampler engine with one voice -- a hit cuts the one sounding -- and
+    /// the kit's own `pitch` on every pad. What the Slicer makes.
+    Slice   = 2
 };
 
 /// Mirrors SampleBank::kMaxZones — zones beyond this are dropped at parse time.
@@ -147,6 +151,29 @@ struct KitInfo {
     /// A kit of the user's own: said so, or written by the Slicer before it
     /// said so.
     bool isUser() const { return category == "user" || author == "CrossPad Slicer"; }
+    /// A drum kit (category "drums"/"drum", any case): short hits, which the
+    /// sampler plays at most kDrumVoices at once.
+    bool isDrums() const {
+        auto is = [this](const char* w) {
+            size_t i = 0;
+            for (; w[i]; ++i) {
+                if (i >= category.size()) return false;
+                char c = category[i];
+                if (c >= 'A' && c <= 'Z') c = static_cast<char>(c - 'A' + 'a');
+                if (c != w[i]) return false;
+            }
+            return i == category.size();
+        };
+        return is("drums") || is("drum");
+    }
+    static constexpr uint8_t kDrumVoices = 12;
+    /// Voices the sampler engine may play for this kit; 0 = its default.
+    uint8_t voiceCap() const { return isDrums() ? kDrumVoices : 0; }
+    /// Played by the sampler engine (a Sampler or a Slice kit), not the pitched one.
+    bool playsOnSampler() const { return engine != KitEngine::Pitched; }
+    /// The whole kit's transpose in semitones, on top of each pad's own: a
+    /// Slice kit's PITCH. Realtime, nothing is rendered for it.
+    int8_t pitch = 0;
     /// The kit's tempo in BPM: what the click counts and the loop recorder is
     /// quantised to once the kit is loaded, and what preview.mid is played at.
     /// 0 means the kit does not say -- and a lot of DAWs export a MIDI file
@@ -178,7 +205,7 @@ struct KitInfo {
     }
 
     const char* engineName() const {
-        return engine == KitEngine::Pitched ? "pitched" : "sampler";
+        return engine == KitEngine::Pitched ? "pitched" : engine == KitEngine::Slice ? "slice" : "sampler";
     }
 
     std::string getDetails() const {

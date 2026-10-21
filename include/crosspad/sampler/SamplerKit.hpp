@@ -69,6 +69,7 @@ struct KitPad {
     float gain  = 1.0f;        ///< from volume 0..127
     float pan   = 0.0f;        ///< -1 left .. +1 right, from pan 0..127
     int8_t semitones = 0;      ///< realtime, from `pitch`
+    float  attackMs = -1.0f;   ///< the hit's fade-in; < 0 = SamplerEngine::Params::attackMs
 };
 
 struct SamplerKit {

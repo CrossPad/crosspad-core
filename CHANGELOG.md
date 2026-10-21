@@ -6,8 +6,30 @@ carries the same number) and consumers gate on it with
 `crosspad/RequireVersion.hpp`. This file starts at 1.45.0; earlier releases
 are described in their `chore: X.Y.Z` commits.
 
-## 2.4.0 — 2026-10-21
+## 2.5.0 — 2026-10-21
 
+The Slice kit: one WAV in regions, a pad each, played with one voice.
+
+### Added
+
+- `KitEngine::Slice` (kit.json `"engine": "slice"`): a kit whose pads are
+  regions of one WAV (`{sample, start, end}`), played by the sampler engine
+  with every pad in choke group 1 -- a hit cuts the one sounding.
+- `KitInfo::pitch` (kit.json `"pitch"`, -24..+24): the whole kit's transpose
+  on top of each pad's, realtime. `Pad::attack` (`"attack"`, ms) and
+  `KitPad::attackMs`: a pad's own fade-in; 0 / < 0 is the engine's.
+- `KitInfo::isDrums()`, `voiceCap()` (`kDrumVoices` 12 for a drum kit),
+  `playsOnSampler()`; `TakeSpec::voiceCap`, `TakePad::attack`.
+- The Slicer's KIT (`SampleToolsEngine`) writes a Slice kit: the loop once,
+  as it is, as `SAMPLES/loop.wav`, each pad a region of it, the kit's pitch
+  and each pad's attack -- not a WAV per slice with both written into it.
+- `SamplerEngine::kTrimFadeMs`: a one-shot whose trim ends inside its file
+  fades out over its last 5 ms instead of stopping on a click -- what the
+  Slicer used to write into a file per slice. The block render's recorded
+  digest moves with it (its pad 6 is such a trim); with the fade off it is
+  the old one.
+
+## 2.4.0 — 2026-10-21
 ### Added
 
 - `REG_CTL_SIM_PADS_HI`/`_LO`/`_SECS` (0x0352..0x0354): pads held without a

@@ -26,14 +26,17 @@ bool copyWhole(char* dst, size_t cap, const std::string& src)
     return true;
 }
 
-CROSSPAD_COLD void copyPad(const Pad& pad, TakePad& tp)
+CROSSPAD_COLD void copyPad(const KitInfo& kit, const Pad& pad, TakePad& tp)
 {
     tp = TakePad{};
     tp.mode    = pad.playbackMode;
-    tp.choke   = static_cast<uint8_t>(pad.choke_group);
+    /* One voice: every slice cuts the one sounding, as on an MPC. */
+    tp.choke   = static_cast<uint8_t>(kit.engine == KitEngine::Slice ? 1 : pad.choke_group);
     tp.volume  = static_cast<int16_t>(pad.volume);
     tp.pan     = static_cast<int16_t>(pad.pan);
-    tp.pitch   = static_cast<int8_t>(pad.pitch);
+    const int pitch = pad.pitch + kit.pitch;
+    tp.pitch   = static_cast<int8_t>(pitch < -24 ? -24 : pitch > 24 ? 24 : pitch);
+    tp.attack  = pad.attack;
     tp.hp      = pad.hp;
     tp.lp      = pad.lp;
     tp.reverse = pad.reverse;
@@ -69,14 +72,16 @@ CROSSPAD_COLD bool buildTakeSpec(const KitInfo& kit, int kitId, TakeSpec& out)
     out.name[0] = '\0';
     out.layerCount = 0;
     out.layersDropped = 0;
+    out.voiceCap = 0;
     for (auto& p : out.pads) p = TakePad{};
     if (!takeable(kit) || !copyWhole(out.kitPath, sizeof(out.kitPath), kit.path)) return false;
 
     out.kitId = kitId;
     std::snprintf(out.name, sizeof(out.name), "%s", kit.name.c_str());   // a label: cut is fine
+    out.voiceCap = kit.voiceCap();
     for (uint8_t p = 0; p < SamplerKit::kPads && p < KIT_PADS; ++p) {
         TakePad& tp = out.pads[p];
-        copyPad(kit.pads[p], tp);
+        copyPad(kit, kit.pads[p], tp);
         tp.firstLayer = static_cast<uint8_t>(out.layerCount);
         tp.layerCount = static_cast<uint8_t>(
             copyLayers(kit.pads[p], out.layers, out.layerCount, TakeSpec::kMaxLayers, out.layersDropped));
@@ -94,7 +99,7 @@ CROSSPAD_COLD bool buildTakePadSpec(const KitInfo& kit, int kitId, uint8_t pad, 
     if (pad >= SamplerKit::kPads || pad >= KIT_PADS || !takeable(kit)) return false;
     if (!copyWhole(out.kitPath, sizeof(out.kitPath), kit.path)) return false;
     out.kitId = kitId;
-    copyPad(kit.pads[pad], out.pad);
+    copyPad(kit, kit.pads[pad], out.pad);
     out.pad.firstLayer = 0;
     out.pad.layerCount = static_cast<uint8_t>(
         copyLayers(kit.pads[pad], out.layers, 0, KitPad::kMaxLayers, out.layersDropped));

@@ -82,6 +82,9 @@ public:
     static constexpr uint8_t kMaxSounding = kMaxVoices - kFadeSlots;
     static constexpr uint8_t kPads = SamplerKit::kPads;
     static constexpr float   kStealFadeMs = 2.0f;
+    /// A one-shot whose trim ends inside its file -- a slice of one WAV --
+    /// fades out over this before the trim's end, or it stops on a click.
+    static constexpr float   kTrimFadeMs = 5.0f;
 
     struct Params {
         /// Voices that may sound at once. Sixteen is what the engine this

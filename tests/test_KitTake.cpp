@@ -271,3 +271,35 @@ TEST_CASE("After any burst of requests the last one is served and the state sett
         REQUIRE(q.state() == LatestWork<uint32_t>::kReady);
     }
 }
+
+TEST_CASE("A Slice kit's take is one voice, at the kit's pitch, with each pad's attack", "[kittake][slice]") {
+    auto kit = makeKit();
+    kit->engine = KitEngine::Slice;
+    kit->pitch = 3;
+    kit->pads[2].attack = 12;
+    auto spec = std::make_unique<TakeSpec>();
+    REQUIRE(buildTakeSpec(*kit, 1, *spec));
+    for (uint8_t p = 0; p < KIT_PADS; ++p) {
+        CHECK(spec->pads[p].choke == 1);                         // every slice cuts the one sounding
+        CHECK(spec->pads[p].pitch == static_cast<int8_t>(p - 8 + 3));
+    }
+    CHECK(spec->pads[2].attack == 12);
+    CHECK(spec->pads[3].attack == 0);
+    CHECK(spec->voiceCap == 0);
+
+    auto one = std::make_unique<TakePadSpec>();
+    REQUIRE(buildTakePadSpec(*kit, 1, 2, *one));
+    CHECK(one->pad.choke == 1);
+    CHECK(one->pad.pitch == static_cast<int8_t>(2 - 8 + 3));
+    CHECK(one->pad.attack == 12);
+}
+
+TEST_CASE("A drum kit's take carries its voice cap", "[kittake]") {
+    auto kit = makeKit();
+    kit->category = "Drums";
+    auto spec = std::make_unique<TakeSpec>();
+    REQUIRE(buildTakeSpec(*kit, 1, *spec));
+    CHECK(spec->voiceCap == KitInfo::kDrumVoices);
+    CHECK(spec->pads[1].choke == 1);                             // its own groups, untouched
+    CHECK(spec->pads[2].choke == 2);
+}

@@ -330,3 +330,45 @@ TEST_CASE("kit json: a saved crosspad.app kit is written in the firmware's keys"
     CHECK(back.pads[0].playbackMode == 1);
     CHECK(back.pads[1].cycle);
 }
+
+TEST_CASE("kit json: a Slice kit is one file in regions, and comes back as it went", "[kitjson][slice]") {
+    const char* json = R"({
+      "name": "AMEN", "author": "CrossPad Slicer", "category": "slice", "engine": "slice", "pitch": -2,
+      "pads": [
+        { "samples": [ { "sample": "loop.wav", "start": 0, "end": 5000 } ], "attack": 4 },
+        { "samples": [ { "sample": "loop.wav", "start": 5000, "end": 9000 } ] }
+      ]
+    })";
+    KitInfo kit = parse(json);
+    CHECK(kit.engine == KitEngine::Slice);
+    CHECK(kit.playsOnSampler());
+    CHECK(kit.pitch == -2);
+    CHECK(std::string(kit.engineName()) == "slice");
+    REQUIRE(kit.pads[1].samples.size() == 1);
+    CHECK(kit.pads[1].samples[0].start == 5000);
+    CHECK(kit.pads[1].samples[0].end == 9000);
+    CHECK(kit.pads[0].attack == 4);
+    CHECK(kit.pads[1].attack == 0);
+
+    JsonDocument out;
+    REQUIRE(crosspad::kit_serialize(kit, out));
+    std::string text;
+    serializeJson(out, text);
+    KitInfo back = parse(text.c_str());
+    CHECK(back.engine == KitEngine::Slice);
+    CHECK(back.pitch == -2);
+    CHECK(back.pads[0].attack == 4);
+    CHECK(back.pads[1].samples[0].start == 5000);
+}
+
+TEST_CASE("kit json: drums are told by their category, any case", "[kitjson]") {
+    KitInfo kit;
+    kit.category = "DRUMS";
+    CHECK(kit.isDrums());
+    CHECK(kit.voiceCap() == KitInfo::kDrumVoices);
+    kit.category = "drum";
+    CHECK(kit.isDrums());
+    kit.category = "drumsets";
+    CHECK_FALSE(kit.isDrums());
+    CHECK(kit.voiceCap() == 0);
+}

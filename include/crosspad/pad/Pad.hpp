@@ -37,6 +37,7 @@ public:
     uint16_t hp = 0;        // high pass cutoff in Hz, 0 = off
     uint16_t lp = 0;        // low pass cutoff in Hz, 0 = off
     bool reverse = false;   // played from its end to its start
+    uint16_t attack = 0;    // ms the hit fades in over; 0 = the engine's own
     int volume = 100;
     int pan = 0;
     bool dirty = false;
@@ -109,6 +110,7 @@ public:
         hp = source.hp;
         lp = source.lp;
         reverse = source.reverse;
+        attack = source.attack;
         volume = source.volume;
         pan = source.pan;
         playbackMode = source.playbackMode;

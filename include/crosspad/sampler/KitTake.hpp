@@ -47,7 +47,8 @@ struct TakePad {
     uint8_t  choke = 0;        ///< Pad::choke_group
     int16_t  volume = 100;
     int16_t  pan    = 0;       ///< signed offset from centre, as the kit stores it
-    int8_t   pitch  = 0;       ///< semitones
+    int8_t   pitch  = 0;       ///< semitones: the pad's own plus the kit's (KitInfo::pitch)
+    uint16_t attack = 0;       ///< ms; 0 = the engine's own (Pad::attack)
     uint16_t hp = 0, lp = 0;
     bool     reverse = false;
     bool     cycle   = false;
@@ -70,6 +71,7 @@ struct TakeSpec {
     char     name[40] = {};
     uint16_t layerCount = 0;
     uint16_t layersDropped = 0;   ///< past kMaxLayers, or a name too long to keep
+    uint8_t  voiceCap = 0;        ///< KitInfo::voiceCap(): 0 = the engine's own
     TakePad  pads[SamplerKit::kPads];
     TakeLayer layers[kMaxLayers];
 };
@@ -87,6 +89,9 @@ struct TakePadSpec {
  * @brief Copy @p kit into @p out for a take. No I/O.
  * @return false for a kit no take plays: not parsed, or a pitched kit (it has
  *         an engine of its own). @p out is then left empty.
+ *
+ * A Slice kit's pads all cut each other (choke group 1: one voice), and the
+ * kit's own pitch is added to every pad's.
  */
 bool buildTakeSpec(const KitInfo& kit, int kitId, TakeSpec& out);
 

@@ -1153,7 +1153,10 @@ TEST_CASE("SamplerEngine's block render plays what the frame-by-frame one did, b
     const Played blk = playScript();
 
     REQUIRE(blk.out.size() == 20634);
-    CHECK(digest(blk.out) == 0x8e94f5f726c5288dull);
+    /* 0x8e94f5f726c5288d until 21.10.2026, when a trim ending inside its
+     * file (pad 6, to frame 900) began fading out over kTrimFadeMs; with that
+     * fade switched off the render still gives the old digest. */
+    CHECK(digest(blk.out) == 0x58cfe201ef12eed5ull);
 
     float peak = 0.0f;
     for (float s : blk.out) peak = std::max(peak, std::fabs(s));
@@ -1818,4 +1821,81 @@ TEST_CASE("MetronomeNode: frames to the next bar line", "[metronome][loop]") {
     m.startCountIn(1);
     m.mix(out.data(), 64);
     REQUIRE(m.framesToBar() == m.samplesPerBeat() - 64);
+}
+
+namespace {
+/// Every frame's left channel while @p rig plays, up to @p frames.
+std::vector<float> leftChannel(Rig& rig, uint32_t frames)
+{
+    std::vector<float> all;
+    std::vector<float> out(64 * 2);
+    while (all.size() < frames) {
+        std::fill(out.begin(), out.end(), 0.0f);
+        rig.engine.mix(out.data(), 64);
+        for (uint32_t i = 0; i < 64; ++i) all.push_back(out[i * 2]);
+        rig.engine.serviceIo();
+    }
+    return all;
+}
+} // namespace
+
+TEST_CASE("SamplerEngine fades a trim that ends inside its file out before its end", "[samplerengine][trim][slice]") {
+    Rig rig;
+    rig.build();
+    rig.src.add("loop.wav", 8000, 1);
+    const uint16_t slot = rig.store.load("loop.wav", 4096, 0, 2000);
+    REQUIRE(slot != SampleStore::kNoSlot);
+    KitPad& kp = rig.kit.pad[0];
+    kp.layers[0].slot = slot;
+    kp.layers[0].start = 0;
+    kp.layers[0].end = 2000;
+    kp.layerCount = 1;
+    kp.gain = 1.0f;
+    rig.publish();
+
+    rig.engine.noteOn(0, 127);
+    const std::vector<float> l = leftChannel(rig, 2400);
+    size_t last = 0;
+    float peak = 0.0f;
+    for (size_t i = 0; i < l.size(); ++i) {
+        if (l[i] != 0.0f) last = i;
+        peak = std::max(peak, std::fabs(l[i]));
+    }
+    REQUIRE(peak > 0.0f);
+    CHECK(last < 2000);                                   // over by the trim's end
+    CHECK(std::fabs(l[last]) < peak * 0.05f);             // down to nothing, not cut off at full level
+    /* The fade is the last kTrimFadeMs, not the whole slice. */
+    const size_t fade = static_cast<size_t>(SamplerEngine::kTrimFadeMs * 0.001f * 44100.0f);
+    CHECK(std::fabs(l[last - fade - 10]) > peak * 0.9f);
+    REQUIRE_FALSE(rig.engine.anySounding());
+}
+
+TEST_CASE("SamplerEngine plays a file's own end without the trim's fade", "[samplerengine][trim][slice]") {
+    Rig rig;
+    rig.build();
+    rig.src.add("hit.wav", 2000, 1);
+    rig.assign(0, "hit.wav", 4096);
+    rig.publish();
+    rig.engine.noteOn(0, 127);
+    const std::vector<float> l = leftChannel(rig, 2400);
+    float peak = 0.0f;
+    for (float v : l) peak = std::max(peak, std::fabs(v));
+    CHECK(std::fabs(l[1999]) > peak * 0.9f);              // as written, to its last frame
+}
+
+TEST_CASE("SamplerEngine rises over a pad's own attack", "[samplerengine][slice]") {
+    Rig rig;
+    rig.build();
+    rig.src.add("hit.wav", 8000, 1);
+    rig.assign(0, "hit.wav", 4096);
+    rig.assign(1, "hit.wav", 4096);
+    rig.kit.pad[1].attackMs = 50.0f;                      // 2205 frames
+    rig.publish();
+    rig.engine.noteOn(0, 127);
+    const std::vector<float> plain = leftChannel(rig, 256);
+    rig.engine.stopPad(0);
+    rig.run(10);
+    rig.engine.noteOn(1, 127);
+    const std::vector<float> slow = leftChannel(rig, 256);
+    CHECK(std::fabs(slow[200]) < std::fabs(plain[200]) * 0.2f);
 }
