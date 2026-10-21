@@ -6,6 +6,17 @@ carries the same number) and consumers gate on it with
 `crosspad/RequireVersion.hpp`. This file starts at 1.45.0; earlier releases
 are described in their `chore: X.Y.Z` commits.
 
+## 2.4.0 — 2026-10-21
+
+### Added
+
+- `REG_CTL_SIM_PADS_HI`/`_LO`/`_SECS` (0x0352..0x0354): pads held without a
+  finger for a bench test -- a mask OR'ed into `REG_IN_PADS_*` for SECS
+  seconds, kept across an ESP reset (CrossPad/CrossPad_STM32_r2
+  `feat/console-hold-pad16`). Lets a bench boot the ESP with pad 16 held,
+  the return to the main firmware. Test registers: `STM32_PROTO_VERSION`
+  stays 0x0011, and an STM without them ignores the writes.
+
 ## 2.3.0 — 2026-10-21
 
 The 1.x line's adaptive hit window (1.71.0 there, CrossPad/crosspad-core#42).

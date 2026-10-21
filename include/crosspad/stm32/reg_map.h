@@ -310,6 +310,16 @@ extern "C" {
 #define REG_CTL_BTN_HIT_PEAK_DROP   (REG_CONTROL_BASE + 0x50)  /* adaptive: raw ADC counts above the deepest */
 #define REG_CTL_BTN_HIT_PEAK_SAMPLES (REG_CONTROL_BASE + 0x51) /* adaptive: consecutive samples, 1..255 */
 
+/* Pads held without a finger (RW, STM 1.12 test build), for a bench test of
+ * what the ESP decides from REG_IN_PADS_* -- pad 16 held through a boot. The
+ * mask is OR'ed into the pressed bitmap for SECS seconds from the write of
+ * SECS (0 releases at once); SIM_PADS_HI/LO stage it. The STM keeps it across
+ * an ESP reset. No note-on or pressure goes out for it, and nothing is saved;
+ * an STM without it ignores the writes. */
+#define REG_CTL_SIM_PADS_HI         (REG_CONTROL_BASE + 0x52)  /* bits 8..15 */
+#define REG_CTL_SIM_PADS_LO         (REG_CONTROL_BASE + 0x53)  /* bits 0..7  */
+#define REG_CTL_SIM_PADS_SECS       (REG_CONTROL_BASE + 0x54)  /* arms; 0 = release */
+
 /* Command (WO trigger — write any byte to fire). */
 #define REG_CMD_DFU                 (REG_COMMAND_BASE + 0x00)
 #define REG_CMD_POWEROFF            (REG_COMMAND_BASE + 0x01)
