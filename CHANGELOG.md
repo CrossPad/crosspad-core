@@ -6,6 +6,23 @@ carries the same number) and consumers gate on it with
 `crosspad/RequireVersion.hpp`. This file starts at 1.45.0; earlier releases
 are described in their `chore: X.Y.Z` commits.
 
+## 2.3.0 — 2026-10-21
+
+The 1.x line's adaptive hit window (1.71.0 there, CrossPad/crosspad-core#42).
+
+### Added
+
+- Adaptive hit window (STM 1.12, proto 0x0011): `REG_CTL_BTN_HIT_MODE`
+  (0x034E, 0 fixed / 1 adaptive), `_HIT_MIN_MS` (0x034F), `_HIT_PEAK_DROP`
+  (0x0350, raw ADC counts) and `_HIT_PEAK_SAMPLES` (0x0351). Adaptive sends
+  the note-on once the press has peaked -- that many samples in a row that
+  much shallower than the deepest -- not before the minimum and never after
+  `pressDebounceMs`. `Stm32Settings::hitMode`/`hitMinMs`/`hitPeakDrop`/
+  `hitPeakSamples` (NVS `hit_mode`, `hit_min_ms`, `hit_drop`, `hit_samples`;
+  JSON in the pad tuning, clamped 0..1, 0..15, 0..255, 1..8), defaults the
+  STM's own (fixed, 2 ms, 32, 2); `Stm32ConfigSync::pushAll` writes them.
+  `STM32_PROTO_VERSION` 0x0011; an STM 1.11 ignores the writes.
+
 ## 2.2.0 — 2026-10-20
 
 UX 2000 from the 1.x line (Steve's 1.71.0 and 1.72.0 there, 5b0d106 on the

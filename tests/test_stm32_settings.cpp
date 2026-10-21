@@ -25,6 +25,10 @@ TEST_CASE("Stm32Settings: defaults match STM compiled defaults", "[settings][stm
     REQUIRE(s.analogMinMs == 16);
     REQUIRE(s.analogDelta == 2);
     REQUIRE(s.pressDebounceMs == 6);  // not the STM's 15: the note-on waits it out
+    REQUIRE(s.hitMode == 0);          // fixed window until the A/B picks
+    REQUIRE(s.hitMinMs == 2);
+    REQUIRE(s.hitPeakDrop == 32);
+    REQUIRE(s.hitPeakSamples == 2);
     REQUIRE(s.en3v3Hold == 1);
     REQUIRE(s.usbSuspendS == 30);
     REQUIRE(s.encCcMode == 0);
@@ -58,6 +62,10 @@ TEST_CASE("Stm32Settings: persistence round-trip", "[settings][stm]") {
     a.noteOffset = -12;
     a.sleepTimeoutS = 900;
     a.pressDebounceMs = 11;
+    a.hitMode = 1;
+    a.hitMinMs = 4;
+    a.hitPeakDrop = 50;
+    a.hitPeakSamples = 3;
 #if defined(PAD_CONFIG_PER_PAD)
     a.padAnalogMode[3] = 1;
     a.padSensitivity[3] = 250;
@@ -76,6 +84,10 @@ TEST_CASE("Stm32Settings: persistence round-trip", "[settings][stm]") {
     REQUIRE(b.noteOffset == -12);
     REQUIRE(b.sleepTimeoutS == 900);
     REQUIRE(b.pressDebounceMs == 11);
+    REQUIRE(b.hitMode == 1);
+    REQUIRE(b.hitMinMs == 4);
+    REQUIRE(b.hitPeakDrop == 50);
+    REQUIRE(b.hitPeakSamples == 3);
 #if defined(PAD_CONFIG_PER_PAD)
     REQUIRE(b.padAnalogMode[3] == 1);
     REQUIRE(b.padSensitivity[3] == 250);
