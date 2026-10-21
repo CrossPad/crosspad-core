@@ -66,6 +66,16 @@ struct Stm32Settings {
     static constexpr uint8_t kPressDebounceMinMs = 2;
     static constexpr uint8_t kPressDebounceMaxMs = 15;
     uint8_t pressDebounceMs = BOARD_PRESS_DEBOUNCE_MS_DEF;
+    // Adaptive hit window (REG_CTL_BTN_HIT_*, STM 1.12): the note-on as soon
+    // as the press has peaked -- hitPeakSamples samples in a row hitPeakDrop
+    // raw ADC counts shallower than the deepest -- but not before hitMinMs;
+    // pressDebounceMs stays the longest. hitMode 0 is the fixed window above.
+    // Defaults are the STM's compiled-in ones; an older STM ignores them.
+    static constexpr uint8_t kHitPeakSamplesMax = 8;
+    uint8_t hitMode        = 0;
+    uint8_t hitMinMs       = 2;
+    uint8_t hitPeakDrop    = 32;
+    uint8_t hitPeakSamples = 2;
 
     // per-pad config — access ONLY via the accessors below.
 #if defined(PAD_CONFIG_PER_PAD)
@@ -147,6 +157,10 @@ struct Stm32Settings {
         analogMinMs = s.readU8("cfg_stm", "an_min_ms", analogMinMs);
         analogDelta = s.readU8("cfg_stm", "an_delta", analogDelta);
         pressDebounceMs = s.readU8("cfg_stm", "press_db", pressDebounceMs);
+        hitMode        = s.readU8("cfg_stm", "hit_mode", hitMode);
+        hitMinMs       = s.readU8("cfg_stm", "hit_min_ms", hitMinMs);
+        hitPeakDrop    = s.readU8("cfg_stm", "hit_drop", hitPeakDrop);
+        hitPeakSamples = s.readU8("cfg_stm", "hit_samples", hitPeakSamples);
 #if defined(PAD_CONFIG_PER_PAD)
         for (int i = 0; i < kPads; ++i) {
             char k[12];
@@ -190,6 +204,10 @@ struct Stm32Settings {
         s.saveU8("cfg_stm", "an_min_ms", analogMinMs);
         s.saveU8("cfg_stm", "an_delta", analogDelta);
         s.saveU8("cfg_stm", "press_db", pressDebounceMs);
+        s.saveU8("cfg_stm", "hit_mode", hitMode);
+        s.saveU8("cfg_stm", "hit_min_ms", hitMinMs);
+        s.saveU8("cfg_stm", "hit_drop", hitPeakDrop);
+        s.saveU8("cfg_stm", "hit_samples", hitPeakSamples);
 #if defined(PAD_CONFIG_PER_PAD)
         for (int i = 0; i < kPads; ++i) {
             char k[12];
@@ -226,6 +244,10 @@ struct Stm32Settings {
         json["analogMinMs"] = analogMinMs;
         json["analogDelta"] = analogDelta;
         json["pressDebounceMs"] = pressDebounceMs;
+        json["hitMode"]         = hitMode;
+        json["hitMinMs"]        = hitMinMs;
+        json["hitPeakDrop"]     = hitPeakDrop;
+        json["hitPeakSamples"]  = hitPeakSamples;
         JsonArray sens = json["padSensitivity"].to<JsonArray>();
         JsonArray lr   = json["padLrRatio"].to<JsonArray>();
         JsonArray an   = json["padAnalogMode"].to<JsonArray>();
@@ -251,6 +273,10 @@ struct Stm32Settings {
         analogDelta = (uint8_t)jsonInt(json["analogDelta"], analogDelta, 0, 255);
         pressDebounceMs = (uint8_t)jsonInt(json["pressDebounceMs"], pressDebounceMs,
                                            kPressDebounceMinMs, kPressDebounceMaxMs);
+        hitMode        = (uint8_t)jsonInt(json["hitMode"], hitMode, 0, 1);
+        hitMinMs       = (uint8_t)jsonInt(json["hitMinMs"], hitMinMs, 0, kPressDebounceMaxMs);
+        hitPeakDrop    = (uint8_t)jsonInt(json["hitPeakDrop"], hitPeakDrop, 0, 255);
+        hitPeakSamples = (uint8_t)jsonInt(json["hitPeakSamples"], hitPeakSamples, 1, kHitPeakSamplesMax);
 
         JsonVariantConst sens = json["padSensitivity"];
         JsonVariantConst lr   = json["padLrRatio"];

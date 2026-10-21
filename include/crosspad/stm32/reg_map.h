@@ -43,9 +43,10 @@ extern "C" {
  * REG_ESP_RST_* reset-reason counter block, and the REG_EXP_* I2C-expander
  * block. Bumped 2026-08-25 to 0x000B for power-button wake-hold time and
  * active/qualified flags. Bumped 2026-08-28 to 0x000C for the link-watchdog
- * reset telemetry (REG_ESP_RST_WD_*). Keep in sync with CrossPad_STM32_r20
- * app/inc/reg_map.h. */
-#define STM32_PROTO_VERSION         0x0010
+ * reset telemetry (REG_ESP_RST_WD_*). Bumped 2026-10-17 to 0x0011 for the
+ * adaptive hit window (REG_CTL_BTN_HIT_*, STM 1.12). Keep in sync with
+ * CrossPad_STM32_r20 app/inc/reg_map.h. */
+#define STM32_PROTO_VERSION         0x0011
 
 /* Block bases. */
 #define REG_IDENTITY_BASE           0x0000
@@ -297,6 +298,17 @@ extern "C" {
 #define REG_CTL_VPAD_COUNT_LO       (REG_CONTROL_BASE + 0x4B)
 #define REG_CTL_VPAD_HOLD_MS        (REG_CONTROL_BASE + 0x4C)
 #define REG_CTL_VPAD_MODE           (REG_CONTROL_BASE + 0x4D)  /* bits1:0 pad rr/single/random, bits3:2 vel sweep/random/fixed */
+/* Hit window (RW, proto 0x0011). The note-on goes out when the press window
+ * ends, with the velocity of the deepest sample inside it. HIT_MODE 0: the
+ * window is REG_CTL_BTN_PRESS_DB_MS long. HIT_MODE 1 (adaptive): it also ends
+ * once the pressure has peaked -- HIT_PEAK_SAMPLES consecutive samples of the
+ * pad at least HIT_PEAK_DROP raw ADC counts shallower than its deepest (0 =
+ * merely not deeper) -- but never before HIT_MIN_MS; PRESS_DB_MS stays the
+ * longest it can be. The STM samples a pad twice per ms. */
+#define REG_CTL_BTN_HIT_MODE        (REG_CONTROL_BASE + 0x4E)  /* 0 fixed, 1 adaptive */
+#define REG_CTL_BTN_HIT_MIN_MS      (REG_CONTROL_BASE + 0x4F)  /* adaptive: earliest note-on, ms */
+#define REG_CTL_BTN_HIT_PEAK_DROP   (REG_CONTROL_BASE + 0x50)  /* adaptive: raw ADC counts above the deepest */
+#define REG_CTL_BTN_HIT_PEAK_SAMPLES (REG_CONTROL_BASE + 0x51) /* adaptive: consecutive samples, 1..255 */
 
 /* Command (WO trigger — write any byte to fire). */
 #define REG_CMD_DFU                 (REG_COMMAND_BASE + 0x00)
