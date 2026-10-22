@@ -281,6 +281,99 @@ TEST_CASE("PadManager: the input tap sees played pads, not the sequencer's", "[p
 
 namespace {
 
+// Counts the presses and releases that reach it; buttons-only on request.
+class CountingLogic : public DummyPadLogic {
+public:
+    explicit CountingLogic(bool buttons = false) : buttons_(buttons) {}
+    bool buttonsOnly() const override { return buttons_; }
+    void onPadPress(PadManager&, uint8_t pad, uint8_t) override { ++presses; lastPad = pad; }
+    void onPadRelease(PadManager&, uint8_t) override { ++releases; }
+    int presses = 0, releases = 0;
+    uint8_t lastPad = 0xFF;
+private:
+    bool buttons_;
+};
+
+} // namespace
+
+TEST_CASE("PadManager: a buttons-only logic takes a finger; every other note plays under it",
+          "[pad][buttons]") {
+    test::CoreTestPlatform platform;
+    REQUIRE(platform.init());
+    auto& pm = platform.padManager;
+    auto inst = std::make_shared<CountingLogic>();
+    auto map  = std::make_shared<CountingLogic>(true);
+    pm.registerPadLogic("Inst", inst);
+    pm.registerPadLogic("Map", map);
+    pm.setBasePadLogic("Inst");
+    pm.pushPadLogic("Map");
+    REQUIRE(pm.getActivePadLogic() == "Map");
+
+    SECTION("a finger chooses on the map and plays nothing") {
+        pm.handlePadPress(3, 100);
+        pm.handlePadRelease(3);
+        CHECK(map->presses == 1);
+        CHECK(map->releases == 1);
+        CHECK(inst->presses == 0);
+        CHECK(inst->releases == 0);
+    }
+
+    for (const EventSource src : {EventSource::SequencerCallback, EventSource::MidiInput,
+                                  EventSource::App}) {
+        DYNAMIC_SECTION("a note from source " << static_cast<int>(src) << " sounds under the map") {
+            pm.handlePadPress(7, 90, src);
+            pm.handlePadRelease(7, src);
+            CHECK(inst->presses == 1);
+            CHECK(inst->lastPad == 7);
+            CHECK(inst->releases == 1);
+            CHECK(map->presses == 0);
+            CHECK(map->releases == 0);
+        }
+    }
+
+    SECTION("the logic under is the one the map was pushed over, not the base") {
+        auto app = std::make_shared<CountingLogic>();
+        pm.registerPadLogic("App", app);
+        pm.popPadLogic();
+        pm.pushPadLogic("App");
+        pm.pushPadLogic("Map");
+        pm.handlePadPress(1, 100, EventSource::SequencerCallback);
+        CHECK(app->presses == 1);
+        CHECK(inst->presses == 0);
+    }
+
+    SECTION("with the map gone the notes go back to the active logic") {
+        pm.popPadLogic();
+        pm.handlePadPress(2, 100, EventSource::MidiInput);
+        pm.handlePadPress(2, 100);
+        CHECK(inst->presses == 2);
+        CHECK(map->presses == 0);
+    }
+}
+
+TEST_CASE("PadManager: a finger on a buttons-only logic is not the recorder's input",
+          "[pad][buttons]") {
+    test::CoreTestPlatform platform;
+    REQUIRE(platform.init());
+    auto& pm = platform.padManager;
+    int tapped = 0;
+    pm.setInputTap([](void* ctx, uint8_t, uint8_t) { ++*static_cast<int*>(ctx); }, &tapped);
+    pm.registerPadLogic("Inst", std::make_shared<CountingLogic>());
+    pm.registerPadLogic("Map", std::make_shared<CountingLogic>(true));
+    pm.setBasePadLogic("Inst");
+    pm.pushPadLogic("Map");
+
+    pm.handlePadPress(4, 100);                          // a button press
+    CHECK(tapped == 0);
+    pm.handlePadPress(4, 100, EventSource::MidiInput);  // a host's note, recorded as ever
+    CHECK(tapped == 1);
+    pm.popPadLogic();
+    pm.handlePadPress(4, 100);                          // a finger playing the instrument
+    CHECK(tapped == 2);
+}
+
+namespace {
+
 // 16 levels of pitch on pad 6, for whatever is struck; reads back what the
 // recorder said a played-back press was.
 class LevelsLogic : public IPadLogicHandler {

@@ -10,12 +10,25 @@ namespace {
 thread_local int t_dispatchDepth = 0;
 } // namespace
 
-PadManager::DispatchScope::DispatchScope(const PadManager& pm) : pm_(pm) {
+PadManager::DispatchScope::DispatchScope(const PadManager& pm, EventSource source) : pm_(pm) {
     std::lock_guard<std::mutex> lock(pm_.logicMutex_);
     if (!pm_.activePadLogic_) return;
     handler = pm_.activePadLogic_;
+    if (handler->buttonsOnly()) {
+        if (source == EventSource::PadManager) buttons = true;
+        else handler = pm_.logicUnderButtons();
+    }
+    if (!handler) return;
     ++pm_.dispatchInFlight_;
     ++t_dispatchDepth;
+}
+
+std::shared_ptr<IPadLogicHandler> PadManager::logicUnderButtons() const {
+    for (auto it = padLogicStack_.rbegin(); it != padLogicStack_.rend(); ++it) {
+        const auto found = padLogicHandlers_.find(it->empty() ? basePadLogicName_ : *it);
+        if (found != padLogicHandlers_.end() && !found->second->buttonsOnly()) return found->second;
+    }
+    return nullptr;
 }
 
 PadManager::DispatchScope::~DispatchScope() {
@@ -100,13 +113,15 @@ void PadManager::handlePadPress(uint8_t padIdx, uint8_t velocity, EventSource so
                                 PadPerformance performance) {
     if (padIdx >= 16) return;
     if (inputSuppressed_) return;
-    if (inputTap_ && source != EventSource::SequencerCallback && source != EventSource::App) {
+
+    // The pad logic this press is for, counted in flight until this call returns.
+    const DispatchScope dispatch(*this, source);
+    const std::shared_ptr<IPadLogicHandler>& handler = dispatch.handler;
+
+    if (inputTap_ && !dispatch.buttons &&
+        source != EventSource::SequencerCallback && source != EventSource::App) {
         inputTap_(inputTapCtx_, padIdx, velocity);
     }
-
-    // The active pad logic, counted in flight until this call returns.
-    const DispatchScope dispatch(*this);
-    const std::shared_ptr<IPadLogicHandler>& handler = dispatch.handler;
 
     // Update internal state (thread-safe write)
     {
@@ -158,8 +173,8 @@ void PadManager::handlePadTouch(uint8_t padIdx, bool touching) {
 void PadManager::handlePadRelease(uint8_t padIdx, EventSource source) {
     if (padIdx >= 16) return;
 
-    // The active pad logic, counted in flight until this call returns.
-    const DispatchScope dispatch(*this);
+    // The pad logic the press went to, counted in flight until this call returns.
+    const DispatchScope dispatch(*this, source);
     const std::shared_ptr<IPadLogicHandler>& handler = dispatch.handler;
 
     {
