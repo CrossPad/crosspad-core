@@ -6,6 +6,22 @@ carries the same number) and consumers gate on it with
 `crosspad/RequireVersion.hpp`. This file starts at 1.45.0; earlier releases
 are described in their `chore: X.Y.Z` commits.
 
+## 2.10.0 — 2026-10-23
+
+A pitched sampler voice in a third less, and the pads tap only when wanted.
+
+### Added
+
+- `SampleCursor::readRun()`: read() over a run of one buffer, frame by
+  frame the same interpolation. `SamplerEngine` renders a pitched voice's
+  steady part with it (no fade, release or trim tail): a Slice kit's voice
+  went from ~167 to ~124 us a block on the board, bit for bit the same
+  output (the kernel digests hold).
+- `SamplerEngine::Counters::pitchedRunFrames` / `pitchedSlowFrames`.
+- `SongEngine::capturing()` and `SampleToolsEngine::wantsBus()`: whether the
+  pads tap is needed this block, so a platform need not mix it otherwise
+  (~48 us a block on the board).
+
 ## 2.9.0 — 2026-10-22
 
 A seq track can be frozen.

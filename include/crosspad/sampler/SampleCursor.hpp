@@ -254,7 +254,64 @@ public:
         return true;
     }
 
+    /// read() over a run: from @p phase, stepping @p inc, the frames that lie
+    /// in one buffer -- the head, or the window's run where read() would walk
+    /// it -- and before frame @p stop, at most @p n of them. Each goes to
+    /// @p emit(left, right, frame) interpolated exactly as read() does it;
+    /// emit returning false stops on that frame, @p phase left on it.
+    /// Returns the frames emitted and accepted; 0 where read() takes its slow
+    /// path, which the caller then takes frame by frame.
+    template <class Emit>
+    uint32_t readRun(uint64_t& phase, uint64_t inc, uint32_t stop, uint32_t n, Emit&& emit) const
+    {
+        const int16_t* base = nullptr;
+        uint32_t first = 0, end = 0;
+        if (!runAround(static_cast<uint32_t>(phase >> 32), base, first, end)) return 0;
+        uint32_t k = 0;
+        for (; k < n; ++k) {
+            const uint32_t i = static_cast<uint32_t>(phase >> 32);
+            if (i + 2 >= end || i >= stop) break;
+            const float f = static_cast<float>(static_cast<uint32_t>(phase)) * kFracNorm;
+            float l, r;
+            walk(base + static_cast<size_t>(i - 1 - first) * channels_, f, l, r);
+            if (!emit(l, r, i)) break;
+            phase += inc;
+        }
+        return k;
+    }
+
 private:
+    /// The buffer around frame @p i whose four taps read() would walk by
+    /// pointer: @p base is frame @p first's, and frames up to @p end are in
+    /// it. The head where read() takes it, else the window's run -- only a
+    /// voice not lapping a streamed loop, the case readRun() is for.
+    bool runAround(uint32_t i, const int16_t*& base, uint32_t& first, uint32_t& end) const
+    {
+        if (head_ && i >= headStart_ + 1 && i + 2 < headEnd_) {
+            base = head_;
+            first = headStart_;
+            end = headEnd_;
+            return true;
+        }
+        if (!window_ || lapOffset_ || i < 1) return false;
+        const uint32_t left4 = i - 1;
+        if (!(runPtr_ && left4 >= runFirst_ && i + 2 < runLast_)) {
+            uint32_t f = 0, last = 0;
+            const int16_t* p = window_->run(left4, f, last);
+            if (!p || i + 2 >= last) {
+                runPtr_ = nullptr;
+                return false;
+            }
+            runPtr_ = p;
+            runFirst_ = left4;
+            runLast_ = last;
+        }
+        base = runPtr_;
+        first = runFirst_;
+        end = runLast_;
+        return true;
+    }
+
     /// Four neighbouring frames from @p p, interpolated. @p p is the tap at
     /// i-1, so the caller has already checked that four frames fit.
     bool walk(const int16_t* p, float f, float& left, float& right) const

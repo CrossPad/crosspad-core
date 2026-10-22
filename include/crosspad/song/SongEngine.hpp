@@ -31,6 +31,10 @@ public:
     /// The pads-only bus, one block, from the render. Does nothing unless a
     /// bounce is armed.
     void rtCapture(const float* padsBus, uint32_t frames);
+    /// A bounce or a freeze is armed or recording: rtCapture() needs the pads
+    /// tap this block. Without one it only keeps the pads' peak, which a
+    /// platform whose seqLevel() answers never reads.
+    bool capturing() const;
     /// Stop playback, cancel any bounce and give both rings back; returns
     /// once they are. Never from the worker.
     void releaseRings();

@@ -186,6 +186,11 @@ public:
         uint32_t streamRefused = 0;   ///< the pool had no blocks: the voice plays its head only
         uint32_t underruns     = 0;   ///< a voice reached frames the streamer had not delivered
         uint32_t voicesPeak    = 0;
+        /// Pitched frames rendered as a run off one buffer, and frame by frame
+        /// (attack, fades, the trim's tail, a buffer's edge): where the
+        /// slower path's share of a pitched kit's render goes.
+        uint32_t pitchedRunFrames  = 0;
+        uint32_t pitchedSlowFrames = 0;
         uint32_t sheds         = 0;   ///< steals setOverloaded() forced below the cap (part of steals)
         uint32_t armed         = 0;   ///< voices armed by a touch
         uint32_t armFired      = 0;   ///< ... that its velocity started
@@ -692,6 +697,7 @@ private:
     std::atomic<bool> overloaded_{false};
     std::atomic<uint32_t> cLoopsQueued_{0}, cLoopsLaunched_{0};
     std::atomic<uint32_t> cStreamRefused_{0}, cUnderruns_{0}, cVoicesPeak_{0}, cSilenced_{0};
+    std::atomic<uint32_t> cPitchedRun_{0}, cPitchedSlow_{0};
     std::atomic<uint8_t> ringsWaiting_{0};
 };
 

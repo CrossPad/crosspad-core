@@ -47,6 +47,10 @@ public:
     /// The pads tap of this block, after the mixer; also where a take armed
     /// with the song sees the song start.
     void rtBus(const float* padsBus, uint32_t frames);
+    /// rtBus() has something to do this block: a take of the pads or the
+    /// Pitch instrument, or one waiting for the song to start. Without, the
+    /// platform need not make the tap at all.
+    bool wantsBus() const;
     void setCaptureTap(CaptureTap fn, void* ctx);
 
     /// Before the platform takes back memory it lent a ring: a lent preview

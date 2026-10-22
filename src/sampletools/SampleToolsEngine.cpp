@@ -444,6 +444,11 @@ struct SampleToolsEngine::Impl {
             input_.load(std::memory_order_relaxed) == RecInput::Usb) take(block, frames);
     }
 
+    bool wantsBus() const {
+        if (syncWait_.load(std::memory_order_acquire)) return true;
+        const RecInput in = input_.load(std::memory_order_relaxed);
+        return listening_.load(std::memory_order_relaxed) && (in == RecInput::Pads || in == RecInput::Pitch);
+    }
     void rtBus(const float* bus, uint32_t frames) {
         if (syncWait_.load(std::memory_order_acquire)) rtSync(frames);
         // Pitch is the same bus: a borrowed pitched bank renders into it where
@@ -1657,6 +1662,7 @@ void SampleToolsEngine::rtInput(int codec, const int16_t* block, uint32_t frames
 void SampleToolsEngine::rtUsb(const int16_t* block, uint32_t frames) { impl_->rtUsb(block, frames); }
 void SampleToolsEngine::rtBlockBegin() { impl_->rtBlockBegin(); }
 void SampleToolsEngine::rtBus(const float* padsBus, uint32_t frames) { impl_->rtBus(padsBus, frames); }
+bool SampleToolsEngine::wantsBus() const { return impl_->wantsBus(); }
 void SampleToolsEngine::setCaptureTap(CaptureTap fn, void* ctx) { impl_->setCaptureTap(fn, ctx); }
 void SampleToolsEngine::reclaimLentRing() { impl_->reclaimLentRing(); }
 

@@ -497,6 +497,8 @@ struct SongEngine::Impl {
     }
 
     /// The pads bus, one block. Only while a bounce is armed.
+    bool capturing() const { return bArmed_.load(std::memory_order_seq_cst); }
+
     void rtCapture(const float* bus, uint32_t frames) {
         RtSection rt(rtGen_);
         /* The seq track's meter: its notes play through the pads, live. */
@@ -3708,6 +3710,7 @@ void SongEngine::onPrepare(uint32_t maxFrames, uint32_t sr) { impl_->onPrepare(m
 void SongEngine::onSampleRateChange(uint32_t sr) { impl_->onSampleRateChange(sr); }
 void SongEngine::mix(float* out, uint32_t frames) { impl_->mix(out, frames); }
 void SongEngine::rtCapture(const float* padsBus, uint32_t frames) { impl_->rtCapture(padsBus, frames); }
+bool SongEngine::capturing() const { return impl_->capturing(); }
 void SongEngine::releaseRings() { impl_->releaseRings(); }
 const char* SongEngine::debugLine() const { return impl_->debugLine(); }
 bool SongEngine::liveStart() { return impl_->liveStart(); }

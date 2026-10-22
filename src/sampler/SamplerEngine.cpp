@@ -868,6 +868,17 @@ bool SamplerEngine::renderVoice(Voice& v, float* out, uint32_t frames)
     };
 
     const uint8_t ch = v.cursor.channels();
+    /* Counted once a block, not once a frame: an atomic a frame would cost
+     * what it measures. */
+    struct PitchedTally {
+        std::atomic<uint32_t>& run;
+        std::atomic<uint32_t>& slow;
+        uint32_t r = 0, s = 0;
+        ~PitchedTally() {
+            if (r) run.fetch_add(r, std::memory_order_relaxed);
+            if (s) slow.fetch_add(s, std::memory_order_relaxed);
+        }
+    } tally{cPitchedRun_, cPitchedSlow_};
     uint32_t i = 0;
     while (i < frames) {
         const uint32_t at = static_cast<uint32_t>(phase >> 32);
@@ -908,7 +919,42 @@ bool SamplerEngine::renderVoice(Voice& v, float* out, uint32_t frames)
             continue;
         }
 
+        /* Pitched, in its steady part -- no fade, no release, not in the
+         * trim's tail -- a run of interpolated frames off one buffer, with
+         * the arithmetic of play() for that case. Frame by frame through
+         * read() and play() a pitched voice was ~170 us a block, three times
+         * an unpitched one (a Slice kit's pads, measured on the board). */
+        if (!unitRate && down == 0.0f && env == 1.0f && mute == muteTarget && at < tailFrom) {
+            const uint32_t stopAt = tailFrom < v.last ? tailFrom : v.last;
+            const float e = env * (1.0f / 32768.0f);
+            const float gl = gainL * mute, gr = gainR * mute;
+            float* o = out + static_cast<size_t>(i) * 2;
+            const uint32_t n = v.cursor.readRun(phase, v.inc, stopAt, frames - i,
+                                                [&](float l, float r, uint32_t f) {
+                o[0] += l * gl * e;
+                o[1] += r * gr * e;
+                o += 2;
+                const float a = (l < 0 ? -l : l) > (r < 0 ? -r : r) ? (l < 0 ? -l : l) : (r < 0 ? -r : r);
+                if (a >= loudLevel) {
+                    loudEnd = f + 1;
+                    quiet = 0;
+                } else if (quietLimit && ++quiet >= quietLimit) {
+                    silenced = true;
+                    return false;
+                }
+                return true;
+            });
+            tally.r += n;
+            if (silenced) return stopped();
+            if (n) {
+                i += n;
+                if (!atEnd()) return false;
+                continue;
+            }
+        }
+
         float l = 0.0f, r = 0.0f;
+        if (!unitRate) ++tally.s;
         const bool got = unitRate ? v.cursor.sample(at, l, r) : v.cursor.read(phase, l, r);
         if (!got) {
             /* The frame is not here. Either the sample ended -- the ordinary
@@ -1303,6 +1349,8 @@ CROSSPAD_COLD SamplerEngine::Counters SamplerEngine::counters() const
     Counters c;
     c.notesStarted  = cNotes_.load(std::memory_order_relaxed);
     c.silenced      = cSilenced_.load(std::memory_order_relaxed);
+    c.pitchedRunFrames  = cPitchedRun_.load(std::memory_order_relaxed);
+    c.pitchedSlowFrames = cPitchedSlow_.load(std::memory_order_relaxed);
     c.noteOnMaxUs   = cNoteOnMaxUs_.load(std::memory_order_relaxed);
     c.notesDropped  = cDropped_.load(std::memory_order_relaxed);
     c.steals        = cSteals_.load(std::memory_order_relaxed);
@@ -1323,6 +1371,7 @@ CROSSPAD_COLD void SamplerEngine::resetCounters()
 {
     cNotes_ = 0; cDropped_ = 0; cSteals_ = 0; cSheds_ = 0;
     cStreamRefused_ = 0; cUnderruns_ = 0; cVoicesPeak_ = 0; cSilenced_ = 0;
+    cPitchedRun_ = 0; cPitchedSlow_ = 0;
     cNoteOnMaxUs_ = 0;
     cArmed_ = 0; cArmFired_ = 0; cArmCancelled_ = 0; cArmExpired_ = 0;
     cLoopsQueued_ = 0; cLoopsLaunched_ = 0;
