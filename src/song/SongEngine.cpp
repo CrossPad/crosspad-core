@@ -559,6 +559,7 @@ struct SongEngine::Impl {
 
     bool requestOpen(const std::string& name) {
         if (!valid_name(name) || !ensureWorker()) return false;
+        yieldFreeze();          // or the open waits out the whole freeze
         {
             std::lock_guard<std::recursive_mutex> l(songMutex_);
             openName_ = name;
@@ -858,6 +859,7 @@ struct SongEngine::Impl {
             std::lock_guard<std::recursive_mutex> l(songMutex_);
             if (audioTarget(track, false) < 0) return false;
         }
+        if (!freezeKey) yieldFreeze();   // a bounce asked for goes before a freeze
         if (busy_.exchange(true)) return false;
         {
             std::lock_guard<std::mutex> l(statusMutex_);
@@ -900,15 +902,22 @@ struct SongEngine::Impl {
         }
     }
 
+    /// A freeze running gives way to anything asked of the worker -- PLAY,
+    /// a take, an open, an edit, a bounce: cancelled, the track plays live,
+    /// and this returns once the worker has put the sequencer back (a take
+    /// or playback started under the freeze's restore lost its song map to
+    /// it). A bounce does not give way: false.
+    bool yieldFreeze() {
+        if (!busy_.load()) return true;
+        if (!bFreeze_) return false;
+        bCancel_.store(true);
+        p.wake();
+        for (int i = 0; i < 100 && busy_.load(); ++i) p.sleepMs(5);
+        return !busy_.load();
+    }
+
     bool playWithTake(uint32_t fromBar, SyncTake take) {
-        if (!ensureWorker()) return false;
-        /* A bounce owns the transport; a freeze gives it up -- cancelled, it
-         * leaves the track playing live, and the worker starts this once the
-         * freeze has let go. */
-        if (busy_.load()) {
-            if (!bFreeze_) return false;
-            bCancel_.store(true);
-        }
+        if (!ensureWorker() || !yieldFreeze()) return false;   // a bounce owns the transport
         /* A seq track's length is its scene's, which the seq view changes
          * without a commit: taken again from a stop, not from the last one. */
         if (!playing()) {
@@ -952,7 +961,7 @@ struct SongEngine::Impl {
 
     // ── Takes onto the seq track (Arrange's REC and DUB) ──────────────────
     bool recordSeq(uint32_t fromBar, SyncTake take, uint8_t beats) {
-        if (take == SyncTake::None || playing() || !ensureWorker() || busy_.load()) return false;
+        if (take == SyncTake::None || playing() || !ensureWorker() || !yieldFreeze()) return false;
         {
             std::lock_guard<std::recursive_mutex> l(songMutex_);
             if (!opened_ || seqTake_.load() != SyncTake::None) return false;
@@ -1229,6 +1238,7 @@ private:
 
     /// Publish a claimed edit; its parameters are written before this.
     bool requestEdit(uint8_t edit) {
+        yieldFreeze();          // or the edit waits out the whole freeze
         editReq_.store(edit);
         p.wake();
         return true;

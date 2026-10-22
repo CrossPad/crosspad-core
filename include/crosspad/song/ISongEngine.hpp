@@ -217,8 +217,9 @@ public:
     /// alone, into one clip the song plays in its place while the track is
     /// not armed and its notes, sound and tempo are what they were
     /// (SongTrack::freeze). The track keeps its notes and stays a seq track.
-    /// A bounce, but one that gives way: PLAY cancels it (the track plays
-    /// live) and starts. Poll bounceStatus() and freezeState().
+    /// A bounce, but one that gives way: PLAY, REC, DUB, opening a song, an
+    /// edit or a bounce cancel it (the track plays live) and go ahead. Poll
+    /// bounceStatus() and freezeState().
     virtual bool freezeTrack(uint8_t track) { (void)track; return false; }
     /// What @p track plays as now (FreezeState).
     virtual FreezeState freezeState(uint8_t track) { (void)track; return FreezeState::None; }

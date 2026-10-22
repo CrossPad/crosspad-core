@@ -6,6 +6,16 @@ carries the same number) and consumers gate on it with
 `crosspad/RequireVersion.hpp`. This file starts at 1.45.0; earlier releases
 are described in their `chore: X.Y.Z` commits.
 
+## 2.10.1 — 2026-10-23
+
+### Fixed
+
+- A freeze gives way to everything asked of the song worker, not only PLAY:
+  REC and DUB (a new track armed and recorded at once was refused while the
+  track ARM had left was freezing), opening a song, an edit (an import waited
+  out the whole freeze) and a bounce. PLAY and a take wait for the cancelled
+  freeze to put the sequencer back first (`yieldFreeze()`).
+
 ## 2.10.0 — 2026-10-23
 
 A pitched sampler voice in a third less, and the pads tap only when wanted.

@@ -2016,7 +2016,7 @@ TEST_CASE("song engine: a frozen seq track keeps its notes and plays its freeze 
     }
 }
 
-TEST_CASE("song engine: PLAY during a freeze cancels it and plays the track live", "[song][freeze]") {
+TEST_CASE("song engine: PLAY or REC during a freeze cancels it and plays", "[song][freeze]") {
     Rig r;
     REQUIRE(r.open("Demo"));
     {
@@ -2038,12 +2038,23 @@ TEST_CASE("song engine: PLAY during a freeze cancels it and plays the track live
         std::this_thread::sleep_for(std::chrono::milliseconds(2));
     }
     REQUIRE(r.engine->bounceStatus().state == BounceState::Running);
-    REQUIRE(r.engine->play(0));
+    SECTION("PLAY") {
+        REQUIRE(r.engine->play(0));
+    }
+    SECTION("REC onto another track (a new track armed: what set the freeze off)") {
+        {
+            std::lock_guard<std::recursive_mutex> l(r.engine->songMutex());
+            REQUIRE(r.engine->song().addSeqTrack(1, SeqSource::Pitch, 3));
+            r.engine->song().armed = 1;
+        }
+        r.engine->commit();
+        REQUIRE(r.engine->recordSeq(0, SyncTake::Record, 0));
+    }
+    CHECK(r.engine->bounceStatus().state == BounceState::Failed);   // the freeze let go first
     REQUIRE(waitFor([&] {
         r.block(out, bus);
         return r.engine->playing();
     }));
-    CHECK(r.engine->bounceStatus().state == BounceState::Failed);
     CHECK(r.engine->freezeState(0) == FreezeState::None);
     CHECK(segmentsOf(*r.engine, 0) == 0);                 // live
     r.engine->stop();
