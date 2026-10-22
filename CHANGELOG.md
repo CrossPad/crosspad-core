@@ -6,6 +6,19 @@ carries the same number) and consumers gate on it with
 `crosspad/RequireVersion.hpp`. This file starts at 1.45.0; earlier releases
 are described in their `chore: X.Y.Z` commits.
 
+## 2.7.0 — 2026-10-22
+
+A logic of buttons lets the notes through.
+
+### Added
+
+- `IPadLogicHandler::buttonsOnly()`: a pad logic whose pads are buttons (the
+  MODE map). Only a finger's press and release reach it, and that press is not
+  the loop recorder's input; every other note -- the recorder playing back, a
+  host's MIDI, an app -- goes to the logic it was pushed over
+  (`PadManager::handlePadPress()`/`handlePadRelease()` with their source), so a
+  pattern and a DAW keep sounding under the map.
+
 ## 2.6.0 — 2026-10-22
 
 Drums, Slice, Pitch and audio in one song.

@@ -322,18 +322,25 @@ private:
     mutable int dispatchInFlight_ = 0;
     mutable std::condition_variable dispatchIdle_;
 
-    // The active handler for one dispatch, counted in flight while it lives;
-    // null (and not counted) when no pad logic is active.
+    // The handler for one dispatch, counted in flight while it lives; null
+    // (and not counted) when no pad logic takes it. A note from @p source
+    // that is not a finger's goes past a buttons-only logic to the one under
+    // it (IPadLogicHandler::buttonsOnly()); @c buttons says it was a finger
+    // on such a logic.
     class DispatchScope {
     public:
-        explicit DispatchScope(const PadManager& pm);
+        explicit DispatchScope(const PadManager& pm, EventSource source = EventSource::PadManager);
         ~DispatchScope();
         DispatchScope(const DispatchScope&) = delete;
         DispatchScope& operator=(const DispatchScope&) = delete;
         std::shared_ptr<IPadLogicHandler> handler;
+        bool buttons = false;
     private:
         const PadManager& pm_;
     };
+    // Under logicMutex_: the logic a buttons-only one was pushed over -- the
+    // nearest saved one on the stack that plays notes, the base for "".
+    std::shared_ptr<IPadLogicHandler> logicUnderButtons() const;
     // Under logicMutex_ (released while waiting): returns once no pad-logic
     // callback runs on another thread.
     void waitDispatchIdle(std::unique_lock<std::mutex>& lock);

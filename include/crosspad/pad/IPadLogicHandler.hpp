@@ -98,6 +98,14 @@ public:
         (void)padIdx; (void)velocity;
         return {};
     }
+
+    /// True for a logic whose pads are buttons, not notes (a menu of pads).
+    /// Only a finger's press and release (EventSource::PadManager) reach it,
+    /// and that press is not the loop recorder's input. Every other note --
+    /// the recorder playing back, a host's MIDI, an app -- goes to the logic
+    /// it was pushed over, as if it were not there. Pressure, pan and touch
+    /// come only from the pads and stay with it.
+    virtual bool buttonsOnly() const { return false; }
 };
 
 } // namespace crosspad
