@@ -6,6 +6,32 @@ carries the same number) and consumers gate on it with
 `crosspad/RequireVersion.hpp`. This file starts at 1.45.0; earlier releases
 are described in their `chore: X.Y.Z` commits.
 
+## 2.6.0 — 2026-10-22
+
+Drums, Slice, Pitch and audio in one song.
+
+### Added
+
+- A Pitch track has a route of its own: `AudioSong::seqRoute()` is 2 for it
+  (0 the pads' kit, 1 the second kit), `kMaxSeqTracks` 3, and
+  `freeSeqRoute()` offers a Pitch track beside two kit tracks.
+  `PatternSequencer::kRoutes` 3; its held-note masks are 64-bit.
+- `SeqTrackSound::playPitch()`: a sink's route-2 note on the instrument.
+- A Pitch track playing its scene over the whole song lays it as notes on
+  route 2 (flatten(), a bounce), since the clock's scene is the pads' kit's;
+  every such track counts in a song's length.
+- `IKitPicker::open(..., KitList)`: the browser opened on Perf, Drums or
+  Slice; the two-argument open() is unchanged.
+
+### Changed
+
+- Song files: a Pitch track beside kit tracks is `version` 4 (older firmware
+  keeps a Pitch track only alone). Loading keeps the first seq track on each
+  route.
+- `SeqTrackSound::routePitch` / `route()` are no longer set by this line's
+  Arrange; kept for consumers built against 2.5 (route 0 to the instrument
+  while set).
+
 ## 2.5.0 — 2026-10-21
 
 The Slice kit: one WAV in regions, a pad each, played with one voice.

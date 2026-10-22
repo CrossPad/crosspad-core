@@ -260,7 +260,7 @@ void PatternSequencer::strike(uint8_t route, uint8_t pad, uint8_t vel, uint8_t p
     /* Held per route: pad 3 of one kit holding says nothing about pad 3 of
      * the other. */
     const uint8_t slot = (uint8_t)(route * 16 + pad);
-    const uint32_t bit = pad < 16 && route < kRoutes ? (1u << slot) : 0;
+    const uint64_t bit = pad < 16 && route < kRoutes ? (1ull << slot) : 0;
     /* A pad a note still holds lets go before it is struck again. */
     if (held_ & bit) {
         emit(route, pad, 0, false);
@@ -295,7 +295,7 @@ void PatternSequencer::releaseHeld(uint32_t samples)
 {
     if (!held_) return;
     for (uint8_t slot = 0; slot < kRoutes * 16; ++slot) {
-        const uint32_t bit = 1u << slot;
+        const uint64_t bit = 1ull << slot;
         if (!(held_ & bit)) continue;
         if (relLeft_[slot] > samples) {
             relLeft_[slot] -= samples;
@@ -369,7 +369,7 @@ void PatternSequencer::pollLocked()
      * sampler's waveform settling on one pad. */
     if (pendingRelease_ && hasSink()) {
         for (uint8_t slot = 0; slot < kRoutes * 16; ++slot) {
-            if (pendingRelease_ & (1u << slot)) emit(slot / 16, slot % 16, 0, false);
+            if (pendingRelease_ & (1ull << slot)) emit(slot / 16, slot % 16, 0, false);
         }
         pendingRelease_ = 0;
     }
@@ -985,7 +985,7 @@ void PatternSequencer::stop()
      * scene lock, and released after it, like poll() does -- a release lost
      * to a pass in flight leaves the pad held for good. Inside poll() (a song
      * that ends) the releases join the pass's own. */
-    uint32_t held = 0;
+    uint64_t held = 0;
     {
         std::lock_guard<std::recursive_mutex> lock(editMutex_);
         /* A stopped song is over; the next plain Play plays the scene, and
@@ -1005,7 +1005,7 @@ void PatternSequencer::stop()
         held_ = 0;
         if (presses_) {
             for (uint8_t slot = 0; slot < kRoutes * 16; ++slot) {
-                if (held & (1u << slot)) emit(slot / 16, slot % 16, 0, false);
+                if (held & (1ull << slot)) emit(slot / 16, slot % 16, 0, false);
             }
             held = 0;
         }
@@ -1015,7 +1015,7 @@ void PatternSequencer::stop()
     /* Whatever is still held goes down with the transport, or it stays held
      * until the next pass that never comes. */
     for (uint8_t slot = 0; slot < kRoutes * 16; ++slot) {
-        if (held & (1u << slot)) sinkPress(slot / 16, slot % 16, 0, false, 0);
+        if (held & (1ull << slot)) sinkPress(slot / 16, slot % 16, 0, false, 0);
     }
 }
 

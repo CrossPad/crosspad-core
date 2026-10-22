@@ -246,20 +246,17 @@ SongLoad AudioSong::load(const std::string& projectDir)
         ++t;
     }
     armed = (int8_t)(doc["armed"] | -1);
-    /* Two seq tracks play only through two engines: a kit track each, or a
-     * Pitch track alone. A file that claims more (hand-edited, or written by
-     * firmware that allowed more) keeps the ones that fit, in order, and the
-     * rest become plain audio tracks -- their clips, if any, still play. */
-    bool route[2] = {false, false};
-    bool pitch = false;
-    for (int i = 0, seqs = 0; i < kTracks; ++i) {
+    /* A seq track per engine: the pads' kit, the second kit, Pitch Play's
+     * instrument. A file that claims more (hand-edited, or written by firmware
+     * that allowed more) keeps the first on each route, and the rest become
+     * plain audio tracks -- their clips, if any, still play. */
+    bool route[3] = {false, false, false};
+    for (int i = 0; i < kTracks; ++i) {
         SongTrack& tr = tracks[i];
         if (tr.kind != TrackKind::Seq) continue;
-        const int r = tr.source == SeqSource::Kit && !tr.kit.empty() ? 1 : 0;
-        if (tr.source == SeqSource::Pitch ? seqs == 0 : !pitch && !route[r]) {
-            ++seqs;
+        const int r = tr.source == SeqSource::Pitch ? 2 : !tr.kit.empty() ? 1 : 0;
+        if (!route[r]) {
             route[r] = true;
-            pitch = pitch || tr.source == SeqSource::Pitch;
             /* The second kit's track never plays the scene over the whole
              * song: the scene that sounds is the first one's. */
             if (r == 1) tr.seqBlocks = true;
@@ -301,7 +298,10 @@ bool AudioSong::save() const
     bool ownKit = false;
     for (const auto& t : tracks) ownKit = ownKit || (t.kind == TrackKind::Seq && !t.kit.empty());
     JsonDocument doc;
-    doc["version"] = seqTracks() > 1 || ownKit ? kVersion : notes ? 2 : 1;
+    /* A Pitch track beside a kit track is version 4: firmware before it
+     * keeps a Pitch track only alone, and would drop one of the two. */
+    const bool pitchBeside = hasPitchTrack() && seqTracks() > 1;
+    doc["version"] = pitchBeside ? kVersion : seqTracks() > 1 || ownKit ? 3 : notes ? 2 : 1;
     doc["bpm"]  = bpm;
     doc["bpb"]  = beatsPerBar;
     doc["loop"] = loop;
@@ -453,7 +453,8 @@ int AudioSong::seqRoute(int track) const
     if (track < 0 || track >= kTracks) return -1;
     const SongTrack& t = tracks[track];
     if (!t.inUse || t.kind != TrackKind::Seq) return -1;
-    return t.source == SeqSource::Kit && !t.kit.empty() ? 1 : 0;
+    if (t.source == SeqSource::Pitch) return 2;
+    return !t.kit.empty() ? 1 : 0;
 }
 
 int AudioSong::seqTrackOnRoute(int route) const
@@ -465,8 +466,7 @@ int AudioSong::seqTrackOnRoute(int route) const
 
 int AudioSong::freeSeqRoute(SeqSource source) const
 {
-    if (source == SeqSource::Pitch) return seqTracks() == 0 ? 0 : -1;
-    if (hasPitchTrack()) return -1;
+    if (source == SeqSource::Pitch) return seqTrackOnRoute(2) < 0 ? 2 : -1;
     if (seqTrackOnRoute(0) < 0) return 0;
     if (seqTrackOnRoute(1) < 0) return 1;
     return -1;

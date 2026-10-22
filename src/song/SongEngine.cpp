@@ -1770,11 +1770,11 @@ private:
     uint32_t endBars(const AudioSong& song) const {
         uint32_t end = song.playEnd();
         if (song.length) return end;
-        const int t = song.seqTrackOnRoute(0);
         /* Only a track that plays its scene over everything: one cut into
          * blocks is as long as its blocks, like an audio track. The second
          * kit's track always is (AudioSong::addSeqTrack()). */
-        if (t >= 0 && !song.tracks[t].seqBlocks) {
+        for (int t = 0; t < kTracks; ++t) {
+            if (song.seqRoute(t) < 0 || song.tracks[t].seqBlocks) continue;
             const uint8_t bars = seq_.sceneBars(song.tracks[t].scene);
             end = std::max<uint32_t>(end, bars ? bars : 1);
         }
@@ -1811,6 +1811,14 @@ private:
                 PatternSequencer::SongSpan all;
                 all.b = cut;
                 all.route = (uint8_t)route;
+                /* The clock plays one scene, the pads' kit's: a Pitch track's
+                 * goes round as notes of its own, as it is now. */
+                if (route) {
+                    const SeqPatternPtr own = scenePattern(song.tracks[t].scene);
+                    const uint32_t bars = own->bars ? own->bars : 1;
+                    all.notes = songNotes(own, a.samplesPerBar, song.seqTicksPerBar());
+                    all.loop = bars * a.samplesPerBar;
+                }
                 a.seqSpans.push_back(std::move(all));
             }
             a.seqMapped = true;
@@ -3231,12 +3239,26 @@ private:
             {
                 std::lock_guard<std::recursive_mutex> l(songMutex_);
                 const SongTrack& tr = song_.tracks[bTrack_];
-                if (tr.kind == TrackKind::Seq && tr.seqBlocks) {
+                /* A track off the pads' route never plays the clock's scene:
+                 * its notes are mapped whether it has blocks or not. */
+                if (tr.kind == TrackKind::Seq && (tr.seqBlocks || song_.seqRoute(bTrack_) > 0)) {
                     const int route = song_.seqRoute(bTrack_);
                     const uint32_t spb = clk.samplesPerBeat() * clk.beatsPerBar();
                     const uint32_t off = bFrom_ * spb;
-                    auto all = seqSpansOf(tr, spb, song_.seqTicksPerBar(), off + total,
-                                          (uint8_t)(route > 0 ? route : 0));
+                    std::vector<PatternSequencer::SongSpan> all;
+                    if (tr.seqBlocks) {
+                        all = seqSpansOf(tr, spb, song_.seqTicksPerBar(), off + total,
+                                         (uint8_t)(route > 0 ? route : 0));
+                    } else {
+                        /* Its scene over the whole song, as flatten() lays it. */
+                        PatternSequencer::SongSpan whole;
+                        const SeqPatternPtr own = scenePattern(tr.scene);
+                        whole.b = off + total;
+                        whole.route = (uint8_t)route;
+                        whole.notes = songNotes(own, spb, song_.seqTicksPerBar());
+                        whole.loop = (own->bars ? own->bars : 1) * spb;
+                        all.push_back(std::move(whole));
+                    }
                     /* bFrom_ is the first block's bar: none starts before it. */
                     for (auto& sp : all) {
                         if (sp.a < off) continue;

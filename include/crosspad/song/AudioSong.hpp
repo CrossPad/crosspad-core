@@ -116,8 +116,8 @@ enum class SongLoad : uint8_t { New, Loaded, Unreadable };
 /// each block holds its own (SongClip::notes). A track from before that plays
 /// the pattern sequencer's scene: with no blocks over the whole song, with
 /// blocks (seqBlocksExplicit(), then cut and copied by bars) only under them.
-/// Two tracks may be seqs at once, each playing a kit of its own
-/// (AudioSong::seqRoute()), or one a Pitch track; a bounce turns one into
+/// Three tracks may be seqs at once, one per engine -- two kits and a Pitch
+/// track (AudioSong::seqRoute()); a bounce turns one into
 /// audio, which is how a slot is freed for the next idea.
 enum class TrackKind : uint8_t { Audio = 0, Seq = 1 };
 
@@ -177,10 +177,11 @@ class AudioSong {
 public:
     static constexpr int kTracks = 4;
     /// 2: seq blocks carry notes of their own. 3: two seq tracks, a track
-    /// with a kit of its own. Each written only by a song that needs it, so
-    /// the rest stay readable by firmware from before -- which refuses a newer
-    /// one rather than open it and drop what it cannot hold on its next save.
-    static constexpr int kVersion = 3;
+    /// with a kit of its own. 4: a Pitch track beside kit tracks. Each written
+    /// only by a song that needs it, so the rest stay readable by firmware from
+    /// before -- which refuses a newer one rather than open it and drop what it
+    /// cannot hold on its next save.
+    static constexpr int kVersion = 4;
     /// Ticks to the quarter of a seq block's notes: PatternSequencer::kPpq.
     static constexpr uint16_t kSeqPpq = 96;
     /// The most one seq block a take lays holds: what one scene of the
@@ -260,11 +261,10 @@ public:
     uint32_t samplesPerBar(uint32_t sampleRate) const;
 
     // ── tracks a player makes ──────────────────────────────────────────────
-    /// Tracks that may hold a seq at once: two kit tracks, each through a
-    /// kit engine of its own (seqRoute()), or one Pitch track -- the pitched
-    /// engine and the kits' take turns owning one arena, so a Pitch track is
-    /// the only seq of its song.
-    static constexpr int kMaxSeqTracks = 2;
+    /// Tracks that may hold a seq at once: one per engine (seqRoute()) --
+    /// the pads' kit, the second kit, Pitch Play's instrument. With the
+    /// fourth track audio, that is Drums, Slice, Pitch and a loop in one song.
+    static constexpr int kMaxSeqTracks = 3;
 
     /// Tracks in use: what Arrange counts, and what decides whether it still
     /// offers "+ ADD TRACK".
@@ -274,12 +274,12 @@ public:
     bool seqSlotFree() const { return freeSeqRoute(SeqSource::Kit) >= 0; }
     /// Which engine seq track @p track plays through, as the sequencer routes
     /// its notes (PatternSequencer::SongSpan::route): 0 the pads' -- the
-    /// song's kit, or the Pitch instrument --, 1 the second kit engine, for a
-    /// kit track with a kit of its own (SongTrack::kit). -1 for no seq.
+    /// song's kit --, 1 the second kit engine, for a kit track with a kit of
+    /// its own (SongTrack::kit), 2 the Pitch instrument. -1 for no seq.
     int seqRoute(int track) const;
     /// The route a new seq track on @p source would take, or -1 when there is
-    /// no room for it: a Pitch track only in a song with no seq, a kit track
-    /// the route no kit track has, never beside a Pitch track.
+    /// no room for it: route 2 for a Pitch track while no other has it, the
+    /// first kit route no kit track has for a kit track.
     int freeSeqRoute(SeqSource source) const;
     /// The seq track on route @p route, or -1.
     int seqTrackOnRoute(int route) const;

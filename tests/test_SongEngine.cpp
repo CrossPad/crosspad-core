@@ -1990,6 +1990,41 @@ TEST_CASE("song engine: REC takes onto the armed kit track, and each track plays
     CHECK(heard.ons == std::vector<std::pair<uint8_t, uint8_t>>{{0, 1}, {1, 2}});
 }
 
+TEST_CASE("song engine: Drums, Slice and Pitch tracks play at once, each on its own route", "[song][route][routes]") {
+    Rig r;
+    REQUIRE(r.open("Demo"));
+    const uint32_t bar = r.engine->framesPerBar();
+    {
+        std::lock_guard<std::recursive_mutex> l(r.engine->songMutex());
+        auto& s = r.engine->song();
+        s.bpm = 120.0f;
+        REQUIRE(s.addSeqTrack(0, SeqSource::Kit, 0, "/crosspad/kits/DRUMS/kit.json"));
+        REQUIRE(s.addSeqTrack(1, SeqSource::Kit, 1, "/crosspad/kits/SLICE/kit.json"));
+        REQUIRE(s.addSeqTrack(2, SeqSource::Pitch, 2));
+        SeqNote d; d.pad = 1; d.vel = 100;
+        SeqNote k; k.pad = 2; k.vel = 100; k.tick = AudioSong::kSeqPpq;
+        s.putSeqTake(0, 0, makeSeqPattern(1, {d}), s.samplesPerBar(kRate));
+        s.putSeqTake(1, 0, makeSeqPattern(1, {k}), s.samplesPerBar(kRate));
+    }
+    /* The Pitch track plays its scene over the whole song, as notes on its
+     * own route: the clock's scene is the pads' kit's. */
+    while (r.seq.sceneCount() < 3) REQUIRE(r.seq.addScene());
+    r.seq.setSceneBars(2, 1);
+    REQUIRE(r.seq.addEventTicks(2, 2 * AudioSong::kSeqPpq, 7, 100, 0, PadPerformance{}));
+    r.engine->commit();
+
+    RoutedHits heard;
+    r.seq.setSink(&RoutedHits::sink, &heard);
+    std::vector<float> out(kBlock * 2), bus(kBlock * 2, 0.0f);
+    REQUIRE(r.engine->play(0));
+    REQUIRE(waitFor([&] { r.block(out, bus); return r.engine->framesPlayed() > 0; }, 20000));
+    while (r.engine->framesPlayed() < bar - bar / 8) r.block(out, bus);
+    r.engine->stop();
+    REQUIRE(waitFor([&] { return !r.engine->playing(); }));
+    std::lock_guard<std::mutex> l(heard.m);
+    CHECK(heard.ons == std::vector<std::pair<uint8_t, uint8_t>>{{0, 1}, {1, 2}, {2, 7}});
+}
+
 TEST_CASE("song engine: a REC on one kit track is not heard under itself, the other plays on", "[song][songtake][route]") {
     Rig r;
     REQUIRE(r.open("Demo"));

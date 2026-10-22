@@ -60,8 +60,9 @@ public:
     /// which. Route 0 is the pads' kit; a sink without routes plays only it.
     using RoutedSink = void (*)(void* ctx, uint8_t route, uint8_t pad, uint8_t velocity, bool on,
                                 PadPerformance performance);
-    /// Routes a note can play through: the pads' kit and a second kit track's.
-    static constexpr uint8_t kRoutes = 2;
+    /// Routes a note can play through: the pads' kit (0), a second kit track's
+    /// (1), a Pitch track's instrument (2).
+    static constexpr uint8_t kRoutes = 3;
     /// What a hit coming in would sound as (PadManager::performanceFor());
     /// @p velocity becomes the one that would sound.
     using PerformanceSource = PadPerformance (*)(void* ctx, uint8_t pad, uint8_t& velocity);
@@ -551,9 +552,9 @@ private:
     /// One poll of gate -- shorter than any human tap, long enough that the
     /// press and the release are not the same instant. A hit's, not a note's.
     /// A bit per pad of each route: route * 16 + pad.
-    uint32_t pendingRelease_ = 0;
+    uint64_t pendingRelease_ = 0;   ///< a bit per route and pad: kRoutes * 16
     /// Pads a note with a length holds down, and the samples each has left.
-    uint32_t held_ = 0;
+    uint64_t held_ = 0;             ///< a bit per route and pad: kRoutes * 16
     uint32_t relLeft_[kRoutes * 16] = {};
     /// Presses recorded and not yet released, one per pad.
     Open     open_[16] = {};
