@@ -6,6 +6,29 @@ carries the same number) and consumers gate on it with
 `crosspad/RequireVersion.hpp`. This file starts at 1.45.0; earlier releases
 are described in their `chore: X.Y.Z` commits.
 
+## 2.9.0 — 2026-10-22
+
+A seq track can be frozen.
+
+### Added
+
+- `ISongEngine::freezeTrack()` / `freezeState()` (`FreezeState`): the seq
+  track's engine alone, bounced into one clip the song plays in its place
+  while the track is not armed (`SongTrack::freeze`, `freezeKey`, kept in
+  song.json). The track keeps its notes and stays a Drums, Slice or Pitch
+  track. The key is the track's bars, notes, sound and the tempo; anything
+  that moves it plays the track live again until it is frozen anew.
+- `ISongEnginePlatform::beginRouteCapture(route)`: a freeze records only the
+  engine on its track's route, so fingers on the armed track's engine stay
+  out of it (default: the pads, as a bounce).
+- `SongSounds::keepInstrument(..., changed)`: an instrument built or saved
+  from edits makes the Pitch track's freeze stale.
+
+### Changed
+
+- PLAY during a freeze cancels it and plays (the track live); a bounce still
+  owns the transport.
+
 ## 2.8.0 — 2026-10-22
 
 Every seq track keeps a scene of its own.

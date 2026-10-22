@@ -214,6 +214,13 @@ SongLoad AudioSong::load(const std::string& projectDir)
         tracks[t].scene  = (uint8_t)(tr["scene"] | 0u);
         tracks[t].seqBlocks = tracks[t].kind == TrackKind::Seq && (tr["blocks"] | false);
         tracks[t].kit    = tracks[t].kind == TrackKind::Seq ? (tr["kit"] | "") : "";
+        JsonObjectConst fz = tr["freeze"];
+        if (tracks[t].kind == TrackKind::Seq && !fz.isNull()) {
+            tracks[t].freeze.file = fz["file"] | "";
+            tracks[t].freeze.bar  = fz["bar"]  | 0u;
+            tracks[t].freeze.bars = fz["bars"] | 1u;
+            tracks[t].freezeKey   = fz["key"]  | 0u;
+        }
         /* true keeps the pitch (what 1.57 first wrote), "repitch" moves it. */
         const char* stretch = tr["stretch"].is<const char*>() ? tr["stretch"].as<const char*>() : nullptr;
         tracks[t].stretch = tracks[t].kind != TrackKind::Audio            ? StretchMode::Off
@@ -265,6 +272,7 @@ SongLoad AudioSong::load(const std::string& projectDir)
         tr.kind = TrackKind::Audio;
         tr.seqBlocks = false;
         tr.kit.clear();
+        tr.freeze = SongClip{};
         dropSeqBlocks(i);
     }
     /* A row shorter or longer than the grid is padded or cut rather than
@@ -326,6 +334,13 @@ bool AudioSong::save() const
             o["scene"] = t.scene;
             if (t.seqBlocks) o["blocks"] = true;
             if (!t.kit.empty()) o["kit"] = t.kit;
+            if (!t.freeze.file.empty()) {
+                JsonObject fz = o["freeze"].to<JsonObject>();
+                fz["file"] = t.freeze.file;
+                fz["bar"]  = t.freeze.bar;
+                fz["bars"] = t.freeze.bars;
+                fz["key"]  = t.freezeKey;
+            }
         }
         if (t.kind == TrackKind::Audio && t.stretch == StretchMode::KeepPitch) o["stretch"] = true;
         if (t.kind == TrackKind::Audio && t.stretch == StretchMode::Repitch)   o["stretch"] = "repitch";
@@ -558,6 +573,7 @@ bool AudioSong::bounceSeqTrack(int track, const SongClip* clip)
      * by mistake is one DEL and one new seq track away from where it was. */
     tracks[track].kind = TrackKind::Audio;
     tracks[track].kit.clear();
+    tracks[track].freeze = SongClip{};
     if (clip) {
         tracks[track].clips.clear();
         if (!clip->file.empty() && clip->bars) tracks[track].clips.push_back(*clip);

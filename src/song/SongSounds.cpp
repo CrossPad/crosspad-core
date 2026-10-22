@@ -238,10 +238,21 @@ void SongSounds::instrumentIs(const std::string& path)
     se->commit();
 }
 
-void SongSounds::keepInstrument(const KitInfo& spec, const std::function<bool(const KitInfo&)>& save)
+void SongSounds::keepInstrument(const KitInfo& spec, const std::function<bool(const KitInfo&)>& save,
+                                bool changed)
 {
     std::string home;
     if (!instrumentHome(home)) return;
+    if (changed) {
+        if (ISongEngine* se = songs()) {
+            {
+                std::lock_guard<std::recursive_mutex> l(se->songMutex());
+                for (auto& t : se->song().tracks)
+                    if (t.kind == TrackKind::Seq && t.source == SeqSource::Pitch) t.freezeKey = 0;
+            }
+            se->commit();
+        }
+    }
     if (!spec.path.empty()) {
         instrumentIs(spec.path);
         return;

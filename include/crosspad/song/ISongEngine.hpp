@@ -52,6 +52,12 @@ struct ClipPeaks {
     bool missing = false;
 };
 
+/// A seq track's freeze (ISongEngine::freezeTrack()): none made, one that
+/// plays in its place, one its notes, sound or tempo have moved past (the
+/// track plays live until it is frozen again), or one being made now. An
+/// armed track plays live whatever this says.
+enum class FreezeState : uint8_t { None, Frozen, Stale, Freezing };
+
 struct BounceStatus {
     BounceState state = BounceState::Idle;
     uint32_t    framesDone  = 0;
@@ -207,6 +213,15 @@ public:
     /// song (playEndBars()). The caller turns the track into audio once it is
     /// Done.
     virtual bool bounceSeqTrack(uint8_t track) { (void)track; return false; }
+    /// Freeze the seq track @p track: what it plays, its engine's channel
+    /// alone, into one clip the song plays in its place while the track is
+    /// not armed and its notes, sound and tempo are what they were
+    /// (SongTrack::freeze). The track keeps its notes and stays a seq track.
+    /// A bounce, but one that gives way: PLAY cancels it (the track plays
+    /// live) and starts. Poll bounceStatus() and freezeState().
+    virtual bool freezeTrack(uint8_t track) { (void)track; return false; }
+    /// What @p track plays as now (FreezeState).
+    virtual FreezeState freezeState(uint8_t track) { (void)track; return FreezeState::None; }
     virtual BounceStatus bounceStatus() = 0;
     virtual void cancelBounce() = 0;
 

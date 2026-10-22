@@ -96,8 +96,11 @@ public:
     /// song's Pitch track keeps @p spec -- its file, or one nobody saved (no
     /// path) as a copy in the song's own folder, written by @p save first.
     /// A song without a Pitch track keeps nothing: browsing samples must not
-    /// fill its folder.
-    void keepInstrument(const KitInfo& spec, const std::function<bool(const KitInfo&)>& save);
+    /// fill its folder. @p changed: the instrument was built or saved from
+    /// edits, so it sounds other than its file name says -- the Pitch
+    /// track's freeze (SongTrack::freeze) is of the old sound and goes stale.
+    void keepInstrument(const KitInfo& spec, const std::function<bool(const KitInfo&)>& save,
+                        bool changed = false);
 
     /// A step is still to come.
     bool pending() const { return pending_.load(std::memory_order_acquire); }

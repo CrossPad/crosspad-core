@@ -155,6 +155,14 @@ struct SongTrack {
     /// through the second kit engine. Empty, the track plays the song's kit
     /// (AudioSong::kit) through the pads' -- which the first kit track does.
     std::string kit;
+    /// A seq track frozen: what it sounded as, one WAV in clips/ from bar
+    /// @c freeze.bar for @c freeze.bars (empty @c file: never frozen). Its
+    /// notes stay -- it is still a Drums, Slice or Pitch track -- and while
+    /// it is not armed and @c freezeKey still names its notes, sound and
+    /// tempo (SongEngine works the key out), the song plays this file
+    /// instead of its engine.
+    SongClip  freeze;
+    uint32_t  freezeKey = 0;
     /// A track the player has made. All four exist in this struct from the
     /// start; this is what tells an empty track waiting for a recording from
     /// one nobody has asked for, which is what "2 / 4 tracks" counts and what

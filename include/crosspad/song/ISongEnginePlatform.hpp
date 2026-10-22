@@ -73,6 +73,11 @@ public:
     /// what the player had.
     virtual void beginPadsCapture() = 0;
     virtual void endPadsCapture() = 0;
+    /// A freeze's capture: only the engine on @p route (0 the pads' kit, 1
+    /// the second kit, 2 the Pitch instrument), so fingers on another
+    /// track's engine stay out of the take. endPadsCapture() ends it. A
+    /// platform without a tap per engine takes the pads as a bounce does.
+    virtual void beginRouteCapture(uint8_t route) { (void)route; beginPadsCapture(); }
 
     /// The seq track's fader on the engine its notes play through -- @p
     /// source's: the kit's engines, or the pitched instrument -- while the

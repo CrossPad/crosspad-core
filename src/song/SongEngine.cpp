@@ -811,21 +811,33 @@ struct SongEngine::Impl {
             const SongTrack& t = song_.tracks[track];
             if (!t.inUse || t.kind != TrackKind::Seq) return false;
             scene = t.scene;
-            to = endBars(song_);
-            if (t.seqBlocks && !t.clips.empty()) {
-                const uint32_t cut = std::max<uint32_t>(to, song_.hasRegion() ? song_.loopEnd : 0);
-                const auto& cs = t.clips;
-                from = cs.front().bar;
-                to = from;
-                for (size_t i = 0; i < cs.size(); ++i) {
-                    uint32_t end = cs[i].bar + cs[i].bars;
-                    if (i + 1 < cs.size()) end = std::min(end, cs[i + 1].bar);
-                    to = std::max(to, std::min(end, cut));
-                }
-                if (to <= from) { from = 0; to = endBars(song_); }
-            }
+            seqRange(song_, track, from, to);
         }
         return requestBounce(scene, track, to - from, from);
+    }
+
+    bool freezeTrack(uint8_t track) {
+        if (track >= kTracks) return false;
+        uint8_t scene = 0;
+        uint32_t from = 0, to = 0, key = 0;
+        {
+            std::lock_guard<std::recursive_mutex> l(songMutex_);
+            const SongTrack& t = song_.tracks[track];
+            if (!t.inUse || t.kind != TrackKind::Seq || song_.seqRoute(track) < 0) return false;
+            scene = t.scene;
+            seqRange(song_, track, from, to);
+            key = seqKey(song_, track);
+        }
+        return requestBounce(scene, track, to - from, from, key);
+    }
+
+    FreezeState freezeState(uint8_t track) {
+        if (track >= kTracks) return FreezeState::None;
+        if (busy_.load() && bFreeze_ && bTrack_ == track) return FreezeState::Freezing;
+        std::lock_guard<std::recursive_mutex> l(songMutex_);
+        const SongTrack& t = song_.tracks[track];
+        if (t.kind != TrackKind::Seq || t.freeze.file.empty()) return FreezeState::None;
+        return t.freezeKey == seqKey(song_, track) ? FreezeState::Frozen : FreezeState::Stale;
     }
 
     bool bounceScene(uint8_t scene, uint8_t track) { return requestBounce(scene, track, 0); }
@@ -833,7 +845,10 @@ struct SongEngine::Impl {
     /// @p bars 0: one pass of the scene; otherwise that many bars of the
     /// song from bar @p fromBar, the scene looping over them, onto @p track
     /// on that bar.
-    bool requestBounce(uint8_t scene, uint8_t track, uint32_t bars, uint32_t fromBar = 0) {
+    /// @p freezeKey set: a freeze (freezeTrack()), the track's engine alone
+    /// into SongTrack::freeze, stamped with it.
+    bool requestBounce(uint8_t scene, uint8_t track, uint32_t bars, uint32_t fromBar = 0,
+                       uint32_t freezeKey = 0) {
         if (track >= kTracks || !ensureWorker()) return false;
         /* A scene's bounce is audio for an audio track; only a seq track's own
          * bounce lands on the seq track. */
@@ -851,6 +866,8 @@ struct SongEngine::Impl {
         bTrack_ = track;
         bBars_ = bars;
         bFrom_ = bars ? fromBar : 0;
+        bFreeze_ = bars && freezeKey;
+        bFreezeKey_ = freezeKey;
         bCancel_.store(false);
         bounceReq_.store(true);
         p.wake();
@@ -882,7 +899,14 @@ struct SongEngine::Impl {
     }
 
     bool playWithTake(uint32_t fromBar, SyncTake take) {
-        if (!ensureWorker() || busy_.load()) return false;           // a bounce owns the transport
+        if (!ensureWorker()) return false;
+        /* A bounce owns the transport; a freeze gives it up -- cancelled, it
+         * leaves the track playing live, and the worker starts this once the
+         * freeze has let go. */
+        if (busy_.load()) {
+            if (!bFreeze_) return false;
+            bCancel_.store(true);
+        }
         /* A seq track's length is its scene's, which the seq view changes
          * without a commit: taken again from a stop, not from the last one. */
         if (!playing()) {
@@ -1781,6 +1805,72 @@ private:
         return end;
     }
 
+    /// The bars a seq track's bounce or freeze takes, [@p from, @p to): one
+    /// cut into blocks from its first block's bar to its last one's end, one
+    /// playing its scene everywhere over the whole song.
+    void seqRange(const AudioSong& song, int track, uint32_t& from, uint32_t& to) const {
+        const SongTrack& t = song.tracks[track];
+        from = 0;
+        to = endBars(song);
+        if (!t.seqBlocks || t.clips.empty()) return;
+        const uint32_t cut = std::max<uint32_t>(to, song.hasRegion() ? song.loopEnd : 0);
+        const auto& cs = t.clips;
+        from = cs.front().bar;
+        to = from;
+        for (size_t i = 0; i < cs.size(); ++i) {
+            uint32_t end = cs[i].bar + cs[i].bars;
+            if (i + 1 < cs.size()) end = std::min(end, cs[i + 1].bar);
+            to = std::max(to, std::min(end, cut));
+        }
+        if (to <= from) { from = 0; to = endBars(song); }
+    }
+
+    /// What a freeze of seq track @p track is made of: its bars, its blocks
+    /// and their notes (the scene's, for a block without), what it plays
+    /// through and the tempo. A freeze plays only while this is unchanged.
+    uint32_t seqKey(const AudioSong& song, int track) const {
+        uint32_t h = 2166136261u;
+        auto mix = [&h](const void* v, size_t n) {
+            const uint8_t* b = static_cast<const uint8_t*>(v);
+            for (size_t i = 0; i < n; ++i) { h ^= b[i]; h *= 16777619u; }
+        };
+        auto text = [&](const std::string& v) { mix(v.data(), v.size()); mix("", 1); };
+        auto notes = [&](const SeqPatternPtr& pt) {
+            if (!pt) { mix("", 1); return; }
+            mix(&pt->bars, sizeof pt->bars);
+            for (const SeqNote& n : pt->notes) {
+                mix(&n.tick, 4); mix(&n.len, 4); mix(&n.pad, 1); mix(&n.vel, 1); mix(&n.perf, 1);
+            }
+        };
+        const SongTrack& t = song.tracks[track];
+        uint32_t from = 0, to = 0;
+        seqRange(song, track, from, to);
+        mix(&from, 4); mix(&to, 4);
+        mix(&song.bpm, sizeof song.bpm);
+        mix(&song.beatsPerBar, 1);
+        mix(&sampleRate_, sizeof sampleRate_);
+        const uint8_t head[3] = {(uint8_t)t.source, t.scene, (uint8_t)(t.seqBlocks ? 1 : 0)};
+        mix(head, sizeof head);
+        text(t.source == SeqSource::Pitch ? song.instrument : t.kit.empty() ? song.kit : t.kit);
+        SeqPatternPtr scene;
+        if (!t.seqBlocks) scene = scenePattern(t.scene);
+        for (const auto& c : t.clips) {
+            mix(&c.bar, 4); mix(&c.bars, 2); mix(&c.from, 2);
+            if (!c.notes && !scene) scene = scenePattern(t.scene);
+            notes(c.notes ? c.notes : scene);
+        }
+        if (!t.seqBlocks) notes(scene);
+        return h ? h : 1;
+    }
+
+    /// Seq track @p track plays its freeze: one made, not armed, and still
+    /// what it is.
+    bool frozenPlays(const AudioSong& song, int track) const {
+        const SongTrack& t = song.tracks[track];
+        return t.kind == TrackKind::Seq && !t.freeze.file.empty() && song.armed != track &&
+               t.freezeKey == seqKey(song, track);
+    }
+
     Arrangement flatten(const AudioSong& song) const {
         Arrangement a;
         a.samplesPerBar = song.samplesPerBar(sampleRate_);
@@ -1797,6 +1887,17 @@ private:
         for (int t = 0; t < kTracks; ++t) {
             const int route = song.seqRoute(t);
             if (route < 0) continue;
+            /* Frozen: its file, as an audio track's block, and no notes. */
+            if (frozenPlays(song, t)) {
+                const SongClip& fz = song.tracks[t].freeze;
+                Segment s;
+                s.start = fz.bar * a.samplesPerBar;
+                s.end = std::min<uint32_t>((fz.bar + fz.bars) * a.samplesPerBar, cut);
+                s.path = song.clipPath(fz.file);
+                if (s.end > s.start) a.tracks[t].push_back(s);
+                a.seqMapped = true;   // an empty map: the sequencer plays none of it
+                continue;
+            }
             /* On the song's grid: the song sets the clock's tempo when it
              * starts the sequencer with it. A track that plays its scene
              * everywhere is one span of it over the whole song -- laid on the
@@ -3176,7 +3277,8 @@ private:
         std::string file, path;
         for (int n = 1; n < 1000; ++n) {
             char buf[80];
-            std::snprintf(buf, sizeof(buf), "%s_S%u_%02d.wav", kit.c_str(), (unsigned)(bScene_ + 1), n);
+            if (bFreeze_) std::snprintf(buf, sizeof(buf), "FRZ%u_%02d.wav", (unsigned)(bTrack_ + 1), n);
+            else std::snprintf(buf, sizeof(buf), "%s_S%u_%02d.wav", kit.c_str(), (unsigned)(bScene_ + 1), n);
             file = buf;
             {
                 std::lock_guard<std::recursive_mutex> l(songMutex_);
@@ -3215,7 +3317,16 @@ private:
         };
         seq.stop();
         seq.setCountIn(false);
-        p.beginPadsCapture();
+        if (bFreeze_) {
+            int route = 0;
+            {
+                std::lock_guard<std::recursive_mutex> l(songMutex_);
+                route = std::max(0, song_.seqRoute(bTrack_));
+            }
+            p.beginRouteCapture((uint8_t)route);
+        } else {
+            p.beginPadsCapture();
+        }
         seq.selectScene(bScene_);
 
         /* One pass of the scene, or -- a seq track's bounce -- the scene
@@ -3389,10 +3500,25 @@ private:
              * scene's goes after the track's last block. */
             c.bar  = bBars_ ? bFrom_ : song_.trackEnd(bTrack_);
             c.bars = std::max<uint32_t>(1, (done + spBar - 1) / spBar);
-            song_.addClip(bTrack_, c);
-            /* A seq track's bounce: its notes are this clip now, and the slot
-             * is free for the next idea. */
-            if (bBars_) song_.bounceSeqTrack(bTrack_);
+            SongTrack& tr = song_.tracks[bTrack_];
+            if (bFreeze_) {
+                /* A freeze: the track keeps its notes and plays this while
+                 * they are what was frozen; the one before goes. */
+                if (tr.kind != TrackKind::Seq) {
+                    std::remove(path.c_str());
+                    fail("the track is not a seq track any more");
+                    return;
+                }
+                const std::string old = tr.freeze.file;
+                tr.freeze = c;
+                tr.freezeKey = bFreezeKey_;
+                if (!old.empty() && old != file) std::remove(song_.clipPath(old).c_str());
+            } else {
+                song_.addClip(bTrack_, c);
+                /* A seq track's bounce: its notes are this clip now, and the
+                 * slot is free for the next idea. */
+                if (bBars_) song_.bounceSeqTrack(bTrack_);
+            }
             rebuild();
             if (std::fabs(song_.bpm - bBpm_) >= 0.5f) {
                 char buf[64];
@@ -3539,6 +3665,8 @@ private:
     uint8_t               bScene_ = 0, bTrack_ = 0;
     uint32_t              bBars_ = 0;                // 0 = one pass of the scene
     uint32_t              bFrom_ = 0;                // the song's bar the take starts on
+    bool                  bFreeze_ = false;          // a freeze (freezeTrack()), not a bounce
+    uint32_t              bFreezeKey_ = 0;           // seqKey() when it was asked for
     float                 bBpm_ = 120.0f;
     std::atomic<bool>     busy_{false};
     BounceStatus          status_;
@@ -3600,6 +3728,8 @@ std::vector<ClipInfo> SongEngine::clips() { return impl_->clips(); }
 uint32_t SongEngine::listGeneration() const { return impl_->listGeneration(); }
 bool SongEngine::bounceScene(uint8_t scene, uint8_t track) { return impl_->bounceScene(scene, track); }
 bool SongEngine::bounceSeqTrack(uint8_t track) { return impl_->bounceSeqTrack(track); }
+bool SongEngine::freezeTrack(uint8_t track) { return impl_->freezeTrack(track); }
+FreezeState SongEngine::freezeState(uint8_t track) { return impl_->freezeState(track); }
 uint32_t SongEngine::playEndBars() { return impl_->playEndBars(); }
 BounceStatus SongEngine::bounceStatus() { return impl_->bounceStatus(); }
 void SongEngine::cancelBounce() { impl_->cancelBounce(); }
