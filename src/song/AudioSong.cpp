@@ -513,9 +513,25 @@ bool AudioSong::addAudioTrack(int track)
     return true;
 }
 
+bool AudioSong::sceneUsed(uint8_t scene, int except) const
+{
+    for (int t = 0; t < kTracks; ++t)
+        if (t != except && seqRoute(t) >= 0 && tracks[t].scene == scene) return true;
+    return false;
+}
+
+int AudioSong::sceneForNewSeq(uint8_t sceneCount, bool justAdded) const
+{
+    if (justAdded && sceneCount && !sceneUsed((uint8_t)(sceneCount - 1))) return sceneCount - 1;
+    for (uint8_t s = 0; s < sceneCount; ++s)
+        if (!sceneUsed(s)) return s;
+    return -1;
+}
+
 bool AudioSong::addSeqTrack(int track, SeqSource source, uint8_t scene, const std::string& ownKit)
 {
     if (track < 0 || track >= kTracks || tracks[track].inUse) return false;
+    if (sceneUsed(scene)) return false;
     const int route = freeSeqRoute(source);
     if (route < 0 || (route == 1 && ownKit.empty())) return false;
     tracks[track] = SongTrack{};

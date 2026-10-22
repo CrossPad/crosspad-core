@@ -299,11 +299,20 @@ public:
     /// Make @p track an empty audio track, in use and waiting for a clip.
     /// Returns false for a track already in use.
     bool addAudioTrack(int track);
+    /// A seq track in use other than @p except plays @p scene.
+    bool sceneUsed(uint8_t scene, int except = -1) const;
+    /// The scene a new seq track should take, among @p sceneCount: the one
+    /// just added (the last, when @p justAdded) -- **not** the sequencer's
+    /// active scene, which while it plays is still the old one until the loop
+    /// ends, and gave a Slice track the Drums track's scene (22.10.2026) --
+    /// else the lowest no seq track plays. -1 when every one is taken.
+    int sceneForNewSeq(uint8_t sceneCount, bool justAdded) const;
     /// Make @p track a seq on @p source playing @p scene. A kit track takes
     /// the route that is free (freeSeqRoute()): on 0 it plays the song's kit,
     /// which @p kit, given, becomes; on 1 @p kit is its own and must be
     /// given, and it plays only under blocks. Returns false when the track is
-    /// in use or there is no room for the seq.
+    /// in use, there is no room for the seq, or another seq track plays
+    /// @p scene -- two tracks on one scene overwrite each other's notes.
     bool addSeqTrack(int track, SeqSource source, uint8_t scene, const std::string& kit = {});
     /// Turn a seq track into an audio track: what BOUNCE does once the WAV is
     /// written. @p clip is the block the bounce made and becomes the track's

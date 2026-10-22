@@ -2201,8 +2201,9 @@ private:
              * blocks in -- not the groove up in the Sequencer. With no room
              * for another the one up is lent, as Arrange's SEQ card does. */
             if (t < 0) return false;
-            seq_.addScene();
-            if (!song_.addSeqTrack(t, SeqSource::Kit, seq_.activeScene())) return false;
+            const bool added = seq_.addScene();
+            const int scene = song_.sceneForNewSeq(seq_.sceneCount(), added);
+            if (scene < 0 || !song_.addSeqTrack(t, SeqSource::Kit, (uint8_t)scene)) return false;
             /* A song that starts as a seq track has no clip to take its
              * tempo from: its grid is the sequencer's. */
             if (song_.bpm <= 0.0f) song_.bpm = seq_.getClickBpm();

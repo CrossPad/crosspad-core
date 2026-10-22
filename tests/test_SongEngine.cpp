@@ -1954,7 +1954,7 @@ TEST_CASE("song engine: REC takes onto the armed kit track, and each track plays
     {
         std::lock_guard<std::recursive_mutex> l(r.engine->songMutex());
         auto& s = r.engine->song();
-        REQUIRE(s.addSeqTrack(1, SeqSource::Kit, 1, "/crosspad/kits/B/kit.json"));
+        REQUIRE(s.addSeqTrack(1, SeqSource::Kit, 2, "/crosspad/kits/B/kit.json"));   // its own scene
         s.armed = 1;
     }
     r.engine->commit();
@@ -2033,7 +2033,7 @@ TEST_CASE("song engine: a REC on one kit track is not heard under itself, the ot
         auto& s = r.engine->song();
         s.bpm = 120.0f;
         REQUIRE(s.addSeqTrack(0, SeqSource::Kit, 0));
-        REQUIRE(s.addSeqTrack(1, SeqSource::Kit, 1, "/crosspad/kits/B/kit.json"));
+        REQUIRE(s.addSeqTrack(1, SeqSource::Kit, 2, "/crosspad/kits/B/kit.json"));   // its own scene
         s.armed = 1;
     }
     r.engine->commit();

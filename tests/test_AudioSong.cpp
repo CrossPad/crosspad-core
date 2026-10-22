@@ -231,6 +231,25 @@ TEST_CASE("AudioSong: a Pitch track beside kit tracks is saved as version 4 and 
     CHECK(b.tracks[1].kit == "/crosspad/kits/SLICE/kit.json");
 }
 
+TEST_CASE("AudioSong: every seq track has a scene of its own", "[song][tracks][scenes]") {
+    AudioSong s;
+    REQUIRE(s.addSeqTrack(0, SeqSource::Kit, 1, "/crosspad/kits/DRUMS/kit.json"));
+    /* The Slice track asked for the Drums track's scene: refused, or its seq
+     * view would clear the Drums notes and keep them as its own. */
+    CHECK_FALSE(s.addSeqTrack(1, SeqSource::Kit, 1, "/crosspad/kits/SLICE/kit.json"));
+    CHECK(s.sceneUsed(1));
+    CHECK_FALSE(s.sceneUsed(1, 0));                        // but for itself
+    /* The scene just added is the last one, whatever the sequencer says is
+     * active while it plays. */
+    CHECK(s.sceneForNewSeq(3, true) == 2);
+    /* None added (all eight there): the lowest no track plays. */
+    CHECK(s.sceneForNewSeq(3, false) == 0);
+    REQUIRE(s.addSeqTrack(1, SeqSource::Kit, 2, "/crosspad/kits/SLICE/kit.json"));
+    REQUIRE(s.addSeqTrack(2, SeqSource::Pitch, 0));
+    CHECK(s.sceneForNewSeq(3, false) == -1);
+    CHECK(s.sceneForNewSeq(3, true) == -1);                // the last is taken too
+}
+
 TEST_CASE("AudioSong: the armed track is a seq track, else the first", "[song][tracks]") {
     AudioSong s;
     REQUIRE(s.armedSeqTrack() == -1);

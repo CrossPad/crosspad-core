@@ -6,6 +6,26 @@ carries the same number) and consumers gate on it with
 `crosspad/RequireVersion.hpp`. This file starts at 1.45.0; earlier releases
 are described in their `chore: X.Y.Z` commits.
 
+## 2.8.0 — 2026-10-22
+
+Every seq track keeps a scene of its own.
+
+### Fixed
+
+- A seq track made while the transport ran took the sequencer's *active*
+  scene after `addScene()` -- which, playing, is still the old one until the
+  loop ends: another track's. A Slice track added beside a Drums track got
+  the Drums scene, its seq view cleared it, and the Drums notes landed as a
+  block on the Slice track (22.10.2026). `AudioSong::addSeqTrack()` now
+  refuses a scene another seq track plays, and the take that makes a track
+  (SongEngine) uses the scene just added.
+
+### Added
+
+- `AudioSong::sceneUsed()`, `sceneForNewSeq(sceneCount, justAdded)`: the
+  scene a new seq track takes -- the one just added, else the lowest no seq
+  track plays.
+
 ## 2.7.0 — 2026-10-22
 
 A logic of buttons lets the notes through.
