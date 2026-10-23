@@ -78,6 +78,14 @@ public:
     /// track's engine stay out of the take. endPadsCapture() ends it. A
     /// platform without a tap per engine takes the pads as a bounce does.
     virtual void beginRouteCapture(uint8_t route) { (void)route; beginPadsCapture(); }
+    /// A freeze's render off the clock, as fast as the platform can go: the
+    /// outputs fall silent, the render runs the clock and the captured
+    /// channels only, and holds back only for the card -- the capture's
+    /// writer (SongEngine::captureBacklogged()) and the streamed samples. True
+    /// when it does; false and the freeze runs in real time, as a bounce.
+    /// endOffline() puts the clock back on the outputs.
+    virtual bool beginOffline() { return false; }
+    virtual void endOffline() {}
 
     /// The seq track's fader on the engine its notes play through -- @p
     /// source's: the kit's engines, or the pitched instrument -- while the

@@ -976,6 +976,26 @@ bool SamplerEngine::renderVoice(Voice& v, float* out, uint32_t frames)
     return true;
 }
 
+uint32_t SamplerEngine::streamLead() const
+{
+    uint32_t lead = UINT32_MAX;
+    for (const auto& v : voices_) {
+        if (v.state.load(std::memory_order_acquire) != static_cast<uint8_t>(VoiceState::Playing)) continue;
+        const uint32_t at = v.playFrame.load(std::memory_order_acquire);
+        uint32_t upTo = 0;
+        if (v.window.isOpen()) {
+            upTo = v.window.validUpTo();
+        } else if (v.wantStream && v.slot) {
+            upTo = v.slot->headStart + v.slot->headFrames;   // the head, until its ring opens
+        } else {
+            continue;                                         // resident: nothing to wait for
+        }
+        if (upTo >= v.last) continue;                         // delivered to its end
+        lead = std::min(lead, upTo > at ? upTo - at : 0u);
+    }
+    return lead;
+}
+
 void SamplerEngine::mix(float* out, uint32_t frames)
 {
     uint32_t toBar = 0;

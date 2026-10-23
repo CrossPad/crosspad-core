@@ -35,6 +35,9 @@ public:
     /// tap this block. Without one it only keeps the pads' peak, which a
     /// platform whose seqLevel() answers never reads.
     bool capturing() const;
+    /// RT: the capture's ring is past half full -- an offline render waits
+    /// here for the card to catch up instead of overflowing it.
+    bool captureBacklogged() const;
     /// Stop playback, cancel any bounce and give both rings back; returns
     /// once they are. Never from the worker.
     void releaseRings();

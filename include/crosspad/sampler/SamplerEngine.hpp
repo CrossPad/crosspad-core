@@ -392,6 +392,13 @@ public:
     bool padSounding(uint8_t pad) const;
     bool anySounding() const;
 
+    /// The fewest frames any streaming voice has delivered ahead of where it
+    /// plays -- a voice still in its head, waiting for its ring, counts what
+    /// of the head is left. UINT32_MAX when no voice reads the card, or every
+    /// one has its sample whole. A render faster than real time (an offline
+    /// freeze) waits on it, so the streamer keeps ahead of what it plays.
+    uint32_t streamLead() const;
+
     /**
      * @brief Whether anything may still read slot @p slot of the store.
      *

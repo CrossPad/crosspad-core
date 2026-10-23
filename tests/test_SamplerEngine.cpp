@@ -1899,3 +1899,26 @@ TEST_CASE("SamplerEngine rises over a pad's own attack", "[samplerengine][slice]
     const std::vector<float> slow = leftChannel(rig, 256);
     CHECK(std::fabs(slow[200]) < std::fabs(plain[200]) * 0.2f);
 }
+
+TEST_CASE("SamplerEngine::streamLead: what the streamer is ahead of the voice, falling as it plays",
+          "[samplerengine][offline]")
+{
+    Rig rig;
+    rig.build();
+    rig.src.add("long.wav", 40000, 2);
+    rig.assign(0, "long.wav", 1024);
+    rig.publish();
+    CHECK(rig.engine.streamLead() == UINT32_MAX);          // nothing reads the card
+    rig.engine.noteOn(0, 127);
+    std::vector<float> out(64 * 2);
+    rig.engine.mix(out.data(), 64);
+    const uint32_t inHead = rig.engine.streamLead();
+    CHECK(inHead < 1024);                                  // the head left, its ring not open yet
+    rig.engine.serviceIo();
+    const uint32_t fed = rig.engine.streamLead();
+    CHECK(fed > inHead);                                   // the ring's blocks ahead of it
+    for (int i = 0; i < 4; ++i) rig.engine.mix(out.data(), 64);
+    CHECK(rig.engine.streamLead() == fed - 4 * 64);        // played, nothing delivered meanwhile
+    rig.engine.serviceIo();
+    CHECK(rig.engine.streamLead() >= fed - 4 * 64);
+}

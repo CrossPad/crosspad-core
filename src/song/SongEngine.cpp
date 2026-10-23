@@ -500,6 +500,7 @@ struct SongEngine::Impl {
 
     /// The pads bus, one block. Only while a bounce is armed.
     bool capturing() const { return bArmed_.load(std::memory_order_seq_cst); }
+    bool captureBacklogged() const { return bRing_.cap && bRing_.used() * 2 > bRing_.cap; }
 
     void rtCapture(const float* bus, uint32_t frames) {
         RtSection rt(rtGen_);
@@ -3684,6 +3685,9 @@ private:
         bOverflow_.store(false);
         bDone_.store(false);
         bArmed_.store(true, std::memory_order_seq_cst);
+        /* A freeze is heard by nobody: off the clock, as fast as the card
+         * lets it (ISongEnginePlatform::beginOffline()). */
+        const bool offline = bFreeze_ && p.beginOffline();
         seq.playback();
 
         int16_t* chunk = io_;
@@ -3759,6 +3763,7 @@ private:
 
         bArmed_.store(false, std::memory_order_seq_cst);
         restore();
+        if (offline) p.endOffline();
         waitRtOut();
         bRing_.release();
         const bool closed = w.close();
@@ -4011,6 +4016,7 @@ void SongEngine::onSampleRateChange(uint32_t sr) { impl_->onSampleRateChange(sr)
 void SongEngine::mix(float* out, uint32_t frames) { impl_->mix(out, frames); }
 void SongEngine::rtCapture(const float* padsBus, uint32_t frames) { impl_->rtCapture(padsBus, frames); }
 bool SongEngine::capturing() const { return impl_->capturing(); }
+bool SongEngine::captureBacklogged() const { return impl_->captureBacklogged(); }
 void SongEngine::releaseRings() { impl_->releaseRings(); }
 const char* SongEngine::debugLine() const { return impl_->debugLine(); }
 bool SongEngine::liveStart() { return impl_->liveStart(); }

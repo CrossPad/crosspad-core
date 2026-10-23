@@ -6,6 +6,21 @@ carries the same number) and consumers gate on it with
 `crosspad/RequireVersion.hpp`. This file starts at 1.45.0; earlier releases
 are described in their `chore: X.Y.Z` commits.
 
+## 2.13.0 — 2026-10-23
+
+A freeze off the clock.
+
+### Added
+
+- `ISongEnginePlatform::beginOffline()` / `endOffline()`: a freeze's render
+  runs off the clock where the platform can -- the outputs silent, the clock
+  and the captured channels only, as fast as the card keeps up -- and in real
+  time where it cannot (default).
+- `SongEngine::captureBacklogged()`: the capture's ring past half full, for
+  an offline render to wait on.
+- `SamplerEngine::streamLead()`: the fewest frames any streaming voice has
+  delivered ahead of where it plays, for the same.
+
 ## 2.12.0 — 2026-10-23
 
 A freeze renders only what changed.
