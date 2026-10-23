@@ -22,6 +22,13 @@ void setKitPathFsPrefix(const std::string& prefix);
 std::string resolveKitSamplePath(const std::string& kitJsonPath,
                                   const std::string& sampleFile);
 
+/// The resolver reads a kit's folder and SAMPLES/ once and answers from that
+/// for a few seconds (a kit load resolves each sample several times, and each
+/// stat walks the card's path from the root). Call after writing or removing
+/// files in a kit folder for the change to count at once; a name the listing
+/// does not have is looked up on the card anyway.
+void forgetKitListings();
+
 /// The filesystem path of a logical one -- what resolveKitSamplePath()
 /// returns, or a sample picked in the file browser -- for code that opens the
 /// file itself rather than handing it to the sample player (which adds the

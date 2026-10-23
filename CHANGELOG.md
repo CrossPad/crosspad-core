@@ -6,6 +6,25 @@ carries the same number) and consumers gate on it with
 `crosspad/RequireVersion.hpp`. This file starts at 1.45.0; earlier releases
 are described in their `chore: X.Y.Z` commits.
 
+## 2.15.0 — 2026-10-23
+
+Sixteen streaming voices; a kit's samples resolved from one listing.
+
+### Added
+
+- `forgetKitListings()`: `resolveKitSamplePath()` now answers from a listing
+  of the kit's folder and its `SAMPLES/` (two kits, 3 s each) and falls back
+  to the stats only for a name the listing lacks. A kit load resolves each
+  sample three or four times, and each stat walked the card's path from the
+  root: one 16-sample kit was 466 single-sector directory reads.
+
+### Changed
+
+- `SamplerEngine::Params::maxStreamingVoices` 10 -> 16, measured on a v2
+  with the board's sector bounce and 32 kB I-cache (platform-idf).
+- `dsp::AlignedVector` allocates from internal RAM first on ESP-IDF (the
+  render's per-block buffers), PSRAM when internal RAM is short.
+
 ## 2.14.0 — 2026-10-23
 
 A seq track's bounce is a freeze turned into audio.

@@ -140,8 +140,14 @@ public:
          *
          * Resident voices are not counted against it; `maxVoices` still caps
          * the total.
+         *
+         * Sixteen, the pad count (23.10.2026): measured on a v2, sixteen
+         * stereo one-shots streaming under a kit change and fifteen loops
+         * under the USB-audio profile with a host stream, no underrun, the
+         * card ~50 % busy. Ten was the number before the render and the
+         * card's sector path got cheaper.
          */
-        uint8_t maxStreamingVoices = 10;
+        uint8_t maxStreamingVoices = 16;
 
         /**
          * @brief Blocks in a streaming voice's ring, up to
