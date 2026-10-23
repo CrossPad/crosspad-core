@@ -1131,6 +1131,7 @@ void SamplerEngine::mix(float* out, uint32_t frames)
     }
     barWasRunning_ = clockRunning;
 
+    bool silent = true;
     for (auto& v : voices_) {
         if (v.state.load(std::memory_order_acquire) != static_cast<uint8_t>(VoiceState::Playing)) continue;
         /* A launch waiting for the bar line: not heard, not advanced, and
@@ -1151,8 +1152,10 @@ void SamplerEngine::mix(float* out, uint32_t frames)
             v.announced = true;
             if (onNote_) onNote_(v.pad, v.layer, cbCtx_);
         }
+        silent = false;
         if (!renderVoice(v, out + static_cast<size_t>(at) * 2, frames - at)) endVoice(v);
     }
+    lastSilent_ = silent;
 }
 
 // ── Audition ────────────────────────────────────────────────────────────────

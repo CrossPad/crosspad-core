@@ -242,6 +242,8 @@ public:
     bool isGenerator() const override { return true; }
     void onPrepare(uint32_t maxFrames, uint32_t sampleRate) override;
     void mix(float* out, uint32_t frames) override;
+    /// No voice was rendered in the last mix() (IAudioNode).
+    bool lastMixSilent() const override { return lastSilent_; }
 
     // ── Setup, on the loader thread ───────────────────────────────────────
     /// The pool the voices stream through and the store they read.
@@ -707,6 +709,7 @@ private:
 
     Params params_;
     uint32_t sampleRate_ = 44100;
+    bool     lastSilent_ = true;   ///< render thread: mix() rendered no voice
 
     /* What renderVoice() derives from params_ and sampleRate_, worked out
      * when either changes instead of for every voice of every block: three

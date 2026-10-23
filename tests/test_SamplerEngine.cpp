@@ -1338,6 +1338,32 @@ TEST_CASE("SamplerEngine plays a file whose header claims an absurd rate without
     CHECK_FALSE(rig.engine.padSounding(0));        // a one-shot 256 frames a frame is long over
 }
 
+TEST_CASE("SamplerEngine says when a block added nothing", "[samplerengine]") {
+    /* The mixer meters a silent channel without scanning it on this word:
+     * false for every block a voice wrote into, true only when none did. */
+    Rig rig;
+    rig.build();
+    rig.src.add("hit.wav", 300, 2);
+    rig.assign(0, "hit.wav", 300);
+    rig.publish();
+    std::vector<float> out(64 * 2, 0.0f);
+    rig.engine.mix(out.data(), 64);
+    CHECK(rig.engine.lastMixSilent());
+    rig.engine.noteOn(0, 127);
+    rig.engine.mix(out.data(), 64);
+    CHECK_FALSE(rig.engine.lastMixSilent());
+    for (int b = 0; b < 20 && rig.engine.voicesActive(); ++b) {
+        rig.engine.mix(out.data(), 64);
+        CHECK_FALSE(rig.engine.lastMixSilent());     // the block it ends in still wrote
+        rig.engine.serviceIo();
+    }
+    REQUIRE(rig.engine.voicesActive() == 0);
+    std::fill(out.begin(), out.end(), 0.0f);
+    rig.engine.mix(out.data(), 64);
+    CHECK(rig.engine.lastMixSilent());
+    for (float v : out) REQUIRE(v == 0.0f);
+}
+
 TEST_CASE("SamplerEngine over its budget holds the polyphony where it is", "[samplerengine]") {
     Rig rig;
     rig.build();

@@ -908,3 +908,28 @@ TEST_CASE("SampleBank: the crossfade and the start stay where they can play",
     REQUIRE(bank->zone(0).start == 100);
     delete bank;
 }
+
+TEST_CASE("PitchedInstrument: says when a block added nothing", "[instrument][engine]") {
+    /* The mixer takes a silent channel's peak as 0 without scanning it on
+     * this word, so it must be false for every block that wrote. */
+    SampleBank* bank = makeBank(200, 57.0f, 0, 0, rampFill);
+    PitchedInstrument inst;
+    inst.onPrepare(kFrames, kSr);
+    inst.setParams(params(24));
+    std::vector<float> out(kFrames * 2, 0.0f);
+    inst.mix(out.data(), kFrames);
+    CHECK(inst.lastMixSilent());                   // no bank
+    inst.setBank(bank);
+    inst.mix(out.data(), kFrames);
+    CHECK(inst.lastMixSilent());                   // a bank, no note
+    inst.noteOn(57, 127, 0);
+    inst.mix(out.data(), kFrames);
+    CHECK_FALSE(inst.lastMixSilent());
+    for (int b = 0; b < 200 && inst.activeVoices(); ++b) inst.mix(out.data(), kFrames);
+    REQUIRE(inst.activeVoices() == 0);             // 200 frames, played out
+    std::fill(out.begin(), out.end(), 0.0f);
+    inst.mix(out.data(), kFrames);
+    CHECK(inst.lastMixSilent());
+    for (float v : out) REQUIRE(v == 0.0f);
+    delete bank;
+}

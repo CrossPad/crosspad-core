@@ -471,6 +471,7 @@ void PitchedInstrument::mix(float* out, uint32_t frames) {
     // stores happen even on the early returns below — the flag has to be
     // honest about every path through mix(), not just the one that renders.
     rendering_.store(true, std::memory_order_seq_cst);
+    lastSilent_ = true;
     if (gated_.load(std::memory_order_seq_cst)) {
         rendering_.store(false, std::memory_order_seq_cst);
         // A gated block still happened, and it was silent. Say so, or the view
@@ -508,6 +509,7 @@ void PitchedInstrument::renderBlock(float* out, uint32_t frames) {
             // has never been used still has a null zone, so it is skipped.
             if (!v.active.load(std::memory_order_acquire) || !v.zone) continue;
             renderVoice(v, frames);
+            lastSilent_ = false;
             if (captureScope) {
                 for (uint32_t n = 0; n < frames; ++n) mono[n] += scratch_[n];
             }

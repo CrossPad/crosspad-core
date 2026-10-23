@@ -6,6 +6,42 @@ carries the same number) and consumers gate on it with
 `crosspad/RequireVersion.hpp`. This file starts at 1.45.0; earlier releases
 are described in their `chore: X.Y.Z` commits.
 
+## 2.16.0 — 2026-10-23
+
+The sampler's render: pitched loops on every lap, kernels out of line, a
+voice shed when the render cannot keep up.
+
+### Added
+
+- `IAudioNode::lastMixSilent()` (default false): a node says its last
+  `mix()` added nothing, and the mixer meters the channel without a pass
+  over it. `SamplerEngine` and `PitchedInstrument` answer it.
+- `SamplerEngine::shedOne()`: the oldest sounding voice let go (faded, as a
+  steal; counted in `sheds`), for a board's audio task to call while its
+  pass stays longer than the block.
+
+### Fixed
+
+- A streamed loop stepping a fraction a frame lost its run walk after its
+  first lap and read frame by frame (~170 us a voice a block): sixteen
+  pitched loops held core 1 until the task watchdog fired. `SampleCursor::
+  runAt()` takes the lap offset as `read()` does.
+- A voice's step is held to 256 frames a frame: a WAV header claiming
+  gigahertz on a pad pitched to the top overflowed the step and the run's
+  64-bit phase sums (undefined conversion, a walk past the buffer).
+
+### Changed
+
+- The pitched run is `walkPitched<Ch, Loud>()` and the unit-rate run
+  `walkLevel<Ch, Loud>()`: counted once a run, loudness settled once a run
+  (none for a loop, whose quiet nothing reads); `hermite4i()` works the
+  Catmull-Rom coefficients out in integers (exact for int16 taps, the same
+  number to the bit). Steps derived from the parameters are computed when
+  they change (`refreshSteps()`), a trimmed one-shot's tail at the note.
+  `SampleCursor::readRun()` is gone (its loop is the kernel). Board, 16
+  stereo loops: pitched +7 1043-1267 us rising to saturation -> 680 us;
+  unpitched 408 -> 354 us. Host digests unchanged.
+
 ## 2.15.0 — 2026-10-23
 
 Sixteen streaming voices; a kit's samples resolved from one listing.
