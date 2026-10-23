@@ -756,7 +756,7 @@ namespace {
 #define CP_OWN_REGISTERS
 #endif
 
-template <int Ch>
+template <int Ch, bool Loud>
 CP_OWN_REGISTERS uint32_t playLevel(const int16_t* p, uint32_t n, float* o, uint32_t at,
                                     float gainL, float gainR, float e, float loudLevel,
                                     uint32_t quietLimit, uint32_t& quietIo, uint32_t& loudEndIo)
@@ -767,6 +767,7 @@ CP_OWN_REGISTERS uint32_t playLevel(const int16_t* p, uint32_t n, float* o, uint
         const float r = Ch == 2 ? static_cast<float>(p[1]) : l;
         o[0] += l * gainL * e;
         o[1] += r * gainR * e;
+        if (!Loud) continue;
         if (dsp::maxOf(std::fabs(l), std::fabs(r)) >= loudLevel) {
             loudEnd = at + k + 1;
             quiet = 0;
@@ -784,13 +785,14 @@ CP_OWN_REGISTERS uint32_t playLevel(const int16_t* p, uint32_t n, float* o, uint
  * of them in the buffer and before anything that could end the voice (the
  * caller counted them). Returns where the last frame at or above
  * @p loudLevel went in @p o, null if none did: the loudness bookkeeping is
- * the caller's, once a run.
+ * the caller's, once a run. Without @p Loud -- a loop, whose quiet and
+ * audible end nothing reads -- there is none, and it returns null.
  *
  * Out of line for the reason playLevel() is: inside renderVoice() the walk
  * was a call into flash per frame, its two results came back through the
  * stack, and the phase, the gains and the counters were stored and reloaded
  * every frame -- ~150 instructions a frame where the arithmetic is ~50. */
-template <int Ch>
+template <int Ch, bool Loud>
 CP_OWN_REGISTERS const float* walkPitched(const int16_t* base, uint32_t first, uint64_t phase, uint64_t inc,
                                           uint32_t n, float* o, float gainL, float gainR, float e,
                                           float loudLevel)
@@ -809,7 +811,7 @@ CP_OWN_REGISTERS const float* walkPitched(const int16_t* base, uint32_t first, u
         }
         o[0] += l * gainL * e;
         o[1] += r * gainR * e;
-        if (dsp::maxOf(std::fabs(l), std::fabs(r)) >= loudLevel) loud = o;
+        if (Loud && dsp::maxOf(std::fabs(l), std::fabs(r)) >= loudLevel) loud = o;
         phase += inc;
     }
     return loud;
@@ -950,9 +952,13 @@ bool SamplerEngine::renderVoice(Voice& v, float* out, uint32_t frames)
             if (down == 0.0f && env == 1.0f && mute == muteTarget && at < tailFrom) {
                 const float e = env * (1.0f / 32768.0f);
                 const float gl = gainL * mute, gr = gainR * mute;
+                /* A loop's quiet and audible end are never read (learnEnd()
+                 * is a one-shot's): its walk keeps no loudness at all. */
                 const uint32_t done =
-                    ch == 2 ? playLevel<2>(p, n, o, at, gl, gr, e, loudLevel, quietLimit, quiet, loudEnd)
-                            : playLevel<1>(p, n, o, at, gl, gr, e, loudLevel, quietLimit, quiet, loudEnd);
+                    v.loop ? (ch == 2 ? playLevel<2, false>(p, n, o, at, gl, gr, e, loudLevel, quietLimit, quiet, loudEnd)
+                                      : playLevel<1, false>(p, n, o, at, gl, gr, e, loudLevel, quietLimit, quiet, loudEnd))
+                           : (ch == 2 ? playLevel<2, true>(p, n, o, at, gl, gr, e, loudLevel, quietLimit, quiet, loudEnd)
+                                      : playLevel<1, true>(p, n, o, at, gl, gr, e, loudLevel, quietLimit, quiet, loudEnd));
                 if (done < n) {
                     silenced = true;
                     phase = static_cast<uint64_t>(at + done) * kOne;
@@ -993,17 +999,20 @@ bool SamplerEngine::renderVoice(Voice& v, float* out, uint32_t frames)
                  * then has no test a frame. */
                 const uint32_t lim = end - 2 < stopAt ? end - 2 : stopAt;
                 const uint64_t limQ = static_cast<uint64_t>(lim) << 32;
-                uint32_t room = 0;
-                if (phase < limQ) {
-                    const uint64_t steps = (limQ - phase + v.inc - 1) / v.inc;
-                    room = steps < frames - i ? static_cast<uint32_t>(steps) : frames - i;
+                /* Nearly always the rest of the block fits, which a multiply
+                 * shows; the division (soft on the S3) only where it ends. */
+                uint32_t room = frames - i;
+                if (phase + static_cast<uint64_t>(room - 1) * v.inc >= limQ) {
+                    room = phase < limQ ? static_cast<uint32_t>((limQ - phase + v.inc - 1) / v.inc) : 0;
                 }
                 /* A run the quiet cannot end. One that might -- the last
                  * block of a one-shot's silent tail -- goes frame by frame. */
                 if (room && (!quietLimit || quiet + room < quietLimit)) {
                     const float* loud =
-                        ch == 2 ? walkPitched<2>(base, first, phase, v.inc, room, o, gl, gr, e, loudLevel)
-                                : walkPitched<1>(base, first, phase, v.inc, room, o, gl, gr, e, loudLevel);
+                        v.loop ? (ch == 2 ? walkPitched<2, false>(base, first, phase, v.inc, room, o, gl, gr, e, loudLevel)
+                                          : walkPitched<1, false>(base, first, phase, v.inc, room, o, gl, gr, e, loudLevel))
+                               : (ch == 2 ? walkPitched<2, true>(base, first, phase, v.inc, room, o, gl, gr, e, loudLevel)
+                                          : walkPitched<1, true>(base, first, phase, v.inc, room, o, gl, gr, e, loudLevel));
                     if (loud) {
                         const uint32_t k = static_cast<uint32_t>((loud - o) / 2);
                         loudEnd = static_cast<uint32_t>((phase + static_cast<uint64_t>(k) * v.inc) >> 32) + 1;

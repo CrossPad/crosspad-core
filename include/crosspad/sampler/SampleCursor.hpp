@@ -25,6 +25,12 @@
 
 #include <cstdint>
 
+#if defined(__XTENSA__) && defined(__has_include)
+#if __has_include(<xtensa/config/core-isa.h>)
+#include <xtensa/config/core-isa.h>
+#endif
+#endif
+
 namespace crosspad {
 
 class SampleCursor {
@@ -305,10 +311,24 @@ public:
     static float hermite4i(int32_t y0, int32_t y1, int32_t y2, int32_t y3, float f)
     {
         const float c0 = static_cast<float>(y1);
-        const float c1 = static_cast<float>(y2 - y0) * 0.5f;
-        const float c2 = static_cast<float>(2 * y0 - 5 * y1 + 4 * y2 - y3) * 0.5f;
-        const float c3 = static_cast<float>(y3 - y0 + 3 * (y1 - y2)) * 0.5f;
+        const float c1 = halfOf(y2 - y0);
+        const float c2 = halfOf(2 * y0 - 5 * y1 + 4 * y2 - y3);
+        const float c3 = halfOf(y3 - y0 + 3 * (y1 - y2));
         return ((c3 * f + c2) * f + c1) * f + c0;
+    }
+
+    /// @p x / 2 as a float, exactly for any @p x inside 24 bits: on an Xtensa
+    /// FPU the conversion's own scale (FLOAT.S x, 1), one instruction where a
+    /// conversion and a multiply by 0.5 were two.
+    static float halfOf(int32_t x)
+    {
+#if defined(XCHAL_HAVE_FP) && XCHAL_HAVE_FP
+        float r;
+        asm("float.s %0, %1, 1" : "=f"(r) : "r"(x));
+        return r;
+#else
+        return static_cast<float>(x) * 0.5f;
+#endif
     }
 
     /// Catmull-Rom over four taps. y1 is the sample at the integer position.
