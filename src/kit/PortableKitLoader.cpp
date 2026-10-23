@@ -166,6 +166,7 @@ bool PortableKitLoader::readKitCopy(const std::string& kitJsonPath, KitInfo& out
 }
 
 bool PortableKitLoader::removeKit(int id) {
+    forgetKitListings();
     if (id < 0 || id >= static_cast<int>(kits_.size())) return false;
     if (id == currentKitId_ || id == retiredKitId_) return false;
     const std::string path = kits_[id].path;

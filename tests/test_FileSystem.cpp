@@ -255,7 +255,30 @@ TEST_CASE("kit paths: a sample is looked for flat, then under SAMPLES", "[fs][ki
     fake.addFile("/card/kits/K/SAMPLES/kick.wav");
     CHECK(resolveKitSamplePath("/kits/K/kit.json", "kick.wav") == "/kits/K/SAMPLES/kick.wav");
     fake.addFile("/card/kits/K/kick.wav");
+    forgetKitListings();
     CHECK(resolveKitSamplePath("/kits/K/kit.json", "kick.wav") == "/kits/K/kick.wav");
     CHECK(resolveKitSamplePath("/kits/K/kit.json", "snare.wav") == "/kits/K/snare.wav");
+    setKitPathFsPrefix("");
+}
+
+TEST_CASE("kit paths: a kit's samples are resolved from one listing, not a stat each", "[fs][kit]") {
+    test::FakeFileSystem fake;
+    test::UseFileSystem use(fake);
+    setKitPathFsPrefix("/card");
+    fake.addDir("/card/kits");
+    fake.addDir("/card/kits/K");
+    fake.addDir("/card/kits/K/SAMPLES");
+    fake.addFile("/card/kits/K/kit.json");
+    for (int i = 0; i < 16; ++i) fake.addFile("/card/kits/K/SAMPLES/" + std::to_string(i) + ".wav");
+    const int stats0 = fake.stats.load();
+    for (int pass = 0; pass < 3; ++pass)
+        for (int i = 0; i < 16; ++i)
+            CHECK(resolveKitSamplePath("/kits/K/kit.json", std::to_string(i) + ".wav") ==
+                  "/kits/K/SAMPLES/" + std::to_string(i) + ".wav");
+    CHECK(fake.stats.load() == stats0);
+    CHECK(fake.lists.load() == 2);
+    /* A name the listing has not seen is still found on the card. */
+    fake.addFile("/card/kits/K/SAMPLES/new.wav");
+    CHECK(resolveKitSamplePath("/kits/K/kit.json", "new.wav") == "/kits/K/SAMPLES/new.wav");
     setKitPathFsPrefix("");
 }
