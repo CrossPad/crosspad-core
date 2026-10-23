@@ -6,6 +6,21 @@ carries the same number) and consumers gate on it with
 `crosspad/RequireVersion.hpp`. This file starts at 1.45.0; earlier releases
 are described in their `chore: X.Y.Z` commits.
 
+## 2.14.0 — 2026-10-23
+
+A seq track's bounce is a freeze turned into audio.
+
+### Changed
+
+- `bounceSeqTrack()` renders the track as `freezeTrack()` does -- a looping
+  block's two passes, each render found on the card where it is (a track
+  frozen as it is bounces with nothing rendered), off the clock -- and the
+  renders become the track's audio blocks, offsets and all; the track turns
+  audio and its seq slot is free, as before. Renders a bounced track plays are
+  kept by a freeze's clean-up.
+- Every bounce, a scene's too, renders off the clock where the platform can
+  (`beginOffline()`).
+
 ## 2.13.0 — 2026-10-23
 
 A freeze off the clock.

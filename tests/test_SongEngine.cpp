@@ -1917,13 +1917,62 @@ TEST_CASE("song engine: a seq track's bounce takes only the bars its blocks play
     }
     const BounceStatus st = r.engine->bounceStatus();
     REQUIRE(st.state == BounceState::Done);
-    CHECK(st.framesTotal == r.engine->framesPerBar());    // one bar, not sixteen
+    /* The bar and a bar of what rings on into the gap after it, not sixteen:
+     * rendered as a freeze is (core 2.14). */
+    CHECK(st.framesTotal == 2 * r.engine->framesPerBar());
     std::lock_guard<std::recursive_mutex> l(r.engine->songMutex());
     const auto& tr = r.engine->song().tracks[0];
     CHECK(tr.kind == TrackKind::Audio);
+    CHECK(tr.freeze.empty());
     REQUIRE(tr.clips.size() == 1);
     CHECK(tr.clips[0].bar == 5);                          // where the block was
     CHECK(tr.clips[0].file == st.file);
+}
+
+TEST_CASE("song engine: a frozen track bounces with nothing rendered", "[song][bounce][freeze]") {
+    Rig r;
+    REQUIRE(r.open("Demo"));
+    {
+        std::lock_guard<std::recursive_mutex> l(r.engine->songMutex());
+        auto& s = r.engine->song();
+        s.bpm = 120.0f;
+        s.length = 16;
+        REQUIRE(s.addSeqTrack(0, SeqSource::Kit, 0));
+        SeqNote n;
+        n.pad = 1; n.vel = 100;
+        s.putSeqTake(0, 0, makeSeqPattern(2, {n}), s.samplesPerBar(kRate));
+        s.tracks[0].clips[0].bars = 16;
+        s.armed = -1;
+    }
+    r.engine->commit();
+    std::vector<float> out(kBlock * 2), bus(kBlock * 2, 0.25f);
+    auto run = [&](bool bounce) {
+        const bool asked = bounce ? r.engine->bounceSeqTrack(0) : r.engine->freezeTrack(0);
+        REQUIRE(asked);
+        for (int i = 0; i < 6000 && r.engine->bounceStatus().state == BounceState::Running; ++i) {
+            r.block(out, bus);
+            std::this_thread::sleep_for(std::chrono::milliseconds(2));
+        }
+        REQUIRE(r.engine->bounceStatus().state == BounceState::Done);
+    };
+    run(false);
+    std::vector<SongClip> frozen;
+    {
+        std::lock_guard<std::recursive_mutex> l(r.engine->songMutex());
+        frozen = r.engine->song().tracks[0].freeze;
+    }
+    const int before = r.platform.captureBegun;
+    run(true);
+    CHECK(r.platform.captureBegun == before);              // every render was on the card
+    std::lock_guard<std::recursive_mutex> l(r.engine->songMutex());
+    const auto& tr = r.engine->song().tracks[0];
+    CHECK(tr.kind == TrackKind::Audio);
+    REQUIRE(tr.clips.size() == frozen.size());
+    for (size_t i = 0; i < frozen.size(); ++i) {
+        CHECK(tr.clips[i].file == frozen[i].file);
+        CHECK(tr.clips[i].bar == frozen[i].bar);
+        CHECK(tr.clips[i].offset == frozen[i].offset);
+    }
 }
 
 namespace {

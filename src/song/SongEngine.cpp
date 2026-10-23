@@ -817,18 +817,22 @@ struct SongEngine::Impl {
     /// take is played in real time, and a one-bar block in a 64-bar song was
     /// 64 bars of waiting, nearly all of it silence (20.10.2026). A track
     /// that plays its scene over everything is the whole song, as before.
+    /// Arrange's BOUNCE: a freeze (runFreeze()) whose blocks become the
+    /// track's audio -- the same renders, found on the card where they are
+    /// (a track frozen as it is bounces at once), off the clock where not.
     bool bounceSeqTrack(uint8_t track) {
         if (track >= kTracks) return false;
         uint8_t scene = 0;
-        uint32_t from = 0, to = 0;
+        uint32_t from = 0, to = 0, key = 0;
         {
             std::lock_guard<std::recursive_mutex> l(songMutex_);
             const SongTrack& t = song_.tracks[track];
-            if (!t.inUse || t.kind != TrackKind::Seq) return false;
+            if (!t.inUse || t.kind != TrackKind::Seq || song_.seqRoute(track) < 0) return false;
             scene = t.scene;
             seqRange(song_, track, from, to);
+            key = seqKey(song_, track);
         }
-        return requestBounce(scene, track, to - from, from);
+        return requestBounce(scene, track, to - from, from, key, true);
     }
 
     bool freezeTrack(uint8_t track) {
@@ -863,7 +867,7 @@ struct SongEngine::Impl {
     /// @p freezeKey set: a freeze (freezeTrack()), the track's engine alone
     /// into SongTrack::freeze, stamped with it.
     bool requestBounce(uint8_t scene, uint8_t track, uint32_t bars, uint32_t fromBar = 0,
-                       uint32_t freezeKey = 0) {
+                       uint32_t freezeKey = 0, bool toAudio = false) {
         if (track >= kTracks || !ensureWorker()) return false;
         /* A scene's bounce is audio for an audio track; only a seq track's own
          * bounce lands on the seq track. */
@@ -884,6 +888,7 @@ struct SongEngine::Impl {
         bFrom_ = bars ? fromBar : 0;
         bFreeze_ = bars && freezeKey;
         bFreezeKey_ = freezeKey;
+        bToAudio_ = bFreeze_ && toAudio;
         bCancel_.store(false);
         bounceReq_.store(true);
         p.wake();
@@ -2117,17 +2122,28 @@ private:
                 return;
             }
             /* What the track played before and plays no longer: one of 2.9's
-             * whole-track files, or a render no track's freeze names now. */
+             * whole-track files, or a render no track names now -- in a freeze,
+             * or as a bounced track's audio. */
             auto named = [&](const std::string& f) {
-                for (const auto& other : song_.tracks)
+                for (const auto& other : song_.tracks) {
                     for (const auto& c : other.freeze)
                         if (c.file == f) return true;
+                    for (const auto& c : other.clips)
+                        if (c.file == f) return true;
+                }
                 return false;
             };
             std::vector<std::string> old;
             for (const auto& c : tr.freeze) old.push_back(c.file);
-            tr.freeze = std::move(clips);
-            tr.freezeKey = bFreezeKey_;
+            if (bToAudio_) {
+                /* A bounce: the renders are the track's audio now, its notes
+                 * gone with its seq blocks, the slot free for the next idea. */
+                song_.bounceSeqTrack(bTrack_);
+                for (const auto& c : clips) song_.addClip(bTrack_, c);
+            } else {
+                tr.freeze = std::move(clips);
+                tr.freezeKey = bFreezeKey_;
+            }
             for (const auto& f : old)
                 if (!named(f)) std::remove(song_.clipPath(f).c_str());
             std::vector<std::string> stray;
@@ -2135,8 +2151,9 @@ private:
                 if (!isDir && !named(std::string(kFreezeDir) + "/" + name)) stray.push_back(dir + "/" + name);
             });
             for (const auto& f : stray) std::remove(f.c_str());
-            logf(false, "froze track %u: %u renders of %u, %u blocks", (unsigned)(bTrack_ + 1),
-                 (unsigned)rendered, (unsigned)used.size(), (unsigned)tr.freeze.size());
+            logf(false, "%s track %u: %u renders of %u, %u blocks", bToAudio_ ? "bounced" : "froze",
+                 (unsigned)(bTrack_ + 1), (unsigned)rendered, (unsigned)used.size(),
+                 (unsigned)(bToAudio_ ? tr.clips.size() : tr.freeze.size()));
             rebuild();
         }
         doSave();
@@ -3685,9 +3702,10 @@ private:
         bOverflow_.store(false);
         bDone_.store(false);
         bArmed_.store(true, std::memory_order_seq_cst);
-        /* A freeze is heard by nobody: off the clock, as fast as the card
-         * lets it (ISongEnginePlatform::beginOffline()). */
-        const bool offline = bFreeze_ && p.beginOffline();
+        /* A bounce or a freeze is a render to a file, not to the speakers:
+         * off the clock, as fast as the card lets it, where the platform can
+         * (ISongEnginePlatform::beginOffline()); in real time where not. */
+        const bool offline = p.beginOffline();
         seq.playback();
 
         int16_t* chunk = io_;
@@ -3966,6 +3984,7 @@ private:
     uint32_t              bBars_ = 0;                // 0 = one pass of the scene
     uint32_t              bFrom_ = 0;                // the song's bar the take starts on
     bool                  bFreeze_ = false;          // a freeze (freezeTrack()), not a bounce
+    bool                  bToAudio_ = false;         // ... whose blocks become the track's audio (bounceSeqTrack())
     uint32_t              bFreezeKey_ = 0;           // seqKey() when it was asked for
     /* runFreeze()'s piece for runBounce(): the window's notes, the frames
      * recorded and the run-in before them; what the piece made. */
