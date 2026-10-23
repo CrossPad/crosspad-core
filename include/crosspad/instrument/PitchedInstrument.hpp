@@ -206,6 +206,8 @@ public:
     bool isGenerator() const override { return true; }
     void onPrepare(uint32_t maxFrames, uint32_t sampleRate) override;
     void mix(float* out, uint32_t frames) override;
+    /// Gated, or no voice rendered, in the last mix() (IAudioNode).
+    bool lastMixSilent() const override { return lastSilent_; }
 
     /**
      * @brief The engine's own output, mono, as a UI thread can read it.
@@ -303,6 +305,7 @@ private:
     std::atomic<uint8_t> maxVoices_{24};
     std::atomic<uint8_t> voiceCap_{kMaxSounding};
     std::atomic<bool> overloaded_{false};
+    bool lastSilent_ = true;   ///< render thread: the last mix() rendered no voice
     std::atomic<float> attackMs_{2.0f};
     std::atomic<float> releaseMs_{150.0f};
     std::atomic<int16_t> padVolume_[kPads];

@@ -242,6 +242,8 @@ public:
     bool isGenerator() const override { return true; }
     void onPrepare(uint32_t maxFrames, uint32_t sampleRate) override;
     void mix(float* out, uint32_t frames) override;
+    /// No voice was rendered in the last mix() (IAudioNode).
+    bool lastMixSilent() const override { return lastSilent_; }
 
     // ── Setup, on the loader thread ───────────────────────────────────────
     /// The pool the voices stream through and the store they read.
@@ -261,6 +263,15 @@ public:
      * for its DMA starves the thread that plays and releases the notes.
      */
     void setOverloaded(bool on) { overloaded_.store(on, std::memory_order_relaxed); }
+    /**
+     * The render over its whole block and staying there: the oldest sounding
+     * voice is let go, faded out as a steal is (counted in `sheds`). A held
+     * polyphony (setOverloaded()) only stops a note adding a voice, and a
+     * loop never ends on its own -- the board's audio task calls this one
+     * voice at a time while its pass runs longer than the block it fills.
+     * False when nothing was sounding. Any thread, as noteOn() is.
+     */
+    bool shedOne();
     bool overloaded() const { return overloaded_.load(std::memory_order_relaxed); }
     void setNoteCallbacks(NoteCb on, NoteCb off, void* ctx);
 
@@ -572,6 +583,10 @@ private:
         uint32_t age = 0;        ///< order of starting, for the steal
         uint32_t quiet = 0;      ///< consecutive frames below silenceLevel
         uint32_t loudEnd = 0;    ///< one past the last frame above it, 0 = none yet
+        /* A one-shot trimmed to end inside its file fades out from here (the
+         * file's frames) by tailStep a frame; UINT32_MAX = no such fade. */
+        uint32_t tailFrom = UINT32_MAX;
+        float    tailStep = 0.0f;
         uint16_t slotIdx = SampleStore::kNoSlot;   ///< where to say so
         /* What the streaming thread needs to open this voice's ring, left for
          * it by noteOn() rather than done there. */
@@ -694,6 +709,20 @@ private:
 
     Params params_;
     uint32_t sampleRate_ = 44100;
+    bool     lastSilent_ = true;   ///< render thread: mix() rendered no voice
+
+    /* What renderVoice() derives from params_ and sampleRate_, worked out
+     * when either changes instead of for every voice of every block: three
+     * float divisions a voice, each a call into the ROM's soft-float on the
+     * S3 (its FPU has no divide), ~25 us a block at sixteen voices. */
+    struct Steps {
+        float    fadeStep = 1.0f;     ///< a steal's fade-out, a frame
+        float    relStep = 1.0f;      ///< a release, a frame
+        float    muteStep = 1.0f;     ///< a Loop pad's mute ramp, a frame
+        uint32_t quietFrames = 0;     ///< silenceMs in frames; 0 = never stop on quiet
+        float    loudLevel = 0.0f;    ///< silenceLevel in the file's own units
+    } steps_;
+    void refreshSteps();
 
     NowFn  now_ = nullptr;
     std::atomic<uint32_t> cNoteOnMaxUs_{0};
