@@ -20,6 +20,8 @@ namespace crosspad {
 
 namespace {
 constexpr uint64_t kOne = 1ull << 32;
+/// The most frames a voice steps in one of the engine's (fill()).
+constexpr uint32_t kMaxStep = 256;
 
 /// Semitones to a speed ratio. Called when a note starts, never per frame.
 float semitoneRatio(int semitones)
@@ -440,7 +442,12 @@ void SamplerEngine::fill(Voice& v, const KitPad& kp, const Plan& p, uint8_t pad,
      * transposed copies of the files to the card instead. */
     const double rate  = static_cast<double>(slot->desc.sampleRate) / static_cast<double>(sampleRate_);
     const double ratio = rate * static_cast<double>(semitoneRatio(kp.semitones + transpose));
-    v.inc = static_cast<uint64_t>(ratio * static_cast<double>(kOne));
+    /* The rate is the file's header's word. Held to kMaxStep frames a frame
+     * -- far past any kit's rate and pitch -- the step converts without
+     * overflow and every phase sum the render makes stays inside 64 bits
+     * (a WAV's frames are under 2^30): a header claiming gigahertz would
+     * otherwise wrap them and walk a run past its buffer. */
+    v.inc = static_cast<uint64_t>(std::min(ratio, static_cast<double>(kMaxStep)) * static_cast<double>(kOne));
     if (v.inc == 0) v.inc = 1;
 
     v.phase = static_cast<uint64_t>(first) * kOne;

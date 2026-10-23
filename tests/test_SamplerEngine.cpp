@@ -1310,6 +1310,34 @@ TEST_CASE("SamplerEngine lets the oldest voice go when the render cannot keep up
     CHECK(rig.engine.counters().sheds == 3);
 }
 
+TEST_CASE("SamplerEngine plays a file whose header claims an absurd rate without walking off it",
+          "[samplerengine][kernels]")
+{
+    /* The step comes from the WAV's own sampleRate and the pad's pitch. A
+     * header saying 4 GHz on a pad pitched to the top made it too big for 64
+     * bits -- the conversion itself undefined, the run's phase sums wrapped,
+     * the walk off its buffer; held to kMaxStep it races to the end. */
+    Rig rig;
+    rig.build();
+    rig.src.add("mad.wav", 20000, 2, 4000000000u);
+    rig.src.add("loop.wav", 20000, 1, 4000000000u);
+    rig.assign(0, "mad.wav", 1024);
+    rig.assign(1, "loop.wav", 1024, PadMode::Loop);
+    rig.kit.pad[0].semitones = 127;                // what an int8 `pitch` can say
+    rig.kit.pad[1].semitones = 127;
+    rig.publish();
+    rig.engine.noteOn(0, 127, 127);                // and a transpose on top
+    rig.engine.noteOn(1, 127, 127);
+    std::vector<float> out(64 * 2);
+    for (int b = 0; b < 200; ++b) {
+        std::fill(out.begin(), out.end(), 0.0f);
+        rig.engine.mix(out.data(), 64);
+        rig.engine.serviceIo();
+        for (float x : out) REQUIRE(std::isfinite(x));
+    }
+    CHECK_FALSE(rig.engine.padSounding(0));        // a one-shot 256 frames a frame is long over
+}
+
 TEST_CASE("SamplerEngine over its budget holds the polyphony where it is", "[samplerengine]") {
     Rig rig;
     rig.build();
