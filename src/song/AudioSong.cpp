@@ -216,10 +216,21 @@ SongLoad AudioSong::load(const std::string& projectDir)
         tracks[t].kit    = tracks[t].kind == TrackKind::Seq ? (tr["kit"] | "") : "";
         JsonObjectConst fz = tr["freeze"];
         if (tracks[t].kind == TrackKind::Seq && !fz.isNull()) {
-            tracks[t].freeze.file = fz["file"] | "";
-            tracks[t].freeze.bar  = fz["bar"]  | 0u;
-            tracks[t].freeze.bars = fz["bars"] | 1u;
-            tracks[t].freezeKey   = fz["key"]  | 0u;
+            tracks[t].freezeKey = fz["key"] | 0u;
+            auto one = [&](JsonObjectConst c) {
+                SongClip clip;
+                clip.file   = c["file"] | "";
+                clip.bar    = c["bar"]  | 0u;
+                clip.bars   = c["bars"] | 1u;
+                clip.offset = c["offset"] | 0u;
+                if (!clip.file.empty() && clip.bars) tracks[t].freeze.push_back(clip);
+            };
+            /* One file whole, as 2.9 wrote it, or blocks over files. */
+            if (fz["clips"].is<JsonArrayConst>()) {
+                for (JsonObjectConst c : fz["clips"].as<JsonArrayConst>()) one(c);
+            } else {
+                one(fz);
+            }
         }
         /* true keeps the pitch (what 1.57 first wrote), "repitch" moves it. */
         const char* stretch = tr["stretch"].is<const char*>() ? tr["stretch"].as<const char*>() : nullptr;
@@ -272,7 +283,7 @@ SongLoad AudioSong::load(const std::string& projectDir)
         tr.kind = TrackKind::Audio;
         tr.seqBlocks = false;
         tr.kit.clear();
-        tr.freeze = SongClip{};
+        tr.freeze.clear();
         dropSeqBlocks(i);
     }
     /* A row shorter or longer than the grid is padded or cut rather than
@@ -334,12 +345,17 @@ bool AudioSong::save() const
             o["scene"] = t.scene;
             if (t.seqBlocks) o["blocks"] = true;
             if (!t.kit.empty()) o["kit"] = t.kit;
-            if (!t.freeze.file.empty()) {
+            if (!t.freeze.empty()) {
                 JsonObject fz = o["freeze"].to<JsonObject>();
-                fz["file"] = t.freeze.file;
-                fz["bar"]  = t.freeze.bar;
-                fz["bars"] = t.freeze.bars;
-                fz["key"]  = t.freezeKey;
+                fz["key"] = t.freezeKey;
+                JsonArray fc = fz["clips"].to<JsonArray>();
+                for (const auto& c : t.freeze) {
+                    JsonObject co = fc.add<JsonObject>();
+                    co["file"] = c.file;
+                    co["bar"]  = c.bar;
+                    co["bars"] = c.bars;
+                    if (c.offset) co["offset"] = c.offset;
+                }
             }
         }
         if (t.kind == TrackKind::Audio && t.stretch == StretchMode::KeepPitch) o["stretch"] = true;
@@ -573,7 +589,7 @@ bool AudioSong::bounceSeqTrack(int track, const SongClip* clip)
      * by mistake is one DEL and one new seq track away from where it was. */
     tracks[track].kind = TrackKind::Audio;
     tracks[track].kit.clear();
-    tracks[track].freeze = SongClip{};
+    tracks[track].freeze.clear();
     if (clip) {
         tracks[track].clips.clear();
         if (!clip->file.empty() && clip->bars) tracks[track].clips.push_back(*clip);

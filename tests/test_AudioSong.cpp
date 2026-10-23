@@ -424,6 +424,36 @@ TEST_CASE("AudioSong: a song written before tracks had kinds counts its clips", 
     fs::remove_all(d);
 }
 
+TEST_CASE("AudioSong: a freeze as 2.9 wrote it -- one file whole -- loads as one block", "[song][freeze]") {
+    const auto d = freshProject("cp_song_freeze29");
+    {
+        std::ofstream(songFile(d)) << R"({"version":3,"bpm":120,"tracks":[
+            {"volume":1,"muted":false,"used":true,"kind":1,"src":0,"scene":1,"blocks":true,
+             "freeze":{"file":"FRZ1_01.wav","bar":4,"bars":8,"key":77},
+             "clips":[{"bar":4,"bars":8,"notes":{"bars":1,"ev":"0,1,100,0"}}]},
+            {"volume":1,"muted":false,"clips":[]},
+            {"volume":1,"muted":false,"clips":[]},
+            {"volume":1,"muted":false,"clips":[]}]})";
+    }
+    AudioSong s;
+    REQUIRE(s.load(d) == SongLoad::Loaded);
+    REQUIRE(s.tracks[0].freeze.size() == 1);
+    CHECK(s.tracks[0].freeze[0].file == "FRZ1_01.wav");
+    CHECK(s.tracks[0].freeze[0].bar == 4);
+    CHECK(s.tracks[0].freeze[0].bars == 8);
+    CHECK(s.tracks[0].freeze[0].offset == 0);
+    CHECK(s.tracks[0].freezeKey == 77);
+    /* Written back as blocks, and read the same. */
+    s.tracks[0].freeze.push_back({"FRZ1_01.wav", 12, 2, 88200});
+    REQUIRE(s.save());
+    AudioSong back;
+    REQUIRE(back.load(d) == SongLoad::Loaded);
+    REQUIRE(back.tracks[0].freeze.size() == 2);
+    CHECK(back.tracks[0].freeze[1].bar == 12);
+    CHECK(back.tracks[0].freeze[1].offset == 88200);
+    fs::remove_all(d);
+}
+
 TEST_CASE("AudioSong: a file claiming two seq tracks on one route keeps the first", "[song][tracks]") {
     const auto d = freshProject("cp_song_twoseq");
     {

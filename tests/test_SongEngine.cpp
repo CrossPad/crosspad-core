@@ -1963,7 +1963,9 @@ TEST_CASE("song engine: a frozen seq track keeps its notes and plays its freeze 
     }
     const BounceStatus st = r.engine->bounceStatus();
     REQUIRE(st.state == BounceState::Done);
-    CHECK(st.framesTotal == r.engine->framesPerBar());
+    /* The bar, and a bar of what rings on into the gap after it; the bar
+     * before it played, not recorded. */
+    CHECK(st.framesTotal == 2 * r.engine->framesPerBar());
     CHECK(r.platform.routeCaptured == 0);                 // the kit's engine alone
     CHECK(r.engine->freezeState(0) == FreezeState::Frozen);
     {
@@ -1972,9 +1974,11 @@ TEST_CASE("song engine: a frozen seq track keeps its notes and plays its freeze 
         CHECK(tr.kind == TrackKind::Seq);                 // still the Drums track
         REQUIRE(tr.clips.size() == 1);
         CHECK(tr.clips[0].notes);
-        CHECK(tr.freeze.file == st.file);
-        CHECK(tr.freeze.bar == 5);
-        CHECK(tr.freeze.bars == 1);
+        REQUIRE(tr.freeze.size() == 1);
+        CHECK(tr.freeze[0].file == st.file);
+        CHECK(tr.freeze[0].bar == 5);
+        CHECK(tr.freeze[0].bars == 2);
+        CHECK(tr.freeze[0].offset == 0);
     }
     CHECK(segmentsOf(*r.engine, 0) == 1);                 // its file plays
 
@@ -2010,10 +2014,52 @@ TEST_CASE("song engine: a frozen seq track keeps its notes and plays its freeze 
         }
         AudioSong back;
         REQUIRE(back.load(dir) == SongLoad::Loaded);
-        CHECK(back.tracks[0].freeze.file == st.file);
+        REQUIRE(back.tracks[0].freeze.size() == 1);
+        CHECK(back.tracks[0].freeze[0].file == st.file);
         std::lock_guard<std::recursive_mutex> l(r.engine->songMutex());
         CHECK(back.tracks[0].freezeKey == r.engine->song().tracks[0].freezeKey);
     }
+}
+
+TEST_CASE("song engine: a block going round is frozen from two of its passes", "[song][freeze]") {
+    Rig r;
+    REQUIRE(r.open("Demo"));
+    {
+        std::lock_guard<std::recursive_mutex> l(r.engine->songMutex());
+        auto& s = r.engine->song();
+        s.bpm = 120.0f;
+        s.length = 16;
+        REQUIRE(s.addSeqTrack(0, SeqSource::Kit, 0));
+        SeqNote n;
+        n.pad = 1; n.vel = 100;
+        s.putSeqTake(0, 0, makeSeqPattern(2, {n}), s.samplesPerBar(kRate));
+        s.tracks[0].clips[0].bars = 16;                   // a 2-bar take round the whole song
+        s.armed = -1;
+    }
+    r.engine->commit();
+    std::vector<float> out(kBlock * 2), bus(kBlock * 2, 0.25f);
+    REQUIRE(r.engine->freezeTrack(0));
+    for (int i = 0; i < 4000 && r.engine->bounceStatus().state == BounceState::Running; ++i) {
+        r.block(out, bus);
+        std::this_thread::sleep_for(std::chrono::milliseconds(2));
+    }
+    const BounceStatus st = r.engine->bounceStatus();
+    REQUIRE(st.state == BounceState::Done);
+    const uint32_t fpb = r.engine->framesPerBar();
+    CHECK(st.framesTotal == 4 * fpb);                     // two passes, not sixteen bars
+    std::lock_guard<std::recursive_mutex> l(r.engine->songMutex());
+    const auto& fz = r.engine->song().tracks[0].freeze;
+    REQUIRE(fz.size() == 8);
+    CHECK(fz[0].bar == 0);
+    CHECK(fz[0].bars == 2);
+    CHECK(fz[0].offset == 0);                             // the first pass, as it starts
+    for (size_t i = 1; i < fz.size(); ++i) {
+        CHECK(fz[i].file == fz[0].file);
+        CHECK(fz[i].bar == 2 * i);
+        CHECK(fz[i].bars == 2);
+        CHECK(fz[i].offset == 2 * fpb);                   // every later pass: the second
+    }
+    CHECK(segmentsOf(*r.engine, 0) == 8);
 }
 
 TEST_CASE("song engine: PLAY or REC during a freeze cancels it and plays", "[song][freeze]") {

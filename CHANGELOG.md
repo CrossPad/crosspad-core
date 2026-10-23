@@ -6,6 +6,22 @@ carries the same number) and consumers gate on it with
 `crosspad/RequireVersion.hpp`. This file starts at 1.45.0; earlier releases
 are described in their `chore: X.Y.Z` commits.
 
+## 2.11.0 — 2026-10-23
+
+A freeze renders a looping block's two passes, not the whole track.
+
+### Changed
+
+- `SongTrack::freeze` is a list of audio blocks over files (`SongClip` with
+  `offset`), not one file. A block whose notes go round is rendered for two
+  passes -- the first as it starts, the second as every later one sounds,
+  tails of the one before included -- and the second plays as often as the
+  block goes round; a block no longer than two passes is rendered whole.
+  Each render runs a bar in before what it records (what rings into it) and
+  a block followed by a gap gets a bar of what rings on. A 2-bar take round
+  64 bars freezes in 4 bars of real time instead of 64. song.json keeps
+  `"freeze": {"key", "clips": [...]}`; 2.9's one-file form still loads.
+
 ## 2.10.1 — 2026-10-23
 
 ### Fixed
