@@ -214,6 +214,7 @@ SongLoad AudioSong::load(const std::string& projectDir)
         tracks[t].scene  = (uint8_t)(tr["scene"] | 0u);
         tracks[t].seqBlocks = tracks[t].kind == TrackKind::Seq && (tr["blocks"] | false);
         tracks[t].kit    = tracks[t].kind == TrackKind::Seq ? (tr["kit"] | "") : "";
+        tracks[t].freezeSalt = tracks[t].kind == TrackKind::Seq ? (tr["fsalt"] | 0u) : 0u;
         JsonObjectConst fz = tr["freeze"];
         if (tracks[t].kind == TrackKind::Seq && !fz.isNull()) {
             tracks[t].freezeKey = fz["key"] | 0u;
@@ -345,6 +346,7 @@ bool AudioSong::save() const
             o["scene"] = t.scene;
             if (t.seqBlocks) o["blocks"] = true;
             if (!t.kit.empty()) o["kit"] = t.kit;
+            if (t.freezeSalt) o["fsalt"] = t.freezeSalt;
             if (!t.freeze.empty()) {
                 JsonObject fz = o["freeze"].to<JsonObject>();
                 fz["key"] = t.freezeKey;

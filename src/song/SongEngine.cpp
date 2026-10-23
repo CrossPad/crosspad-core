@@ -105,6 +105,8 @@ constexpr uint32_t kPeakChunkFrames  = 4096;
 constexpr const char* kPeaksDir      = ".peaks";
 /// Under clips/: a stretched track's blocks, fitted to the song's tempo.
 constexpr const char* kStretchDir    = ".stretch";
+/// A freeze's renders, in clips/, named by what they play (pieceKey()).
+constexpr const char* kFreezeDir     = ".freeze";
 /// Within this of 1:1 a block plays as recorded -- a copy would be the same
 /// sound, a card read later.
 constexpr double      kStretchSame   = 0.005;
@@ -2001,13 +2003,55 @@ private:
         return out;
     }
 
-    /// Worker: freeze track bTrack_ -- every piece of its freezePlan()
-    /// rendered by runBounce(), then the blocks they give put on the track
-    /// together, with the key it was asked for. A piece that fails or is
-    /// cancelled leaves the track as it was and no file behind.
+    /// What one freeze render plays, as a number: the window's notes where
+    /// they fall in it, the run-in and length, the sound (its name and
+    /// freezeSalt), the route and the tempo. Two renders with one key are the
+    /// same audio, so a block the same as another -- or as it was the last
+    /// time the track froze -- is rendered once and found on the card after.
+    uint32_t pieceKey(const AudioSong& song, int track, uint32_t spb, const FreezePiece& pc,
+                      const std::vector<PatternSequencer::SongSpan>& spans) const {
+        uint32_t h = 2166136261u;
+        auto mix = [&h](const void* v, size_t n) {
+            const uint8_t* b = static_cast<const uint8_t*>(v);
+            for (size_t i = 0; i < n; ++i) { h ^= b[i]; h *= 16777619u; }
+        };
+        auto text = [&](const std::string& v) { mix(v.data(), v.size()); mix("", 1); };
+        const SongTrack& t = song.tracks[track];
+        const uint32_t head[5] = {pc.pre, pc.cap, spb, (uint32_t)sampleRate_, t.freezeSalt};
+        mix(head, sizeof head);
+        const uint8_t src[2] = {(uint8_t)t.source, (uint8_t)std::max(0, song.seqRoute(track))};
+        mix(src, sizeof src);
+        text(t.source == SeqSource::Pitch ? song.instrument : t.kit.empty() ? song.kit : t.kit);
+        bool clockScene = false;
+        for (const auto& sp : spans) {
+            const uint32_t at = sp.loop ? sp.scene % sp.loop : sp.scene;
+            const uint32_t w[4] = {sp.a, sp.b, at, sp.loop};
+            mix(w, sizeof w);
+            mix(&sp.route, 1);
+            if (!sp.notes) { clockScene = true; continue; }
+            for (const auto& n : *sp.notes) {
+                mix(&n.pos, sizeof n.pos); mix(&n.len, sizeof n.len);
+                mix(&n.pad, 1); mix(&n.vel, 1); mix(&n.perf, 1);
+            }
+        }
+        if (clockScene) {
+            const SeqPatternPtr sc = scenePattern(t.scene);
+            for (const SeqNote& n : sc->notes) {
+                mix(&n.tick, 4); mix(&n.len, 4); mix(&n.pad, 1); mix(&n.vel, 1); mix(&n.perf, 1);
+            }
+        }
+        return h;
+    }
+
+    /// Worker: freeze track bTrack_ -- every piece of its freezePlan(), each
+    /// found on the card by its pieceKey() or rendered by runBounce(), then
+    /// the blocks they give put on the track together, with the key it was
+    /// asked for. Renders that finished stay when a later one fails or is
+    /// cancelled: the next freeze finds them and renders only the rest.
     void runFreeze() {
         std::vector<FreezePiece> plan;
         uint32_t spb = 0;
+        std::string dir;
         {
             std::lock_guard<std::recursive_mutex> l(songMutex_);
             const SongTrack& t = song_.tracks[bTrack_];
@@ -2017,49 +2061,81 @@ private:
             }
             spb = song_.samplesPerBar(sampleRate_);
             plan = freezePlan(song_, bTrack_, spb);
+            dir = song_.clipPath(kFreezeDir);
         }
         if (plan.empty()) {
             setStatus(BounceState::Failed, "nothing to freeze");
             return;
         }
+        fsx::makeDir(dir);
+        {
+            std::lock_guard<std::mutex> l(statusMutex_);
+            status_.pieces = (uint16_t)std::min<size_t>(plan.size(), 0xFFFF);
+            status_.piecesDone = 0;
+        }
         std::vector<SongClip> clips;
-        std::vector<std::string> made;
-        auto forget = [&] {
-            std::lock_guard<std::recursive_mutex> l(songMutex_);
-            for (const auto& f : made) std::remove(song_.clipPath(f).c_str());
-        };
+        std::vector<std::string> used;
+        uint32_t rendered = 0;
         for (const FreezePiece& pc : plan) {
+            std::string file;
             {
                 std::lock_guard<std::recursive_mutex> l(songMutex_);
                 bWinSpans_ = windowSpans(song_, bTrack_, spb, pc.w0 * spb, (pc.w0 + pc.pre + pc.cap) * spb);
+                char name[40];
+                std::snprintf(name, sizeof(name), "%s/FRZ%08X.wav", kFreezeDir,
+                              (unsigned)pieceKey(song_, bTrack_, spb, pc, bWinSpans_));
+                file = name;
             }
-            bWinTotal_ = pc.cap * spb;
-            bWinSkip_ = pc.pre * spb;
-            bPieceOk_ = false;
-            runBounce();
-            if (!bPieceOk_) { forget(); return; }        // runBounce() said why
-            made.push_back(bPieceFile_);
+            std::string path;
+            {
+                std::lock_guard<std::recursive_mutex> l(songMutex_);
+                path = song_.clipPath(file);
+            }
+            if (!fsx::exists(path)) {
+                bWinTotal_ = pc.cap * spb;
+                bWinSkip_ = pc.pre * spb;
+                bPieceFile_ = file;
+                bPieceOk_ = false;
+                runBounce();
+                if (!bPieceOk_) return;                  // runBounce() said why
+                ++rendered;
+            }
+            used.push_back(file);
             for (SongClip c : pc.emit) {
-                c.file = bPieceFile_;
+                c.file = file;
                 clips.push_back(std::move(c));
             }
+            std::lock_guard<std::mutex> l(statusMutex_);
+            ++status_.piecesDone;
         }
         {
             std::lock_guard<std::recursive_mutex> l(songMutex_);
             SongTrack& tr = song_.tracks[bTrack_];
             if (tr.kind != TrackKind::Seq) {
-                for (const auto& f : made) std::remove(song_.clipPath(f).c_str());
                 setStatus(BounceState::Failed, "the track is not a seq track any more");
                 return;
             }
-            for (const auto& old : tr.freeze) {
-                if (std::find(made.begin(), made.end(), old.file) == made.end())
-                    std::remove(song_.clipPath(old.file).c_str());
-            }
+            /* What the track played before and plays no longer: one of 2.9's
+             * whole-track files, or a render no track's freeze names now. */
+            auto named = [&](const std::string& f) {
+                for (const auto& other : song_.tracks)
+                    for (const auto& c : other.freeze)
+                        if (c.file == f) return true;
+                return false;
+            };
+            std::vector<std::string> old;
+            for (const auto& c : tr.freeze) old.push_back(c.file);
             tr.freeze = std::move(clips);
             tr.freezeKey = bFreezeKey_;
-            logf(false, "froze track %u: %u renders, %u blocks", (unsigned)(bTrack_ + 1),
-                 (unsigned)made.size(), (unsigned)tr.freeze.size());
+            for (const auto& f : old)
+                if (!named(f)) std::remove(song_.clipPath(f).c_str());
+            std::vector<std::string> stray;
+            fsx::listDir(dir, [&](const std::string& name, bool isDir) {
+                if (!isDir && !named(std::string(kFreezeDir) + "/" + name)) stray.push_back(dir + "/" + name);
+            });
+            for (const auto& f : stray) std::remove(f.c_str());
+            logf(false, "froze track %u: %u renders of %u, %u blocks", (unsigned)(bTrack_ + 1),
+                 (unsigned)rendered, (unsigned)used.size(), (unsigned)tr.freeze.size());
             rebuild();
         }
         doSave();
@@ -3481,10 +3557,16 @@ private:
          * name and wrote over that clip. */
         if (kit.size() > kMaxClipPrefix) kit.resize(kMaxClipPrefix);
         std::string file, path;
-        for (int n = 1; n < 1000; ++n) {
+        if (bFreeze_) {
+            /* Its name is what it plays (runFreeze()): written under a
+             * working name, so a render cut short is never found as done. */
+            file = bPieceFile_;
+            std::lock_guard<std::recursive_mutex> l(songMutex_);
+            path = song_.clipPath(file) + ".part";
+        }
+        for (int n = 1; !bFreeze_ && n < 1000; ++n) {
             char buf[80];
-            if (bFreeze_) std::snprintf(buf, sizeof(buf), "FRZ%u_%02d.wav", (unsigned)(bTrack_ + 1), n);
-            else std::snprintf(buf, sizeof(buf), "%s_S%u_%02d.wav", kit.c_str(), (unsigned)(bScene_ + 1), n);
+            std::snprintf(buf, sizeof(buf), "%s_S%u_%02d.wav", kit.c_str(), (unsigned)(bScene_ + 1), n);
             file = buf;
             {
                 std::lock_guard<std::recursive_mutex> l(songMutex_);
@@ -3688,7 +3770,17 @@ private:
         }
         logf(false, "bounced scene %u to %s (%u frames)", (unsigned)(bScene_ + 1), file.c_str(), (unsigned)done);
         if (bFreeze_) {                              // one piece of runFreeze()'s
-            bPieceFile_ = file;
+            std::string done;
+            {
+                std::lock_guard<std::recursive_mutex> l(songMutex_);
+                done = song_.clipPath(file);
+            }
+            std::remove(done.c_str());
+            if (!fsx::rename(path, done)) {
+                std::remove(path.c_str());
+                fail("card write failed");
+                return;
+            }
             bPieceOk_ = true;
             return;
         }

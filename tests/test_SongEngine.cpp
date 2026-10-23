@@ -2062,6 +2062,78 @@ TEST_CASE("song engine: a block going round is frozen from two of its passes", "
     CHECK(segmentsOf(*r.engine, 0) == 8);
 }
 
+TEST_CASE("song engine: a freeze renders a block once however often it recurs, and only what changed",
+          "[song][freeze]") {
+    Rig r;
+    REQUIRE(r.open("Demo"));
+    SeqNote x, y;
+    x.pad = 1; x.vel = 100;
+    y.pad = 2; y.vel = 90;
+    {
+        std::lock_guard<std::recursive_mutex> l(r.engine->songMutex());
+        auto& s = r.engine->song();
+        s.bpm = 120.0f;
+        s.length = 16;
+        REQUIRE(s.addSeqTrack(0, SeqSource::Kit, 0));
+        const uint32_t spb = s.samplesPerBar(kRate);
+        s.putSeqTake(0, 2, makeSeqPattern(2, {x}), spb);   // X, a bar of silence before and after
+        s.putSeqTake(0, 6, makeSeqPattern(2, {x}), spb);   // X again, in the same surroundings
+        s.putSeqTake(0, 10, makeSeqPattern(2, {y}), spb);  // Y
+        s.armed = -1;
+    }
+    r.engine->commit();
+    std::vector<float> out(kBlock * 2), bus(kBlock * 2, 0.25f);
+    auto freeze = [&]() {
+        REQUIRE(r.engine->freezeTrack(0));
+        for (int i = 0; i < 6000 && r.engine->bounceStatus().state == BounceState::Running; ++i) {
+            r.block(out, bus);
+            std::this_thread::sleep_for(std::chrono::milliseconds(2));
+        }
+        const BounceStatus st = r.engine->bounceStatus();
+        REQUIRE(st.state == BounceState::Done);
+        CHECK(st.pieces == 3);
+        CHECK(st.piecesDone == 3);
+        CHECK(r.engine->freezeState(0) == FreezeState::Frozen);
+    };
+    const int before = r.platform.captureBegun;
+    freeze();
+    CHECK(r.platform.captureBegun - before == 2);          // the second X is the first's file
+    {
+        std::lock_guard<std::recursive_mutex> l(r.engine->songMutex());
+        const auto& fz = r.engine->song().tracks[0].freeze;
+        REQUIRE(fz.size() == 3);
+        CHECK(fz[0].file == fz[1].file);
+        CHECK(fz[2].file != fz[0].file);
+        CHECK(fz[0].file.rfind(".freeze/FRZ", 0) == 0);
+    }
+
+    SECTION("frozen again unchanged: nothing rendered") {
+        const int was = r.platform.captureBegun;
+        freeze();
+        CHECK(r.platform.captureBegun == was);
+    }
+    SECTION("Y's notes changed: only Y rendered, X kept") {
+        std::string xFile;
+        {
+            std::lock_guard<std::recursive_mutex> l(r.engine->songMutex());
+            auto& s = r.engine->song();
+            xFile = s.tracks[0].freeze[0].file;
+            SeqNote z = y;
+            z.vel = 40;
+            s.tracks[0].clips[2].notes = makeSeqPattern(2, {z});
+        }
+        r.engine->commit();
+        CHECK(r.engine->freezeState(0) == FreezeState::Stale);
+        const int was = r.platform.captureBegun;
+        freeze();
+        CHECK(r.platform.captureBegun - was == 1);
+        std::lock_guard<std::recursive_mutex> l(r.engine->songMutex());
+        const auto& fz = r.engine->song().tracks[0].freeze;
+        CHECK(fz[0].file == xFile);
+        CHECK(fz[1].file == xFile);
+    }
+}
+
 TEST_CASE("song engine: PLAY or REC during a freeze cancels it and plays", "[song][freeze]") {
     Rig r;
     REQUIRE(r.open("Demo"));

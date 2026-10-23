@@ -62,6 +62,11 @@ struct BounceStatus {
     BounceState state = BounceState::Idle;
     uint32_t    framesDone  = 0;
     uint32_t    framesTotal = 0;
+    /// A freeze: the renders its plan needs, and those through so far --
+    /// rendered, or found on the card from an earlier freeze (framesDone and
+    /// framesTotal are then the render under way's).
+    uint16_t    pieces     = 0;
+    uint16_t    piecesDone = 0;
     std::string file;          ///< clip name inside the project's clips/
     std::string error;         ///< why it failed; with Done, a warning (tempo off the grid)
     /// How the card keeps up, after every piece and kept once the take ends or

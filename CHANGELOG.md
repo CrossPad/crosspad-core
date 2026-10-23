@@ -6,6 +6,26 @@ carries the same number) and consumers gate on it with
 `crosspad/RequireVersion.hpp`. This file starts at 1.45.0; earlier releases
 are described in their `chore: X.Y.Z` commits.
 
+## 2.12.0 — 2026-10-23
+
+A freeze renders only what changed.
+
+### Added
+
+- Each freeze render is named by what it plays (`pieceKey()`: the window's
+  notes where they fall, run-in and length, the sound and its
+  `SongTrack::freezeSalt`, route, tempo) in `clips/.freeze/`. A block the
+  same as another in the track, or as it was at the last freeze, is found on
+  the card instead of rendered: 18 passes of one pattern and one with an
+  overdub render two blocks' worth. A render is written as `.part` and named
+  only once whole, so one cut short is never taken for done; renders that
+  finished stay when a later one is cancelled, and the next freeze renders
+  only the rest. Renders no track names any more are removed at a freeze.
+- `BounceStatus::pieces` / `piecesDone`: a freeze's renders, needed and
+  through (found or made).
+- `SongTrack::freezeSalt` (song.json `fsalt`): moved by an instrument saved
+  from edits, so renders of the old sound are not found again.
+
 ## 2.11.0 — 2026-10-23
 
 A freeze renders a looping block's two passes, not the whole track.

@@ -248,7 +248,10 @@ void SongSounds::keepInstrument(const KitInfo& spec, const std::function<bool(co
             {
                 std::lock_guard<std::recursive_mutex> l(se->songMutex());
                 for (auto& t : se->song().tracks)
-                    if (t.kind == TrackKind::Seq && t.source == SeqSource::Pitch) t.freezeKey = 0;
+                    if (t.kind == TrackKind::Seq && t.source == SeqSource::Pitch) {
+                        t.freezeKey = 0;
+                        ++t.freezeSalt;     // the renders on the card are of the old sound
+                    }
             }
             se->commit();
         }

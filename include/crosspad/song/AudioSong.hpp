@@ -164,6 +164,10 @@ struct SongTrack {
     /// the key out), the song plays these instead of its engine.
     std::vector<SongClip> freeze;
     uint32_t  freezeKey = 0;
+    /// Moved when what the track plays through changes under the same name
+    /// (an instrument saved from edits): a freeze's renders are found on the
+    /// card by what they play, sound included, and this is the sound's part.
+    uint32_t  freezeSalt = 0;
     /// A track the player has made. All four exist in this struct from the
     /// start; this is what tells an empty track waiting for a recording from
     /// one nobody has asked for, which is what "2 / 4 tracks" counts and what
