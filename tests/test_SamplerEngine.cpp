@@ -1278,6 +1278,38 @@ TEST_CASE("SamplerEngine walks a pitched streamed loop by runs on every lap, not
     }
 }
 
+TEST_CASE("SamplerEngine lets the oldest voice go when the render cannot keep up", "[samplerengine]") {
+    /* Loops never end on their own: over its whole block the board sheds
+     * them one at a time, oldest first, faded as a steal. */
+    Rig rig;
+    rig.build();
+    for (const char* f : {"a.wav", "b.wav", "c.wav"}) rig.src.add(f, 4000, 1);
+    rig.assign(0, "a.wav", 4000, PadMode::Loop);
+    rig.assign(1, "b.wav", 4000, PadMode::Loop);
+    rig.assign(2, "c.wav", 4000, PadMode::Loop);
+    rig.publish();
+    for (uint8_t pad = 0; pad < 3; ++pad) {
+        rig.engine.noteOn(pad, 127);
+        rig.run(1);
+    }
+    REQUIRE(rig.engine.voicesActive() == 3);
+
+    CHECK(rig.engine.shedOne());
+    rig.run(4);                                    // past the fade
+    CHECK(rig.engine.voicesActive() == 2);
+    CHECK_FALSE(rig.engine.padSounding(0));        // the oldest went
+    CHECK(rig.engine.padSounding(1));
+    CHECK(rig.engine.padSounding(2));
+    CHECK(rig.engine.counters().sheds == 1);
+
+    CHECK(rig.engine.shedOne());
+    CHECK(rig.engine.shedOne());
+    rig.run(4);
+    CHECK(rig.engine.voicesActive() == 0);
+    CHECK_FALSE(rig.engine.shedOne());             // nothing left to let go
+    CHECK(rig.engine.counters().sheds == 3);
+}
+
 TEST_CASE("SamplerEngine over its budget holds the polyphony where it is", "[samplerengine]") {
     Rig rig;
     rig.build();

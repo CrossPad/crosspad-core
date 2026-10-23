@@ -153,6 +153,13 @@ bool SamplerEngine::stealOldest()
     return true;
 }
 
+bool SamplerEngine::shedOne()
+{
+    if (!stealOldest()) return false;
+    cSheds_.fetch_add(1, std::memory_order_relaxed);
+    return true;
+}
+
 /* Is this voice charged to the streaming budget?
  *
  * **Not `wantStream` alone.** That flag means "this voice still needs its

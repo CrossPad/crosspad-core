@@ -261,6 +261,15 @@ public:
      * for its DMA starves the thread that plays and releases the notes.
      */
     void setOverloaded(bool on) { overloaded_.store(on, std::memory_order_relaxed); }
+    /**
+     * The render over its whole block and staying there: the oldest sounding
+     * voice is let go, faded out as a steal is (counted in `sheds`). A held
+     * polyphony (setOverloaded()) only stops a note adding a voice, and a
+     * loop never ends on its own -- the board's audio task calls this one
+     * voice at a time while its pass runs longer than the block it fills.
+     * False when nothing was sounding. Any thread, as noteOn() is.
+     */
+    bool shedOne();
     bool overloaded() const { return overloaded_.load(std::memory_order_relaxed); }
     void setNoteCallbacks(NoteCb on, NoteCb off, void* ctx);
 
