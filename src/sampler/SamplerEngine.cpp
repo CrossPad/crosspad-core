@@ -28,7 +28,7 @@ float semitoneRatio(int semitones)
 }
 } // namespace
 
-SamplerEngine::SamplerEngine() = default;
+SamplerEngine::SamplerEngine() { refreshSteps(); }
 
 CROSSPAD_COLD void SamplerEngine::bind(BlockPool* pool, SampleStore* store)
 {
@@ -41,6 +41,20 @@ CROSSPAD_COLD void SamplerEngine::setParams(const Params& p)
     params_ = p;
     if (params_.maxVoices > kMaxSounding) params_.maxVoices = kMaxSounding;
     if (params_.maxVoices == 0) params_.maxVoices = 1;
+    refreshSteps();
+}
+
+CROSSPAD_COLD void SamplerEngine::refreshSteps()
+{
+    const float rate = static_cast<float>(sampleRate_);
+    const float fadeFrames = kStealFadeMs * 0.001f * rate;
+    steps_.fadeStep = fadeFrames > 1.0f ? (1.0f / fadeFrames) : 1.0f;
+    const float relFrames = params_.releaseMs * 0.001f * rate;
+    steps_.relStep = relFrames > 1.0f ? (1.0f / relFrames) : 1.0f;
+    const float muteFrames = params_.muteMs * 0.001f * rate;
+    steps_.muteStep = muteFrames > 1.0f ? (1.0f / muteFrames) : 1.0f;
+    steps_.quietFrames = params_.silenceMs > 0.0f ? static_cast<uint32_t>(params_.silenceMs * 0.001f * rate) : 0;
+    steps_.loudLevel = params_.silenceLevel * 32768.0f;
 }
 
 CROSSPAD_COLD void SamplerEngine::setNoteCallbacks(NoteCb on, NoteCb off, void* ctx)
@@ -56,6 +70,7 @@ CROSSPAD_COLD void SamplerEngine::onPrepare(uint32_t /*maxFrames*/, uint32_t sam
      * so it may not assume it is the first time. Nothing here is sized by the
      * block length: voices render straight into the caller's buffer. */
     if (sampleRate) sampleRate_ = sampleRate;
+    refreshSteps();
 }
 
 void SamplerEngine::beginMutation()
@@ -439,6 +454,20 @@ void SamplerEngine::fill(Voice& v, const KitPad& kp, const Plan& p, uint8_t pad,
 
     v.quiet = 0;
     v.loudEnd = 0;
+    /* A one-shot whose trim ends inside its file -- a slice of one WAV --
+     * fades out from tailFrom (the file's frames) to its end: stopped there
+     * mid-wave it clicked. The Slicer used to write that fade into a file of
+     * each slice's own. Here rather than in the render: the double arithmetic
+     * is soft-float on the S3, and nothing it reads changes while it plays. */
+    v.tailFrom = UINT32_MAX;
+    v.tailStep = 0.0f;
+    if (!v.loop && last < slot->desc.frames) {
+        const float outFrames = kTrimFadeMs * 0.001f * static_cast<float>(sampleRate_);
+        const uint32_t fileFrames =
+            static_cast<uint32_t>(static_cast<double>(outFrames) * static_cast<double>(v.inc) / static_cast<double>(kOne));
+        v.tailFrom = last > first + fileFrames ? last - fileFrames : first;
+        v.tailStep = outFrames > 1.0f ? (1.0f / outFrames) : 1.0f;
+    }
     v.slotIdx = p.slotIdx;
     v.announced = false;
     v.fading.store(false, std::memory_order_relaxed);
@@ -743,14 +772,48 @@ CP_OWN_REGISTERS uint32_t playLevel(const int16_t* p, uint32_t n, float* o, uint
     return k;
 }
 
+/* A pitched run -- the steady part of a voice stepping a fraction a frame --
+ * over one buffer: Catmull-Rom off four taps, into the bus. @p n frames, all
+ * of them in the buffer and before anything that could end the voice (the
+ * caller counted them). Returns where the last frame at or above
+ * @p loudLevel went in @p o, null if none did: the loudness bookkeeping is
+ * the caller's, once a run.
+ *
+ * Out of line for the reason playLevel() is: inside renderVoice() the walk
+ * was a call into flash per frame, its two results came back through the
+ * stack, and the phase, the gains and the counters were stored and reloaded
+ * every frame -- ~150 instructions a frame where the arithmetic is ~50. */
+template <int Ch>
+CP_OWN_REGISTERS const float* walkPitched(const int16_t* base, uint32_t first, uint64_t phase, uint64_t inc,
+                                          uint32_t n, float* o, float gainL, float gainR, float e,
+                                          float loudLevel)
+{
+    const float* loud = nullptr;
+    for (uint32_t k = 0; k < n; ++k, o += 2) {
+        const uint32_t i = static_cast<uint32_t>(phase >> 32);
+        const float f = static_cast<float>(static_cast<uint32_t>(phase)) * SampleCursor::kFracNorm;
+        const int16_t* p = base + static_cast<size_t>(i - 1 - first) * Ch;
+        float l, r;
+        if (Ch == 1) {
+            l = r = SampleCursor::hermite4i(p[0], p[1], p[2], p[3], f);
+        } else {
+            l = SampleCursor::hermite4i(p[0], p[2], p[4], p[6], f);
+            r = SampleCursor::hermite4i(p[1], p[3], p[5], p[7], f);
+        }
+        o[0] += l * gainL * e;
+        o[1] += r * gainR * e;
+        if (dsp::maxOf(std::fabs(l), std::fabs(r)) >= loudLevel) loud = o;
+        phase += inc;
+    }
+    return loud;
+}
+
 } // namespace
 
 bool SamplerEngine::renderVoice(Voice& v, float* out, uint32_t frames)
 {
-    const float fadeFrames = kStealFadeMs * 0.001f * static_cast<float>(sampleRate_);
-    const float fadeStep = fadeFrames > 1.0f ? (1.0f / fadeFrames) : 1.0f;
-    const float relFrames = params_.releaseMs * 0.001f * static_cast<float>(sampleRate_);
-    const float relStep = relFrames > 1.0f ? (1.0f / relFrames) : 1.0f;
+    const float fadeStep = steps_.fadeStep;
+    const float relStep = steps_.relStep;
 
     const bool fading = v.fading.load(std::memory_order_acquire);
     const bool releasing = v.releasing.load(std::memory_order_acquire);
@@ -758,15 +821,11 @@ bool SamplerEngine::renderVoice(Voice& v, float* out, uint32_t frames)
 
     /* Only a one-shot: a loop is meant to carry on and a held note is the
      * player's to release. */
-    const uint32_t quietLimit =
-        (!v.loop && !releasing && params_.silenceMs > 0.0f)
-            ? static_cast<uint32_t>(params_.silenceMs * 0.001f * static_cast<float>(sampleRate_))
-            : 0;
+    const uint32_t quietLimit = (!v.loop && !releasing) ? steps_.quietFrames : 0;
 
-    const float loudLevel = params_.silenceLevel * 32768.0f;   // in the file's own units
+    const float loudLevel = steps_.loudLevel;   // in the file's own units
 
-    const float muteFrames = params_.muteMs * 0.001f * static_cast<float>(sampleRate_);
-    const float muteStep = muteFrames > 1.0f ? (1.0f / muteFrames) : 1.0f;
+    const float muteStep = steps_.muteStep;
     const float muteTarget = v.muted.load(std::memory_order_acquire) ? 0.0f : 1.0f;
     float mute = v.muteGain;
 
@@ -774,19 +833,8 @@ bool SamplerEngine::renderVoice(Voice& v, float* out, uint32_t frames)
     const uint64_t firstQ = static_cast<uint64_t>(v.first) * kOne;
     const uint64_t spanQ = lastQ > firstQ ? (lastQ - firstQ) : kOne;
 
-    /* A one-shot whose trim ends inside its file -- a slice of one WAV --
-     * fades out from tailFrom (the file's frames) to its end: stopped there
-     * mid-wave it clicked. The Slicer used to write that fade into a file of
-     * each slice's own. */
-    uint32_t tailFrom = UINT32_MAX;
-    float tailStep = 0.0f;
-    if (!v.loop && v.slot && v.last < v.slot->desc.frames) {
-        const float outFrames = kTrimFadeMs * 0.001f * static_cast<float>(sampleRate_);
-        const uint32_t fileFrames =
-            static_cast<uint32_t>(static_cast<double>(outFrames) * static_cast<double>(v.inc) / static_cast<double>(kOne));
-        tailFrom = v.last > v.first + fileFrames ? v.last - fileFrames : v.first;
-        tailStep = outFrames > 1.0f ? (1.0f / outFrames) : 1.0f;
-    }
+    const uint32_t tailFrom = v.tailFrom;
+    const float tailStep = v.tailStep;
 
     /* A voice stepping exactly one frame a frame needs no interpolation: the
      * file is at the engine's rate and the pad has no pitch on it, which is
@@ -929,23 +977,38 @@ bool SamplerEngine::renderVoice(Voice& v, float* out, uint32_t frames)
             const float e = env * (1.0f / 32768.0f);
             const float gl = gainL * mute, gr = gainR * mute;
             float* o = out + static_cast<size_t>(i) * 2;
-            const uint32_t n = v.cursor.readRun(phase, v.inc, stopAt, frames - i,
-                                                [&](float l, float r, uint32_t f) {
-                o[0] += l * gl * e;
-                o[1] += r * gr * e;
-                o += 2;
-                const float a = (l < 0 ? -l : l) > (r < 0 ? -r : r) ? (l < 0 ? -l : l) : (r < 0 ? -r : r);
-                if (a >= loudLevel) {
-                    loudEnd = f + 1;
-                    quiet = 0;
-                } else if (quietLimit && ++quiet >= quietLimit) {
-                    silenced = true;
-                    return false;
+            const int16_t* base = nullptr;
+            uint32_t first = 0, end = 0;
+            uint32_t n = 0;
+            if (v.cursor.runAt(at, base, first, end)) {
+                /* The frames whose four taps are in the buffer and that come
+                 * before the trim's fade or its end, counted once: the walk
+                 * then has no test a frame. */
+                const uint32_t lim = end - 2 < stopAt ? end - 2 : stopAt;
+                const uint64_t limQ = static_cast<uint64_t>(lim) << 32;
+                uint32_t room = 0;
+                if (phase < limQ) {
+                    const uint64_t steps = (limQ - phase + v.inc - 1) / v.inc;
+                    room = steps < frames - i ? static_cast<uint32_t>(steps) : frames - i;
                 }
-                return true;
-            });
+                /* A run the quiet cannot end. One that might -- the last
+                 * block of a one-shot's silent tail -- goes frame by frame. */
+                if (room && (!quietLimit || quiet + room < quietLimit)) {
+                    const float* loud =
+                        ch == 2 ? walkPitched<2>(base, first, phase, v.inc, room, o, gl, gr, e, loudLevel)
+                                : walkPitched<1>(base, first, phase, v.inc, room, o, gl, gr, e, loudLevel);
+                    if (loud) {
+                        const uint32_t k = static_cast<uint32_t>((loud - o) / 2);
+                        loudEnd = static_cast<uint32_t>((phase + static_cast<uint64_t>(k) * v.inc) >> 32) + 1;
+                        quiet = quietLimit ? room - 1 - k : 0;
+                    } else if (quietLimit) {
+                        quiet += room;
+                    }
+                    phase += static_cast<uint64_t>(room) * v.inc;
+                    n = room;
+                }
+            }
             tally.r += n;
-            if (silenced) return stopped();
             if (n) {
                 i += n;
                 if (!atEnd()) return false;

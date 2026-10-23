@@ -572,6 +572,10 @@ private:
         uint32_t age = 0;        ///< order of starting, for the steal
         uint32_t quiet = 0;      ///< consecutive frames below silenceLevel
         uint32_t loudEnd = 0;    ///< one past the last frame above it, 0 = none yet
+        /* A one-shot trimmed to end inside its file fades out from here (the
+         * file's frames) by tailStep a frame; UINT32_MAX = no such fade. */
+        uint32_t tailFrom = UINT32_MAX;
+        float    tailStep = 0.0f;
         uint16_t slotIdx = SampleStore::kNoSlot;   ///< where to say so
         /* What the streaming thread needs to open this voice's ring, left for
          * it by noteOn() rather than done there. */
@@ -694,6 +698,19 @@ private:
 
     Params params_;
     uint32_t sampleRate_ = 44100;
+
+    /* What renderVoice() derives from params_ and sampleRate_, worked out
+     * when either changes instead of for every voice of every block: three
+     * float divisions a voice, each a call into the ROM's soft-float on the
+     * S3 (its FPU has no divide), ~25 us a block at sixteen voices. */
+    struct Steps {
+        float    fadeStep = 1.0f;     ///< a steal's fade-out, a frame
+        float    relStep = 1.0f;      ///< a release, a frame
+        float    muteStep = 1.0f;     ///< a Loop pad's mute ramp, a frame
+        uint32_t quietFrames = 0;     ///< silenceMs in frames; 0 = never stop on quiet
+        float    loudLevel = 0.0f;    ///< silenceLevel in the file's own units
+    } steps_;
+    void refreshSteps();
 
     NowFn  now_ = nullptr;
     std::atomic<uint32_t> cNoteOnMaxUs_{0};
