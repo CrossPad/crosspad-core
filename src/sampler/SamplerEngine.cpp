@@ -763,7 +763,7 @@ namespace {
 #define CP_OWN_REGISTERS
 #endif
 
-template <int Ch, bool Loud>
+template <int Ch>
 CP_OWN_REGISTERS uint32_t playLevel(const int16_t* p, uint32_t n, float* o, uint32_t at,
                                     float gainL, float gainR, float e, float loudLevel,
                                     uint32_t quietLimit, uint32_t& quietIo, uint32_t& loudEndIo)
@@ -774,7 +774,6 @@ CP_OWN_REGISTERS uint32_t playLevel(const int16_t* p, uint32_t n, float* o, uint
         const float r = Ch == 2 ? static_cast<float>(p[1]) : l;
         o[0] += l * gainL * e;
         o[1] += r * gainR * e;
-        if (!Loud) continue;
         if (dsp::maxOf(std::fabs(l), std::fabs(r)) >= loudLevel) {
             loudEnd = at + k + 1;
             quiet = 0;
@@ -785,6 +784,27 @@ CP_OWN_REGISTERS uint32_t playLevel(const int16_t* p, uint32_t n, float* o, uint
     quietIo = quiet;
     loudEndIo = loudEnd;
     return k;
+}
+
+/* playLevel() for a run the quiet cannot end -- every run of a loop, and of
+ * a one-shot until its last block of silence: the sums alone, and with
+ * @p Loud where the last frame at or above @p loudLevel went in @p o (null:
+ * none did, or not asked). The loudness bookkeeping is the caller's, once a
+ * run, which takes the compare and the branch of each frame out of the walk
+ * every hit of a drum kit plays through. */
+template <int Ch, bool Loud>
+CP_OWN_REGISTERS const float* walkLevel(const int16_t* p, uint32_t n, float* o, float gainL, float gainR,
+                                        float e, float loudLevel)
+{
+    const float* loud = nullptr;
+    for (uint32_t k = 0; k < n; ++k, p += Ch, o += 2) {
+        const float l = static_cast<float>(p[0]);
+        const float r = Ch == 2 ? static_cast<float>(p[1]) : l;
+        o[0] += l * gainL * e;
+        o[1] += r * gainR * e;
+        if (Loud && dsp::maxOf(std::fabs(l), std::fabs(r)) >= loudLevel) loud = o;
+    }
+    return loud;
 }
 
 /* A pitched run -- the steady part of a voice stepping a fraction a frame --
@@ -959,17 +979,31 @@ bool SamplerEngine::renderVoice(Voice& v, float* out, uint32_t frames)
             if (down == 0.0f && env == 1.0f && mute == muteTarget && at < tailFrom) {
                 const float e = env * (1.0f / 32768.0f);
                 const float gl = gainL * mute, gr = gainR * mute;
-                /* A loop's quiet and audible end are never read (learnEnd()
-                 * is a one-shot's): its walk keeps no loudness at all. */
-                const uint32_t done =
-                    v.loop ? (ch == 2 ? playLevel<2, false>(p, n, o, at, gl, gr, e, loudLevel, quietLimit, quiet, loudEnd)
-                                      : playLevel<1, false>(p, n, o, at, gl, gr, e, loudLevel, quietLimit, quiet, loudEnd))
-                           : (ch == 2 ? playLevel<2, true>(p, n, o, at, gl, gr, e, loudLevel, quietLimit, quiet, loudEnd)
-                                      : playLevel<1, true>(p, n, o, at, gl, gr, e, loudLevel, quietLimit, quiet, loudEnd));
-                if (done < n) {
-                    silenced = true;
-                    phase = static_cast<uint64_t>(at + done) * kOne;
-                    return stopped();
+                if (v.loop) {
+                    /* A loop's quiet and audible end are never read (learnEnd()
+                     * is a one-shot's): its walk keeps no loudness at all. */
+                    if (ch == 2) walkLevel<2, false>(p, n, o, gl, gr, e, loudLevel);
+                    else         walkLevel<1, false>(p, n, o, gl, gr, e, loudLevel);
+                } else if (!quietLimit || quiet + n < quietLimit) {
+                    const float* loud = ch == 2 ? walkLevel<2, true>(p, n, o, gl, gr, e, loudLevel)
+                                                : walkLevel<1, true>(p, n, o, gl, gr, e, loudLevel);
+                    if (loud) {
+                        const uint32_t k = static_cast<uint32_t>((loud - o) / 2);
+                        loudEnd = at + k + 1;
+                        quiet = quietLimit ? n - 1 - k : 0;
+                    } else if (quietLimit) {
+                        quiet += n;
+                    }
+                } else {
+                    /* The run the quiet may end: frame by frame. */
+                    const uint32_t done =
+                        ch == 2 ? playLevel<2>(p, n, o, at, gl, gr, e, loudLevel, quietLimit, quiet, loudEnd)
+                                : playLevel<1>(p, n, o, at, gl, gr, e, loudLevel, quietLimit, quiet, loudEnd);
+                    if (done < n) {
+                        silenced = true;
+                        phase = static_cast<uint64_t>(at + done) * kOne;
+                        return stopped();
+                    }
                 }
             } else {
                 for (uint32_t k = 0; k < n; ++k, p += ch, o += 2) {
