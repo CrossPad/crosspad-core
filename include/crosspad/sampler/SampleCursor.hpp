@@ -25,6 +25,12 @@
 
 #include <cstdint>
 
+#if defined(__XTENSA__) && defined(__has_include)
+#if __has_include(<xtensa/config/core-isa.h>)
+#include <xtensa/config/core-isa.h>
+#endif
+#endif
+
 namespace crosspad {
 
 class SampleCursor {
@@ -254,38 +260,13 @@ public:
         return true;
     }
 
-    /// read() over a run: from @p phase, stepping @p inc, the frames that lie
-    /// in one buffer -- the head, or the window's run where read() would walk
-    /// it -- and before frame @p stop, at most @p n of them. Each goes to
-    /// @p emit(left, right, frame) interpolated exactly as read() does it;
-    /// emit returning false stops on that frame, @p phase left on it.
-    /// Returns the frames emitted and accepted; 0 where read() takes its slow
-    /// path, which the caller then takes frame by frame.
-    template <class Emit>
-    uint32_t readRun(uint64_t& phase, uint64_t inc, uint32_t stop, uint32_t n, Emit&& emit) const
-    {
-        const int16_t* base = nullptr;
-        uint32_t first = 0, end = 0;
-        if (!runAround(static_cast<uint32_t>(phase >> 32), base, first, end)) return 0;
-        uint32_t k = 0;
-        for (; k < n; ++k) {
-            const uint32_t i = static_cast<uint32_t>(phase >> 32);
-            if (i + 2 >= end || i >= stop) break;
-            const float f = static_cast<float>(static_cast<uint32_t>(phase)) * kFracNorm;
-            float l, r;
-            walk(base + static_cast<size_t>(i - 1 - first) * channels_, f, l, r);
-            if (!emit(l, r, i)) break;
-            phase += inc;
-        }
-        return k;
-    }
-
-private:
     /// The buffer around frame @p i whose four taps read() would walk by
     /// pointer: @p base is frame @p first's, and frames up to @p end are in
-    /// it. The head where read() takes it, else the window's run -- only a
-    /// voice not lapping a streamed loop, the case readRun() is for.
-    bool runAround(uint32_t i, const int16_t*& base, uint32_t& first, uint32_t& end) const
+    /// it -- the voice's numbering, a later lap's run included. The head
+    /// where read() takes it, else the window's run. False where read()
+    /// takes its slow path. What a run of interpolated frames is walked over
+    /// (the engine's pitched kernel); a frame i is in it while i + 2 < @p end.
+    bool runAt(uint32_t i, const int16_t*& base, uint32_t& first, uint32_t& end) const
     {
         if (head_ && i >= headStart_ + 1 && i + 2 < headEnd_) {
             base = head_;
@@ -293,12 +274,18 @@ private:
             end = headEnd_;
             return true;
         }
-        if (!window_ || lapOffset_ || i < 1) return false;
-        const uint32_t left4 = i - 1;
-        if (!(runPtr_ && left4 >= runFirst_ && i + 2 < runLast_)) {
+        /* On a later lap only past the head, as in read(): below it the
+         * window holds the previous lap's tail under these numbers. Without
+         * the laps a streamed pitched loop fell to read() frame by frame on
+         * its second time round -- ~170 us a voice a block, and sixteen of
+         * them held core 1 until the task watchdog fired on IDLE1. */
+        if (!window_ || i < 1 || (lapOffset_ && i - 1 < headEnd_)) return false;
+        const uint32_t left4 = i - 1 + lapOffset_;
+        const uint32_t w = i + lapOffset_;
+        if (!(runPtr_ && left4 >= runFirst_ && w + 2 < runLast_)) {
             uint32_t f = 0, last = 0;
             const int16_t* p = window_->run(left4, f, last);
-            if (!p || i + 2 >= last) {
+            if (!p || w + 2 >= last) {
                 runPtr_ = nullptr;
                 return false;
             }
@@ -306,23 +293,42 @@ private:
             runFirst_ = left4;
             runLast_ = last;
         }
+        /* Back in the voice's numbering. `first` may wrap below zero: the
+         * caller only ever subtracts it from a frame of this lap, which
+         * unwraps it. */
         base = runPtr_;
-        first = runFirst_;
-        end = runLast_;
+        first = runFirst_ - lapOffset_;
+        end = runLast_ - lapOffset_;
         return true;
     }
 
-    /// Four neighbouring frames from @p p, interpolated. @p p is the tap at
-    /// i-1, so the caller has already checked that four frames fit.
-    bool walk(const int16_t* p, float f, float& left, float& right) const
+    /// hermite4() over four int16 taps, to the bit: for whole numbers of this
+    /// size every coefficient hermite4() works out in float is exact (each
+    /// step a multiple of 0.5 well inside 24 bits), so it is the same number
+    /// worked out in integers and converted once. That keeps the walk's
+    /// arithmetic in the integer registers -- the S3 has sixteen float ones,
+    /// and the four constants of the float form were reloaded every frame.
+    static float hermite4i(int32_t y0, int32_t y1, int32_t y2, int32_t y3, float f)
     {
-        if (channels_ == 1) {
-            left = right = hermite4(p[0], p[1], p[2], p[3], f);
-        } else {
-            left  = hermite4(p[0], p[2], p[4], p[6], f);
-            right = hermite4(p[1], p[3], p[5], p[7], f);
-        }
-        return true;
+        const float c0 = static_cast<float>(y1);
+        const float c1 = halfOf(y2 - y0);
+        const float c2 = halfOf(2 * y0 - 5 * y1 + 4 * y2 - y3);
+        const float c3 = halfOf(y3 - y0 + 3 * (y1 - y2));
+        return ((c3 * f + c2) * f + c1) * f + c0;
+    }
+
+    /// @p x / 2 as a float, exactly for any @p x inside 24 bits: on an Xtensa
+    /// FPU the conversion's own scale (FLOAT.S x, 1), one instruction where a
+    /// conversion and a multiply by 0.5 were two.
+    static float halfOf(int32_t x)
+    {
+#if defined(XCHAL_HAVE_FP) && XCHAL_HAVE_FP
+        float r;
+        asm("float.s %0, %1, 1" : "=f"(r) : "r"(x));
+        return r;
+#else
+        return static_cast<float>(x) * 0.5f;
+#endif
     }
 
     /// Catmull-Rom over four taps. y1 is the sample at the integer position.
@@ -333,6 +339,20 @@ private:
         const float c2 = y0 - 2.5f * y1 + 2.0f * y2 - 0.5f * y3;
         const float c3 = 0.5f * (y3 - y0) + 1.5f * (y1 - y2);
         return ((c3 * f + c2) * f + c1) * f + c0;
+    }
+
+private:
+    /// Four neighbouring frames from @p p, interpolated. @p p is the tap at
+    /// i-1, so the caller has already checked that four frames fit.
+    bool walk(const int16_t* p, float f, float& left, float& right) const
+    {
+        if (channels_ == 1) {
+            left = right = hermite4i(p[0], p[1], p[2], p[3], f);
+        } else {
+            left  = hermite4i(p[0], p[2], p[4], p[6], f);
+            right = hermite4i(p[1], p[3], p[5], p[7], f);
+        }
+        return true;
     }
 
     /// One frame, from wherever it lives. Out of range clamps to the edges,

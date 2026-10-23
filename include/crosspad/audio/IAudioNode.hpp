@@ -50,6 +50,13 @@ public:
     /// RT-safe contract applies — see class doc.
     virtual void mix(float* /*out*/, uint32_t /*frames*/) {}
 
+    /// True when the last mix() added nothing: the buffer is exactly as it
+    /// was handed in. The mixer then meters the channel as silent without a
+    /// pass over its block -- an idle engine's channel costs no scan. False,
+    /// the default, promises nothing. Read on the render thread, right after
+    /// mix().
+    virtual bool lastMixSilent() const { return false; }
+
     /// Marks this node as a generator (mix() called) vs effect (process() called).
     virtual bool isGenerator() const { return false; }
 

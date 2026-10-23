@@ -1247,6 +1247,123 @@ TEST_CASE("SamplerEngine's block render steps a fraction a frame as the frame-by
     CHECK(peak > 0.1f);
 }
 
+TEST_CASE("SamplerEngine walks a pitched streamed loop by runs on every lap, not frame by frame",
+          "[samplerengine][kernels]")
+{
+    /* A loop longer than its head and ring, a fifth up, round three times.
+     * Its later laps read the window under numbers a lap further on; when the
+     * run walk did not know that, every frame after the first lap went
+     * through read() one at a time -- sixteen such voices held core 1 for
+     * good on the board. Only the seams may go the slow way. */
+    for (uint8_t channels : {uint8_t(1), uint8_t(2)}) {
+        Rig rig;
+        rig.build();
+        rig.src.add("bar.wav", 9000, channels);
+        rig.assign(0, "bar.wav", 1024, PadMode::Loop);
+        rig.kit.pad[0].semitones = 7;
+        rig.publish();
+        rig.engine.noteOn(0, 127);
+        std::vector<float> out(64 * 2);
+        const uint32_t blocks = 3 * 9000 * 2 / 3 / 64;   // three laps at 1.5x
+        for (uint32_t b = 0; b < blocks; ++b) {
+            std::fill(out.begin(), out.end(), 0.0f);
+            rig.engine.mix(out.data(), 64);
+            rig.engine.serviceIo();
+        }
+        REQUIRE(rig.engine.padSounding(0));
+        const auto c = rig.engine.counters();
+        CHECK(c.underruns == 0);
+        CHECK(c.pitchedRunFrames > 0);
+        CHECK(c.pitchedSlowFrames * 100 < c.pitchedRunFrames);
+    }
+}
+
+TEST_CASE("SamplerEngine lets the oldest voice go when the render cannot keep up", "[samplerengine]") {
+    /* Loops never end on their own: over its whole block the board sheds
+     * them one at a time, oldest first, faded as a steal. */
+    Rig rig;
+    rig.build();
+    for (const char* f : {"a.wav", "b.wav", "c.wav"}) rig.src.add(f, 4000, 1);
+    rig.assign(0, "a.wav", 4000, PadMode::Loop);
+    rig.assign(1, "b.wav", 4000, PadMode::Loop);
+    rig.assign(2, "c.wav", 4000, PadMode::Loop);
+    rig.publish();
+    for (uint8_t pad = 0; pad < 3; ++pad) {
+        rig.engine.noteOn(pad, 127);
+        rig.run(1);
+    }
+    REQUIRE(rig.engine.voicesActive() == 3);
+
+    CHECK(rig.engine.shedOne());
+    rig.run(4);                                    // past the fade
+    CHECK(rig.engine.voicesActive() == 2);
+    CHECK_FALSE(rig.engine.padSounding(0));        // the oldest went
+    CHECK(rig.engine.padSounding(1));
+    CHECK(rig.engine.padSounding(2));
+    CHECK(rig.engine.counters().sheds == 1);
+
+    CHECK(rig.engine.shedOne());
+    CHECK(rig.engine.shedOne());
+    rig.run(4);
+    CHECK(rig.engine.voicesActive() == 0);
+    CHECK_FALSE(rig.engine.shedOne());             // nothing left to let go
+    CHECK(rig.engine.counters().sheds == 3);
+}
+
+TEST_CASE("SamplerEngine plays a file whose header claims an absurd rate without walking off it",
+          "[samplerengine][kernels]")
+{
+    /* The step comes from the WAV's own sampleRate and the pad's pitch. A
+     * header saying 4 GHz on a pad pitched to the top made it too big for 64
+     * bits -- the conversion itself undefined, the run's phase sums wrapped,
+     * the walk off its buffer; held to kMaxStep it races to the end. */
+    Rig rig;
+    rig.build();
+    rig.src.add("mad.wav", 20000, 2, 4000000000u);
+    rig.src.add("loop.wav", 20000, 1, 4000000000u);
+    rig.assign(0, "mad.wav", 1024);
+    rig.assign(1, "loop.wav", 1024, PadMode::Loop);
+    rig.kit.pad[0].semitones = 127;                // what an int8 `pitch` can say
+    rig.kit.pad[1].semitones = 127;
+    rig.publish();
+    rig.engine.noteOn(0, 127, 127);                // and a transpose on top
+    rig.engine.noteOn(1, 127, 127);
+    std::vector<float> out(64 * 2);
+    for (int b = 0; b < 200; ++b) {
+        std::fill(out.begin(), out.end(), 0.0f);
+        rig.engine.mix(out.data(), 64);
+        rig.engine.serviceIo();
+        for (float x : out) REQUIRE(std::isfinite(x));
+    }
+    CHECK_FALSE(rig.engine.padSounding(0));        // a one-shot 256 frames a frame is long over
+}
+
+TEST_CASE("SamplerEngine says when a block added nothing", "[samplerengine]") {
+    /* The mixer meters a silent channel without scanning it on this word:
+     * false for every block a voice wrote into, true only when none did. */
+    Rig rig;
+    rig.build();
+    rig.src.add("hit.wav", 300, 2);
+    rig.assign(0, "hit.wav", 300);
+    rig.publish();
+    std::vector<float> out(64 * 2, 0.0f);
+    rig.engine.mix(out.data(), 64);
+    CHECK(rig.engine.lastMixSilent());
+    rig.engine.noteOn(0, 127);
+    rig.engine.mix(out.data(), 64);
+    CHECK_FALSE(rig.engine.lastMixSilent());
+    for (int b = 0; b < 20 && rig.engine.voicesActive(); ++b) {
+        rig.engine.mix(out.data(), 64);
+        CHECK_FALSE(rig.engine.lastMixSilent());     // the block it ends in still wrote
+        rig.engine.serviceIo();
+    }
+    REQUIRE(rig.engine.voicesActive() == 0);
+    std::fill(out.begin(), out.end(), 0.0f);
+    rig.engine.mix(out.data(), 64);
+    CHECK(rig.engine.lastMixSilent());
+    for (float v : out) REQUIRE(v == 0.0f);
+}
+
 TEST_CASE("SamplerEngine over its budget holds the polyphony where it is", "[samplerengine]") {
     Rig rig;
     rig.build();
