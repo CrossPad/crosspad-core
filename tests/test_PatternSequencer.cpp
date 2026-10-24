@@ -180,6 +180,23 @@ TEST_CASE("sequencer: count-in follows the metre", "[seq][countin]") {
     REQUIRE(r.seq.countInLeft() == 3);
 }
 
+TEST_CASE("sequencer: a two-bar count-in counts both bars, and is kept while off", "[seq][countin]") {
+    Rig r;
+    r.seq.setCountInBars(2);
+    r.seq.setCountIn(true);
+    r.seq.record();
+    REQUIRE(r.seq.countInLeft() == 2 * r.clock.beatsPerBar());
+    r.run(kBeat * r.clock.beatsPerBar() + kBlock);
+    REQUIRE(r.seq.state() == SequencerState::PreBeat);
+    r.run(kBeat * r.clock.beatsPerBar());
+    REQUIRE(r.seq.state() == SequencerState::Running);
+    r.seq.setCountIn(false);
+    REQUIRE(r.seq.countInBeats() == 0);
+    REQUIRE(r.seq.countInBars() == 2);
+    r.seq.setCountInBars(9);
+    REQUIRE(r.seq.countInBars() == PatternSequencer::kMaxCountInBars);
+}
+
 TEST_CASE("sequencer: without count-in a take starts at once", "[seq][countin]") {
     Rig r;
     r.seq.setCountIn(false);

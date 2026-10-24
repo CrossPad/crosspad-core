@@ -56,6 +56,17 @@ public:
     bool audible() const { return audible_.load(std::memory_order_relaxed); }
 
     void setLevel(float v) { level_.store(v < 0.0f ? 0.0f : (v > 1.0f ? 1.0f : v), std::memory_order_relaxed); }
+    float level() const { return level_.load(std::memory_order_relaxed); }
+
+    /// Clicks a beat: 1 quarters, 2 eighths, 4 sixteenths; anything else is
+    /// 1. The beats keep their clicks, the ones between are quieter
+    /// (kSubdivisionGain), so the beat still reads. A count-in is subdivided
+    /// too. The grid a take is quantised to is not touched.
+    void setDivision(uint8_t d) {
+        division_.store((d == 2 || d == 4) ? d : 1, std::memory_order_relaxed);
+    }
+    uint8_t division() const { return division_.load(std::memory_order_relaxed); }
+    static constexpr float kSubdivisionGain = 0.5f;
 
     // ── Transport ─────────────────────────────────────────────────────────
     //
@@ -173,6 +184,7 @@ public:
         const uint32_t cinTotal = countInTotal_.load(std::memory_order_relaxed);
         const bool aud = audible_.load(std::memory_order_relaxed);
         const float lvl = level_.load(std::memory_order_relaxed);
+        const uint32_t div = division_.load(std::memory_order_relaxed);
         const bool wasCounting = cin > 0;
 
         for (uint32_t i = 0; i < frames; ++i) {
@@ -182,19 +194,29 @@ public:
             const uint32_t at = counting ? cinTotal - cin : pos;
             /* A beat starts exactly where the sample index crosses it, so the
              * click is placed to the sample and never rounded to a block. */
-            if (at % spb == 0) {
+            const uint32_t inBeat = at % spb;
+            if (inBeat == 0) {
                 clickLeft_ = clickSamples_;
                 /* Bar one is a fifth up, which is what makes a count-in
                  * countable without watching the screen. */
                 const bool downbeat = ((at / spb) % beatsPerBar()) == 0;
                 step_ = (downbeat ? 1500.0f : 1000.0f) * 6.2831853f / (float)sampleRate_;
                 phase_ = 0.0f;
+                gain_ = 1.0f;
+            } else if (div > 1 && (inBeat * div) % spb < div) {
+                /* The first sample of a subdivision: inBeat * div has just
+                 * passed a whole beat's samples. Never a tick a few samples
+                 * before the beat when the beat does not divide evenly. */
+                clickLeft_ = clickSamples_;
+                step_ = 1000.0f * 6.2831853f / (float)sampleRate_;
+                phase_ = 0.0f;
+                gain_ = kSubdivisionGain;
             }
             if (clickLeft_ && (aud || counting)) {
                 /* Decaying sine: short enough to read as a tick, shaped so it
                  * does not click at the edges of its own envelope. */
                 const float env = (float)clickLeft_ / (float)clickSamples_;
-                const float s = std::sin(phase_) * env * env * lvl;
+                const float s = std::sin(phase_) * env * env * lvl * gain_;
                 out[i * 2 + 0] += s;
                 out[i * 2 + 1] += s;
                 phase_ += step_;
@@ -264,9 +286,11 @@ private:
     uint32_t clickLeft_      = 0;
     float    phase_          = 0.0f;
     float    step_           = 0.0f;
+    float    gain_           = 1.0f;   // of the click sounding: a beat's, or a subdivision's
 
     std::atomic<float>    bpm_{120.0f};
     std::atomic<float>    level_{0.35f};
+    std::atomic<uint8_t>  division_{1};
     std::atomic<uint8_t>  beatsPerBar_{4};
     std::atomic<uint8_t>  barCount_{SequencerLimits::MAX_SEQ_LENGTH / 4};
     std::atomic<bool>     audible_{true};

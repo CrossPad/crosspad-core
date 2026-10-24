@@ -149,3 +149,65 @@ TEST_CASE("metronome: a transport change is never undone by the block in flight"
     rt.join();
     REQUIRE(wrong == 0);
 }
+
+namespace {
+/// The samples a click starts on over @p frames: where the output turns from
+/// silence to sound. The first sample of a click is sin(0) = 0, so the onset
+/// is the sample before the first non-zero one.
+std::vector<uint32_t> onsets(MetronomeNode& m, uint32_t frames, std::vector<float>* peaks = nullptr)
+{
+    std::vector<float> out(frames * 2, 0.0f);
+    m.mix(out.data(), frames);
+    std::vector<uint32_t> at;
+    bool sounding = false;
+    float peak = 0.0f;
+    for (uint32_t i = 0; i < frames; ++i) {
+        const float v = out[i * 2] < 0 ? -out[i * 2] : out[i * 2];
+        if (v > 0.0f && !sounding) {
+            if (peaks && !at.empty()) peaks->push_back(peak);
+            at.push_back(i - 1);
+            peak = 0.0f;
+        }
+        sounding = v > 0.0f;
+        if (v > peak) peak = v;
+    }
+    if (peaks && !at.empty()) peaks->push_back(peak);
+    return at;
+}
+} // namespace
+
+TEST_CASE("metronome: a division clicks between the beats, quieter", "[metronome]") {
+    MetronomeNode m;
+    prepared(m);
+    m.setDivision(4);
+    REQUIRE(m.division() == 4);
+    m.start();
+    std::vector<float> peaks;
+    const std::vector<uint32_t> at = onsets(m, 48000, &peaks);   // two beats
+    REQUIRE(at == std::vector<uint32_t>{0, 6000, 12000, 18000, 24000, 30000, 36000, 42000});
+    REQUIRE(peaks.size() == at.size());
+    REQUIRE(peaks[1] < peaks[0] * 0.6f);
+    REQUIRE(peaks[4] > peaks[5]);
+}
+
+TEST_CASE("metronome: a beat that does not divide evenly has no tick just before it", "[metronome]") {
+    MetronomeNode m;
+    m.onPrepare(kBlock, 44100);
+    m.setBpm(120.0f);           // 22050 samples a beat: not a multiple of 4
+    m.setDivision(4);
+    m.start();
+    const std::vector<uint32_t> at = onsets(m, 22050 + 100);
+    REQUIRE(at.size() == 5);    // four in the beat, then the next beat's
+    REQUIRE(at.back() == 22050);
+    for (size_t i = 1; i < at.size(); ++i) REQUIRE(at[i] - at[i - 1] >= 5512);
+}
+
+TEST_CASE("metronome: an unknown division is quarters, and the level is read back", "[metronome]") {
+    MetronomeNode m;
+    m.setDivision(3);
+    REQUIRE(m.division() == 1);
+    m.setLevel(0.7f);
+    REQUIRE(m.level() == 0.7f);
+    m.setLevel(2.0f);
+    REQUIRE(m.level() == 1.0f);
+}
