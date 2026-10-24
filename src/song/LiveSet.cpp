@@ -518,6 +518,7 @@ bool writeLiveSetXml(std::string skel, const AudioSong& song, const std::vector<
             !setValue(track, {"AudioTrack"}, "<Color Value=\"", std::to_string(kColors[t])) ||
             !setValue(track, {"Mixer", "Volume"}, "<Manual Value=\"", numf(std::min(std::max(tr.volume, 0.0f), kMaxVolume))) ||
             !setValue(track, {"Mixer", "Speaker"}, "<Manual Value=\"", tr.muted ? "false" : "true") ||
+            !setValue(track, {"Mixer", "Pan"}, "<Manual Value=\"", numf(std::min(std::max(tr.pan, -1.0f), 1.0f))) ||
             !out(track.data(), track.size())) {
             return false;
         }

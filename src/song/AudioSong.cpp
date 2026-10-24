@@ -228,6 +228,7 @@ SongLoad AudioSong::load(const std::string& projectDir)
     for (JsonObjectConst tr : doc["tracks"].as<JsonArrayConst>()) {
         if (t >= kTracks) break;
         tracks[t].volume = tr["volume"] | 1.0f;
+        tracks[t].pan    = std::min(1.0f, std::max(-1.0f, tr["pan"] | 0.0f));
         tracks[t].muted  = tr["muted"]  | false;
         tracks[t].solo   = tr["solo"]   | false;
         tracks[t].name   = tr["name"]   | "";
@@ -359,6 +360,7 @@ bool AudioSong::save() const
     for (const auto& t : tracks) {
         JsonObject o = trs.add<JsonObject>();
         o["volume"] = t.volume;
+        if (t.pan != 0.0f) o["pan"] = t.pan;
         o["muted"]  = t.muted;
         if (t.solo) o["solo"] = true;
         if (!t.name.empty()) o["name"] = t.name;

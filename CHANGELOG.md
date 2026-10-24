@@ -6,6 +6,20 @@ carries the same number) and consumers gate on it with
 `crosspad/RequireVersion.hpp`. This file starts at 1.45.0; earlier releases
 are described in their `chore: X.Y.Z` commits.
 
+## 2.21.0 — 2026-10-24
+
+### Added
+
+- `SongTrack::pan` (-1 left .. +1 right, 0 centre): a balance as the Mixer's
+  pan -- the side it moves away from turned down. Saved in song.json as
+  `"pan"` (left out at centre) and in the undo steps. An audio track's clips
+  are panned in the song's render, before its meter; a seq track's pan goes
+  to the engine its notes play through, as its fader does, through the new
+  `ISongEnginePlatform::setSeqPan()` / `setKitPan()` (0 when the song stops;
+  a platform without a mixer leaves them alone). A merge puts each track's
+  pan into the clip, the target's own excepted while it keeps blocks. The
+  Live export carries it (`Mixer/Pan`).
+
 ## 2.20.0 — 2026-10-24
 
 ### Added
