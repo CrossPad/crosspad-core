@@ -323,7 +323,8 @@ public:
     /// Make @p track a seq on @p source playing @p scene. A kit track takes
     /// the route that is free (freeSeqRoute()): on 0 it plays the song's kit,
     /// which @p kit, given, becomes; on 1 @p kit is its own and must be
-    /// given, and it plays only under blocks. Returns false when the track is
+    /// given. Every new seq track is empty and plays only under its blocks
+    /// (SongTrack::seqBlocks). Returns false when the track is
     /// in use, there is no room for the seq, or another seq track plays
     /// @p scene -- two tracks on one scene overwrite each other's notes.
     bool addSeqTrack(int track, SeqSource source, uint8_t scene, const std::string& kit = {});

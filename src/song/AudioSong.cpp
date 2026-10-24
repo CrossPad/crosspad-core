@@ -572,9 +572,12 @@ bool AudioSong::addSeqTrack(int track, SeqSource source, uint8_t scene, const st
     tracks[track].kind   = TrackKind::Seq;
     tracks[track].source = source;
     tracks[track].scene  = scene;
+    /* A new track is empty: it plays under the blocks a take or the seq view
+     * gives it, never its scene over the whole song -- that is a track from
+     * before blocks had notes of their own, which only load() makes. */
+    tracks[track].seqBlocks = true;
     if (route == 1) {
         tracks[track].kit = ownKit;
-        tracks[track].seqBlocks = true;
     } else if (source == SeqSource::Kit && !ownKit.empty()) {
         kit = ownKit;
     }

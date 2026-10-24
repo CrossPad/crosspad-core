@@ -1297,13 +1297,18 @@ TEST_CASE("song engine: audio never lands on the seq track", "[song]") {
     CHECK_FALSE(r.engine->bounceScene(0, 0));
 }
 
-TEST_CASE("song engine: a song that is only a seq track is one pass of its scene long", "[song]") {
+TEST_CASE("song engine: a song that is only a seq track playing its scene is one pass of it long", "[song]") {
     Rig r;
     REQUIRE(r.open("Demo"));
     CHECK(r.engine->playEndBars() == 0);
     {
         std::lock_guard<std::recursive_mutex> l(r.engine->songMutex());
         REQUIRE(r.engine->song().addSeqTrack(0, SeqSource::Kit, 0));
+    }
+    CHECK(r.engine->playEndBars() == 0);     // a new track is empty
+    {
+        std::lock_guard<std::recursive_mutex> l(r.engine->songMutex());
+        r.engine->song().tracks[0].seqBlocks = false;   // from before blocks had notes
     }
     CHECK(r.engine->playEndBars() >= 1);
 }
@@ -1639,7 +1644,8 @@ TEST_CASE("song engine: a track that played its scene keeps it around a take", "
         auto& s = r.engine->song();
         s.bpm = 120.0f;
         s.length = 4;
-        REQUIRE(s.addSeqTrack(0, SeqSource::Kit, 0));      // the scene over the whole song
+        REQUIRE(s.addSeqTrack(0, SeqSource::Kit, 0));
+        s.tracks[0].seqBlocks = false;                     // the scene over the whole song
     }
     r.engine->commit();
     const uint32_t bar = r.engine->framesPerBar();
@@ -2305,6 +2311,7 @@ TEST_CASE("song engine: Drums, Slice and Pitch tracks play at once, each on its 
         REQUIRE(s.addSeqTrack(0, SeqSource::Kit, 0, "/crosspad/kits/DRUMS/kit.json"));
         REQUIRE(s.addSeqTrack(1, SeqSource::Kit, 1, "/crosspad/kits/SLICE/kit.json"));
         REQUIRE(s.addSeqTrack(2, SeqSource::Pitch, 2));
+        s.tracks[2].seqBlocks = false;   // from before blocks had notes
         SeqNote d; d.pad = 1; d.vel = 100;
         SeqNote k; k.pad = 2; k.vel = 100; k.tick = AudioSong::kSeqPpq;
         s.putSeqTake(0, 0, makeSeqPattern(1, {d}), s.samplesPerBar(kRate));
@@ -2468,7 +2475,8 @@ TEST_CASE("song engine: muting a seq track silences its notes as it plays, and u
         auto& s = r.engine->song();
         s.bpm = 120.0f;
         s.length = 8;
-        REQUIRE(s.addSeqTrack(0, SeqSource::Kit, 0));     // its scene over the whole song
+        REQUIRE(s.addSeqTrack(0, SeqSource::Kit, 0));
+        s.tracks[0].seqBlocks = false;                    // its scene over the whole song
         s.tracks[0].muted = true;                          // muted before it starts
     }
     r.engine->commit();

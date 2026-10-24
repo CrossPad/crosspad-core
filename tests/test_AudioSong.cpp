@@ -149,6 +149,19 @@ TEST_CASE("AudioSong: tracks are made one at a time, up to four", "[song][tracks
     REQUIRE_FALSE(s.addAudioTrack(0));         // already in use
 }
 
+TEST_CASE("AudioSong: a new seq track is empty, whatever it plays through", "[song][tracks]") {
+    AudioSong s;
+    REQUIRE(s.addSeqTrack(0, SeqSource::Kit, 0));
+    REQUIRE(s.addSeqTrack(1, SeqSource::Pitch, 1));
+    REQUIRE(s.addSeqTrack(2, SeqSource::Kit, 2, "/crosspad/kits/B/kit.json"));
+    for (int t = 0; t < 3; ++t) {
+        CHECK(s.tracks[t].seqBlocks);       // no scene over the whole song
+        CHECK(s.tracks[t].clips.empty());
+    }
+    CHECK_FALSE(s.seqBlocksExplicit(8));     // nothing to give blocks to
+    CHECK(s.playEnd() == 0);
+}
+
 TEST_CASE("AudioSong: two kit tracks, the second on a kit of its own; a bounce frees a slot", "[song][tracks]") {
     AudioSong s;
     REQUIRE(s.addSeqTrack(0, SeqSource::Kit, 2));
@@ -536,6 +549,7 @@ TEST_CASE("AudioSong: a cut goes by what sounds, not by the stored length", "[so
 TEST_CASE("AudioSong: a seq block is cut by scene bars", "[song][cut][seq]") {
     AudioSong s = songAt120();
     REQUIRE(s.addSeqTrack(1, SeqSource::Kit, 0));
+    s.tracks[1].seqBlocks = false;   // from before blocks had notes
     REQUIRE(s.seqBlocksExplicit(8));
     REQUIRE(s.tracks[1].seqBlocks);
     REQUIRE(s.cutClip(1, 3, kSpb) == 1);
@@ -572,6 +586,7 @@ TEST_CASE("AudioSong: a region doubled doubles the seq by bars as well", "[song]
     AudioSong s = songAt120();
     s.addClip(0, {"a.wav", 0, 8});
     REQUIRE(s.addSeqTrack(1, SeqSource::Kit, 0));
+    s.tracks[1].seqBlocks = false;   // from before blocks had notes
     s.seqBlocksExplicit(8);
     /* Region x2 over bars 0..4, as Arrange does it. */
     const auto part = s.copyRange(0, 4, kSpb);
@@ -614,6 +629,7 @@ TEST_CASE("AudioSong: cuts and seq blocks survive a save", "[song][cut][seq]") {
     a.addClip(0, {"a.wav", 0, 4});
     a.cutClip(0, 1, kSpb);
     REQUIRE(a.addSeqTrack(1, SeqSource::Pitch, 2));
+    a.tracks[1].seqBlocks = false;   // from before blocks had notes
     a.seqBlocksExplicit(6);
     a.cutClip(1, 2, kSpb);
     REQUIRE(a.save());
@@ -827,6 +843,7 @@ TEST_CASE("AudioSong: DUB into a block played from its middle lands on the right
 TEST_CASE("AudioSong: blocks that played the scene adopt its notes", "[song][seq][notes]") {
     AudioSong s = songAt120();
     REQUIRE(s.addSeqTrack(1, SeqSource::Kit, 0));
+    s.tracks[1].seqBlocks = false;   // from before blocks had notes
     /* No blocks yet: the scene over the whole song becomes one block of it. */
     const auto scene = makeSeqPattern(2, {note(0, 3)});
     CHECK(s.adoptSceneNotes(1, scene, 6) == 1);
@@ -839,6 +856,7 @@ TEST_CASE("AudioSong: blocks that played the scene adopt its notes", "[song][seq
     /* An empty scene leaves no block of silence behind. */
     AudioSong e = songAt120();
     REQUIRE(e.addSeqTrack(0, SeqSource::Kit, 0));
+    e.tracks[0].seqBlocks = false;   // from before blocks had notes
     e.seqBlocksExplicit(4);
     CHECK(e.adoptSceneNotes(0, makeSeqPattern(1, {}), 4) == 1);
     CHECK(e.tracks[0].clips.empty());

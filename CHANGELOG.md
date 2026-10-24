@@ -6,6 +6,17 @@ carries the same number) and consumers gate on it with
 `crosspad/RequireVersion.hpp`. This file starts at 1.45.0; earlier releases
 are described in their `chore: X.Y.Z` commits.
 
+## 2.16.1 — 2026-10-24
+
+### Fixed
+
+- `AudioSong::addSeqTrack()`: every new seq track is empty and plays only
+  under its blocks (`seqBlocks`), as the second kit's already did. The first
+  kit track and a Pitch track used to start as a track from before blocks
+  had notes -- their scene over the whole song -- which Arrange drew as one
+  empty block from the first bar to the last. Songs saved that way still
+  load as they were.
+
 ## 2.16.0 — 2026-10-23
 
 The sampler's render: pitched loops on every lap, kernels out of line, a
