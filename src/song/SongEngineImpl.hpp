@@ -366,6 +366,11 @@ struct SongEngine::Impl {
     bool requestProjects() { return request(kListProjects); }
     std::vector<std::string> projects();
     bool requestOpen(const std::string& name);
+    bool requestOpenElement(const std::string& ref);
+    bool requestElements() { return request(kListElements); }
+    std::vector<ElementInfo> elements();
+    bool requestBakeElement();
+    ElementBake bakeResult();
     SongOpState openState() const { return openState_.load(); }
     bool requestRename(const std::string& name);
     bool requestDelete();
@@ -444,6 +449,7 @@ private:
     enum class Job : uint8_t { None, Play };
     static constexpr uint8_t kListProjects = 1;
     static constexpr uint8_t kListClips    = 2;
+    static constexpr uint8_t kListElements = 4;
     static void worker_entry(void* arg) { static_cast<Impl*>(arg)->worker(); }
     bool request(uint8_t list);
     bool claimEdit();
@@ -451,7 +457,12 @@ private:
     void waitRtOut();
     void doListProjects();
     void doListClips();
-    SongOpState doOpen(const std::string& name);
+    void doListElements();
+    /// @p remember: @p name is the project to open at the next boot (an
+    /// element is not).
+    SongOpState doOpen(const std::string& name, bool remember = true);
+    bool askToOpen(const std::string& name, bool remember);
+    SongOpState doBakeElement();
     void openLast();
     SongOpState doRename();
     SongOpState doDelete();
@@ -549,6 +560,7 @@ private:
     std::atomic<bool> opened_{false};
     bool        lastTried_ = false;            // worker only
     std::string openName_;
+    bool        openRemember_ = true;             // under songMutex_, with openName_
     std::atomic<bool> openReq_{false}, saveReq_{false}, playReq_{false};
     std::atomic<int64_t> saveAtUs_{0};            // a committed song is saved from then on
     std::atomic<SongOpState> openState_{SongOpState::Idle};
@@ -587,7 +599,7 @@ private:
     mutable std::vector<NoteCache> noteCache_;
     mutable std::mutex noteCacheMutex_;
     static constexpr uint8_t kEditRename = 1, kEditTempo = 2, kEditMerge = 3, kEditImport = 4,
-                             kEditDelete = 5, kEditExport = 6;
+                             kEditDelete = 5, kEditExport = 6, kEditBake = 7;
     uint32_t    importA_ = 0, importB_ = 0, importBar_ = 0, importLead_ = 0;   // owned by claimEdit()'s caller until editReq_
     uint8_t     importTrack_ = 0;
     std::atomic<uint8_t>  editMask_{0}, editProgress_{0};
@@ -598,6 +610,7 @@ private:
     std::string editName_;                        // under songMutex_
     std::vector<std::string> report_;             // the last export's, under reportMutex_
     std::mutex  reportMutex_;
+    ElementBake bake_;                            // the last bake's, under reportMutex_
     /* Waveforms of the project in peaksDir_, by clip name, and the ones asked
      * for and not had yet, oldest first; under peaksMutex_. */
     std::map<std::string, std::shared_ptr<const std::vector<uint8_t>>> peaks_;
@@ -612,6 +625,7 @@ private:
     std::atomic<uint32_t> listGen_{0};
     std::vector<std::string> projects_;
     std::vector<ClipInfo>    clips_;
+    std::vector<ElementInfo> elements_;
     std::mutex  listMutex_;
     Arrangement snap_;
     std::mutex  snapMutex_;

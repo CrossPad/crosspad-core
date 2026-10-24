@@ -171,15 +171,17 @@ void SongEngine::Impl::worker() {
         }
         if (openReq_.exchange(false)) {
             std::string name;
+            bool remember = true;
             {
                 std::lock_guard<std::recursive_mutex> l(songMutex_);
                 name = openName_;
+                remember = openRemember_;
             }
             /* A project asked for by name is the one open: opening the
              * last one afterwards would read it back over unsaved edits. */
             lastTried_ = true;
             if (saveReq_.exchange(false)) doSave();   // the edits waiting go to the song they were made in
-            openState_.store(doOpen(name));
+            openState_.store(doOpen(name, remember));
             continue;
         }
         if (const uint8_t edit = editReq_.exchange(0)) {
@@ -188,12 +190,14 @@ void SongEngine::Impl::worker() {
                            : edit == kEditTempo  ? doTempo(editBpm_.load())
                            : edit == kEditImport ? doImport()
                            : edit == kEditExport ? doExport()
+                           : edit == kEditBake   ? doBakeElement()
                            : doMerge(editMask_.load(), editFrom_.load(), editTo_.load()));
             continue;
         }
         if (const uint8_t lists = listReq_.exchange(0)) {
             if (lists & kListProjects) doListProjects();
             if (lists & kListClips)    doListClips();
+            if (lists & kListElements) doListElements();
             listGen_.fetch_add(1);
             continue;
         }
@@ -280,6 +284,11 @@ uint32_t SongEngine::redoSteps() const { return impl_->redoSteps(); }
 uint8_t SongEngine::stretchProgress() const { return impl_->stretchProgress(); }
 bool SongEngine::requestExportLiveSet() { return impl_->requestExportLiveSet(); }
 std::vector<std::string> SongEngine::editReport() { return impl_->editReport(); }
+bool SongEngine::requestOpenElement(const std::string& ref) { return impl_->requestOpenElement(ref); }
+bool SongEngine::requestElements() { return impl_->requestElements(); }
+std::vector<ElementInfo> SongEngine::elements() { return impl_->elements(); }
+bool SongEngine::requestBakeElement() { return impl_->requestBakeElement(); }
+ElementBake SongEngine::bakeResult() { return impl_->bakeResult(); }
 bool SongEngine::clipPeaks(const std::string& file, ClipPeaks& out) { return impl_->clipPeaks(file, out); }
 uint32_t SongEngine::peaksGeneration() const { return impl_->peaksGeneration(); }
 uint32_t SongEngine::framesPerBar() { return impl_->framesPerBar(); }

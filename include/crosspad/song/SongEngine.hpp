@@ -68,6 +68,11 @@ public:
     uint32_t redoSteps() const override;
     bool requestExportLiveSet() override;
     std::vector<std::string> editReport() override;
+    bool requestOpenElement(const std::string& ref) override;
+    bool requestElements() override;
+    std::vector<ElementInfo> elements() override;
+    bool requestBakeElement() override;
+    ElementBake bakeResult() override;
     bool clipPeaks(const std::string& file, ClipPeaks& out) override;
     uint32_t peaksGeneration() const override;
     uint32_t framesPerBar() override;

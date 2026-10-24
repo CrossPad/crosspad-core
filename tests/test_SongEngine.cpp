@@ -2871,3 +2871,254 @@ TEST_CASE("song engine: a new tempo leaves an element clip's bars alone", "[song
     CHECK(r.engine->song().tracks[0].clips[0].bars == 6);
     CHECK(r.engine->song().tracks[1].clips[0].bars == 4);
 }
+
+// ── Elements: open, list, bake ────────────────────────────────────────────
+
+namespace {
+
+const char* const kElementRef = ".elements/E00000001";
+
+/// An element project written straight onto the card, as a song that has
+/// been through the engine would leave it.
+void writeElement(Rig& r, const std::string& ref, const std::string& title,
+                  const std::vector<std::string>& uses, uint32_t length) {
+    AudioSong s;
+    s.dir = r.platform.root + "/" + ref;
+    fs::create_directories(fs::path(s.dir) / AudioSong::clipsDir());
+    s.title = title;
+    s.length = length;
+    s.bpm = 120.0f;
+    for (size_t i = 0; i < uses.size(); ++i) {
+        s.tracks[i].inUse = true;
+        SongClip c;
+        c.element = uses[i];
+        c.file = "B0000000000000001.wav";
+        c.frames = 1000;
+        c.bars = 1;
+        s.addClip((int)i, c);
+    }
+    REQUIRE(s.save());
+}
+
+bool bakeAndWait(Rig& r) {
+    return r.engine->requestBakeElement() &&
+           waitFor([&] { return r.engine->editState() != SongOpState::Busy; }, 10000);
+}
+
+fs::path bakeFile(Rig& r) {
+    return fs::path(r.platform.root) / AudioSong::bakeDir() / r.engine->bakeResult().file;
+}
+
+/// Two constant audio tracks, 2 bars at 120 bpm (88200 frames a bar).
+void twoTracks(Rig& r) {
+    writeClip((r.clipsDir("Song 1") / "a.wav").string(), kRate * 4, 8192);    // a quarter
+    writeClip((r.clipsDir("Song 1") / "b.wav").string(), kRate * 4, 16384);   // a half
+    {
+        std::lock_guard<std::recursive_mutex> l(r.engine->songMutex());
+        AudioSong& s = r.engine->song();
+        s.bpm = 120.0f;
+        s.tracks[0].inUse = s.tracks[1].inUse = true;
+        s.tracks[1].volume = 0.5f;
+        s.addClip(0, {"a.wav", 0, 2});
+        s.addClip(1, {"b.wav", 0, 2});
+    }
+    r.engine->commit();
+}
+
+} // namespace
+
+TEST_CASE("song engine: an element opens without becoming the boot project", "[song][element]") {
+    Rig r;
+    REQUIRE(r.open("Song 1"));
+    CHECK_FALSE(r.engine->requestOpenElement("Song 2"));
+    CHECK_FALSE(r.engine->requestOpenElement(".elements/../x"));
+    REQUIRE(r.engine->requestOpenElement(kElementRef));
+    REQUIRE(waitFor([&] { return r.engine->openState() == SongOpState::Ready; }));
+    {
+        std::lock_guard<std::recursive_mutex> l(r.engine->songMutex());
+        const std::string dir = r.engine->song().dir;
+        const std::string tail = std::string("/") + kElementRef;
+        REQUIRE(dir.size() > tail.size());
+        CHECK(dir.compare(dir.size() - tail.size(), tail.size(), tail) == 0);
+    }
+    CHECK(r.platform.current == "Song 1");
+    CHECK(fs::is_directory(fs::path(r.platform.root) / kElementRef / AudioSong::clipsDir()));
+}
+
+TEST_CASE("song engine: the projects list hides the library folders", "[song][element]") {
+    Rig r;
+    REQUIRE(r.open("Demo"));
+    fs::create_directories(fs::path(r.platform.root) / AudioSong::elementsDir());
+    fs::create_directories(fs::path(r.platform.root) / AudioSong::bakeDir());
+    REQUIRE(r.engine->requestProjects());
+    REQUIRE(waitFor([&] { return !r.engine->projects().empty(); }));
+    CHECK(r.engine->projects() == std::vector<std::string>{"Demo"});
+}
+
+TEST_CASE("song engine: the library lists elements with title, length and what they use", "[song][element]") {
+    Rig r;
+    REQUIRE(r.open("Song 1"));
+    writeElement(r, ".elements/E00000001", "Intro", {}, 4);
+    writeElement(r, ".elements/E00000002", "Verse", {".elements/E00000001", ".elements/E00000001"}, 8);
+    fs::create_directories(fs::path(r.platform.root) / AudioSong::elementsDir() / "not-an-element");
+    const uint32_t gen = r.engine->listGeneration();
+    REQUIRE(r.engine->requestElements());
+    REQUIRE(waitFor([&] { return r.engine->listGeneration() != gen; }));
+    const auto list = r.engine->elements();
+    REQUIRE(list.size() == 2);
+    CHECK(list[0].ref == ".elements/E00000001");
+    CHECK(list[0].title == "Intro");
+    CHECK(list[0].bars == 4);
+    CHECK(list[0].uses.empty());
+    CHECK(list[1].ref == ".elements/E00000002");
+    CHECK(list[1].title == "Verse");
+    CHECK(list[1].bars == 8);
+    CHECK(list[1].uses == std::vector<std::string>{".elements/E00000001"});   // once, however many blocks
+}
+
+TEST_CASE("song engine: a bake mixes every heard track at its volume", "[song][element]") {
+    Rig r;
+    REQUIRE(r.open("Song 1"));
+    twoTracks(r);
+    const SongOpState before = r.engine->editState();
+    REQUIRE(bakeAndWait(r));
+    INFO("report: " << (r.engine->editReport().empty() ? "" : r.engine->editReport()[0]) << " before=" << (int)before);
+    REQUIRE(r.engine->editState() == SongOpState::Ready);
+    const ElementBake bake = r.engine->bakeResult();
+    CHECK_FALSE(bake.cached);
+    CHECK(bake.bars == 2);
+    CHECK(bake.frames == 2 * 2 * kRate);
+    REQUIRE(fs::exists(bakeFile(r)));
+    CHECK(bake.file.size() == 21);                          // B + 16 digits + .wav
+    const auto pcm = readWavData(bakeFile(r).string());
+    REQUIRE(pcm.size() == (size_t)bake.frames * 2);
+    for (size_t i : {size_t(0), size_t(2 * 88200), pcm.size() - 2}) CHECK(std::abs(pcm[i] - 16384) <= 1);
+    {
+        std::lock_guard<std::recursive_mutex> l(r.engine->songMutex());
+        CHECK(r.engine->song().tracks[0].clips.size() == 1);   // the song is as it was
+    }
+    CHECK(r.platform.current == "Song 1");
+}
+
+TEST_CASE("song engine: a silenced track is not in the bake", "[song][element]") {
+    Rig r;
+    REQUIRE(r.open("Song 1"));
+    twoTracks(r);
+    {
+        std::lock_guard<std::recursive_mutex> l(r.engine->songMutex());
+        r.engine->song().tracks[1].muted = true;
+    }
+    r.engine->commit();
+    REQUIRE(bakeAndWait(r));
+    REQUIRE(r.engine->editState() == SongOpState::Ready);
+    const auto pcm = readWavData(bakeFile(r).string());
+    REQUIRE_FALSE(pcm.empty());
+    CHECK(std::abs(pcm[0] - 8192) <= 1);
+}
+
+TEST_CASE("song engine: the same element baked again is found in the cache", "[song][element]") {
+    Rig r;
+    REQUIRE(r.open("Song 1"));
+    twoTracks(r);
+    REQUIRE(bakeAndWait(r));
+    REQUIRE(r.engine->editState() == SongOpState::Ready);
+    const ElementBake first = r.engine->bakeResult();
+    const auto written = fs::last_write_time(bakeFile(r));
+    std::this_thread::sleep_for(std::chrono::milliseconds(20));
+    REQUIRE(bakeAndWait(r));
+    REQUIRE(r.engine->editState() == SongOpState::Ready);
+    const ElementBake again = r.engine->bakeResult();
+    CHECK(again.cached);
+    CHECK(again.file == first.file);
+    CHECK(again.frames == first.frames);
+    CHECK(again.bars == first.bars);
+    CHECK(fs::last_write_time(bakeFile(r)) == written);
+
+    {
+        std::lock_guard<std::recursive_mutex> l(r.engine->songMutex());
+        r.engine->song().tracks[0].volume = 0.5f;
+    }
+    r.engine->commit();
+    REQUIRE(bakeAndWait(r));
+    CHECK_FALSE(r.engine->bakeResult().cached);             // another sound, another bake
+    CHECK(r.engine->bakeResult().file != first.file);
+}
+
+TEST_CASE("song engine: a seq track not frozen refuses the bake", "[song][element]") {
+    Rig r;
+    REQUIRE(r.open("Song 1"));
+    {
+        std::lock_guard<std::recursive_mutex> l(r.engine->songMutex());
+        auto& s = r.engine->song();
+        s.bpm = 120.0f;
+        s.length = 4;
+        REQUIRE(s.addSeqTrack(0, SeqSource::Kit, 0));
+        SeqNote n;
+        n.pad = 1; n.vel = 100;
+        s.putSeqTake(0, 0, makeSeqPattern(1, {n}), s.samplesPerBar(kRate));
+    }
+    r.engine->commit();
+    REQUIRE(bakeAndWait(r));
+    CHECK(r.engine->editState() == SongOpState::Failed);
+    const auto report = r.engine->editReport();
+    REQUIRE_FALSE(report.empty());
+    CHECK(report[0].find("freeze") != std::string::npos);
+    CHECK_FALSE(fs::exists(fs::path(r.platform.root) / AudioSong::bakeDir()));
+}
+
+TEST_CASE("song engine: an armed frozen seq track is baked from its freeze", "[song][element]") {
+    Rig r;
+    REQUIRE(r.open("Song 1"));
+    {
+        std::lock_guard<std::recursive_mutex> l(r.engine->songMutex());
+        auto& s = r.engine->song();
+        s.bpm = 120.0f;
+        s.length = 8;
+        REQUIRE(s.addSeqTrack(0, SeqSource::Kit, 0));
+        SeqNote n;
+        n.pad = 1; n.vel = 100;
+        s.putSeqTake(0, 2, makeSeqPattern(1, {n}), s.samplesPerBar(kRate));
+        s.armed = -1;
+    }
+    r.engine->commit();
+    std::vector<float> out(kBlock * 2), bus(kBlock * 2, 0.25f);
+    REQUIRE(r.engine->freezeTrack(0));
+    for (int i = 0; i < 4000 && r.engine->bounceStatus().state == BounceState::Running; ++i) {
+        r.block(out, bus);
+        std::this_thread::sleep_for(std::chrono::milliseconds(4));
+    }
+    REQUIRE(r.engine->bounceStatus().state == BounceState::Done);
+    const std::string freezeWav = (r.clipsDir("Song 1") / r.engine->bounceStatus().file).string();
+    {
+        std::lock_guard<std::recursive_mutex> l(r.engine->songMutex());
+        r.engine->song().armed = 0;              // armed, it plays live; the bake still has its freeze
+    }
+    r.engine->commit();
+    REQUIRE(bakeAndWait(r));
+    INFO("report: " << (r.engine->editReport().empty() ? "" : r.engine->editReport()[0]));
+    REQUIRE(r.engine->editState() == SongOpState::Ready);
+    const ElementBake bake = r.engine->bakeResult();
+    CHECK(bake.bars == 8);
+    const auto pcm = readWavData(bakeFile(r).string());
+    const auto frozen = readWavData(freezeWav);
+    REQUIRE_FALSE(frozen.empty());
+    REQUIRE(pcm.size() == (size_t)bake.frames * 2);
+    const size_t at = (size_t)2 * r.engine->framesPerBar() * 2;      // bar 3, where the block is
+    CHECK(pcm[at + 2] == frozen[2]);
+    CHECK(pcm[at + 2] != 0);
+}
+
+TEST_CASE("song engine: a bake the card cannot take fails and leaves no part file", "[song][element]") {
+    Rig r;
+    REQUIRE(r.open("Song 1"));
+    twoTracks(r);
+    {
+        std::FILE* f = std::fopen((fs::path(r.platform.root) / AudioSong::bakeDir()).string().c_str(), "wb");
+        REQUIRE(f);
+        std::fclose(f);                      // .bake is a file: nothing can be made in it
+    }
+    REQUIRE(bakeAndWait(r));
+    CHECK(r.engine->editState() == SongOpState::Failed);
+    CHECK_FALSE(r.engine->editReport().empty());
+    CHECK(r.engine->bakeResult().file.empty());
+}

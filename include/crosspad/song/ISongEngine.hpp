@@ -38,6 +38,22 @@ struct ClipInfo {
     uint16_t    bars = 1;
 };
 
+/// An element in the library (ISongEngine::elements()).
+struct ElementInfo {
+    std::string ref;                 ///< ".elements/E%08X", as SongClip::element holds it
+    std::string title;               ///< AudioSong::title; empty until it is named
+    uint16_t    bars = 0;            ///< its length, AudioSong::playEnd()
+    std::vector<std::string> uses;   ///< the elements its own blocks play, each once
+};
+
+/// A bake of the open song (ISongEngine::requestBakeElement()).
+struct ElementBake {
+    std::string file;                ///< name inside the songs root's .bake/
+    uint32_t    frames = 0;          ///< one pass, at the song's tempo
+    uint16_t    bars = 0;
+    bool        cached = false;      ///< found on the card, not written by this request
+};
+
 /// A clip's waveform, for drawing it: the loudest sample of each run of
 /// @c hop frames, either channel, 0..255 of full scale. Empty when the file
 /// is not a WAV the engine plays.
@@ -110,6 +126,23 @@ public:
     /// remembered across boots.
     virtual bool requestOpen(const std::string& name) = 0;
     virtual SongOpState openState() const = 0;
+    /// Open the element at @p ref (".elements/E%08X") as the song, creating its
+    /// folder when missing. Not remembered as the project to open at boot: a
+    /// restart inside an element opens the song it was reached from.
+    virtual bool requestOpenElement(const std::string& ref) { (void)ref; return false; }
+    /// Refresh elements(); listGeneration() moves when done.
+    virtual bool requestElements() { return false; }
+    /// Every element in the library: its title, its length (playEnd) and the
+    /// element refs its own blocks use (for the cycle check), sorted by ref.
+    virtual std::vector<ElementInfo> elements() { return {}; }
+    /// Mix the open song down to its bake in the cache: every track that is
+    /// heard, seq tracks from their freeze (armed or not), [0, playEnd). An
+    /// edit: editState()/editProgress(); Failed with editReport() naming why
+    /// when a seq track is not frozen or a stretched block is not fitted yet.
+    /// A bake already in the cache is found, not written (ElementBake::cached).
+    virtual bool requestBakeElement() { return false; }
+    /// The last bake request's result; empty after one that failed.
+    virtual ElementBake bakeResult() { return {}; }
     /// The open project. Read or edit it holding songMutex().
     virtual AudioSong& song() = 0;
     virtual std::recursive_mutex& songMutex() = 0;

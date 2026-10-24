@@ -13,11 +13,23 @@ std::vector<std::string> SongEngine::Impl::projects() {
 }
 
 bool SongEngine::Impl::requestOpen(const std::string& name) {
-    if (!valid_name(name) || !ensureWorker()) return false;
+    return valid_name(name) && askToOpen(name, true);
+}
+
+/// An element is a project under the songs root like any other, one level
+/// further down, and is never the one a boot opens: the song it was reached
+/// from is, so a restart inside an element loses nothing.
+bool SongEngine::Impl::requestOpenElement(const std::string& ref) {
+    return is_element_ref(ref) && askToOpen(ref, false);
+}
+
+bool SongEngine::Impl::askToOpen(const std::string& name, bool remember) {
+    if (!ensureWorker()) return false;
     yieldFreeze();          // or the open waits out the whole freeze
     {
         std::lock_guard<std::recursive_mutex> l(songMutex_);
         openName_ = name;
+        openRemember_ = remember;
     }
     openState_.store(SongOpState::Busy);
     openReq_.store(true);
@@ -130,6 +142,11 @@ std::vector<ClipInfo> SongEngine::Impl::clips() {
     return clips_;
 }
 
+std::vector<ElementInfo> SongEngine::Impl::elements() {
+    std::lock_guard<std::mutex> l(listMutex_);
+    return elements_;
+}
+
 /// Worker: project folders under the songs root.
 void SongEngine::Impl::doListProjects() {
     std::vector<std::string> out;
@@ -188,7 +205,7 @@ void SongEngine::Impl::doListClips() {
 /// it. Read into a copy first, outside songMutex_, so the UI's timers are
 /// not held out by the card; a song that cannot be read is not opened, and
 /// the one open stays -- nothing then saves an empty song over it.
-SongOpState SongEngine::Impl::doOpen(const std::string& name) {
+SongOpState SongEngine::Impl::doOpen(const std::string& name, bool remember) {
     if (!p.storageReady()) return SongOpState::Failed;
     /* The song open now has its last edits written first: a save waits
      * kSaveDelayMs after a commit, and the song it would have written is
@@ -198,7 +215,11 @@ SongOpState SongEngine::Impl::doOpen(const std::string& name) {
     if (saveReq_.exchange(false)) doSave();
     const std::string root = p.songsRoot();
     const std::string dir = root + "/" + name;
-    if (!fsx::makeDir(root) || !fsx::makeDir(dir) || !fsx::makeDir(dir + "/" + AudioSong::clipsDir())) {
+    /* An element's folder is two down: the library's, then its own. */
+    const size_t slash = name.find('/');
+    if (!fsx::makeDir(root) ||
+        (slash != std::string::npos && !fsx::makeDir(root + "/" + name.substr(0, slash))) ||
+        !fsx::makeDir(dir) || !fsx::makeDir(dir + "/" + AudioSong::clipsDir())) {
         return SongOpState::Failed;
     }
     AudioSong fresh;
@@ -226,7 +247,7 @@ SongOpState SongEngine::Impl::doOpen(const std::string& name) {
         rebuild();
     }
     opened_ = true;
-    p.saveCurrent(name);
+    if (remember) p.saveCurrent(name);
     {
         std::lock_guard<std::recursive_mutex> l(songMutex_);
         p.songOpened(song_);
