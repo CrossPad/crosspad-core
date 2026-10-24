@@ -196,6 +196,12 @@ public:
     bool    getCountIn() const     { return engine_ && engine_->countIn(); }
     uint8_t getCountInLeft() const { return engine_ ? engine_->countInLeft() : 0; }
     uint8_t getCountInBeats() const { return engine_ ? engine_->countInBeats() : 0; }
+    void    setCountInBars(uint8_t bars) { if (engine_) engine_->setCountInBars(bars); }
+    uint8_t getCountInBars() const { return engine_ ? engine_->countInBars() : 1; }
+    void    setClickLevel(float level)   { if (engine_) engine_->setClickLevel(level); }
+    float   getClickLevel() const        { return engine_ ? engine_->clickLevel() : 0.0f; }
+    void    setClickDivision(uint8_t d)  { if (engine_) engine_->setClickDivision(d); }
+    uint8_t getClickDivision() const     { return engine_ ? engine_->clickDivision() : 1; }
     void    setSwing(uint8_t pct)   { if (engine_) engine_->setSwing(pct); }
     uint8_t getSwing() const        { return engine_ ? engine_->swing() : 0; }
     void    setSwingPerBeat(uint8_t n) { if (engine_) engine_->setSwingPerBeat(n); }

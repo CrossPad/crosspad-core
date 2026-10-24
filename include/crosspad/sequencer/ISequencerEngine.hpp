@@ -31,6 +31,10 @@ public:
     virtual uint8_t countInBeats() const { return 0; }
     /// Beats of count-in still to go, 0 when not counting in.
     virtual uint8_t countInLeft() const { return 0; }
+    /// Bars the count-in lasts when it is on, 1 or 2. Kept while it is off,
+    /// so turning it back on counts as long as before.
+    virtual void    setCountInBars(uint8_t bars) { (void)bars; }
+    virtual uint8_t countInBars() const { return 1; }
 
     // --- Swing ---
     /// How hard every second subdivision is pushed late, 0..100.
@@ -144,6 +148,12 @@ public:
     virtual float getClickBpm() const = 0;
     /// Index of the current beat in the bar.
     virtual int getClickPos() const = 0;
+    /// How loud the click is, 0..1.
+    virtual void  setClickLevel(float level) { (void)level; }
+    virtual float clickLevel() const { return 0.0f; }
+    /// Clicks a beat: 1, 2 or 4 (MetronomeNode::setDivision).
+    virtual void    setClickDivision(uint8_t div) { (void)div; }
+    virtual uint8_t clickDivision() const { return 1; }
 };
 
 } // namespace crosspad

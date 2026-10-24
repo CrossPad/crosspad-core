@@ -197,5 +197,16 @@ void  transportSetTempoFromHost(bool host);
 bool  transportClick();
 /// Turn the metronome on or off.
 void  transportSetClick(bool on);
+/// How loud the click is, 0..1 (0 before a sequencer is published).
+float transportClickLevel();
+void  transportSetClickLevel(float level);
+/// Clicks a beat: 1 quarters, 2 eighths, 4 sixteenths; the ones between the
+/// beats are quieter. 1 before a sequencer is published.
+uint8_t transportClickDivision();
+void    transportSetClickDivision(uint8_t div);
+/// The count-in before a take started from a stop, in bars: 0 off, 1 or 2.
+/// Off keeps the length, so the Sequencer's PRE turns the same one back on.
+uint8_t transportCountInBars();
+void    transportSetCountInBars(uint8_t bars);
 
 } // namespace crosspad

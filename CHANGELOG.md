@@ -6,6 +6,26 @@ carries the same number) and consumers gate on it with
 `crosspad/RequireVersion.hpp`. This file starts at 1.45.0; earlier releases
 are described in their `chore: X.Y.Z` commits.
 
+## 2.17.0 — 2026-10-24
+
+The metronome's options: how loud, how dense, how long the count-in.
+
+### Added
+
+- `MetronomeNode::setDivision()` / `division()`: 1, 2 or 4 clicks a beat;
+  the clicks between the beats play at `kSubdivisionGain`, on the first
+  sample of each subdivision (no tick a few samples before a beat that does
+  not divide evenly). `MetronomeNode::level()` reads `setLevel()` back.
+- `ISequencerEngine::setCountInBars()` / `countInBars()` (1 or 2, default 1,
+  `PatternSequencer::kMaxCountInBars`): `countInBeats()` is that many bars of
+  the metre; the length is kept while the count-in is off.
+  `setClickLevel()` / `clickLevel()`, `setClickDivision()` /
+  `clickDivision()` forward to the clock; `SequencerController` forwards all
+  six.
+- `transportClickLevel()`, `transportClickDivision()`,
+  `transportCountInBars()` (0 = off) and their setters, for the top bar's
+  metronome options.
+
 ## 2.16.1 — 2026-10-24
 
 ### Fixed

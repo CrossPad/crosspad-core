@@ -126,14 +126,20 @@ public:
     /// What a take is being snapped to, or Off. For the UI and tests.
     Quantization quantization() const { return quant_; }
     void setLoop(bool loop) override { loop_ = loop; }
-    /// Any pre-length turns the count-in on: it is always one bar of the
-    /// metre the click is in, whatever length the caller had in mind.
+    /// Any pre-length turns the count-in on: it is whole bars of the metre
+    /// the click is in (countInBars()), whatever length the caller had in mind.
     void setPreLen(uint8_t len) override { setCountIn(len > 0); }
     void setCountIn(bool on) override { countIn_.store(on, std::memory_order_relaxed); }
     bool countIn() const override { return countIn_.load(std::memory_order_relaxed); }
-    uint8_t countInBeats() const override {
-        return countIn() && clock_ ? clock_->beatsPerBar() : 0;   // a bar of it
+    void setCountInBars(uint8_t bars) override {
+        countInBars_.store(bars >= kMaxCountInBars ? kMaxCountInBars : (bars ? bars : 1),
+                           std::memory_order_relaxed);
     }
+    uint8_t countInBars() const override { return countInBars_.load(std::memory_order_relaxed); }
+    uint8_t countInBeats() const override {
+        return countIn() && clock_ ? (uint8_t)(clock_->beatsPerBar() * countInBars()) : 0;
+    }
+    static constexpr uint8_t kMaxCountInBars = 2;
 
     void setSwing(uint8_t percent) override {
         swing_.store(percent > kMaxSwing ? kMaxSwing : percent, std::memory_order_relaxed);
@@ -248,6 +254,10 @@ public:
     void resetClick() override { if (clock_) clock_->resetPosition(); }
     float getClickBpm() const override { return clock_ ? clock_->bpm() : 120.0f; }
     int getClickPos() const override { return clock_ ? (int)clock_->currentBeat() : 0; }
+    void setClickLevel(float level) override { if (clock_) clock_->setLevel(level); }
+    float clickLevel() const override { return clock_ ? clock_->level() : 0.0f; }
+    void setClickDivision(uint8_t div) override { if (clock_) clock_->setDivision(div); }
+    uint8_t clickDivision() const override { return clock_ ? clock_->division() : 1; }
 
     // ── State, for the UI and HIL ─────────────────────────────────────────
 
@@ -503,6 +513,7 @@ private:
     uint8_t  activeSeq_  = 0;
     uint8_t  pendingSeq_ = 0;
     std::atomic<bool> countIn_{false};
+    std::atomic<uint8_t> countInBars_{1};
     std::atomic<uint8_t> swing_{0};          ///< percent of a subdivision, 0 = straight
     std::atomic<uint8_t> swingPerBeat_{2};   ///< 2 = eighths, 4 = sixteenths
     bool     loop_       = true;

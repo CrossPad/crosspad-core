@@ -170,6 +170,42 @@ void transportSetClick(bool on)
     if (SequencerController* seq = getPlatformServices().sequencer) seq->setClickActive(on);
 }
 
+float transportClickLevel()
+{
+    SequencerController* seq = getPlatformServices().sequencer;
+    return seq ? seq->getClickLevel() : 0.0f;
+}
+
+void transportSetClickLevel(float level)
+{
+    if (SequencerController* seq = getPlatformServices().sequencer) seq->setClickLevel(level);
+}
+
+uint8_t transportClickDivision()
+{
+    SequencerController* seq = getPlatformServices().sequencer;
+    return seq ? seq->getClickDivision() : 1;
+}
+
+void transportSetClickDivision(uint8_t div)
+{
+    if (SequencerController* seq = getPlatformServices().sequencer) seq->setClickDivision(div);
+}
+
+uint8_t transportCountInBars()
+{
+    SequencerController* seq = getPlatformServices().sequencer;
+    return seq && seq->getCountIn() ? seq->getCountInBars() : 0;
+}
+
+void transportSetCountInBars(uint8_t bars)
+{
+    SequencerController* seq = getPlatformServices().sequencer;
+    if (!seq) return;
+    if (bars) seq->setCountInBars(bars);
+    seq->setCountIn(bars != 0);
+}
+
 const char* transportName()
 {
     ITransportTarget* t = transportTarget();
