@@ -6,6 +6,17 @@ carries the same number) and consumers gate on it with
 `crosspad/RequireVersion.hpp`. This file starts at 1.45.0; earlier releases
 are described in their `chore: X.Y.Z` commits.
 
+## 2.19.0 — 2026-10-24
+
+### Added
+
+- `ArrangeAudioTake` round a loop: with LOOP on, the take is cut into its
+  passes and every complete one is imported as a clip of its own, in turn --
+  the last is on the track, the others are in the song's clips. The first
+  pass runs from the bar the take went in at to the loop's end, each after
+  it the whole loop (the region, or the whole song); what was sung after the
+  last complete pass is dropped. `Result::passes` says how many.
+
 ## 2.18.0 — 2026-10-24
 
 Arrange records audio itself: REC onto an armed audio track takes its input

@@ -2709,3 +2709,51 @@ TEST_CASE("Arrange REC refuses an input that cannot record, and records nothing"
     CHECK_FALSE(arrangeAudioTake().lastError().empty());
     CHECK(tools.calls.empty());
 }
+
+TEST_CASE("Arrange REC round a loop keeps every complete pass as a clip, the last on the track", "[song][audiotake]") {
+    Rig r;
+    REQUIRE(r.open("Demo"));
+    placeClip(r, "beat.wav", 500, 0, 0, 4);
+    {
+        std::lock_guard<std::recursive_mutex> l(r.engine->songMutex());
+        AudioSong& s = r.engine->song();
+        s.loop = true;
+        s.loopStart = 1;
+        s.loopEnd = 3;                                  // round bars 2 and 3
+        REQUIRE(s.addAudioTrack(1));
+        s.armed = 1;
+    }
+    r.engine->commit();
+    const uint32_t bar = r.engine->framesPerBar();
+    FakeTools tools;
+    tools.takeFile = (r.dir / "rec_003.wav").string();
+    /* In at bar 2 (0-based 1): a pass to the loop's end (2 bars), a second
+     * whole loop, then half of a third, which is not kept. */
+    tools.takeFrames = bar * 2 + bar * 2 + bar;
+    tools.syncBar = 1;
+    writeRamp(tools.takeFile, tools.takeFrames);
+    Services svc(r.engine.get(), &tools);
+
+    SongTransport& tr = songTransport();
+    tr.setStartBar(1);
+    tr.record();
+    REQUIRE(arrangeAudioTake().recording());
+    tr.record();
+    const auto res = landTake();
+    REQUIRE(res.ok);
+    CHECK(res.passes == 2);
+    CHECK(res.bar == 1);
+    std::lock_guard<std::recursive_mutex> l(r.engine->songMutex());
+    const auto& cs = r.engine->song().tracks[1].clips;
+    REQUIRE(cs.size() == 1);                            // the last pass, over the first
+    CHECK(cs[0].bar == 1);
+    CHECK(cs[0].bars == 2);
+    CHECK(cs[0].file == "rec_003_2.wav");
+    /* Both passes are clips of their own, each one loop long, the second
+     * starting where the first ended in the take. */
+    const auto first = readWavData((r.clipsDir("Demo") / "rec_003.wav").string());
+    const auto second = readWavData((r.clipsDir("Demo") / "rec_003_2.wav").string());
+    REQUIRE(first.size() == (size_t)bar * 2 * 2);
+    REQUIRE(second.size() == (size_t)bar * 2 * 2);
+    CHECK(second.front() == int16_t((bar * 2) % 30000));
+}
