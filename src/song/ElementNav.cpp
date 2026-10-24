@@ -19,6 +19,10 @@ namespace {
 constexpr uint32_t kRefusalPolls = 200;
 /// Tempos closer than this are the same one.
 constexpr float kTempoEpsilon = 0.01f;
+
+/// The tempo a song plays at: a song never given one stores 0 and plays at the
+/// grid's default, which is what an element is fitted to and requestTempo can set.
+float effectiveBpm(const AudioSong& s) { return s.bpm > 0.0f ? s.bpm : AudioSong::kDefaultBpm; }
 /// Polls the fitting of stretched blocks may go without one more done before
 /// the leave is given up: the card is gone, or the worker is.
 constexpr uint32_t kStretchStallPolls = 2400;
@@ -128,7 +132,7 @@ bool ElementNav::startEnter(const std::string& ref, int track, uint32_t bar, Job
     syncRoot();
     {
         std::lock_guard<std::recursive_mutex> l(se->songMutex());
-        parentBpm_ = se->song().bpm;
+        parentBpm_ = effectiveBpm(se->song());
     }
     ref_ = ref;
     level_ = Level{ref, {}, track, bar};
@@ -325,7 +329,7 @@ ElementNav::Result ElementNav::opened()
     {
         std::lock_guard<std::recursive_mutex> l(se->songMutex());
         level_.title = se->song().title;
-        apart = std::fabs(se->song().bpm - parentBpm_) > kTempoEpsilon;
+        apart = std::fabs(effectiveBpm(se->song()) - parentBpm_) > kTempoEpsilon;
         /* A recording keeps to the song's tempo, not the one it was made at. */
         if (apart) {
             for (SongTrack& t : se->song().tracks)

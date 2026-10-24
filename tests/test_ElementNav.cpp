@@ -464,3 +464,26 @@ TEST_CASE("element nav: a leave whose audio is never fitted gives up and stays i
     CHECK(elementNav().depth() == 1);
     CHECK(openName(r) == kA);
 }
+
+TEST_CASE("element nav: a song never given a tempo is entered at the default one", "[element][nav]") {
+    Rig r;
+    Services svc(r.engine.get(), nullptr);
+    NavGuard guard;
+    writeAudioElement(r, kB, "Hat", 2, 90.0f);
+    REQUIRE(r.open("Demo"));
+    {
+        std::lock_guard<std::recursive_mutex> l(r.engine->songMutex());
+        r.engine->song().bpm = 0.0f;
+    }
+    r.engine->commit();
+    REQUIRE(listElements(r));
+    REQUIRE(elementNav().insertExisting(2, 0, kB));
+    const auto out = runNav();
+    INFO("error: " << out.error);
+    REQUIRE(out.ok);
+    const SongClip c = clipOf(r, 2);
+    CHECK(c.element == kB);
+    CHECK_FALSE(c.file.empty());
+    CHECK(c.frames == 2 * kBarFrames);                       // two bars at 120, not at 90
+    CHECK(fs::exists(bakeOf(r, c.file)));
+}
