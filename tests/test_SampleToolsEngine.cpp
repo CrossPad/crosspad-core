@@ -461,6 +461,46 @@ TEST_CASE("SampleToolsEngine records the selected input to a take", "[sampletool
     CHECK_FALSE(r.tools->wantsCodec(1));
 }
 
+TEST_CASE("SampleToolsEngine records the mics and the line-in summed, both ADCs held", "[sampletools]") {
+    Rig r;
+    REQUIRE(r.tools->selectInput(RecInput::MicLine));
+    CHECK(r.platform.claims == std::vector<int>{0, 1});
+    CHECK(r.tools->wantsCodec(0));
+    CHECK(r.tools->wantsCodec(1));
+
+    REQUIRE(r.tools->startRecording());
+    REQUIRE(waitFor([&] { return !r.tools->recStatus().file.empty(); }));
+    std::this_thread::sleep_for(std::chrono::milliseconds(50));   // armed just after the file is named
+    std::vector<int16_t> mics(kBlock * 2, 1000), line(kBlock * 2, 234), loud(kBlock * 2, 30000);
+    constexpr int kBlocks = 20;
+    for (int b = 0; b < kBlocks; ++b) {
+        r.tools->rtBlockBegin();
+        r.tools->rtInput(0, b == kBlocks - 1 ? loud.data() : mics.data(), kBlock);
+        r.tools->rtInput(1, b == kBlocks - 1 ? loud.data() : line.data(), kBlock);
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    /* A block whose line-in was never read: the mics alone, at the next block. */
+    r.tools->rtBlockBegin();
+    r.tools->rtInput(0, mics.data(), kBlock);
+    r.tools->rtBlockBegin();
+    std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    r.tools->stopRecording();
+    REQUIRE(waitFor([&] { return !r.tools->recStatus().recording; }));
+    const RecStatus st = r.tools->recStatus();
+    CHECK(st.error.empty());
+    CHECK(st.frames == (kBlocks + 1) * kBlock);
+    const auto pcm = readWavData(st.file);
+    REQUIRE(pcm.size() == (size_t)(kBlocks + 1) * kBlock * 2);
+    const size_t blk = kBlock * 2;
+    CHECK(std::all_of(pcm.begin(), pcm.begin() + (long)((kBlocks - 1) * blk), [](int16_t v) { return v == 1234; }));
+    CHECK(std::all_of(pcm.begin() + (long)((kBlocks - 1) * blk), pcm.begin() + (long)(kBlocks * blk),
+                      [](int16_t v) { return v == 32767; }));     // clipped, not wrapped
+    CHECK(std::all_of(pcm.begin() + (long)(kBlocks * blk), pcm.end(), [](int16_t v) { return v == 1000; }));
+
+    r.tools->releaseInput();
+    CHECK(r.platform.claims == std::vector<int>{0, 1, -1, -2});
+}
+
 TEST_CASE("SampleToolsEngine records the pads bus, clipped to int16", "[sampletools]") {
     Rig r;
     REQUIRE(r.tools->selectInput(RecInput::Pads));

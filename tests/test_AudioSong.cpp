@@ -903,3 +903,29 @@ TEST_CASE("AudioSong: the song's kit and instrument survive a save, and a Pitch 
     CHECK(b.instrument.empty());
     fs::remove_all(d);
 }
+
+TEST_CASE("AudioSong: an audio track keeps its input and can be armed", "[song][tracks][input]") {
+    const auto d = freshProject("cp_song_input");
+    AudioSong a;
+    a.dir = d;
+    REQUIRE(a.addAudioTrack(0));
+    REQUIRE(a.addAudioTrack(1));
+    REQUIRE(a.addSeqTrack(2, SeqSource::Kit, 0));
+    CHECK(a.tracks[0].input == RecInput::Mic);              // the default
+    a.tracks[1].input = RecInput::MicLine;
+    a.armed = 1;
+    CHECK(a.armedAudioTrack() == 1);
+    CHECK(a.armedSeqTrack() == 2);                          // the seq takes still find their track
+    REQUIRE(a.save());
+
+    AudioSong b;
+    REQUIRE(b.load(d) == SongLoad::Loaded);
+    CHECK(b.tracks[0].input == RecInput::Mic);
+    CHECK(b.tracks[1].input == RecInput::MicLine);
+    CHECK(b.armedAudioTrack() == 1);
+    b.armed = 2;
+    CHECK(b.armedAudioTrack() == -1);                       // a seq track is no audio track
+    b.armed = 3;
+    CHECK(b.armedAudioTrack() == -1);                       // nor is one nobody made
+    fs::remove_all(d);
+}

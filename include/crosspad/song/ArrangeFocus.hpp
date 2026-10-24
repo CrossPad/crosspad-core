@@ -9,9 +9,10 @@ namespace crosspad {
 
 /// Which Arrange track the screen now open is filling.
 ///
-/// Arrange is where a song starts: choosing AUDIO on a new track
-/// opens the Recorder to record into it, choosing SEQ opens the sequencer on
-/// that track's scene, and a seq track's EDIT opens the Sampler or Pitch Play
+/// Arrange is where a song starts, and some of its work is done on another
+/// screen: CLIP EDIT opens an audio block in the Recorder and a seq block in
+/// the sequencer on that track's scene, a Pitch track with no instrument
+/// opens Pitch Play, and a seq track's EDIT opens the Sampler or Pitch Play
 /// on the sound it plays. Each of those screens is the app that already does
 /// that job -- they only need to know, while they are up, which track sent
 /// them and how to get back.

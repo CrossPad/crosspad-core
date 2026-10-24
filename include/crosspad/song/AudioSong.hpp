@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
 
+#include "crosspad/sampletools/RecInput.hpp"
+
 #include <cstdint>
 #include <memory>
 #include <string>
@@ -151,6 +153,9 @@ struct SongTrack {
     /// stretched or repitched (SongEngine renders it while stopped; until then
     /// the block plays as recorded). Off, a block keeps its speed, as always.
     StretchMode stretch = StretchMode::Off;
+    /// An audio track's input: what a REC in Arrange records into it while
+    /// it is armed (ArrangeAudioTake).
+    RecInput  input = RecInput::Mic;
     /// A Kit seq track's own kit (a kit.json as the kit list names it), played
     /// through the second kit engine. Empty, the track plays the song's kit
     /// (AudioSong::kit) through the pads' -- which the first kit track does.
@@ -226,9 +231,11 @@ public:
     /// say what is loaded, not how the song is arranged.
     std::string kit;
     std::string instrument;
-    /// The seq track REC and DUB take onto, and whose kit the pads play in
-    /// Arrange (Arrange's ARM); -1, or a track that is no seq, is the first
-    /// seq track (armedSeqTrack()). Not part of undo, as the sounds are not.
+    /// The track REC takes onto (Arrange's ARM): a seq track's pads, whose
+    /// kit the pads then play in Arrange, or an audio track's input
+    /// (armedAudioTrack()). For the seq takes -1, or a track that is no seq,
+    /// is the first seq track (armedSeqTrack()). Not part of undo, as the
+    /// sounds are not.
     int8_t      armed = -1;
     /// The loop region, in bars, [loopStart, loopEnd): with loop on, playback
     /// goes round it instead of the whole song. loopEnd <= loopStart = none.
@@ -299,6 +306,8 @@ public:
     /// The track @c armed names when it is a seq track in use, else the first
     /// seq track, else -1.
     int armedSeqTrack() const;
+    /// The track @c armed names when it is an audio track in use, else -1.
+    int armedAudioTrack() const;
     /// Some track is soloed.
     bool anySolo() const;
     /// The seq track in use plays Pitch Play's instrument.

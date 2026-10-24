@@ -7,7 +7,11 @@
 #include "crosspad/audio/WavWriter.hpp"
 #include "crosspad/sequencer/MetronomeNode.hpp"
 #include "crosspad/sequencer/PatternSequencer.hpp"
+#include "crosspad/platform/PlatformServices.hpp"
+#include "crosspad/sampletools/ISampleTools.hpp"
+#include "crosspad/song/ArrangeAudioTake.hpp"
 #include "crosspad/song/SongEngine.hpp"
+#include "crosspad/transport/SongTransport.hpp"
 
 #include <algorithm>
 #include <atomic>
@@ -2531,4 +2535,177 @@ TEST_CASE("song engine: the platform hears every song that opens, with the kit i
     CHECK(r.platform.openedKits[0] == "Demo:");
     CHECK(r.platform.openedKits[1] == "Other:");
     CHECK(r.platform.openedKits[2] == "Demo:/crosspad/kits/X/kit.json");
+}
+
+// ── Arrange's REC onto an audio track ─────────────────────────────────────
+
+namespace {
+
+/// The sample tools as ArrangeAudioTake sees them: what was asked, and a
+/// take that "records" by naming a WAV written beforehand.
+struct FakeTools final : ISampleTools {
+    RecInput    in = RecInput::Mic;
+    bool        usb = false;
+    std::vector<std::string> calls;
+    RecStatus   st;
+    std::string takeFile;
+    uint32_t    takeFrames = 0;
+    uint32_t    syncBar = 0;     // where a take with the song says it went in
+
+    bool selectInput(RecInput i) override { in = i; calls.push_back("select " + std::to_string((int)i)); return true; }
+    RecInput input() const override { return in; }
+    bool inputAvailable(RecInput i) const override { return i != RecInput::Usb || usb; }
+    void peaks(float& l, float& r) override { l = r = 0; }
+    bool startRecording() override { calls.push_back("start"); st = RecStatus{}; st.recording = true; return true; }
+    bool startRecordingWithSong(uint32_t bar) override { return startRecordingWithSong(bar, 0); }
+    bool startRecordingWithSong(uint32_t bar, uint8_t beats) override {
+        calls.push_back("start song " + std::to_string(bar) + " " + std::to_string(beats));
+        st = RecStatus{};
+        st.recording = true;
+        st.withSong = true;
+        st.fromBar = syncBar;
+        return true;
+    }
+    void stopRecording() override {
+        calls.push_back("stop");
+        st.recording = false;
+        st.file = takeFile;
+        st.frames = takeFrames;
+    }
+    RecStatus recStatus() override { return st; }
+    void releaseInput() override { calls.push_back("release"); }
+    bool requestRecordings() override { return false; }
+    std::vector<std::string> recordings() override { return {}; }
+    bool requestOverview(const std::string&, uint32_t, uint32_t, uint16_t) override { return false; }
+    WaveOverview overview() override { return {}; }
+    bool requestSaveRegion(const std::string&, uint32_t, uint32_t) override { return false; }
+    bool requestExportKit(const SliceKit&) override { return false; }
+    ToolJob job() const override { return ToolJob::Idle; }
+    std::string jobResult() override { return {}; }
+    uint8_t jobProgress() const override { return 0; }
+    bool preview(const std::string&, uint32_t, uint32_t, bool) override { return false; }
+    void stopPreview() override {}
+    bool previewing() const override { return false; }
+    uint32_t previewFrame() const override { return 0; }
+    void setHandoff(const std::string&, uint32_t, uint32_t) override {}
+    bool takeHandoff(std::string&, uint32_t&, uint32_t&) override { return false; }
+};
+
+/// The song engine and the tools as the board's services, put back after.
+struct Services {
+    ISongEngine* se;
+    ISampleTools* st;
+    Services(ISongEngine* e, ISampleTools* t) : se(getPlatformServices().songEngine), st(getPlatformServices().sampleTools) {
+        getPlatformServices().songEngine = e;
+        getPlatformServices().sampleTools = t;
+    }
+    ~Services() {
+        getPlatformServices().songEngine = se;
+        getPlatformServices().sampleTools = st;
+    }
+};
+
+ArrangeAudioTake::Result landTake() {
+    ArrangeAudioTake::Result res;
+    waitFor([&] { res = arrangeAudioTake().poll(); return res.done; }, 10000);
+    return res;
+}
+
+} // namespace
+
+TEST_CASE("Arrange REC on an armed audio track records its input and lays the take on it", "[song][audiotake]") {
+    Rig r;
+    REQUIRE(r.open("Demo"));
+    placeClip(r, "beat.wav", 500, 0, 0, 4);           // a beat to sing over
+    {
+        std::lock_guard<std::recursive_mutex> l(r.engine->songMutex());
+        AudioSong& s = r.engine->song();
+        REQUIRE(s.addAudioTrack(1));
+        s.tracks[1].input = RecInput::MicLine;
+        s.armed = 1;
+    }
+    r.engine->commit();
+    FakeTools tools;
+    tools.takeFile = (r.dir / "rec_001.wav").string();
+    tools.takeFrames = kRate * 3;
+    writeRamp(tools.takeFile, tools.takeFrames);
+    tools.syncBar = 2;
+    Services svc(r.engine.get(), &tools);
+
+    SongTransport& tr = songTransport();
+    tr.setStartBar(2);
+    CHECK((tr.caps() & kTransportCanRecord) != 0);
+    CHECK((tr.caps() & kTransportCanOverdub) == 0);    // nothing to dub onto audio
+    tr.record();
+    REQUIRE(arrangeAudioTake().recording());
+    CHECK(arrangeAudioTake().track() == 1);
+    CHECK(tr.state() == TransportState::Recording);
+    CHECK(tools.calls == std::vector<std::string>{"select " + std::to_string((int)RecInput::MicLine), "start song 2 0"});
+    tr.overdub();                                      // ignored
+    CHECK(arrangeAudioTake().recording());
+
+    tr.record();                                       // REC again ends it
+    CHECK_FALSE(arrangeAudioTake().recording());
+    const auto res = landTake();
+    REQUIRE(res.done);
+    CHECK(res.ok);
+    CHECK(res.track == 1);
+    CHECK(res.bar == 2);
+    CHECK(tools.calls.back() == "release");
+    std::lock_guard<std::recursive_mutex> l(r.engine->songMutex());
+    const auto& cs = r.engine->song().tracks[1].clips;
+    REQUIRE(cs.size() == 1);
+    CHECK(cs[0].file == "rec_001.wav");
+    CHECK(cs[0].bar == 2);
+    CHECK(cs[0].bars == 2);                            // 3 s at 2 s a bar
+    CHECK(fs::exists(r.clipsDir("Demo") / "rec_001.wav"));
+}
+
+TEST_CASE("Arrange REC into an empty song records on its own from the playhead's bar", "[song][audiotake]") {
+    Rig r;
+    REQUIRE(r.open("Demo"));
+    {
+        std::lock_guard<std::recursive_mutex> l(r.engine->songMutex());
+        AudioSong& s = r.engine->song();
+        s.bpm = 120.0f;
+        REQUIRE(s.addAudioTrack(0));
+        s.armed = 0;
+    }
+    r.engine->commit();
+    FakeTools tools;
+    tools.takeFile = (r.dir / "rec_002.wav").string();
+    tools.takeFrames = kRate;
+    writeRamp(tools.takeFile, tools.takeFrames);
+    Services svc(r.engine.get(), &tools);
+
+    SongTransport& tr = songTransport();
+    tr.setStartBar(3);
+    tr.record();
+    REQUIRE(arrangeAudioTake().recording());
+    CHECK(tools.calls.back() == "start");               // nothing to line up with
+    tr.stop();                                          // STOP ends it too
+    const auto res = landTake();
+    REQUIRE(res.ok);
+    CHECK(res.bar == 3);
+    std::lock_guard<std::recursive_mutex> l(r.engine->songMutex());
+    REQUIRE(r.engine->song().tracks[0].clips.size() == 1);
+    CHECK(r.engine->song().tracks[0].clips[0].bar == 3);
+}
+
+TEST_CASE("Arrange REC refuses an input that cannot record, and records nothing", "[song][audiotake]") {
+    Rig r;
+    REQUIRE(r.open("Demo"));
+    {
+        std::lock_guard<std::recursive_mutex> l(r.engine->songMutex());
+        AudioSong& s = r.engine->song();
+        REQUIRE(s.addAudioTrack(0));
+        s.tracks[0].input = RecInput::Usb;
+        s.armed = 0;
+    }
+    FakeTools tools;
+    Services svc(r.engine.get(), &tools);
+    songTransport().record();
+    CHECK_FALSE(arrangeAudioTake().recording());
+    CHECK_FALSE(arrangeAudioTake().lastError().empty());
+    CHECK(tools.calls.empty());
 }

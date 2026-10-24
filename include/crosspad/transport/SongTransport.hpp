@@ -3,6 +3,7 @@
 
 #include "crosspad/platform/PlatformServices.hpp"
 #include "crosspad/sequencer/SequencerController.hpp"
+#include "crosspad/song/ArrangeAudioTake.hpp"
 #include "crosspad/song/ISongEngine.hpp"
 #include "crosspad/transport/Transport.hpp"
 
@@ -25,6 +26,11 @@
  * start (ISongEngine::recordSeq): a REC is a block of its own notes there, as
  * many bars as it ran; a DUB adds to the blocks it plays over. Pressed while
  * the song plays they punch in, pressed again they punch out.
+ *
+ * With an audio track armed REC records its input instead (ArrangeAudioTake):
+ * over the song from where PLAY would start, or -- the song playing -- from
+ * its next bar line, until STOP, REC or PLAY ends it. There is no DUB onto
+ * audio: a take replaces what was under it.
  */
 
 namespace crosspad {
@@ -44,6 +50,7 @@ public:
     {
         ISongEngine* se = engine();
         if (!se) return;
+        if (arrangeAudioTake().recording()) { arrangeAudioTake().stop(); return; }
         if (se->playing()) {
             if (se->seqTake() != SyncTake::None) se->seqPunch(SyncTake::None);
             return;
@@ -56,9 +63,15 @@ public:
     {
         ISongEngine* se = engine();
         if (!se) return;
-        if (!se->playing()) { heldBar_ = 0; return; }
+        ArrangeAudioTake& audio = arrangeAudioTake();
+        if (!se->playing()) {
+            if (audio.recording()) audio.stop();    // a take with no song under it
+            else                   heldBar_ = 0;
+            return;
+        }
         double bars = se->positionBars();
         heldBar_ = bars > 0.0 ? (uint32_t)bars : 0;
+        if (audio.recording()) audio.stop();        // the song stops with it
         se->stop();
     }
 
@@ -68,6 +81,16 @@ public:
     {
         ISongEngine* se = engine();
         if (!se) return;
+        ArrangeAudioTake& audio = arrangeAudioTake();
+        if (audio.recording()) { audio.stop(); return; }
+        if (audioArmed(*se)) {
+            switch (state()) {
+                case TransportState::Stopped: audio.start(startFrom(*se), countIn()); return;
+                case TransportState::Playing: audio.start(startFrom(*se), 0);         return;
+                case TransportState::Waiting: stop();                                return;
+                default:                                                             return;
+            }
+        }
         switch (state()) {
             case TransportState::Stopped:     se->recordSeq(startFrom(*se), SyncTake::Record, countIn()); return;
             case TransportState::Waiting:     stop();                                return;
@@ -81,7 +104,7 @@ public:
     void overdub() override
     {
         ISongEngine* se = engine();
-        if (!se) return;
+        if (!se || audioArmed(*se) || arrangeAudioTake().recording()) return;
         switch (state()) {
             case TransportState::Stopped:     se->recordSeq(startFrom(*se), SyncTake::Overdub, countIn()); return;
             case TransportState::Waiting:                                            return;
@@ -95,7 +118,10 @@ public:
     TransportState state() const override
     {
         ISongEngine* se = engine();
-        if (!se || !se->playing()) return TransportState::Stopped;
+        if (!se) return TransportState::Stopped;
+        const ArrangeAudioTake& audio = arrangeAudioTake();
+        if (audio.recording()) return audio.waiting() ? TransportState::Waiting : TransportState::Recording;
+        if (!se->playing()) return TransportState::Stopped;
         if (se->countInBeatsLeft()) return TransportState::Waiting;
         switch (se->seqTake()) {
             case SyncTake::Record:  return TransportState::Recording;
@@ -111,6 +137,15 @@ public:
     uint8_t caps() const override
     {
         ISongEngine* se = engine();
+        if (se && (audioArmed(*se) || arrangeAudioTake().recording())) {
+            /* Audio: REC and nothing to DUB; a take is ended by STOP, REC or PLAY. */
+            switch (state()) {
+                case TransportState::Stopped:
+                    return kTransportCanPlay | kTransportCanStop | kTransportCanLocate | kTransportCanRecord;
+                case TransportState::Waiting: return kTransportCanStop | kTransportCanRecord;
+                default:                      return kTransportCanPlay | kTransportCanStop | kTransportCanRecord;
+            }
+        }
         const uint8_t take = kTransportCanRecord | kTransportCanOverdub;
         switch (state()) {
             case TransportState::Waiting: return kTransportCanStop | kTransportCanRecord;
@@ -187,6 +222,14 @@ private:
     {
         SequencerController* sq = getPlatformServices().sequencer;
         return sq ? sq->getCountInBeats() : 0;
+    }
+
+    /// REC records an audio track's input: one is armed and the board can record.
+    static bool audioArmed(ISongEngine& se)
+    {
+        if (!getPlatformServices().sampleTools) return false;
+        std::lock_guard<std::recursive_mutex> l(se.songMutex());
+        return se.song().armedAudioTrack() >= 0;
     }
 
     /// A seq track to take onto, or room to make one.

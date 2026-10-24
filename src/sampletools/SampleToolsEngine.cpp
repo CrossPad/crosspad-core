@@ -146,7 +146,16 @@ std::string base_of(const std::string& path)
     return s == std::string::npos ? path : path.substr(s + 1);
 }
 
-int codec_of(RecInput in) { return in == RecInput::Mic ? 0 : (in == RecInput::Line ? 1 : -1); }
+/// The codecs an input records from, a bit each: 0 the mics, 1 the line-in.
+uint8_t codecs_of(RecInput in)
+{
+    switch (in) {
+        case RecInput::Mic:     return 1u << 0;
+        case RecInput::Line:    return 1u << 1;
+        case RecInput::MicLine: return (1u << 0) | (1u << 1);
+        default:                return 0;
+    }
+}
 
 /// Sixteen hues round the wheel, one per slice, so pad and slice match.
 uint32_t slice_color(int i)
@@ -411,6 +420,7 @@ struct SampleToolsEngine::Impl {
         sampleRate_ = sampleRate ? sampleRate : 44100;
         scratch_.assign(maxFrames * 2, 0);
         capture_.assign(maxFrames * 2, 0);
+        held_.assign(maxFrames * 2, 0);
     }
     void onSampleRateChange(uint32_t sr) { sampleRate_ = sr ? sr : 44100; }
 
@@ -431,13 +441,46 @@ struct SampleToolsEngine::Impl {
 
     // ── Render taps ───────────────────────────────────────────────────────
     bool wantsCodec(int codec) const {
-        return listening_.load(std::memory_order_relaxed) &&
-               codec_of(input_.load(std::memory_order_relaxed)) == codec;
+        return listening_.load(std::memory_order_relaxed) && codec >= 0 && codec < 2 &&
+               (codecs_of(input_.load(std::memory_order_relaxed)) & (1u << codec)) != 0;
     }
     void rtInput(int codec, const int16_t* block, uint32_t frames) {
-        if (wantsCodec(codec)) take(block, frames);
+        if (!wantsCodec(codec)) return;
+        if (input_.load(std::memory_order_relaxed) != RecInput::MicLine) {
+            take(block, frames);
+            return;
+        }
+        /* Both codecs into one take: the mics' block is held until the
+         * line-in's of the same render block comes, and the two are summed. */
+        if (frames * 2 > held_.size()) return;
+        if (codec == 0) {
+            std::memcpy(held_.data(), block, frames * 2 * sizeof(int16_t));
+            heldFrames_ = frames;
+            return;
+        }
+        if (heldFrames_ == frames) {
+            int16_t* d = held_.data();
+            for (uint32_t i = 0; i < frames * 2; ++i) {
+                const int32_t v = (int32_t)d[i] + block[i];
+                d[i] = (int16_t)(v > 32767 ? 32767 : (v < -32768 ? -32768 : v));
+            }
+            heldFrames_ = 0;
+            take(d, frames);
+            return;
+        }
+        heldFrames_ = 0;
+        take(block, frames);       // the mics were not read this block
     }
-    void rtBlockBegin() { blockBegin_ = recFrames_.load(std::memory_order_relaxed); }
+    void rtBlockBegin() {
+        /* The mics of the last block, the line-in never read: on their own
+         * rather than not at all, or the take would fall behind the song. */
+        if (heldFrames_) {
+            const uint32_t n = heldFrames_;
+            heldFrames_ = 0;
+            take(held_.data(), n);
+        }
+        blockBegin_ = recFrames_.load(std::memory_order_relaxed);
+    }
 
     void rtUsb(const int16_t* block, uint32_t frames) {
         if (listening_.load(std::memory_order_relaxed) &&
@@ -476,8 +519,9 @@ struct SampleToolsEngine::Impl {
         if (takeOpen()) return false;   // not mid-take
         releaseAdc();
         input_.store(in);
-        const int c = codec_of(in);
-        if (c >= 0 && p.claimCodec((uint8_t)c, true)) claimed_ = c;
+        const uint8_t codecs = codecs_of(in);
+        for (uint8_t c = 0; c < 2; ++c)
+            if ((codecs & (1u << c)) && p.claimCodec(c, true)) claimed_ |= (uint8_t)(1u << c);
         listening_.store(true);
         return true;
     }
@@ -732,8 +776,9 @@ struct SampleToolsEngine::Impl {
     }
 
     void releaseAdc() {
-        if (claimed_ >= 0) p.claimCodec((uint8_t)claimed_, false);
-        claimed_ = -1;
+        for (uint8_t c = 0; c < 2; ++c)
+            if (claimed_ & (1u << c)) p.claimCodec(c, false);
+        claimed_ = 0;
     }
 
     bool request(JobKind kind) {
@@ -955,7 +1000,7 @@ struct SampleToolsEngine::Impl {
                 std::lock_guard<std::mutex> l(statusMutex_);
                 rec_.fromBar = bar;
             }
-            const uint32_t delay = codec_of(input_.load()) >= 0 ? kCodecDelayFrames : 0;
+            const uint32_t delay = codecs_of(input_.load()) != 0 ? kCodecDelayFrames : 0;
             skip = syncFrame_.load() + delay;
             if (skip < dropped_) return "the song's first frame was lost";
             skip_.store(skip);
@@ -1556,7 +1601,7 @@ struct SampleToolsEngine::Impl {
     std::mutex            inputMutex_;
     std::atomic<RecInput> input_{RecInput::Mic};
     std::atomic<bool>     listening_{false};
-    int                   claimed_ = -1;                      // codec whose ADC is held; under inputMutex_
+    uint8_t               claimed_ = 0;                       // codecs whose ADC is held, a bit each; under inputMutex_
     std::atomic<int32_t>  pkL_{0}, pkR_{0};
     std::atomic<bool>     recArmed_{false}, recStartReq_{false}, recStopReq_{false}, recOverflow_{false};
     std::atomic<uint32_t> recFrames_{0};
@@ -1589,6 +1634,8 @@ struct SampleToolsEngine::Impl {
     RecStatus             rec_;
     std::mutex            statusMutex_;
     std::vector<int16_t>  capture_;                           // render: the pads bus as int16
+    std::vector<int16_t>  held_;                              // render: MicLine, the mics until the line-in comes
+    uint32_t              heldFrames_ = 0;                    // render: frames in held_, 0 = none
 
     // Preview.
     std::atomic<Prev>     prev_{Prev::Idle};

@@ -83,6 +83,28 @@ std::vector<SeqNote> readNotes(const char* s)
     return out;
 }
 
+/// An audio track's input as song.json names it; the mics are the default
+/// and are not written.
+struct NamedInput { RecInput in; const char* name; };
+constexpr NamedInput kInputNames[] = {
+    {RecInput::Mic, "mic"},   {RecInput::Line, "line"}, {RecInput::MicLine, "mic+line"},
+    {RecInput::Usb, "usb"},   {RecInput::Pads, "pads"},
+};
+
+const char* rec_input_name(RecInput in)
+{
+    for (const auto& n : kInputNames)
+        if (n.in == in) return n.name;
+    return "mic";
+}
+
+RecInput rec_input_named(const char* name)
+{
+    for (const auto& n : kInputNames)
+        if (name && std::strcmp(n.name, name) == 0) return n.in;
+    return RecInput::Mic;
+}
+
 } // namespace
 
 SeqPatternPtr makeSeqPattern(uint16_t bars, std::vector<SeqNote> notes)
@@ -239,6 +261,7 @@ SongLoad AudioSong::load(const std::string& projectDir)
                           : stretch && std::strcmp(stretch, "repitch") == 0 ? StretchMode::Repitch
                           : (tr["stretch"] | false)                         ? StretchMode::KeepPitch
                                                                             : StretchMode::Off;
+        tracks[t].input = tracks[t].kind == TrackKind::Audio ? rec_input_named(tr["input"] | "") : RecInput::Mic;
         /* A song saved before tracks had kinds has no "used" key: the clips
          * say which tracks somebody made. Written out from then on, so a
          * track emptied by hand stays a track. */
@@ -362,6 +385,7 @@ bool AudioSong::save() const
         }
         if (t.kind == TrackKind::Audio && t.stretch == StretchMode::KeepPitch) o["stretch"] = true;
         if (t.kind == TrackKind::Audio && t.stretch == StretchMode::Repitch)   o["stretch"] = "repitch";
+        if (t.kind == TrackKind::Audio && t.input != RecInput::Mic)           o["input"] = rec_input_name(t.input);
         JsonArray cs = o["clips"].to<JsonArray>();
         std::string ev;
         for (const auto& c : t.clips) {
@@ -503,6 +527,13 @@ int AudioSong::freeSeqRoute(SeqSource source) const
     if (seqTrackOnRoute(0) < 0) return 0;
     if (seqTrackOnRoute(1) < 0) return 1;
     return -1;
+}
+
+int AudioSong::armedAudioTrack() const
+{
+    if (armed < 0 || armed >= kTracks) return -1;
+    const SongTrack& t = tracks[armed];
+    return t.inUse && t.kind == TrackKind::Audio ? armed : -1;
 }
 
 int AudioSong::armedSeqTrack() const

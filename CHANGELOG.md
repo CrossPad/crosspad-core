@@ -6,6 +6,27 @@ carries the same number) and consumers gate on it with
 `crosspad/RequireVersion.hpp`. This file starts at 1.45.0; earlier releases
 are described in their `chore: X.Y.Z` commits.
 
+## 2.18.0 — 2026-10-24
+
+Arrange records audio itself: REC onto an armed audio track takes its input
+over the song, and the take lands on the track.
+
+### Added
+
+- `ArrangeAudioTake` (`crosspad/song/ArrangeAudioTake.hpp`, `arrangeAudioTake()`):
+  the armed audio track's input recorded with the song from a bar
+  (`ISampleTools::startRecordingWithSong`, after the count-in; on its own in
+  an empty song), and on STOP laid on the track as one block from the bar it
+  went in at (`ISongEngine::requestImport`). `poll()` lands it.
+- `SongTransport` drives it: with an audio track armed REC starts and ends
+  the take (from the next bar line while the song plays), STOP and PLAY end
+  it, and there is no DUB.
+- `SongTrack::input` (song.json `"input"`, written when not the mics) and
+  `AudioSong::armedAudioTrack()`: `armed` may name an audio track.
+- `RecInput::MicLine`: the mics and the line-in summed into one take, both
+  codecs' ADCs held. `RecInput` has its own header,
+  `crosspad/sampletools/RecInput.hpp`.
+
 ## 2.17.0 — 2026-10-24
 
 The metronome's options: how loud, how dense, how long the count-in.
