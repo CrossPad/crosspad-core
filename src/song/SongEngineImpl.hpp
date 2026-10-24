@@ -378,7 +378,9 @@ struct SongEngine::Impl {
     SongOpState editState() const { return editState_.load(); }
     bool requestMerge(uint8_t trackMask, uint32_t fromBar, uint32_t toBar);
     uint8_t editProgress() const { return editProgress_.load(); }
-    uint32_t stretchWaiting() const { return stretchCount_.load(); }
+    /// Counted when asked, not when the worker last had time to: right after an
+    /// open or a tempo says Ready it is what that song waits for.
+    uint32_t stretchWaiting() { return nextStretch(nullptr); }
     uint8_t stretchProgress() const { return stretchProg_.load(); }
     bool undo() { return step(undo_, redo_); }
     bool redo() { return step(redo_, undo_); }
@@ -714,7 +716,6 @@ private:
     // need none or cannot have one -- by path, cleared when a project opens.
     mutable std::mutex    stretchMutex_;
     std::set<std::string> stretchReady_, stretchSkip_;
-    std::atomic<uint32_t> stretchCount_{0};
     std::atomic<uint8_t>  stretchProg_{0};   ///< the block being fitted, 0..100
     // Undo: steps back and forward, and the arrangement as last seen (all
     // under songMutex_); the counts for the screen.

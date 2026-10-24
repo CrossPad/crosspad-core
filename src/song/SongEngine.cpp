@@ -131,9 +131,12 @@ void SongEngine::Impl::worker() {
         const bool stretching = !streaming && !peaking && stretchPending() && p.storageReady();
         /* Until a project is open, look for the card once a second; with a
          * save waiting, back in time to make it. */
-        p.waitWake(streaming ? kStreamPollMs
-                             : peaking || stretching ? 0
-                             : saveReq_.load() ? kSaveDelayMs : (lastTried_ ? UINT32_MAX : kCardPollMs));
+        /* A request made while the last one was handled has had its wake-up
+         * used: it runs now, not at the next one. */
+        if (!requestWaiting())
+            p.waitWake(streaming ? kStreamPollMs
+                                 : peaking || stretching ? 0
+                                 : saveReq_.load() ? kSaveDelayMs : (lastTried_ ? UINT32_MAX : kCardPollMs));
         if (quit_.load()) break;
 
         if (releaseReq_.load()) {

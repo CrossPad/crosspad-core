@@ -2902,3 +2902,21 @@ TEST_CASE("song engine: an element is never renamed out of the library", "[song]
     CHECK_FALSE(fs::exists(fs::path(r.platform.root) / "X"));
     CHECK(r.platform.current == "Song 1");
 }
+
+TEST_CASE("song engine: an open asked for right after a stop still runs", "[song][element]") {
+    Rig r;
+    REQUIRE(r.open("Demo"));
+    /* Both requests are set before the worker wakes: each round puts them as
+     * close together as a caller can. */
+    for (int round = 0; round < 50; ++round) {
+        const bool element = round % 2 == 1;
+        r.engine->stop();
+        const bool asked = element ? r.engine->requestOpenElement(".elements/E00000001")
+                                   : r.engine->requestOpen("Other");
+        REQUIRE(asked);
+        REQUIRE(waitFor([&] { return r.engine->openState() == SongOpState::Ready; }, 2000));
+        r.engine->stop();
+        REQUIRE(r.engine->requestOpen("Demo"));
+        REQUIRE(waitFor([&] { return r.engine->openState() == SongOpState::Ready; }, 2000));
+    }
+}

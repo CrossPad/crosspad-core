@@ -19,16 +19,11 @@ namespace {
 constexpr uint32_t kRefusalPolls = 200;
 /// Tempos closer than this are the same one.
 constexpr float kTempoEpsilon = 0.01f;
+/// Polls the fitting of stretched blocks may go without one more done before
+/// the leave is given up: the card is gone, or the worker is.
+constexpr uint32_t kStretchStallPolls = 2400;
 
 ISongEngine* songEngine() { return getPlatformServices().songEngine; }
-
-/// Playback stopped. Only asked of a song that plays: the worker handles one
-/// request a wake-up, and a stop that changes nothing, followed at once by the
-/// open, can leave the open waiting for a wake-up that never comes.
-void stopSong(ISongEngine& se)
-{
-    if (se.playing()) se.stop();
-}
 
 /// An id for a new element that no element in the library has.
 std::string freshElementRef(ISongEngine& se)
@@ -142,7 +137,7 @@ bool ElementNav::startEnter(const std::string& ref, int track, uint32_t bar, Job
     asked_ = false;
     refusals_ = 0;
     error_.clear();
-    stopSong(*se);
+    se->stop();
     return true;
 }
 
@@ -154,7 +149,7 @@ void ElementNav::startLeave(Job job)
     asked_ = false;
     refusals_ = 0;
     error_.clear();
-    stopSong(*songEngine());
+    if (ISongEngine* se = songEngine()) se->stop();
 }
 
 bool ElementNav::enter(int track, uint32_t bar)
@@ -279,12 +274,19 @@ ElementNav::Result ElementNav::poll()
         case Phase::Opening:    return opened();
         case Phase::Retempo:    return retempo();
         case Phase::Freezing:   return freezing();
-        case Phase::Stretching:
-            if (se->stretchWaiting()) return {};
+        case Phase::Stretching: {
+            /* Counted afresh, so a copy still to make is never read as none. */
+            const uint32_t waiting = se->stretchWaiting();
+            if (waiting) {
+                if (waiting != lastWaiting_) { lastWaiting_ = waiting; refusals_ = 0; }
+                if (++refusals_ < kStretchStallPolls) return {};
+                return fail("the audio is not fitted to the song's tempo and the card is not making progress");
+            }
             phase_ = Phase::Baking;
             asked_ = false;
             refusals_ = 0;
             return {};
+        }
         case Phase::Baking:     return baking();
         case Phase::Reopening:  return reopening();
         default:                return {};
@@ -400,6 +402,8 @@ ElementNav::Result ElementNav::freezing()
         freezeTrack_ = nextToFreeze();
         if (freezeTrack_ >= AudioSong::kTracks) {
             phase_ = Phase::Stretching;
+            lastWaiting_ = 0;
+            refusals_ = 0;
             return {};
         }
         if (!se->freezeTrack((uint8_t)freezeTrack_))

@@ -529,9 +529,6 @@ void SongEngine::Impl::rebuild() {
         pan_[t].store(tr.pan);
     }
     for (int t = 0; t < kTracks; ++t) seqRoute_[t].store((int8_t)song_.seqRoute(t), std::memory_order_relaxed);
-    /* Counted here too, not only by song_io: it asks only while
-     * stopped, and a tempo turned while playing must show at once. */
-    nextStretch(nullptr);
     /* The live transport has a grid of its own and no end; a commit
      * made while it runs (a fader, a mute) must not hand RT the
      * arrangement's. */
@@ -611,10 +608,10 @@ bool SongEngine::Impl::stretchReady(const std::string& path) const {
 }
 
 /// The blocks of stretched tracks still without a copy, and the first of
-/// them in @p job. Counted for stretchWaiting().
+/// them in @p job. What stretchWaiting() answers.
 uint32_t SongEngine::Impl::nextStretch(StretchJob* job) {
     std::lock_guard<std::recursive_mutex> l(songMutex_);
-    if (!opened_) { stretchCount_.store(0); return 0; }
+    if (!opened_) return 0;
     const uint32_t spb = song_.samplesPerBar(sampleRate_);
     uint32_t pending = 0;
     std::lock_guard<std::mutex> s(stretchMutex_);
@@ -634,7 +631,6 @@ uint32_t SongEngine::Impl::nextStretch(StretchJob* job) {
             }
         }
     }
-    stretchCount_.store(pending);
     return pending;
 }
 

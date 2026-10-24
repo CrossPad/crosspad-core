@@ -122,6 +122,7 @@ private:
     bool        leaveAfterEnter_ = false;   ///< insertExisting: bake what was just laid
     int         targetDepth_ = 0;     ///< where a leave stops
     int         freezeTrack_ = 0;
+    uint32_t    lastWaiting_ = 0;     ///< stretched blocks still unfitted at the last poll
     std::string bakeFile_;
     uint32_t    bakeFrames_ = 0;
     std::string error_;

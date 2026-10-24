@@ -369,3 +369,98 @@ TEST_CASE("element nav: entering at another tempo fits the element's recordings"
     CHECK(s.tracks[0].stretch == StretchMode::KeepPitch);
     CHECK(s.bpm == 120.0f);
 }
+
+TEST_CASE("element nav: an element laid at another tempo is baked at the song's", "[element][nav]") {
+    Rig r;
+    Services svc(r.engine.get(), nullptr);
+    NavGuard guard;
+    writeAudioElement(r, kB, "Hat", 2, 90.0f);
+    REQUIRE(r.engine->requestOpenElement(kB));
+    REQUIRE(waitFor([&] { return r.engine->openState() == SongOpState::Ready; }));
+    REQUIRE(r.engine->requestBakeElement());                 // the element as it was made, at 90
+    REQUIRE(waitFor([&] { return r.engine->editState() != SongOpState::Busy; }, 10000));
+    REQUIRE(r.engine->editState() == SongOpState::Ready);
+    const ElementBake at90 = r.engine->bakeResult();
+    REQUIRE(r.open("Demo"));
+    {
+        std::lock_guard<std::recursive_mutex> l(r.engine->songMutex());
+        r.engine->song().bpm = 120.0f;
+    }
+    r.engine->commit();
+    REQUIRE(listElements(r));
+    REQUIRE(elementNav().insertExisting(2, 0, kB));
+    const auto out = runNav();
+    INFO("error: " << out.error);
+    REQUIRE(out.ok);
+    const SongClip c = clipOf(r, 2);
+    CHECK_FALSE(c.file.empty());
+    CHECK(c.file != at90.file);
+    CHECK(c.frames == 2 * kBarFrames);                       // two bars at 120, not at 90
+    CHECK(at90.frames != c.frames);
+    CHECK(fs::exists(bakeOf(r, c.file)));
+}
+
+TEST_CASE("element nav: leaving freezes a live seq track before the bake", "[element][nav]") {
+    Rig r;
+    Services svc(r.engine.get(), nullptr);
+    NavGuard guard;
+    writeAudioElement(r, kA, "Beat", 2, 120.0f);
+    openDemo(r, kA);
+    REQUIRE(elementNav().enter(1, 0));
+    REQUIRE(runNav().ok);
+    {
+        std::lock_guard<std::recursive_mutex> l(r.engine->songMutex());
+        AudioSong& s = r.engine->song();
+        REQUIRE(s.addSeqTrack(1, SeqSource::Kit, 0));
+        SeqNote n;
+        n.pad = 1; n.vel = 100;
+        s.putSeqTake(1, 0, makeSeqPattern(1, {n}), s.samplesPerBar(kRate));
+        s.armed = -1;
+    }
+    r.engine->commit();
+    REQUIRE(r.engine->freezeState(1) != FreezeState::Frozen);
+    REQUIRE(elementNav().leave());
+    /* The freeze renders off the audio clock: the blocks are the test's. */
+    std::vector<float> out(kBlock * 2), bus(kBlock * 2, 0.25f);
+    ElementNav::Result res;
+    REQUIRE(waitFor([&] {
+        r.block(out, bus);
+        res = elementNav().poll();
+        return res.done;
+    }, 20000));
+    INFO("error: " << res.error);
+    REQUIRE(res.ok);
+    CHECK(openName(r) == "Demo");
+    const SongClip c = clipOf(r, 1);
+    CHECK(c.file == r.engine->bakeResult().file);
+    CHECK_FALSE(c.file.empty());
+    REQUIRE(elementNav().enter(1, 0));
+    REQUIRE(runNav().ok);
+    CHECK(r.engine->freezeState(1) == FreezeState::Frozen);
+}
+
+TEST_CASE("element nav: a leave whose audio is never fitted gives up and stays in the element", "[element][nav]") {
+    Rig r;
+    Services svc(r.engine.get(), nullptr);
+    NavGuard guard;
+    writeAudioElement(r, kA, "Slow", 2, 120.0f);
+    openDemo(r, kA);
+    REQUIRE(elementNav().enter(1, 0));
+    REQUIRE(runNav().ok);
+    r.platform.storage = false;                              // no card: nothing is ever fitted
+    {
+        std::lock_guard<std::recursive_mutex> l(r.engine->songMutex());
+        r.engine->song().tracks[0].stretch = StretchMode::KeepPitch;
+        r.engine->song().tracks[0].clips[0].bars = 3;        // a length no copy exists for
+    }
+    r.engine->commit();
+    REQUIRE(r.engine->stretchWaiting() > 0);
+    REQUIRE(elementNav().leave());
+    const auto out = runNav();
+    CHECK(out.done);
+    CHECK_FALSE(out.ok);
+    CHECK_FALSE(out.error.empty());
+    CHECK_FALSE(elementNav().busy());
+    CHECK(elementNav().depth() == 1);
+    CHECK(openName(r) == kA);
+}
