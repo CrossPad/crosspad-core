@@ -15,6 +15,10 @@ constexpr char     kSilent[]  = "silent";
 constexpr char     kMissing[] = "missing";
 /// Hundredths of a beat per minute: the finest tempo the bake is told apart by.
 constexpr float    kBpmScale  = 100.0f;
+/// A fader is hashed in steps of this: song.json keeps a volume to about seven
+/// digits, so the float read back can differ from the one saved in its last
+/// bits, and a hash of those bits would change with every reopen.
+constexpr float    kVolumeHashSteps = 10000.0f;
 
 struct Fnv {
     uint64_t h = kFnvOffset;
@@ -73,7 +77,7 @@ uint64_t element_content_hash(const AudioSong& song, const ElementHashReader& rd
         f.value(t);
         if (song.silenced(t)) { f.text(kSilent); continue; }
         f.value((uint8_t)tr.kind);
-        f.value(tr.volume);
+        f.value((int32_t)std::lround(tr.volume * kVolumeHashSteps));
         f.value((uint8_t)tr.stretch);
         for (const SongClip& c : tr.clips) {
             f.text(c.file);

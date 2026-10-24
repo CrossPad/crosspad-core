@@ -270,12 +270,16 @@ void SongEngine::Impl::openLast() {
 /// name remembered as the one to open next time.
 SongOpState SongEngine::Impl::doRename() {
     std::string name, from;
+    bool isElement = false;
     {
         std::lock_guard<std::recursive_mutex> l(songMutex_);
         name = editName_;
         from = song_.dir;
+        isElement = is_element_ref(song_.name);
     }
-    if (!opened_ || !p.storageReady()) return SongOpState::Failed;
+    /* An element is named by its title; its folder is its identity in the
+     * library, and a song's rename would move it out. */
+    if (!opened_ || isElement || !p.storageReady()) return SongOpState::Failed;
     const std::string to = std::string(p.songsRoot()) + "/" + name;
     if (fsx::exists(to)) return SongOpState::Failed;              // taken
     endPlayback();

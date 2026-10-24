@@ -3,6 +3,7 @@
 
 #include "crosspad/song/ElementHash.hpp"
 
+#include <filesystem>
 #include <map>
 #include <string>
 
@@ -162,4 +163,24 @@ TEST_CASE("element bake key: tempo and rate are in it", "[element][hash]") {
     CHECK(element_bake_key(1, 120.0f, 44100) != element_bake_key(2, 120.0f, 44100));
     CHECK(element_bake_key(1, 120.0f, 44100) == element_bake_key(1, 120.0f, 44100));
     CHECK(element_bake_file(0x0123456789ABCDEFull) == "B0123456789ABCDEF.wav");
+}
+
+TEST_CASE("element hash: the same after song.json is saved and read back", "[element][hash]") {
+    const std::string dir = (std::filesystem::temp_directory_path() / "cp_element_hash_roundtrip").string();
+    std::filesystem::remove_all(dir);
+    std::filesystem::create_directories(dir);
+    AudioSong s = baseSong();
+    s.dir = dir;
+    for (int t = 0; t < 3; ++t) {
+        s.tracks[t].inUse = true;
+        s.tracks[t].volume = t == 0 ? 0.05f : t == 1 ? 1.0f / 3.0f : 0.123456789f;
+    }
+    FakeCard card;
+    const uint64_t before = element_content_hash(s, card.reader());
+    REQUIRE(s.save());
+    AudioSong back;
+    REQUIRE(back.load(dir) == SongLoad::Loaded);
+    back.dir = dir;
+    CHECK(element_content_hash(back, card.reader()) == before);
+    std::filesystem::remove_all(dir);
 }

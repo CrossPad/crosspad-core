@@ -3122,3 +3122,16 @@ TEST_CASE("song engine: a bake the card cannot take fails and leaves no part fil
     CHECK_FALSE(r.engine->editReport().empty());
     CHECK(r.engine->bakeResult().file.empty());
 }
+
+TEST_CASE("song engine: an element is never renamed out of the library", "[song][element]") {
+    Rig r;
+    REQUIRE(r.open("Song 1"));
+    REQUIRE(r.engine->requestOpenElement(kElementRef));
+    REQUIRE(waitFor([&] { return r.engine->openState() == SongOpState::Ready; }));
+    REQUIRE(r.engine->requestRename("X"));
+    REQUIRE(waitFor([&] { return r.engine->editState() != SongOpState::Busy; }));
+    CHECK(r.engine->editState() == SongOpState::Failed);
+    CHECK(fs::is_directory(fs::path(r.platform.root) / kElementRef));
+    CHECK_FALSE(fs::exists(fs::path(r.platform.root) / "X"));
+    CHECK(r.platform.current == "Song 1");
+}
