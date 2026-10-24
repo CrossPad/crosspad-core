@@ -62,6 +62,8 @@ struct FakePlatform final : ISongEnginePlatform {
     bool woken = false;
     std::atomic<bool> storage{true};
     std::atomic<int> storageAsked{0};
+    /// How often the worker went to wait for a wake-up.
+    std::atomic<int> waits{0};
     std::atomic<int> captureBegun{0}, captureEnded{0};
     /// writeIo the board's way: what stdio holds goes out first, then the
     /// piece straight to the descriptor. Off, the engine's default (fwrite).
@@ -83,6 +85,7 @@ struct FakePlatform final : ISongEnginePlatform {
         cv.notify_one();
     }
     void waitWake(uint32_t ms) override {
+        ++waits;
         std::unique_lock<std::mutex> l(m);
         if (ms == UINT32_MAX) cv.wait(l, [&] { return woken; });
         else cv.wait_for(l, std::chrono::milliseconds(ms), [&] { return woken; });

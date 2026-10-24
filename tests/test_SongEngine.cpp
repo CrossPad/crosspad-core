@@ -2920,3 +2920,26 @@ TEST_CASE("song engine: an open asked for right after a stop still runs", "[song
         REQUIRE(waitFor([&] { return r.engine->openState() == SongOpState::Ready; }, 2000));
     }
 }
+
+TEST_CASE("song engine: a save due during playback does not keep the worker from waiting", "[song]") {
+    Rig r;
+    REQUIRE(r.open("Demo"));
+    writeClip((r.clipsDir("Demo") / "c.wav").string(), kRate * 8, 1000);
+    {
+        std::lock_guard<std::recursive_mutex> l(r.engine->songMutex());
+        AudioSong& s = r.engine->song();
+        s.bpm = 120.0f;
+        s.addClip(0, {"c.wav", 0, 4});
+    }
+    r.engine->commit();
+    REQUIRE(r.engine->play(0));
+    REQUIRE(waitFor([&] { return r.engine->playing(); }));
+    r.engine->commit();                                         // a save, due in kSaveDelayMs, that waits for the stop
+    std::this_thread::sleep_for(std::chrono::milliseconds(500));
+    const int before = r.platform.waits;
+    std::this_thread::sleep_for(std::chrono::milliseconds(200));
+    /* A worker that never waits makes no waitWake calls: it spins on the ring. */
+    CHECK(r.platform.waits - before >= 10);
+    r.engine->stop();
+    REQUIRE(waitFor([&] { return !r.engine->playing(); }));
+}

@@ -132,8 +132,9 @@ void SongEngine::Impl::worker() {
         /* Until a project is open, look for the card once a second; with a
          * save waiting, back in time to make it. */
         /* A request made while the last one was handled has had its wake-up
-         * used: it runs now, not at the next one. */
-        if (!requestWaiting())
+         * used: it runs now, not at the next one. A save due is no such
+         * request while the song streams: the loop leaves it until the stop. */
+        if (!requestWaiting(!streaming))
             p.waitWake(streaming ? kStreamPollMs
                                  : peaking || stretching ? 0
                                  : saveReq_.load() ? kSaveDelayMs : (lastTried_ ? UINT32_MAX : kCardPollMs));
@@ -225,10 +226,10 @@ void SongEngine::Impl::worker() {
 }
 
 /// Worker: anything asked for that goes before a waveform.
-bool SongEngine::Impl::requestWaiting() const {
+bool SongEngine::Impl::requestWaiting(bool saveCounts) const {
     return quit_.load() || releaseReq_.load() || stopReq_.load() || playReq_.load() || openReq_.load() ||
            editReq_.load() != 0 || listReq_.load() != 0 || bounceReq_.load() ||
-           (saveReq_.load() && p.nowUs() >= saveAtUs_.load());
+           (saveCounts && saveReq_.load() && p.nowUs() >= saveAtUs_.load());
 }
 
 SongEngine::SongEngine(ISongEnginePlatform& platform, MetronomeNode& clock, PatternSequencer& seq)

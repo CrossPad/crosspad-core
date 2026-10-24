@@ -539,7 +539,7 @@ private:
     uint32_t nextStretch(StretchJob* job);
     bool stretchPending() { return nextStretch(nullptr) != 0; }
     void doStretch();
-    bool requestWaiting() const;
+    bool requestWaiting(bool saveCounts = true) const;
     bool peaksPending();
     void doPeaks();
     bool readPeaks(const std::string& wav, std::vector<uint8_t>& out);
