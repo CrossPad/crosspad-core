@@ -6,6 +6,16 @@ carries the same number) and consumers gate on it with
 `crosspad/RequireVersion.hpp`. This file starts at 1.45.0; earlier releases
 are described in their `chore: X.Y.Z` commits.
 
+## 2.20.0 — 2026-10-24
+
+### Added
+
+- `IInputMonitor` (`crosspad/audio/IInputMonitor.hpp`,
+  `PlatformServices::inputMonitor`): an input heard live, by the `RecInput`
+  an app records it as -- its mixer channel sent to every heard output or to
+  none, the Mixer's MONITOR at "all" or "off". What Arrange's audio track
+  offers beside its input. Null where the platform has no mixer.
+
 ## 2.19.0 — 2026-10-24
 
 ### Added
