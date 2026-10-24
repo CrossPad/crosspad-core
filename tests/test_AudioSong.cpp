@@ -945,3 +945,82 @@ TEST_CASE("AudioSong: an audio track keeps its input and can be armed", "[song][
     CHECK(b.armedAudioTrack() == -1);                       // nor is one nobody made
     fs::remove_all(d);
 }
+
+namespace {
+std::string fileText(const std::string& path)
+{
+    std::ifstream in(path);
+    return std::string((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+}
+} // namespace
+
+TEST_CASE("audio song: an element clip and a title survive song.json, version 5", "[song][element]") {
+    const auto d = freshProject("cp_song_element");
+    AudioSong a;
+    a.dir = d;
+    a.bpm = 120.0f;
+    a.title = "REFREN";
+    SongClip c;
+    c.element = ".elements/E00C0FFEE";
+    c.file = "B0123456789ABCDEF.wav";
+    c.bar = 4;
+    c.bars = 8;
+    c.from = 1;
+    c.frames = 176400;
+    a.addClip(1, c);
+    REQUIRE(a.save());
+    CHECK(fileText(d + "/song.json").find("\"version\":5") != std::string::npos);
+
+    AudioSong b;
+    REQUIRE(b.load(d) == SongLoad::Loaded);
+    CHECK(b.title == "REFREN");
+    REQUIRE(b.tracks[1].clips.size() == 1);
+    const SongClip& r = b.tracks[1].clips[0];
+    CHECK(r.isElement());
+    CHECK(r.element == c.element);
+    CHECK(r.file == c.file);
+    CHECK(r.bar == 4);
+    CHECK(r.bars == 8);
+    CHECK(r.from == 1);
+    CHECK(r.frames == 176400);
+}
+
+TEST_CASE("audio song: an element clip not baked yet is kept", "[song][element]") {
+    const auto d = freshProject("cp_song_element_unbaked");
+    AudioSong a;
+    a.dir = d;
+    SongClip c;
+    c.element = ".elements/E00000001";
+    c.bar = 0;
+    c.bars = 2;
+    a.addClip(0, c);
+    REQUIRE(a.save());
+    AudioSong b;
+    REQUIRE(b.load(d) == SongLoad::Loaded);
+    REQUIRE(b.tracks[0].clips.size() == 1);
+    CHECK(b.tracks[0].clips[0].element == c.element);
+    CHECK(b.tracks[0].clips[0].file.empty());
+}
+
+TEST_CASE("audio song: a song without elements keeps its old version", "[song][element]") {
+    const auto d = freshProject("cp_song_no_element");
+    AudioSong a;
+    a.dir = d;
+    a.bpm = 120.0f;
+    REQUIRE(a.addSeqTrack(0, SeqSource::Kit, 0, "/crosspad/kits/DRUMS/kit.json"));
+    REQUIRE(a.addSeqTrack(2, SeqSource::Pitch, 2));
+    REQUIRE(a.save());
+    const std::string text = fileText(d + "/song.json");
+    CHECK(text.find("\"version\":4") != std::string::npos);
+    CHECK(text.find("\"element\"") == std::string::npos);
+    CHECK(text.find("\"title\"") == std::string::npos);
+}
+
+TEST_CASE("audio song: element ids and refs", "[song][element]") {
+    CHECK(make_element_id(0xC0FFEEu) == "E00C0FFEE");
+    CHECK(is_element_ref(".elements/E00C0FFEE"));
+    CHECK_FALSE(is_element_ref(".elements/e00c0ffee"));
+    CHECK_FALSE(is_element_ref(".elements/E00C0FFE"));
+    CHECK_FALSE(is_element_ref("../x"));
+    CHECK_FALSE(is_element_ref("Song 1"));
+}

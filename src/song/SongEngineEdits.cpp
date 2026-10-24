@@ -481,6 +481,7 @@ void SongEngine::Impl::pack(const AudioSong& s, Snapshot& out) {
             put(&c.offset, 4);
             put(&c.frames, 4);
             put(&c.from, 2);
+            str(c.element);
             uint16_t ni = 0xFFFF;
             if (c.notes) {
                 const auto it = std::find(out.notes.begin(), out.notes.end(), c.notes);
@@ -536,6 +537,7 @@ void SongEngine::Impl::unpack(const Snapshot& in, AudioSong& s) {
             get(&c.offset, 4);
             get(&c.frames, 4);
             get(&c.from, 2);
+            str(c.element);
             uint16_t ni = 0xFFFF;
             get(&ni, 2);
             c.notes = ni < in.notes.size() ? in.notes[ni] : nullptr;

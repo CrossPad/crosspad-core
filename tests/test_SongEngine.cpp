@@ -2757,3 +2757,34 @@ TEST_CASE("Arrange REC round a loop keeps every complete pass as a clip, the las
     REQUIRE(second.size() == (size_t)bar * 2 * 2);
     CHECK(second.front() == int16_t((bar * 2) % 30000));
 }
+
+TEST_CASE("song engine: undo brings an element clip back whole", "[song][undo][element]") {
+    Rig r;
+    REQUIRE(r.open("Demo"));
+    {
+        std::lock_guard<std::recursive_mutex> l(r.engine->songMutex());
+        SongClip c;
+        c.element = ".elements/E00C0FFEE";
+        c.file = "B0123456789ABCDEF.wav";
+        c.bar = 2;
+        c.bars = 4;
+        c.from = 1;
+        c.frames = 176400;
+        r.engine->song().addClip(0, c);
+    }
+    r.engine->commit();
+    std::this_thread::sleep_for(std::chrono::milliseconds(800));
+    {
+        std::lock_guard<std::recursive_mutex> l(r.engine->songMutex());
+        r.engine->song().tracks[0].clips.clear();
+    }
+    r.engine->commit();
+    REQUIRE(r.engine->undo());
+    std::lock_guard<std::recursive_mutex> l(r.engine->songMutex());
+    REQUIRE(r.engine->song().tracks[0].clips.size() == 1);
+    const SongClip& c = r.engine->song().tracks[0].clips[0];
+    CHECK(c.element == ".elements/E00C0FFEE");
+    CHECK(c.file == "B0123456789ABCDEF.wav");
+    CHECK(c.from == 1);
+    CHECK(c.frames == 176400);
+}

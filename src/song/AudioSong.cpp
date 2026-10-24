@@ -220,6 +220,7 @@ SongLoad AudioSong::load(const std::string& projectDir)
     loop = doc["loop"] | true;
     length = doc["length"] | 0u;
     syncSeq = doc["sync"] | false;
+    title = doc["title"] | "";
     kit = doc["kit"] | "";
     instrument = doc["instrument"] | "";
     loopStart = doc["loop_start"] | 0u;
@@ -275,13 +276,14 @@ SongLoad AudioSong::load(const std::string& projectDir)
             clip.offset = c["offset"] | 0u;
             clip.frames = c["frames"] | 0u;
             clip.from = c["from"] | 0u;
+            clip.element = c["element"] | "";
             /* A seq track's blocks have no file: they are notes, their own
              * or the track's scene. */
             const bool seq = tracks[t].kind == TrackKind::Seq;
             JsonObjectConst notes = c["notes"];
             if (seq && !notes.isNull())
                 clip.notes = makeSeqPattern((uint16_t)(notes["bars"] | 1u), readNotes(notes["ev"] | ""));
-            if ((seq || !clip.file.empty()) && clip.bars) tracks[t].clips.push_back(clip);
+            if ((seq || clip.isElement() || !clip.file.empty()) && clip.bars) tracks[t].clips.push_back(clip);
         }
         sortTrack(t);
         if (!tr["used"].is<bool>())
@@ -334,6 +336,26 @@ SongLoad AudioSong::load(const std::string& projectDir)
     return SongLoad::Loaded;
 }
 
+std::string make_element_id(uint32_t seed)
+{
+    char buf[16];
+    std::snprintf(buf, sizeof buf, "E%08X", (unsigned)seed);
+    return buf;
+}
+
+bool is_element_ref(const std::string& ref)
+{
+    static const char kPrefix[] = ".elements/E";
+    constexpr size_t kPrefixLen = sizeof kPrefix - 1;
+    constexpr size_t kDigits = 8;
+    if (ref.size() != kPrefixLen + kDigits || ref.compare(0, kPrefixLen, kPrefix) != 0) return false;
+    for (size_t i = kPrefixLen; i < ref.size(); ++i) {
+        const char ch = ref[i];
+        if (!((ch >= '0' && ch <= '9') || (ch >= 'A' && ch <= 'F'))) return false;
+    }
+    return true;
+}
+
 bool AudioSong::save() const
 {
     bool notes = false;
@@ -341,16 +363,22 @@ bool AudioSong::save() const
         for (const auto& c : t.clips) notes = notes || (t.kind == TrackKind::Seq && c.notes);
     bool ownKit = false;
     for (const auto& t : tracks) ownKit = ownKit || (t.kind == TrackKind::Seq && !t.kit.empty());
+    bool elements = !title.empty();
+    for (const auto& t : tracks)
+        for (const auto& c : t.clips) elements = elements || c.isElement();
     JsonDocument doc;
-    /* A Pitch track beside a kit track is version 4: firmware before it
-     * keeps a Pitch track only alone, and would drop one of the two. */
+    /* Element clips and a title are version 5, a Pitch track beside a kit
+     * track version 4 (firmware before it keeps a Pitch track only alone, and
+     * would drop one of the two): each older firmware refuses rather than
+     * open what it cannot hold. */
     const bool pitchBeside = hasPitchTrack() && seqTracks() > 1;
-    doc["version"] = pitchBeside ? kVersion : seqTracks() > 1 || ownKit ? 3 : notes ? 2 : 1;
+    doc["version"] = elements ? 5 : pitchBeside ? 4 : seqTracks() > 1 || ownKit ? 3 : notes ? 2 : 1;
     doc["bpm"]  = bpm;
     doc["bpb"]  = beatsPerBar;
     doc["loop"] = loop;
     doc["length"] = length;
     doc["sync"] = syncSeq;
+    if (!title.empty()) doc["title"] = title;
     if (!kit.empty()) doc["kit"] = kit;
     if (!instrument.empty()) doc["instrument"] = instrument;
     doc["loop_start"] = loopStart;
@@ -399,6 +427,7 @@ bool AudioSong::save() const
             if (c.offset) co["offset"] = c.offset;
             if (c.frames) co["frames"] = c.frames;
             if (c.from) co["from"] = c.from;
+            if (c.isElement()) co["element"] = c.element;
             if (t.kind == TrackKind::Seq && c.notes) {
                 JsonObject no = co["notes"].to<JsonObject>();
                 no["bars"] = c.notes->bars;

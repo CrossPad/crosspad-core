@@ -53,6 +53,13 @@ SeqPatternPtr makeSeqPattern(uint16_t bars, std::vector<SeqNote> notes);
 /// track's scene. Either is played from its bar @c from, looped, for @c bars
 /// bars. That is what lets a region copy or a cut move the notes by bars the
 /// way it moves the audio.
+///
+/// On either kind of track it can instead be an element: another arrangement,
+/// kept as a project of its own under the song's .elements/ folder and played
+/// from a bake of it (WAV in .bake/). Then @c element names it, @c file is the
+/// bake's name (empty until it has been baked), @c frames one pass of the
+/// element at the bake's tempo (0 until baked) and @c from the element bar the
+/// block starts on; @c bar and @c bars are as for any block.
 struct SongClip {
     std::string file;        ///< name inside <project>/clips/; empty on a seq track
     uint32_t    bar  = 0;    ///< 0-based start bar
@@ -61,6 +68,9 @@ struct SongClip {
     uint32_t    frames = 0;  ///< audio: frames it plays from @c offset; 0 = to the file's end
     uint16_t    from = 0;    ///< seq: the bar of its notes the block starts on
     SeqPatternPtr notes;     ///< seq: the block's own notes; null = the track's scene
+    std::string element;     ///< element ref (.elements/E%08X); empty on every other block
+
+    bool isElement() const { return !element.empty(); }
 };
 
 /// A launcher set: the project's clips arranged in a grid to be played live,
@@ -198,11 +208,12 @@ class AudioSong {
 public:
     static constexpr int kTracks = 4;
     /// 2: seq blocks carry notes of their own. 3: two seq tracks, a track
-    /// with a kit of its own. 4: a Pitch track beside kit tracks. Each written
+    /// with a kit of its own. 4: a Pitch track beside kit tracks. 5: element
+    /// clips (SongClip::element) and a title. Each written
     /// only by a song that needs it, so the rest stay readable by firmware from
     /// before -- which refuses a newer one rather than open it and drop what it
     /// cannot hold on its next save.
-    static constexpr int kVersion = 4;
+    static constexpr int kVersion = 5;
     /// Ticks to the quarter of a seq block's notes: PatternSequencer::kPpq.
     static constexpr uint16_t kSeqPpq = 96;
     /// The most one seq block a take lays holds: what one scene of the
@@ -214,9 +225,15 @@ public:
     static constexpr uint8_t kDefaultBeatsPerBar = 4;
     static const char* fileName() { return "song.json"; }
     static const char* clipsDir() { return "clips"; }
+    /// Where the song's elements live, one project folder each, inside the
+    /// song's own folder; and where their bakes are, next to them.
+    static const char* elementsDir() { return ".elements"; }
+    static const char* bakeDir() { return ".bake"; }
 
     std::string dir;              ///< project folder, no trailing slash
     std::string name;
+    /// An element's display name; empty on a song, which is named by its folder.
+    std::string title;
     float       bpm  = 0.0f;      ///< 0 until the first clip sets it
     uint8_t     beatsPerBar = kDefaultBeatsPerBar;
     bool        loop = true;
@@ -417,5 +434,13 @@ private:
     SongClip part(int track, const SongClip& c, uint32_t skip, uint32_t bars, uint32_t spBar) const;
     void dropSeqBlocks(int track);
 };
+
+/// The folder name of an element made from @p seed: "E" and eight upper-case
+/// hex digits.
+std::string make_element_id(uint32_t seed);
+
+/// @p ref is exactly ".elements/E" and eight upper-case hex digits -- what
+/// SongClip::element holds, and the only shape a path built from it may take.
+bool is_element_ref(const std::string& ref);
 
 } // namespace crosspad
