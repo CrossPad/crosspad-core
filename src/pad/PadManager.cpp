@@ -1,7 +1,56 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 #include "crosspad/pad/PadManager.hpp"
 #include <cstdio>
 
 namespace crosspad {
+
+namespace {
+// Pad-logic callbacks the calling thread is inside: a pad logic change made
+// from inside one must not wait for itself.
+thread_local int t_dispatchDepth = 0;
+} // namespace
+
+PadManager::DispatchScope::DispatchScope(const PadManager& pm, EventSource source) : pm_(pm) {
+    std::lock_guard<std::mutex> lock(pm_.logicMutex_);
+    if (!pm_.activePadLogic_) return;
+    handler = pm_.activePadLogic_;
+    if (handler->buttonsOnly()) {
+        if (source == EventSource::PadManager) buttons = true;
+        else handler = pm_.logicUnderButtons();
+    }
+    if (!handler) return;
+    ++pm_.dispatchInFlight_;
+    ++t_dispatchDepth;
+}
+
+std::shared_ptr<IPadLogicHandler> PadManager::logicUnderButtons() const {
+    for (auto it = padLogicStack_.rbegin(); it != padLogicStack_.rend(); ++it) {
+        const auto found = padLogicHandlers_.find(it->empty() ? basePadLogicName_ : *it);
+        if (found != padLogicHandlers_.end() && !found->second->buttonsOnly()) return found->second;
+    }
+    return nullptr;
+}
+
+PadManager::DispatchScope::~DispatchScope() {
+    if (!handler) return;
+    --t_dispatchDepth;
+    {
+        std::lock_guard<std::mutex> lock(pm_.logicMutex_);
+        --pm_.dispatchInFlight_;
+    }
+    pm_.dispatchIdle_.notify_all();
+}
+
+void PadManager::waitDispatchIdle(std::unique_lock<std::mutex>& lock) {
+    if (t_dispatchDepth > 0) {
+        // Waiting here could wait for this very thread, or for another one
+        // changing pad logic from its own callback.
+        printf("PadManager: pad logic changed from inside a pad callback; "
+               "callbacks on other threads may still be running\n");
+        return;
+    }
+    dispatchIdle_.wait(lock, [this] { return dispatchInFlight_ == 0; });
+}
 
 void PadManager::init(PadLedController& ledController, PadAnimator& animator,
                        IMidiOutput& midiOutput, IEventBus& eventBus,
@@ -55,16 +104,23 @@ void PadManager::allNotesOff() {
 
 // ── Physical pad interaction ────────────────────────────────────────────
 
-void PadManager::handlePadPress(uint8_t padIdx, uint8_t velocity, EventSource source) {
+PadPerformance PadManager::performanceFor(uint8_t padIdx, uint8_t& velocity) const {
+    const DispatchScope dispatch(*this);
+    return dispatch.handler ? dispatch.handler->performance(padIdx, velocity) : PadPerformance{};
+}
+
+void PadManager::handlePadPress(uint8_t padIdx, uint8_t velocity, EventSource source,
+                                PadPerformance performance) {
     if (padIdx >= 16) return;
     if (inputSuppressed_) return;
-    if (inputTap_ && source != EventSource::SequencerCallback) inputTap_(inputTapCtx_, padIdx, velocity);
 
-    // Get active pad logic handler (thread-safe read)
-    std::shared_ptr<IPadLogicHandler> handler;
-    {
-        std::lock_guard<std::mutex> lock(logicMutex_);
-        handler = activePadLogic_;
+    // The pad logic this press is for, counted in flight until this call returns.
+    const DispatchScope dispatch(*this, source);
+    const std::shared_ptr<IPadLogicHandler>& handler = dispatch.handler;
+
+    if (inputTap_ && !dispatch.buttons &&
+        source != EventSource::SequencerCallback && source != EventSource::App) {
+        inputTap_(inputTapCtx_, padIdx, velocity);
     }
 
     // Update internal state (thread-safe write)
@@ -73,6 +129,7 @@ void PadManager::handlePadPress(uint8_t padIdx, uint8_t velocity, EventSource so
         padStates_[padIdx] = true;
         padVelocity_[padIdx] = velocity;
     }
+    pressPerformance_[padIdx].store(performance.pack(), std::memory_order_release);
     pressSource_[padIdx].store(source, std::memory_order_release);
 
     // Check if there's an active pad logic handler
@@ -104,14 +161,21 @@ void PadManager::handlePadPress(uint8_t padIdx, uint8_t velocity, EventSource so
     }
 }
 
+void PadManager::handlePadTouch(uint8_t padIdx, bool touching) {
+    if (padIdx >= 16) return;
+    if (inputSuppressed_) return;
+
+    // The active pad logic, counted in flight until this call returns.
+    const DispatchScope dispatch(*this);
+    if (dispatch.handler) dispatch.handler->onPadTouch(*this, padIdx, touching);
+}
+
 void PadManager::handlePadRelease(uint8_t padIdx, EventSource source) {
     if (padIdx >= 16) return;
 
-    std::shared_ptr<IPadLogicHandler> handler;
-    {
-        std::lock_guard<std::mutex> lock(logicMutex_);
-        handler = activePadLogic_;
-    }
+    // The pad logic the press went to, counted in flight until this call returns.
+    const DispatchScope dispatch(*this, source);
+    const std::shared_ptr<IPadLogicHandler>& handler = dispatch.handler;
 
     {
         std::lock_guard<std::mutex> lock(stateMutex_);
@@ -149,11 +213,9 @@ void PadManager::handlePadRelease(uint8_t padIdx, EventSource source) {
 void PadManager::handlePadPressure(uint8_t padIdx, uint8_t pressure) {
     if (padIdx >= 16) return;
 
-    std::shared_ptr<IPadLogicHandler> handler;
-    {
-        std::lock_guard<std::mutex> lock(logicMutex_);
-        handler = activePadLogic_;
-    }
+    // The active pad logic, counted in flight until this call returns.
+    const DispatchScope dispatch(*this);
+    const std::shared_ptr<IPadLogicHandler>& handler = dispatch.handler;
 
     {
         std::lock_guard<std::mutex> lock(stateMutex_);
@@ -173,11 +235,9 @@ void PadManager::handlePadPressure(uint8_t padIdx, uint8_t pressure) {
 void PadManager::notifyPadPressure(uint8_t padIdx, uint8_t pressure) {
     if (padIdx >= 16) return;
 
-    std::shared_ptr<IPadLogicHandler> handler;
-    {
-        std::lock_guard<std::mutex> lock(logicMutex_);
-        handler = activePadLogic_;
-    }
+    // The active pad logic, counted in flight until this call returns.
+    const DispatchScope dispatch(*this);
+    const std::shared_ptr<IPadLogicHandler>& handler = dispatch.handler;
     {
         std::lock_guard<std::mutex> lock(stateMutex_);
         padPressure_[padIdx] = pressure;
@@ -189,7 +249,11 @@ void PadManager::notifyPadPressure(uint8_t padIdx, uint8_t pressure) {
     }
     // ...but the LED brightness is ALWAYS driven here by padIdx, so live
     // pressure reaches the RGB regardless of which app is active (mirrors how
-    // handlePadPress drives notifyNoteOn unconditionally).
+    // handlePadPress drives notifyNoteOn unconditionally). By index, not by
+    // note: getPadForMidiNote() can return 255 under sampler kit configs, and
+    // PadLedController's per-pad midiNote is not populated, so the note-based
+    // handleAftertouch() route does not find the pad. Used by the STM32 MIDI
+    // aftertouch route.
     if (ledController_) {
         ledController_->notifyAftertouch(padIdx, pressure);
     }
@@ -198,11 +262,9 @@ void PadManager::notifyPadPressure(uint8_t padIdx, uint8_t pressure) {
 void PadManager::notifyPadPan(uint8_t padIdx, int8_t pan) {
     if (padIdx >= 16) return;
 
-    std::shared_ptr<IPadLogicHandler> handler;
-    {
-        std::lock_guard<std::mutex> lock(logicMutex_);
-        handler = activePadLogic_;
-    }
+    // The active pad logic, counted in flight until this call returns.
+    const DispatchScope dispatch(*this);
+    const std::shared_ptr<IPadLogicHandler>& handler = dispatch.handler;
     {
         std::lock_guard<std::mutex> lock(stateMutex_);
         padPan_[padIdx] = pan;
@@ -574,6 +636,7 @@ void PadManager::setActivePadLogic(const std::string& appName) {
         auto oldLogic = activePadLogic_;
         activePadLogic_ = nullptr;
         activePadLogicName_ = "";
+        waitDispatchIdle(lock);
 
         // Unlock before calling user code to avoid deadlock
         lock.unlock();
@@ -633,6 +696,7 @@ void PadManager::unregisterPadLogic(const std::string& appName) {
         auto oldLogic = activePadLogic_;
         activePadLogic_ = nullptr;
         activePadLogicName_ = "";
+        waitDispatchIdle(lock);
 
         lock.unlock();
         oldLogic->onDeactivate(*this);

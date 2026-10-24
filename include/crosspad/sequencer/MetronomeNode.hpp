@@ -144,6 +144,15 @@ public:
     uint32_t loopSamples() const {
         return samplesPerBeat_ * beatsPerBar() * barCount();
     }
+    /// Frames from where the clock is to the next bar line, 0 on one. While
+    /// counting in, the frames left of it: beat one follows the count-in.
+    /// What a launch quantised to the bar waits for (SamplerEngine::setBarClock).
+    uint32_t framesToBar() const {
+        if (countingIn()) return countInSamples();
+        const uint32_t bar = samplesPerBeat_ * beatsPerBar();
+        if (!bar) return 0;
+        return (bar - positionSamples() % bar) % bar;
+    }
     uint8_t currentBeat() const {
         const uint32_t spb = samplesPerBeat_ ? samplesPerBeat_ : 1;
         return (uint8_t)((positionSamples() / spb) % beatsPerBar());
@@ -230,6 +239,10 @@ private:
         pos = p;
         cin = c;
         countInTotal_.store(c, std::memory_order_relaxed);
+        /* Before the command reads as applied: until this block ends, readers
+         * would otherwise see the position from before the move. */
+        posSamples_.store(p, std::memory_order_relaxed);
+        countInLeft_.store(c, std::memory_order_relaxed);
         clickLeft_ = 0;
         phase_ = 0.0f;
         appliedSeq_.store(seq, std::memory_order_release);

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 /*
  * STM32 I2C1 slave register map — the single mirror of
  * CrossPad_STM32_r20/app/inc/reg_map.h. Keep in sync with the firmware side.
@@ -42,9 +43,10 @@ extern "C" {
  * REG_ESP_RST_* reset-reason counter block, and the REG_EXP_* I2C-expander
  * block. Bumped 2026-08-25 to 0x000B for power-button wake-hold time and
  * active/qualified flags. Bumped 2026-08-28 to 0x000C for the link-watchdog
- * reset telemetry (REG_ESP_RST_WD_*). Keep in sync with CrossPad_STM32_r20
- * app/inc/reg_map.h. */
-#define STM32_PROTO_VERSION         0x0010
+ * reset telemetry (REG_ESP_RST_WD_*). Bumped 2026-10-17 to 0x0011 for the
+ * adaptive hit window (REG_CTL_BTN_HIT_*, STM 1.12). Keep in sync with
+ * CrossPad_STM32_r20 app/inc/reg_map.h. */
+#define STM32_PROTO_VERSION         0x0011
 
 /* Block bases. */
 #define REG_IDENTITY_BASE           0x0000
@@ -119,7 +121,7 @@ extern "C" {
 #define PWR_STATE_SLEEP_PENDING     0x01   /* STOP1 entry */
 #define PWR_STATE_SHIP_PENDING      0x02   /* BATFET off (hard power down) */
 #define PWR_STATE_WOKE              0x03   /* woke from STOP1, backlight off — the ESP redraws, then sets brightness */
-#define PWR_STATE_LIGHT             0x04   /* LIGHT sleep (backlight off, slow scan; ESP zasilony — ściemnij ARGB/display) */
+#define PWR_STATE_LIGHT             0x04   /* LIGHT sleep (backlight off, slow scan; ESP powered — dim ARGB/display) */
 #define PWR_STATE_CHARGE            0x05   /* charger-idle while off (ESP minimally repowered for the charge UI) */
 #define PWR_ACK_MAGIC               0x55
 
@@ -296,6 +298,27 @@ extern "C" {
 #define REG_CTL_VPAD_COUNT_LO       (REG_CONTROL_BASE + 0x4B)
 #define REG_CTL_VPAD_HOLD_MS        (REG_CONTROL_BASE + 0x4C)
 #define REG_CTL_VPAD_MODE           (REG_CONTROL_BASE + 0x4D)  /* bits1:0 pad rr/single/random, bits3:2 vel sweep/random/fixed */
+/* Hit window (RW, proto 0x0011). The note-on goes out when the press window
+ * ends, with the velocity of the deepest sample inside it. HIT_MODE 0: the
+ * window is REG_CTL_BTN_PRESS_DB_MS long. HIT_MODE 1 (adaptive): it also ends
+ * once the pressure has peaked -- HIT_PEAK_SAMPLES consecutive samples of the
+ * pad at least HIT_PEAK_DROP raw ADC counts shallower than its deepest (0 =
+ * merely not deeper) -- but never before HIT_MIN_MS; PRESS_DB_MS stays the
+ * longest it can be. The STM samples a pad twice per ms. */
+#define REG_CTL_BTN_HIT_MODE        (REG_CONTROL_BASE + 0x4E)  /* 0 fixed, 1 adaptive */
+#define REG_CTL_BTN_HIT_MIN_MS      (REG_CONTROL_BASE + 0x4F)  /* adaptive: earliest note-on, ms */
+#define REG_CTL_BTN_HIT_PEAK_DROP   (REG_CONTROL_BASE + 0x50)  /* adaptive: raw ADC counts above the deepest */
+#define REG_CTL_BTN_HIT_PEAK_SAMPLES (REG_CONTROL_BASE + 0x51) /* adaptive: consecutive samples, 1..255 */
+
+/* Pads held without a finger (RW, STM 1.12 test build), for a bench test of
+ * what the ESP decides from REG_IN_PADS_* -- pad 16 held through a boot. The
+ * mask is OR'ed into the pressed bitmap for SECS seconds from the write of
+ * SECS (0 releases at once); SIM_PADS_HI/LO stage it. The STM keeps it across
+ * an ESP reset. No note-on or pressure goes out for it, and nothing is saved;
+ * an STM without it ignores the writes. */
+#define REG_CTL_SIM_PADS_HI         (REG_CONTROL_BASE + 0x52)  /* bits 8..15 */
+#define REG_CTL_SIM_PADS_LO         (REG_CONTROL_BASE + 0x53)  /* bits 0..7  */
+#define REG_CTL_SIM_PADS_SECS       (REG_CONTROL_BASE + 0x54)  /* arms; 0 = release */
 
 /* Command (WO trigger — write any byte to fire). */
 #define REG_CMD_DFU                 (REG_COMMAND_BASE + 0x00)

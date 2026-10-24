@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
 #include <crosspad/sequencer/SequencerTypes.hpp>
 #include <crosspad/sequencer/ISequencerEngine.hpp>

@@ -1,6 +1,13 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 #include <catch2/catch_test_macros.hpp>
 #include "test_helpers.hpp"
 #include "crosspad/pad/IPadLogicHandler.hpp"
+
+#include <algorithm>
+#include <atomic>
+#include <chrono>
+#include <future>
+#include <thread>
 
 using namespace crosspad;
 
@@ -260,11 +267,160 @@ TEST_CASE("PadManager: the input tap sees played pads, not the sequencer's", "[p
         CHECK(seen.count == 0);
     }
 
+    SECTION("an app's own playback (a kit's preview) is not tapped") {
+        pm.handlePadPress(4, 100, EventSource::App);
+        CHECK(seen.count == 0);
+    }
+
     SECTION("a suppressed press is not tapped") {
         pm.setInputSuppressed(true);
         pm.handlePadPress(1, 100);
         CHECK(seen.count == 0);
     }
+}
+
+namespace {
+
+// Counts the presses and releases that reach it; buttons-only on request.
+class CountingLogic : public DummyPadLogic {
+public:
+    explicit CountingLogic(bool buttons = false) : buttons_(buttons) {}
+    bool buttonsOnly() const override { return buttons_; }
+    void onPadPress(PadManager&, uint8_t pad, uint8_t) override { ++presses; lastPad = pad; }
+    void onPadRelease(PadManager&, uint8_t) override { ++releases; }
+    int presses = 0, releases = 0;
+    uint8_t lastPad = 0xFF;
+private:
+    bool buttons_;
+};
+
+} // namespace
+
+TEST_CASE("PadManager: a buttons-only logic takes a finger; every other note plays under it",
+          "[pad][buttons]") {
+    test::CoreTestPlatform platform;
+    REQUIRE(platform.init());
+    auto& pm = platform.padManager;
+    auto inst = std::make_shared<CountingLogic>();
+    auto map  = std::make_shared<CountingLogic>(true);
+    pm.registerPadLogic("Inst", inst);
+    pm.registerPadLogic("Map", map);
+    pm.setBasePadLogic("Inst");
+    pm.pushPadLogic("Map");
+    REQUIRE(pm.getActivePadLogic() == "Map");
+
+    SECTION("a finger chooses on the map and plays nothing") {
+        pm.handlePadPress(3, 100);
+        pm.handlePadRelease(3);
+        CHECK(map->presses == 1);
+        CHECK(map->releases == 1);
+        CHECK(inst->presses == 0);
+        CHECK(inst->releases == 0);
+    }
+
+    for (const EventSource src : {EventSource::SequencerCallback, EventSource::MidiInput,
+                                  EventSource::App}) {
+        DYNAMIC_SECTION("a note from source " << static_cast<int>(src) << " sounds under the map") {
+            pm.handlePadPress(7, 90, src);
+            pm.handlePadRelease(7, src);
+            CHECK(inst->presses == 1);
+            CHECK(inst->lastPad == 7);
+            CHECK(inst->releases == 1);
+            CHECK(map->presses == 0);
+            CHECK(map->releases == 0);
+        }
+    }
+
+    SECTION("the logic under is the one the map was pushed over, not the base") {
+        auto app = std::make_shared<CountingLogic>();
+        pm.registerPadLogic("App", app);
+        pm.popPadLogic();
+        pm.pushPadLogic("App");
+        pm.pushPadLogic("Map");
+        pm.handlePadPress(1, 100, EventSource::SequencerCallback);
+        CHECK(app->presses == 1);
+        CHECK(inst->presses == 0);
+    }
+
+    SECTION("with the map gone the notes go back to the active logic") {
+        pm.popPadLogic();
+        pm.handlePadPress(2, 100, EventSource::MidiInput);
+        pm.handlePadPress(2, 100);
+        CHECK(inst->presses == 2);
+        CHECK(map->presses == 0);
+    }
+}
+
+TEST_CASE("PadManager: a finger on a buttons-only logic is not the recorder's input",
+          "[pad][buttons]") {
+    test::CoreTestPlatform platform;
+    REQUIRE(platform.init());
+    auto& pm = platform.padManager;
+    int tapped = 0;
+    pm.setInputTap([](void* ctx, uint8_t, uint8_t) { ++*static_cast<int*>(ctx); }, &tapped);
+    pm.registerPadLogic("Inst", std::make_shared<CountingLogic>());
+    pm.registerPadLogic("Map", std::make_shared<CountingLogic>(true));
+    pm.setBasePadLogic("Inst");
+    pm.pushPadLogic("Map");
+
+    pm.handlePadPress(4, 100);                          // a button press
+    CHECK(tapped == 0);
+    pm.handlePadPress(4, 100, EventSource::MidiInput);  // a host's note, recorded as ever
+    CHECK(tapped == 1);
+    pm.popPadLogic();
+    pm.handlePadPress(4, 100);                          // a finger playing the instrument
+    CHECK(tapped == 2);
+}
+
+namespace {
+
+// 16 levels of pitch on pad 6, for whatever is struck; reads back what the
+// recorder said a played-back press was.
+class LevelsLogic : public IPadLogicHandler {
+public:
+    void onActivate(PadManager&) override {}
+    void onDeactivate(PadManager&) override {}
+    void onPadPress(PadManager& pm, uint8_t pad, uint8_t) override { seen = pm.pressPerformance(pad); }
+    void onPadRelease(PadManager&, uint8_t) override {}
+    void onPadPressure(PadManager&, uint8_t, uint8_t) override {}
+    PadPerformance performance(uint8_t, uint8_t& velocity) const override {
+        velocity = 127;
+        PadPerformance p;
+        p.levels = PadLevels::Pitch;
+        p.source = 6;
+        return p;
+    }
+    PadPerformance seen;
+};
+
+} // namespace
+
+TEST_CASE("PadManager: what a press would sound as comes from the active logic", "[pad][levels]") {
+    test::CoreTestPlatform platform;
+    REQUIRE(platform.init());
+    auto& pm = platform.padManager;
+
+    uint8_t vel = 30;
+    REQUIRE(pm.performanceFor(3, vel).plain());     // the default logic has no mode
+    REQUIRE(vel == 30);
+
+    auto lv = std::make_shared<LevelsLogic>();
+    pm.registerPadLogic("Levels", lv);
+    pm.setActivePadLogic("Levels");
+    const PadPerformance p = pm.performanceFor(3, vel);
+    REQUIRE(p.levels == PadLevels::Pitch);
+    REQUIRE(p.source == 6);
+    REQUIRE(vel == 127);
+
+    /* A played-back press carries what was recorded; a finger's is plain. */
+    PadPerformance rec;
+    rec.levels = PadLevels::Velocity;
+    rec.source = 2;
+    pm.handlePadPress(9, 55, EventSource::SequencerCallback, rec);
+    REQUIRE(lv->seen.levels == PadLevels::Velocity);
+    REQUIRE(lv->seen.source == 2);
+    pm.handlePadPress(9, 55);
+    REQUIRE(lv->seen.plain());
 }
 
 namespace {
@@ -274,6 +430,156 @@ struct LockCountingStrip : test::MockLedStrip {
     int locks = 0;
 };
 } // namespace
+
+TEST_CASE("PadManager: pad pan is the wire value minus its centre", "[pad][pan]") {
+    STATIC_REQUIRE(IPadLogicHandler::panFromWire(0) == IPadLogicHandler::kPanMin);
+    STATIC_REQUIRE(IPadLogicHandler::panFromWire(IPadLogicHandler::kPanWireCentre)
+                   == IPadLogicHandler::kPanCentre);
+    STATIC_REQUIRE(IPadLogicHandler::panFromWire(127) == IPadLogicHandler::kPanMax);
+
+    struct PanLogic : DummyPadLogic {
+        void onPadPan(PadManager&, uint8_t pad, int8_t pan) override { lastPad = pad; lastPan = pan; }
+        uint8_t lastPad = 0xFF;
+        int8_t lastPan = 1;
+    };
+    test::CoreTestPlatform platform;
+    REQUIRE(platform.init());
+    auto& pm = platform.padManager;
+    auto logic = std::make_shared<PanLogic>();
+    pm.registerPadLogic("pan", logic);
+    pm.setActivePadLogic("pan");
+
+    pm.notifyPadPan(5, IPadLogicHandler::panFromWire(0));
+    REQUIRE(logic->lastPad == 5);
+    REQUIRE(logic->lastPan == IPadLogicHandler::kPanMin);
+    REQUIRE(pm.getPadPan(5) == IPadLogicHandler::kPanMin);
+}
+
+TEST_CASE("PadManager: deactivation waits for a press in flight on another thread", "[pad][dispatch]") {
+    struct HeldPressLogic : DummyPadLogic {
+        std::promise<void> entered, release, deactivated;
+        std::atomic<int> inFlight{0};
+        std::atomic<int> inFlightAtDeactivate{-1};
+        void onPadPress(PadManager&, uint8_t, uint8_t) override {
+            ++inFlight;
+            entered.set_value();
+            release.get_future().wait();
+            --inFlight;
+        }
+        void onDeactivate(PadManager&) override {
+            inFlightAtDeactivate = inFlight.load();
+            deactivated.set_value();
+        }
+    };
+    test::CoreTestPlatform platform;
+    REQUIRE(platform.init());
+    auto& pm = platform.padManager;
+    auto logic = std::make_shared<HeldPressLogic>();
+    pm.registerPadLogic("held", logic);
+    pm.setActivePadLogic("held");
+
+    auto deactivated = logic->deactivated.get_future();
+    std::thread press([&] { pm.handlePadPress(0, 100); });
+    logic->entered.get_future().wait();
+
+    std::thread teardown([&] { pm.setActivePadLogic(""); });
+    // The press is held: the teardown must not reach onDeactivate.
+    REQUIRE(deactivated.wait_for(std::chrono::milliseconds(200)) == std::future_status::timeout);
+
+    logic->release.set_value();
+    press.join();
+    teardown.join();
+    REQUIRE(deactivated.wait_for(std::chrono::seconds(0)) == std::future_status::ready);
+    REQUIRE(logic->inFlightAtDeactivate == 0);
+}
+
+TEST_CASE("PadManager: deactivation waits for a touch in flight on another thread", "[pad][dispatch]") {
+    struct HeldTouchLogic : DummyPadLogic {
+        std::promise<void> entered, release, deactivated;
+        std::atomic<int> inFlight{0};
+        std::atomic<int> inFlightAtDeactivate{-1};
+        void onPadTouch(PadManager&, uint8_t, bool) override {
+            ++inFlight;
+            entered.set_value();
+            release.get_future().wait();
+            --inFlight;
+        }
+        void onDeactivate(PadManager&) override {
+            inFlightAtDeactivate = inFlight.load();
+            deactivated.set_value();
+        }
+    };
+    test::CoreTestPlatform platform;
+    REQUIRE(platform.init());
+    auto& pm = platform.padManager;
+    auto logic = std::make_shared<HeldTouchLogic>();
+    pm.registerPadLogic("touch", logic);
+    pm.setActivePadLogic("touch");
+
+    auto deactivated = logic->deactivated.get_future();
+    std::thread touch([&] { pm.handlePadTouch(3, true); });
+    logic->entered.get_future().wait();
+
+    std::thread teardown([&] { pm.setActivePadLogic(""); });
+    REQUIRE(deactivated.wait_for(std::chrono::milliseconds(200)) == std::future_status::timeout);
+
+    logic->release.set_value();
+    touch.join();
+    teardown.join();
+    REQUIRE(deactivated.wait_for(std::chrono::seconds(0)) == std::future_status::ready);
+    REQUIRE(logic->inFlightAtDeactivate == 0);
+}
+
+TEST_CASE("PadManager: no pad callback reaches a handler after its onDeactivate", "[pad][dispatch]") {
+    struct CheckedLogic : DummyPadLogic {
+        std::atomic<bool> deactivated{false};
+        std::atomic<int> inFlight{0};
+        std::atomic<int> violations{0};
+        std::atomic<int> presses{0};
+        void onPadPress(PadManager&, uint8_t, uint8_t) override {
+            ++inFlight;
+            if (deactivated) ++violations;
+            ++presses;
+            --inFlight;
+        }
+        void onPadRelease(PadManager&, uint8_t) override {
+            ++inFlight;
+            if (deactivated) ++violations;
+            --inFlight;
+        }
+        void onDeactivate(PadManager&) override {
+            if (inFlight != 0) ++violations;
+            deactivated = true;
+        }
+    };
+    test::CoreTestPlatform platform;
+    REQUIRE(platform.init());
+    auto& pm = platform.padManager;
+    auto logic = std::make_shared<CheckedLogic>();
+    pm.registerPadLogic("checked", logic);
+
+    constexpr int kToggles = 300;
+    std::atomic<bool> done{false};
+    std::thread pads([&] {
+        for (uint8_t i = 0; !done; i = (uint8_t)((i + 1) % 16)) {
+            pm.handlePadPress(i, 100);
+            pm.handlePadRelease(i);
+        }
+    });
+    // Only this thread changes the logic, so "deactivated" is cleared before
+    // the handler can be dispatched to again.
+    for (int t = 0; t < kToggles; ++t) {
+        logic->deactivated = false;
+        pm.setActivePadLogic("checked");
+        while (logic->presses.load() <= t) std::this_thread::yield();
+        pm.setActivePadLogic("");
+    }
+    done = true;
+    pads.join();
+
+    REQUIRE(logic->presses.load() >= kToggles);
+    REQUIRE(logic->violations == 0);
+}
 
 TEST_CASE("PadLedController: coalesced, a voice's start is painted by update(), not by its caller",
           "[pad][led]") {
@@ -304,4 +610,28 @@ TEST_CASE("PadLedController: coalesced, a voice's start is painted by update(), 
     REQUIRE(strip.refreshCount == frames + 1);
     leds.update();                      // nothing new: no frame
     REQUIRE(strip.refreshCount == frames + 1);
+}
+
+TEST_CASE("PadLedController: a dimmed Loop pad stays visible whatever its playing colour",
+          "[pad][led]") {
+    test::MockLedStrip strip;
+    crosspad::SyncEventBus bus;
+    crosspad::PadLedController leds;
+    leds.init(strip, bus, nullptr);
+    leds.begin();
+    const auto peakOf = [](crosspad::RgbColor c) { return std::max({c.R, c.G, c.B}); };
+
+    // A bright playing colour: half of it would be above the ceiling.
+    leds.setPadPlayingColor(0, 0, 200, 255);
+    leds.notifyNoteDimmed(0, true);
+    REQUIRE(peakOf(strip.pixels[0]) <= crosspad::PadLedController::kDimmedMaxPeak);
+    REQUIRE(peakOf(strip.pixels[0]) >= crosspad::PadLedController::kDimmedMaxPeak - 1);
+    REQUIRE(strip.pixels[0].R == 0);                       // the hue is kept
+
+    // A dark one (a kit's colour_pressed at 0x31): a quarter of it was 4 % of
+    // full scale, next to nothing on a WS2812. It is raised to the floor.
+    leds.setPadPlayingColor(1, 0, 0x25, 0x31);
+    leds.notifyNoteDimmed(1, true);
+    REQUIRE(peakOf(strip.pixels[1]) >= crosspad::PadLedController::kDimmedMinPeak - 1);
+    REQUIRE(peakOf(strip.pixels[1]) < 0x31);               // still dimmer than playing
 }

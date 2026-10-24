@@ -1,9 +1,10 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
 #include <cstdint>
 
 namespace crosspad {
 
-/// When the daily background check is due (spec Revision 2): last_check a day
+/// When the daily background check is due: last_check a day
 /// old (or unknown) and the launcher idle for two minutes. After a failed
 /// attempt (no WiFi, no_mem) the next one waits an hour; after a good one
 /// without a Date header, a day of this boot's own time.

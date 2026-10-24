@@ -26,8 +26,21 @@
  *   Finished --(streaming thread: give the blocks back)--> Free
  * ```
  *
- * Each arrow has exactly one writer, so the only atomic operation needed is
- * the claim, where two note sources could race for the same slot. In
+ * A hit whose velocity is not known yet takes a detour (arm(), fire()):
+ *
+ * ```
+ *   Free --(note thread: claim, fill all but the level)--> Armed
+ *   Armed --(the velocity: level, cut, room, publish)--> Playing
+ *   Armed --(a touch that never became a hit, or kArmTimeoutMs)--> Finished
+ * ```
+ *
+ * The render never sees an Armed voice. Whoever ends one -- fire(), disarm(),
+ * the streaming thread's timeout -- takes it with a compare-and-swap, so
+ * exactly one of them does.
+ *
+ * Each arrow has exactly one writer, so the only atomic operations needed are
+ * the claim, where two note sources could race for the same slot, and the
+ * end of an armed voice. In
  * particular **the render thread never gives a block back and never closes
  * anything** -- it marks the voice Finished and moves on, which is the same
  * rule the file port had to discover the hard way about `fclose()`.
@@ -69,6 +82,9 @@ public:
     static constexpr uint8_t kMaxSounding = kMaxVoices - kFadeSlots;
     static constexpr uint8_t kPads = SamplerKit::kPads;
     static constexpr float   kStealFadeMs = 2.0f;
+    /// A one-shot whose trim ends inside its file -- a slice of one WAV --
+    /// fades out over this before the trim's end, or it stops on a click.
+    static constexpr float   kTrimFadeMs = 5.0f;
 
     struct Params {
         /// Voices that may sound at once. Sixteen is what the engine this
@@ -94,10 +110,19 @@ public:
          * voices alive at twenty hits a second, where the audible part of a
          * hit is over in half a second.
          *
+         * Silence is judged on the file, not on what the pad's gain makes of
+         * it, and where it was found is kept (SampleStore::audibleEnd()): the
+         * next hit of that sample stops exactly there and never streams the
+         * tail at all. So the wait only matters for a sample's first hit, and
+         * it is long -- at 200 ms it took a rest inside a phrase for the end
+         * of the file and cut the phrase off there (DREAMSCAPE pad 4: a
+         * 221 ms rest at 1.05 s, 1.8 s of the sample never played,
+         * 09.10.2026).
+         *
          * Only one-shots. A loop is meant to carry on, and a held note is the
          * player's to release. 0 disables it.
          */
-        float   silenceMs = 200.0f;
+        float   silenceMs = 1500.0f;
         /**
          * @brief Voices that may be **streaming** at once.
          *
@@ -115,8 +140,26 @@ public:
          *
          * Resident voices are not counted against it; `maxVoices` still caps
          * the total.
+         *
+         * Sixteen, the pad count (23.10.2026): measured on a v2, sixteen
+         * stereo one-shots streaming under a kit change and fifteen loops
+         * under the USB-audio profile with a host stream, no underrun, the
+         * card ~50 % busy. Ten was the number before the render and the
+         * card's sector path got cheaper.
          */
-        uint8_t maxStreamingVoices = 10;
+        uint8_t maxStreamingVoices = 16;
+
+        /**
+         * @brief Blocks in a streaming voice's ring, up to
+         *        StreamWindow::kMaxBlocks.
+         *
+         * A voice can wait one fewer of them for the card before it runs
+         * dry, so this is the longest stall of the streamer a voice survives.
+         * The default is the streamer's own pace; a port whose card is also
+         * the kit loader's and the UI's sets more, and sizes its pool's pages
+         * to a ring each so the ring stays one span (StreamWindow::open()).
+         */
+        uint8_t streamBlocks = StreamWindow::kDefaultBlocks;
 
         /**
          * @brief A pad cuts its own sound when it is hit again.
@@ -135,6 +178,10 @@ public:
 
         /// What counts as inaudible, as a fraction of full scale. -80 dBFS.
         float   silenceLevel = 1.0e-4f;
+
+        /// How long a Loop pad's mute and unmute take: short enough to land
+        /// on the hit, long enough not to click mid-waveform.
+        float   muteMs = 5.0f;
     };
 
     struct Counters {
@@ -145,6 +192,16 @@ public:
         uint32_t streamRefused = 0;   ///< the pool had no blocks: the voice plays its head only
         uint32_t underruns     = 0;   ///< a voice reached frames the streamer had not delivered
         uint32_t voicesPeak    = 0;
+        /// Pitched frames rendered as a run off one buffer, and frame by frame
+        /// (attack, fades, the trim's tail, a buffer's edge): where the
+        /// slower path's share of a pitched kit's render goes.
+        uint32_t pitchedRunFrames  = 0;
+        uint32_t pitchedSlowFrames = 0;
+        uint32_t sheds         = 0;   ///< steals setOverloaded() forced below the cap (part of steals)
+        uint32_t armed         = 0;   ///< voices armed by a touch
+        uint32_t armFired      = 0;   ///< ... that its velocity started
+        uint32_t armCancelled  = 0;   ///< ... that a touch without a hit, or a hit other than the armed one, ended
+        uint32_t armExpired    = 0;   ///< ... that nothing ended within kArmTimeoutMs
         uint32_t rtMaxUs       = 0;   ///< set by the port, which owns the clock
         /**
          * @brief Longest noteOn() call in **wall time** -- work and waiting both.
@@ -165,6 +222,8 @@ public:
          * because the number means what its name suggests.
          */
         uint32_t noteOnMaxUs   = 0;
+        uint32_t loopsQueued   = 0;   ///< Loop pads started while the clock ran: waiting for the bar
+        uint32_t loopsLaunched = 0;   ///< ... that the bar started
     };
 
     /// Microseconds, for the one thing this engine times itself. The port
@@ -183,12 +242,52 @@ public:
     bool isGenerator() const override { return true; }
     void onPrepare(uint32_t maxFrames, uint32_t sampleRate) override;
     void mix(float* out, uint32_t frames) override;
+    /// No voice was rendered in the last mix() (IAudioNode).
+    bool lastMixSilent() const override { return lastSilent_; }
 
     // ── Setup, on the loader thread ───────────────────────────────────────
     /// The pool the voices stream through and the store they read.
     void bind(BlockPool* pool, SampleStore* store);
     void setParams(const Params& p);
+
+    /**
+     * @brief The render is over its budget: hold the polyphony where it is.
+     *
+     * Raised by the platform while its audio task's average pass is close to
+     * a block -- the signal PitchedInstrument::setOverloaded() gets. Until it
+     * is lowered, a note takes the place of the oldest sounding voice instead
+     * of adding one. maxVoices is a count, and what a voice costs is not: a
+     * file at another rate than the engine's, or a pitched pad, interpolates
+     * every frame -- ~70 us a voice on the S3 against ~20 at unit rate -- so
+     * sixteen of them are more than a block, and a render that never waits
+     * for its DMA starves the thread that plays and releases the notes.
+     */
+    void setOverloaded(bool on) { overloaded_.store(on, std::memory_order_relaxed); }
+    /**
+     * The render over its whole block and staying there: the oldest sounding
+     * voice is let go, faded out as a steal is (counted in `sheds`). A held
+     * polyphony (setOverloaded()) only stops a note adding a voice, and a
+     * loop never ends on its own -- the board's audio task calls this one
+     * voice at a time while its pass runs longer than the block it fills.
+     * False when nothing was sounding. Any thread, as noteOn() is.
+     */
+    bool shedOne();
+    bool overloaded() const { return overloaded_.load(std::memory_order_relaxed); }
     void setNoteCallbacks(NoteCb on, NoteCb off, void* ctx);
+
+    /**
+     * @brief The clock a Loop pad launches on.
+     * True while it runs, with @p framesToBar the frames from the start of
+     * the block being rendered to the next bar line (0: the block starts on
+     * one). Asked by the note thread (is it running?) and once a block by the
+     * render, so it must be RT-safe. Unset, or false, means stopped.
+     */
+    using BarClockFn = bool (*)(void* ctx, uint32_t& framesToBar);
+    void setBarClock(BarClockFn fn, void* ctx);
+
+    /// Where a Loop pad is, for a status line and the LEDs.
+    enum class LoopState : uint8_t { Idle = 0, Queued, Playing, Muted };
+    LoopState loopState(uint8_t pad, uint8_t key = kOwnKey) const;
 
     /**
      * @brief Close the note path so the loader can retire the current kit.
@@ -211,6 +310,15 @@ public:
     void setPadMixGains(uint8_t pad, float gain, float balance);
 
     // ── Notes, from the event thread ──────────────────────────────────────
+    /*
+     * A Loop pad is a launch/mute toggle rather than a note: a hit starts it
+     * (on the next bar while the clock runs, at once while it is stopped), a
+     * hit while it sounds mutes it with the clock running -- the voice keeps
+     * its place and goes on streaming -- or stops it with the clock stopped,
+     * a hit while muted unmutes it where it is, and a hit while it waits for
+     * the bar cancels the launch. The clock stopping ends every loop. A
+     * release never reaches a loop; an armed hit on one toggles in fire().
+     */
     /// Play @p pad. @p transpose: semitones on top of the pad's own pitch, for
     /// this note only. @p key: which hit this is -- the retrigger and the
     /// release go by it, so 16 levels of pitch (every pad playing one pad's
@@ -221,6 +329,56 @@ public:
     /// Release the notes of @p pad struck as @p key (kOwnKey: the pad's own).
     void noteOff(uint8_t pad, uint8_t key = kOwnKey);
     void allNotesOff();
+
+    // ── A hit before its velocity ─────────────────────────────────────────
+    /**
+     * @brief How long an armed voice waits for its velocity.
+     *
+     * A safety net, not the way a touch ends: the pad's own controller says
+     * when a touch leaves without a hit (disarm()). Longer than any press
+     * window the STM can be set to (its debounce is a byte of milliseconds),
+     * so a slow window is never cut short -- and a voice armed by a message
+     * that was lost holds a slot for this long, nothing more.
+     */
+    static constexpr uint32_t kArmTimeoutMs = 300;
+
+    /**
+     * @brief A finger is on @p touch and its velocity is still being measured:
+     * get @p pad's voice ready.
+     *
+     * Everything a note-on does that does not depend on the velocity is done
+     * here -- the voice claimed, the sample and its trim bound, the cursor on
+     * its first frame, the pitch, the envelope at its start -- so that fire()
+     * only has to set the level and publish. Nothing is cut, stolen or heard:
+     * a touch that never becomes a hit leaves no trace.
+     *
+     * @p touch is the pad the finger is on, @p pad the one it will sound (16
+     * levels play one pad from all of them), @p transpose and @p key as for
+     * noteOn(). A second arm() for the same @p touch replaces the first.
+     * Note thread. False when there is nothing to arm (no kit, no sample, the
+     * loader holds the engine, no slot free) -- the hit then plays through
+     * noteOn() as it always did.
+     */
+    bool arm(uint8_t touch, uint8_t pad, int8_t transpose = 0, uint8_t key = kOwnKey);
+
+    /**
+     * @brief The velocity of @p touch's hit: start the voice armed for it.
+     *
+     * The rest of a note-on, at the level @p velocity gives: the pad's own
+     * voice and its choke group cut, room made under the caps, the layer
+     * chosen again if the pad splits by velocity or its sample was swapped
+     * since the arm. False when no voice is armed for @p touch, or when the
+     * hit is not the one that was armed (another sound pad, pitch or key --
+     * the mode changed under the finger); that armed voice is dropped and the
+     * caller plays the hit with noteOn().
+     */
+    bool fire(uint8_t touch, uint8_t pad, uint8_t velocity, int8_t transpose = 0, uint8_t key = kOwnKey);
+
+    /// The touch on @p touch ended without a hit: drop its armed voice, if any.
+    void disarm(uint8_t touch);
+
+    /// Voices armed and waiting for a velocity, for a status line.
+    uint8_t armedVoices() const;
 
     /**
      * @brief Silence one pad now, whatever its mode says.
@@ -250,6 +408,28 @@ public:
     /// rebuild a pad without gating the render thread.
     bool padSounding(uint8_t pad) const;
     bool anySounding() const;
+
+    /// The fewest frames any streaming voice has delivered ahead of where it
+    /// plays -- a voice still in its head, waiting for its ring, counts what
+    /// of the head is left. UINT32_MAX when no voice reads the card, or every
+    /// one has its sample whole. A render faster than real time (an offline
+    /// freeze) waits on it, so the streamer keeps ahead of what it plays.
+    uint32_t streamLead() const;
+
+    /**
+     * @brief Whether anything may still read slot @p slot of the store.
+     *
+     * A kit swapped under a performance points each pad at its new samples
+     * while the old ones may still be sounding; a voice keeps reading the
+     * head it started on until it ends. So an old head goes back only once
+     * this is false: no pad of the published kit names the slot, no voice
+     * holds it (the streaming thread has freed every one that did), and no
+     * note is inside noteOn() -- one that is may have read a pad from before
+     * the swap, and its voice is not visible yet.
+     *
+     * Loader thread, after the pads that named the slot have been rewritten.
+     */
+    bool slotInUse(uint16_t slot) const;
 
     // ── Audition: one file outside the kit ────────────────────────────────
     /// Streaming passes an audition may wait for its first block before it
@@ -326,6 +506,23 @@ public:
      */
     bool serviceIo();
 
+    /**
+     * @brief Voices still waiting for a ring after the last serviceIo() pass.
+     *
+     * A voice whose ring the pool could not give keeps asking, pass after
+     * pass, while it plays its head -- until kRingRetryFrames before the
+     * head runs out, when it is refused for good (Counters::streamRefused).
+     * That is the platform's time to grow the pool (BlockPool::reserve(), on
+     * a worker or the streaming thread), so a pool can start small and hold
+     * only the rings that are playing.
+     */
+    uint8_t ringsWaiting() const { return ringsWaiting_.load(std::memory_order_acquire); }
+
+    /// How close to the end of its head a voice still waits for a ring: the
+    /// first block has to be read before the head runs out. 4096 frames is
+    /// 93 ms at 44.1 kHz.
+    static constexpr uint32_t kRingRetryFrames = 4096;
+
     /// No streaming pass is in the voices or the audition right now. What a
     /// teardown waits for before the pool's pages go.
     bool ioIdle() const;
@@ -354,13 +551,16 @@ public:
     uint8_t  voicesActive() const;
 
 private:
-    enum class VoiceState : uint8_t { Free = 0, Claiming, Playing, Finished };
+    enum class VoiceState : uint8_t { Free = 0, Claiming, Playing, Finished, Armed };
 
     struct Voice {
         std::atomic<uint8_t> state{static_cast<uint8_t>(VoiceState::Free)};
         std::atomic<uint32_t> playFrame{0};   ///< published for serviceIo()
         std::atomic<bool>     fading{false};  ///< asked to give its slot up
         std::atomic<bool>     releasing{false};
+        std::atomic<bool>     queued{false};  ///< a Loop launch waiting for the bar
+        std::atomic<bool>     muted{false};   ///< a Loop pad muted: silent, still running
+        float                 muteGain = 1.0f; ///< render: the mute ramp's level
         bool                  announced = false;   ///< onNote fired from the render pass
 
         SampleCursor cursor;
@@ -377,8 +577,17 @@ private:
 
         uint8_t  pad = 0, layer = 0, choke = 0;
         uint8_t  key = 0;        ///< the hit it belongs to: the pad, or what noteOn() was given
+        int8_t   transpose = 0;  ///< the semitones the hit added to the pad's own
+        uint8_t  touch = 0;      ///< Armed: the pad the finger is on
+        uint32_t armUs = 0;      ///< Armed: when, on the engine's clock
         uint32_t age = 0;        ///< order of starting, for the steal
         uint32_t quiet = 0;      ///< consecutive frames below silenceLevel
+        uint32_t loudEnd = 0;    ///< one past the last frame above it, 0 = none yet
+        /* A one-shot trimmed to end inside its file fades out from here (the
+         * file's frames) by tailStep a frame; UINT32_MAX = no such fade. */
+        uint32_t tailFrom = UINT32_MAX;
+        float    tailStep = 0.0f;
+        uint16_t slotIdx = SampleStore::kNoSlot;   ///< where to say so
         /* What the streaming thread needs to open this voice's ring, left for
          * it by noteOn() rather than done there. */
         const SampleStore::Slot* slot = nullptr;
@@ -392,9 +601,36 @@ private:
         bool wantStream = false;
     };
 
+    /// What a note of one layer reads, decided before a voice is taken.
+    struct Plan {
+        const SampleStore::Slot* slot = nullptr;
+        uint16_t slotIdx = 0;
+        uint8_t  layer = 0;
+        uint32_t first = 0, last = 0;
+        bool     willStream = false;
+    };
+
     void   noteOnBody(uint8_t pad, uint8_t velocity, int8_t transpose, uint8_t key);
+    bool   armBody(uint8_t touch, uint8_t pad, int8_t transpose, uint8_t key);
+    bool   fireBody(Voice& v, uint8_t pad, uint8_t velocity, int8_t transpose, uint8_t key);
+    /// The layer a hit at @p velocity plays (round-robin moves on).
+    uint8_t pickLayer(const KitPad& kp, uint8_t pad, uint8_t velocity);
+    /// @p layer's sample and trim; false when it has no sample.
+    bool   plan(const KitPad& kp, uint8_t layer, Plan& p) const;
+    /// A new hit of @p key cuts the pad's own voice and its choke group.
+    void   cutFor(const KitPad& kp, uint8_t key);
+    /// Room under the streaming budget, the voice cap and the overload shed.
+    void   makeRoom(bool willStream);
+    /// Everything but the level: the sample, the trim, pitch, envelope start.
+    void   fill(Voice& v, const KitPad& kp, const Plan& p, uint8_t pad, int8_t transpose, uint8_t key);
+    /// The level, its age, and Playing -- the voice is heard from here.
+    void   start(Voice& v, const KitPad& kp, uint8_t velocity);
+    /// An Armed voice of @p touch, or nullptr.
+    Voice* armedFor(uint8_t touch);
+    /// Armed -> Finished, if nobody took it first.
+    bool   dropArmed(Voice& v);
     Voice* claimVoice();
-    void   stealOldest();
+    bool   stealOldest();
     /// The oldest voice that is reading the card. Used when the streaming
     /// budget is full and a resident voice would be the wrong one to lose.
     void   stealOldestStreaming();
@@ -403,8 +639,14 @@ private:
     /// `wantStream` flag alone is not this question.
     static bool streamsOrWillStream(const Voice& v);
     void   startFade(Voice& v);
+    /// A one-shot has run past its sound: tell the store where it ended.
+    void   learnEnd(const Voice& v);
     void   endVoice(Voice& v);
     bool   renderVoice(Voice& v, float* out, uint32_t frames);
+    /// A hit on a Loop pad that already has its voice: mute, unmute, stop or
+    /// cancel. False when it has none and the hit starts one.
+    bool   loopToggle(uint8_t pad, uint8_t key);
+    bool   barClockRunning() const;
 
     /// The audition's half of serviceIo(); one pass at a time (pSvc_).
     void servicePreview();
@@ -467,14 +709,38 @@ private:
 
     Params params_;
     uint32_t sampleRate_ = 44100;
+    bool     lastSilent_ = true;   ///< render thread: mix() rendered no voice
+
+    /* What renderVoice() derives from params_ and sampleRate_, worked out
+     * when either changes instead of for every voice of every block: three
+     * float divisions a voice, each a call into the ROM's soft-float on the
+     * S3 (its FPU has no divide), ~25 us a block at sixteen voices. */
+    struct Steps {
+        float    fadeStep = 1.0f;     ///< a steal's fade-out, a frame
+        float    relStep = 1.0f;      ///< a release, a frame
+        float    muteStep = 1.0f;     ///< a Loop pad's mute ramp, a frame
+        uint32_t quietFrames = 0;     ///< silenceMs in frames; 0 = never stop on quiet
+        float    loudLevel = 0.0f;    ///< silenceLevel in the file's own units
+    } steps_;
+    void refreshSteps();
 
     NowFn  now_ = nullptr;
     std::atomic<uint32_t> cNoteOnMaxUs_{0};
+    /// Notes inside noteOn() right now; see slotInUse().
+    std::atomic<uint32_t> notesInFlight_{0};
     NoteCb onNote_ = nullptr, offNote_ = nullptr;
+    BarClockFn barClock_ = nullptr;
+    void*      barClockCtx_ = nullptr;
+    bool       barWasRunning_ = false;   ///< render: the clock, last block
     void*  cbCtx_  = nullptr;
 
-    std::atomic<uint32_t> cNotes_{0}, cDropped_{0}, cSteals_{0};
+    std::atomic<uint32_t> cNotes_{0}, cDropped_{0}, cSteals_{0}, cSheds_{0};
+    std::atomic<uint32_t> cArmed_{0}, cArmFired_{0}, cArmCancelled_{0}, cArmExpired_{0};
+    std::atomic<bool> overloaded_{false};
+    std::atomic<uint32_t> cLoopsQueued_{0}, cLoopsLaunched_{0};
     std::atomic<uint32_t> cStreamRefused_{0}, cUnderruns_{0}, cVoicesPeak_{0}, cSilenced_{0};
+    std::atomic<uint32_t> cPitchedRun_{0}, cPitchedSlow_{0};
+    std::atomic<uint8_t> ringsWaiting_{0};
 };
 
 } // namespace crosspad

@@ -21,6 +21,7 @@ bool kit_parse_instrument(KitInfo& kit, JsonDocument& doc)
     kit.instrument = InstrumentSpec();
 
     const char* engine = doc["engine"] | "";
+    if (std::strcmp(engine, "slice") == 0) { kit.engine = KitEngine::Slice; return true; }
     if (std::strcmp(engine, "pitched") != 0) return true;   // sampler, or unknown
     kit.engine = KitEngine::Pitched;
 
@@ -48,6 +49,11 @@ bool kit_parse_instrument(KitInfo& kit, JsonDocument& doc)
 
             zone.loopStart = z["loop_start"] | (uint32_t)0;
             zone.loopEnd   = z["loop_end"]   | (uint32_t)0;
+            zone.loopXfade = z["loop_xfade"] | (uint32_t)0;
+            /* A note used to begin at the loop start, attack or not; a file
+             * written before "start" existed keeps sounding that way. */
+            const uint32_t legacyStart = zone.loopEnd > zone.loopStart ? zone.loopStart : 0;
+            zone.start = z["start"] | legacyStart;
 
             spec.zones.push_back(zone);
         }
@@ -88,6 +94,9 @@ bool kit_parse_metadata(KitInfo& kit, JsonDocument& doc)
     kit.created_at  = doc["created_at"]  | "";
     kit.category    = doc["category"]    | "";
     kit.bpm         = doc["bpm"]         | (uint16_t)0;
+    kit.keepRate    = doc["keep_rate"]   | false;
+    const int pitch = doc["pitch"] | 0;
+    kit.pitch       = static_cast<int8_t>(pitch < -24 ? -24 : pitch > 24 ? 24 : pitch);
 
     if (doc["type"].is<int>())
         kit.type = static_cast<KitInfo::Type>(doc["type"].as<int>());
@@ -129,6 +138,7 @@ bool kit_parse_pads(KitInfo& kit, JsonDocument& doc)
         pad.hp            = padObj["hp"]            | 0;
         pad.lp            = padObj["lp"]            | 0;
         pad.reverse       = padObj["reverse"]       | false;
+        pad.attack        = padObj["attack"]        | (uint16_t)0;
 
         pad.RemoveAllSamples();
 
@@ -177,6 +187,9 @@ bool kit_serialize(const KitInfo& kit, JsonDocument& doc)
     doc["created_at"]  = kit.created_at;
     if (!kit.category.empty()) doc["category"] = kit.category;
     if (kit.bpm) doc["bpm"] = kit.bpm;   // absent rather than 0 when unset
+    if (kit.keepRate) doc["keep_rate"] = true;
+    if (kit.pitch) doc["pitch"] = kit.pitch;   // semitones; absent is 0
+    if (kit.engine == KitEngine::Slice) doc["engine"] = "slice";
     doc["type"]        = static_cast<int>(kit.type);
 
     if (kit.engine == KitEngine::Pitched) {
@@ -193,6 +206,8 @@ bool kit_serialize(const KitInfo& kit, JsonDocument& doc)
             else               zo["root"] = z.root;
             zo["loop_start"] = z.loopStart;
             zo["loop_end"]   = z.loopEnd;
+            if (z.loopXfade) zo["loop_xfade"] = z.loopXfade;
+            zo["start"]      = z.start;
         }
 
         if (spec.padNotesSet) {
@@ -222,6 +237,7 @@ bool kit_serialize(const KitInfo& kit, JsonDocument& doc)
         if (pad.hp) padObj["hp"] = pad.hp;            // filter cutoffs in Hz; absent is off
         if (pad.lp) padObj["lp"] = pad.lp;
         if (pad.reverse) padObj["reverse"] = true;
+        if (pad.attack) padObj["attack"] = pad.attack;   // ms; absent is the engine's own
         padObj["playbackMode"]  = pad.playbackMode;
         padObj["cycle"]         = pad.cycle;
 

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
 
 /**
@@ -27,10 +28,9 @@ struct SettingsIoResult {
     const char* error = nullptr; ///< static string, nullptr when ok
 };
 
-/// 2: masterFX carries only what NVS persists; the per-pad `audio[]` and
-///    `previewAudio` sections are gone (nothing read or saved them — 2 kB of
-///    file instead of 30). Version-1 files still import, the dropped keys
-///    are ignored.
+/// 2: masterFX carries only what NVS persists; there are no per-pad
+///    `audio[]` and `previewAudio` sections. Version-1 files still import,
+///    and those keys are ignored.
 constexpr uint16_t kSettingsFileVersion = 2;
 
 /// Whole-settings snapshot.

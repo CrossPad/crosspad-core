@@ -3,6 +3,7 @@
 
 #include "crosspad/instrument/InstrumentPadLogic.hpp"
 #include "crosspad/pad/PadManager.hpp"
+#include "crosspad/song/SecondKitPadLogic.hpp"
 
 #include <atomic>
 #include <cstdint>
@@ -11,29 +12,38 @@ namespace crosspad {
 
 /// What a Pitch seq track's notes play through while the song plays them.
 ///
-/// A seq track is the sequencer's scene, and the sequencer plays it by
-/// pressing pads -- which reach whatever pad logic the screen on top has. In
-/// the seq view that is the instrument (the Sequencer pushes it); anywhere
-/// else it is the kit, and with the pitched engine holding the arena the kit
-/// is silent: a Pitch track played from Arrange made no sound at all, and
-/// came alive only in EDIT.
-///
-/// So the song's notes for a Pitch track go to the instrument whatever the
-/// screen: the platform's sequencer sink asks route() first. Arrange keeps the
-/// instrument loaded and says when to route (it owns the seq tracks).
+/// A seq track is the sequencer's scene, and the sequencer plays a kit track
+/// by pressing pads -- which reach whatever pad logic the screen on top has.
+/// A Pitch track's notes come on a route of their own (AudioSong::seqRoute()
+/// 2) and go straight to the instrument whatever the screen, beside the kit
+/// tracks on routes 0 and 1: the platform's sequencer sink calls playPitch().
+/// Arrange keeps the instrument loaded (it owns the seq tracks).
 struct SeqTrackSound {
     /// The instrument's pads; ready() once the host's bank is playing.
     InstrumentPadLogic pitch;
-    /// The song is playing (or bouncing) a Pitch seq track.
+    /// Before core 2.6 a Pitch track shared route 0 with the pads' kit, and
+    /// this sent route 0 to the instrument while set. Kept for sinks and apps
+    /// built against that (crosspad-pc's Arrange); this firmware's Arrange
+    /// never sets it, its Pitch notes come on route 2.
     std::atomic<bool> routePitch{false};
+    /// The fingers on the second kit track's kit, while that track is armed
+    /// in Arrange (AudioSong::seqRoute() 1; its notes reach the kit through
+    /// the sequencer's routed sink).
+    SecondKitPadLogic kit2;
 
-    /// The sequencer's note: true when it went to the track's instrument and
-    /// must not reach the pads as well.
+    /// The sequencer's note on the Pitch route.
+    void playPitch(PadManager& pm, uint8_t pad, uint8_t velocity, bool on)
+    {
+        if (on) pitch.onPadPress(pm, pad, velocity);
+        else    pitch.onPadRelease(pm, pad);
+    }
+
+    /// A route-0 note while routePitch is set (see there): true when it went
+    /// to the instrument and must not reach the pads as well.
     bool route(PadManager& pm, uint8_t pad, uint8_t velocity, bool on)
     {
         if (!routePitch.load(std::memory_order_acquire)) return false;
-        if (on) pitch.onPadPress(pm, pad, velocity);
-        else    pitch.onPadRelease(pm, pad);
+        playPitch(pm, pad, velocity, on);
         return true;
     }
 };

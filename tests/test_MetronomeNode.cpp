@@ -104,7 +104,12 @@ TEST_CASE("metronome: a transport change is never undone by the block in flight"
     // The render thread runs blocks back to back while this thread keeps
     // moving the transport. Every move must be where the next reads find it:
     // a block that loaded the old position and stored it back afterwards
-    // would put the clock far from where it was sent.
+    // would put the clock on the old timeline.
+    //
+    // The clock does not wait for this thread, so a reading is judged against
+    // the blocks that actually ran since the move, not against a fixed
+    // distance: a scheduler that parks this thread for a few hundred blocks
+    // moves a correct clock that far too.
     MetronomeNode m;
     prepared(m);
     m.start();
@@ -119,17 +124,26 @@ TEST_CASE("metronome: a transport change is never undone by the block in flight"
     });
 
     constexpr int kMoves = 2000;
-    constexpr uint32_t kFar = 200000;          // well inside the 16-bar loop
+    constexpr uint32_t kFar = 200000;          // well inside the default 4-bar loop (384000 samples)
     constexpr uint32_t kSettleBlocks = 3;      // the move lands at the next block start
+    const uint32_t loop = m.loopSamples();
     int wrong = 0;
     for (int i = 0; i < kMoves; ++i) {
         const uint32_t target = (i & 1) ? kFar : 0;
+        const uint32_t before = blocks.load(std::memory_order_acquire);
+        const auto off = [&] {
+            const uint32_t p = m.positionSamples();
+            const uint32_t ran = blocks.load(std::memory_order_acquire) - before;
+            // +1: the block in flight may have stored its position before counting.
+            return (p + loop - target) % loop > (ran + 1) * kBlock;
+        };
         m.startAt(target);
+        // Read at once too: the block that takes the move must not show the
+        // old position while it renders.
+        if (off()) ++wrong;
         const uint32_t b0 = blocks.load(std::memory_order_acquire);
         while (blocks.load(std::memory_order_acquire) - b0 < kSettleBlocks) std::this_thread::yield();
-        const uint32_t p = m.positionSamples();
-        const uint32_t away = p >= target ? p - target : target - p;
-        if (away > kFar / 2) ++wrong;
+        if (off()) ++wrong;
     }
     done.store(true);
     rt.join();

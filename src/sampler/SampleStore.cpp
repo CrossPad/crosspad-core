@@ -60,26 +60,43 @@ void SampleStore::unload()
     } else {
         for (auto& s : slots_) s = Slot{};
     }
+    for (auto& e : audibleEnd_) e.store(0, std::memory_order_relaxed);
     count_ = 0;
     headBytes_ = 0;
+}
+
+void SampleStore::unloadSlot(uint16_t i)
+{
+    if (i >= kMaxSlots || !slots_[i].used) return;
+    Slot& s = slots_[i];
+    if (free_ && s.head) free_(const_cast<int16_t*>(s.head), ctx_);
+    headBytes_ -= s.headBytes;
+    --count_;
+    s = Slot{};
+    audibleEnd_[i].store(0, std::memory_order_relaxed);
 }
 
 void SampleStore::forget()
 {
     for (auto& s : slots_) s = Slot{};
+    for (auto& e : audibleEnd_) e.store(0, std::memory_order_relaxed);
     count_ = 0;
     headBytes_ = 0;
 }
 
-uint16_t SampleStore::load(const char* path, uint32_t headFrames)
+uint16_t SampleStore::load(const char* path, uint32_t headFrames, uint32_t start, uint32_t end)
 {
     if (!src_ || !alloc_ || !free_ || !path || !path[0]) return kNoSlot;
     if (std::strlen(path) >= kMaxPath) return kNoSlot;
 
-    /* The same file on four pads is one head. Checked before the header read,
-     * which is a trip to the card. */
+    /* The same file from the same place on four pads is one head. Checked
+     * before the header read, which is a trip to the card -- so on the start
+     * asked for, with a trim that ends before it begins taken as the whole
+     * file, as trimStart() takes it; a start past the file comes out at 0 for
+     * every layer that asks for it. */
+    const uint32_t key = (end != 0 && start >= end) ? 0 : start;
     for (uint16_t i = 0; i < kMaxSlots; ++i) {
-        if (slots_[i].used && std::strcmp(slots_[i].path, path) == 0) return i;
+        if (slots_[i].used && slots_[i].keyStart == key && std::strcmp(slots_[i].path, path) == 0) return i;
     }
 
     uint16_t slot = kNoSlot;
@@ -94,14 +111,16 @@ uint16_t SampleStore::load(const char* path, uint32_t headFrames)
         return kNoSlot;
     }
 
-    const uint32_t want = headFrames < desc.frames ? headFrames : desc.frames;
+    const uint32_t from = trimStart(key, end, desc.frames);
+    const uint32_t left = desc.frames - from;
+    const uint32_t want = headFrames < left ? headFrames : left;
     if (want == 0) { ++readFailures_; return kNoSlot; }
 
     const size_t bytes = static_cast<size_t>(want) * desc.channels * sizeof(int16_t);
     auto* head = static_cast<int16_t*>(alloc_(bytes, ctx_));
     if (!head) { ++readFailures_; return kNoSlot; }
 
-    const uint32_t got = src_->read(path, 0, want, head);
+    const uint32_t got = src_->read(path, from, want, head);
     if (got == 0) {
         free_(head, ctx_);
         ++readFailures_;
@@ -113,16 +132,20 @@ uint16_t SampleStore::load(const char* path, uint32_t headFrames)
     if (got < want) {
         std::memset(head + static_cast<size_t>(got) * desc.channels, 0,
                     static_cast<size_t>(want - got) * desc.channels * sizeof(int16_t));
-        desc.frames = got;
+        desc.frames = from + got;
     }
 
     Slot& s = slots_[slot];
     std::snprintf(s.path, sizeof(s.path), "%s", path);
     s.desc = desc;
     s.head = head;
+    s.headStart = from;
     s.headFrames = got;
-    s.complete = (got >= desc.frames);
+    s.headBytes = static_cast<uint32_t>(bytes);
+    s.keyStart = key;
+    s.complete = (from + got >= desc.frames);
     s.used = true;
+    audibleEnd_[slot].store(0, std::memory_order_relaxed);
     ++count_;
     headBytes_ += bytes;
     if (s.complete) src_->done(path);

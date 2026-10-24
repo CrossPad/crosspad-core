@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 #include "crosspad/fw/FwLibraryGc.hpp"
 #include <cstdint>
 #include <cstring>

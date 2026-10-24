@@ -69,6 +69,7 @@ struct KitPad {
     float gain  = 1.0f;        ///< from volume 0..127
     float pan   = 0.0f;        ///< -1 left .. +1 right, from pan 0..127
     int8_t semitones = 0;      ///< realtime, from `pitch`
+    float  attackMs = -1.0f;   ///< the hit's fade-in; < 0 = SamplerEngine::Params::attackMs
 };
 
 struct SamplerKit {
@@ -91,7 +92,7 @@ struct SamplerKit {
         return (pan - 64) / 63.0f;
     }
 
-    /// Equal-power, so a pad swept across the image keeps its loudness.
+    /// Balance, as the mixer: unity at the centre, a side only taken down.
     static void panGains(float balance, float& l, float& r);
 };
 

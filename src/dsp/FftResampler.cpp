@@ -10,13 +10,12 @@ namespace crosspad {
 namespace {
 
 constexpr uint32_t kMaxBlock = 4096;       // largest analysis block, N
-constexpr uint32_t kOversample = 2;        // spectral zero-pad factor
 
-/// Analysis block for @p fft: the inverse runs at 2N, so N is capped by half
-/// the largest transform the backend accepts. 0 means the backend is too
-/// small to resample with at all.
-uint32_t blockFor(const IFft& fft) {
-    uint32_t n = fft.maxSize() / kOversample;
+/// Analysis block for @p fft: the inverse runs at oversample * N, so N is
+/// capped by that fraction of the largest transform the backend accepts. 0
+/// means the backend is too small to resample with at all.
+uint32_t blockFor(const IFft& fft, uint32_t oversample) {
+    uint32_t n = fft.maxSize() / oversample;
     if (n > kMaxBlock) n = kMaxBlock;
     if (n < kMinFftSize) return 0;
     return n;
@@ -55,17 +54,20 @@ uint32_t resampledLength(uint32_t inCount, uint32_t inRate, uint32_t outRate) {
 }
 
 bool FftResamplerStream::begin(IFft& fft, uint32_t inRate, uint32_t outRate,
-                               void* (*alloc)(size_t), void (*free)(void*)) {
+                               void* (*alloc)(size_t), void (*free)(void*),
+                               uint32_t oversample) {
     end();
     if (!alloc || !free) return false;
     if (inRate == 0 || outRate == 0) return false;
+    if (oversample < 2 || (oversample & (oversample - 1)) != 0) return false;
 
-    const uint32_t block = blockFor(fft);
+    const uint32_t block = blockFor(fft, oversample);
     if (block == 0) return false;
 
     block_ = block;
     hop_ = block / 2;                        // 50 % overlap
-    padded_ = block * kOversample;
+    oversample_ = oversample;
+    padded_ = block * oversample;
     ratio_ = static_cast<double>(outRate) / static_cast<double>(inRate);
 
     // Accumulator spans one block's worth of output plus interpolation slack.
@@ -123,6 +125,7 @@ void FftResamplerStream::end() {
     alloc_ = nullptr;
     free_ = nullptr;
     block_ = hop_ = padded_ = accLen_ = cutoff_ = inFill_ = 0;
+    oversample_ = 2;
     ratio_ = 1.0;
     p0_ = accBase_ = accEnd_ = 0;
     inTotal_ = 0;
@@ -188,14 +191,14 @@ void FftResamplerStream::processBlock(int16_t* out, uint32_t outCapacity, uint32
     }
     if (!fft_->inverse(ybuf_, padded_)) { ok_ = false; return; }
 
-    // De-interleave in place: the padded block, at inRate * kOversample.
-    const float gain = static_cast<float>(kOversample);
+    // De-interleave in place: the padded block, at inRate * oversample_.
+    const float gain = static_cast<float>(oversample_);
     for (uint32_t i = 0; i < padded_; ++i) ybuf_[i] = ybuf_[2 * i] * gain;
 
     // ── read the block at the output grid ──
     for (int64_t n = n0; n < n1; ++n) {
         const double t = static_cast<double>(n) / ratio_;      // input-sample time
-        const double u = (t - static_cast<double>(p0)) * kOversample;
+        const double u = (t - static_cast<double>(p0)) * oversample_;
         if (u < 0.0 || u >= static_cast<double>(padded_)) continue;
         const int64_t ui = static_cast<int64_t>(u);
         const float frac = static_cast<float>(u - static_cast<double>(ui));

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
 
 /**
@@ -24,7 +25,11 @@
  *   logicFunc    — void (*)(App*) app logic callback, or nullptr
  *   iconPath     — Icon path string (e.g. "/assets/play.png")
  *   createLVGL   — LVGL factory function, or nullptr
- *   destroyLVGL  — LVGL destroy function, or nullptr
+ *   destroyLVGL  — LVGL destroy function, or nullptr. Gets the root and
+ *                  deletes it (lv_obj_delete_async) when the app is closed;
+ *                  gets nullptr when the root was deleted by someone else
+ *                  (a launcher rebuild) -- then it releases what the app
+ *                  owns and deletes nothing (crosspad-gui AppBase::DestroyFn)
  *   initSimple   — Simple GUI init function, or nullptr
  *   refreshFunc  — GUI refresh function, or nullptr
  *   cleanupFunc  — Cleanup function, or nullptr

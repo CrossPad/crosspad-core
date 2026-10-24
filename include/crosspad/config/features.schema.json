@@ -3,11 +3,6 @@
   "description": "Machine-readable catalog of CrossPad compile-time config. Mirrors Configuration.h / Configuration_adv.h; the headers stay the documented, hand-editable source of defaults, this file is what the app manager TUI renders and what generates -D overrides.",
   "groups": [
     {
-      "id": "board",
-      "title": "Board",
-      "help": "PCB revision the firmware targets."
-    },
-    {
       "id": "pads",
       "title": "Pads",
       "help": "Pad data model depth and pad editors."
@@ -19,44 +14,6 @@
     }
   ],
   "flags": [
-    {
-      "name": "CROSSPAD_BOARD",
-      "type": "enum",
-      "group": "board",
-      "default": "BOARD_CROSSPAD_PC",
-      "values": [
-        {
-          "value": "BOARD_CROSSPAD_V1",
-          "label": "CrossPad v1"
-        },
-        {
-          "value": "BOARD_CROSSPAD_V2",
-          "label": "CrossPad v2"
-        },
-        {
-          "value": "BOARD_CROSSPAD_PC",
-          "label": "PC simulator"
-        }
-      ],
-      "help": "Selects the per-revision board profile (board_v1.h / board_v2.h / board_pc.h) that supplies tuned default values.",
-      "managed_by": {
-        "esp-idf": "kconfig"
-      },
-      "platforms": [
-        "esp-idf",
-        "arduino",
-        "pc"
-      ],
-      "managed_source": {
-        "esp-idf": {
-          "file": "sdkconfig",
-          "match": {
-            "CONFIG_BSP_BOARD_REV_V1=y": "BOARD_CROSSPAD_V1",
-            "CONFIG_BSP_BOARD_REV_V2=y": "BOARD_CROSSPAD_V2"
-          }
-        }
-      }
-    },
     {
       "name": "CROSSPAD_PAD_CONFIG_LEVEL",
       "type": "enum",

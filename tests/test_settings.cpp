@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 #include <catch2/catch_test_macros.hpp>
 #include "test_helpers.hpp"
 #include "crosspad/settings/CrosspadSettings.hpp"
@@ -87,23 +88,34 @@ TEST_CASE("CrosspadSettings: out-of-range NVS values are clamped on load", "[set
     settings->masterFX.inVolume = 50;
 }
 
-TEST_CASE("CrosspadSettings: launcher style round-trips and defaults to the grid", "[settings]") {
+TEST_CASE("CrosspadSettings: home view round-trips and defaults to the pad map", "[settings]") {
     auto* settings = CrosspadSettings::getInstance();
 
     test::MemoryKVStore empty;
     empty.init();
-    settings->launcherStyle = LauncherStyle::List;
+    settings->launcherStyle = LauncherStyle::Grid;
     settings->loadFrom(empty);
-    REQUIRE(settings->launcherStyle == LauncherStyle::Grid);
+    REQUIRE(settings->launcherStyle == LauncherStyle::Pads);
 
+    for (LauncherStyle v : { LauncherStyle::Grid, LauncherStyle::List, LauncherStyle::Pads }) {
+        test::MemoryKVStore store;
+        store.init();
+        settings->launcherStyle = v;
+        settings->saveTo(store);
+        settings->launcherStyle = v == LauncherStyle::Grid ? LauncherStyle::List : LauncherStyle::Grid;
+        settings->loadFrom(store);
+        REQUIRE(settings->launcherStyle == v);
+    }
+    settings->launcherStyle = LauncherStyle::Pads;
+}
+
+TEST_CASE("CrosspadSettings: the old launcher key does not move a board off the pad map", "[settings]") {
+    auto* settings = CrosspadSettings::getInstance();
     test::MemoryKVStore store;
     store.init();
-    settings->launcherStyle = LauncherStyle::List;
-    settings->saveTo(store);
-    settings->launcherStyle = LauncherStyle::Grid;
+    store.saveU8("cfg_display", "launcher", (uint8_t)LauncherStyle::Grid);
     settings->loadFrom(store);
-    REQUIRE(settings->launcherStyle == LauncherStyle::List);
-    settings->launcherStyle = LauncherStyle::Grid;
+    REQUIRE(settings->launcherStyle == LauncherStyle::Pads);
 }
 
 TEST_CASE("CrosspadSettings: touch sensitivity round-trips, defaults to low, clamps", "[settings]") {
@@ -147,4 +159,24 @@ TEST_CASE("CrosspadSettings: enableRemote persists in NVS, missing key means on"
     REQUIRE(settings->wireless.enableRemote == false);
 
     settings->wireless.enableRemote = true;   // leave the singleton as found
+}
+
+TEST_CASE("CrosspadSettings: the output queue survives a reboot and a corrupt value does not", "[settings]") {
+    test::MemoryKVStore store;
+    store.init();
+    auto* settings = CrosspadSettings::getInstance();
+
+    settings->audioEngine.queueFrames = 256;
+    settings->saveTo(store);
+    settings->audioEngine.queueFrames = 0;
+    settings->loadFrom(store);
+    REQUIRE(settings->audioEngine.queueFrames == 256);
+
+    // Past the bound or negative: the platform's safe default, not a guess.
+    store.saveI32("cfg_audio_eng", "q_frames", 100000);
+    settings->loadFrom(store);
+    REQUIRE(settings->audioEngine.queueFrames == 0);
+    store.saveI32("cfg_audio_eng", "q_frames", -5);
+    settings->loadFrom(store);
+    REQUIRE(settings->audioEngine.queueFrames == 0);
 }

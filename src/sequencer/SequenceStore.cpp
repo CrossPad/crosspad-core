@@ -1,12 +1,11 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "crosspad/sequencer/SequenceStore.hpp"
+#include "crosspad/platform/IFileSystem.hpp"
 #include "../util/JsonStdio.hpp"
 
 #include <ArduinoJson.h>
 
-#include <cerrno>
 #include <cstdio>
-#include <sys/stat.h>
 
 namespace crosspad {
 
@@ -48,8 +47,13 @@ bool SequenceStore::save(const PatternSequencer& seq, const std::string& path)
             e.add(vel);
             /* The length only where there is one: a hit stays a triple, and
              * firmware from before lengths reads the first three and plays it
-             * as a hit. */
-            if (const uint32_t len = seq.eventLengthTicks(s, i)) e.add(len);
+             * as a hit. What the hit sounded as (PadPerformance, one byte) only
+             * where it was not plain, after the length -- 0 there for a hit --
+             * so firmware from before it reads what it knows and skips it. */
+            const uint32_t len = seq.eventLengthTicks(s, i);
+            const uint8_t perf = seq.eventPerformance(s, i).pack();
+            if (len || perf) e.add(len);
+            if (perf) e.add(perf);
         }
     }
 
@@ -102,8 +106,7 @@ SequenceLoad SequenceStore::open(PatternSequencer& seq, const std::string& path)
             /* Only "no such file" is absent. A file that will not open -- on
              * the board, every FAT handle taken at boot -- is still somebody's
              * grooves, and must not read as "no scenes". */
-            struct stat st;
-            if (::stat(p.c_str(), &st) != 0 && errno == ENOENT) continue;
+            if (getFileSystem().stat(p.c_str(), nullptr) == FsStat::Missing) continue;
             any = true;
             continue;
         }
@@ -157,7 +160,9 @@ SequenceLoad SequenceStore::open(PatternSequencer& seq, const std::string& path)
                 ticks = (uint32_t)(((uint64_t)ticks * PatternSequencer::kPpq) / (uint32_t)ppq);
                 len = (uint32_t)(((uint64_t)len * PatternSequencer::kPpq) / (uint32_t)ppq);
             }
-            seq.addEventTicks(s, ticks, e[1].as<uint8_t>(), e[2].as<uint8_t>(), len);
+            const crosspad::PadPerformance perf =
+                crosspad::PadPerformance::unpack(e.size() > 4 ? e[4].as<uint8_t>() : 0);
+            seq.addEventTicks(s, ticks, e[1].as<uint8_t>(), e[2].as<uint8_t>(), len, perf);
         }
         ++s;
     }

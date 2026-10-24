@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
 #include <cstddef>
 #include <cstdint>
@@ -32,7 +33,7 @@ struct FwGcPlan {
     uint16_t evict[kFwGcMaxPackages];   ///< indices into the input, in deletion order
 };
 
-/// Space-only cleanup (spec §5): the smallest set of unprotected packages,
+/// Space-only cleanup: the smallest set of unprotected packages,
 /// taken oldest version first within a kit and oldest directory across kits,
 /// that brings the library under libraryMax and leaves kFwCardMinFreePct of
 /// the card free with `incoming` written. Not satisfiable without touching a

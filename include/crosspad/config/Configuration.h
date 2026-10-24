@@ -1,15 +1,5 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
-#include "boards.h"
-
-//===========================================================================
-//============================ Board selection ==============================
-//===========================================================================
-// Which PCB revision this firmware targets. On ESP-IDF this is overridden by
-// the Kconfig board-revision choice (CMake passes -DCROSSPAD_BOARD), so editing
-// here only affects PC / Arduino builds. PC sim / host tests default to PC.
-#ifndef CROSSPAD_BOARD
-#  define CROSSPAD_BOARD BOARD_CROSSPAD_PC
-#endif
 
 //===========================================================================
 //========================== Pad configuration depth ========================

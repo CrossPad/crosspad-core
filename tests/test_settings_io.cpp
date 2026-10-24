@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 #include <catch2/catch_test_macros.hpp>
 #include "test_helpers.hpp"
 #include "crosspad/settings/SettingsIo.hpp"
@@ -57,6 +58,7 @@ TEST_CASE("SettingsIo: full settings round-trip", "[settings][io]") {
     src.masterFX.flanger.bypass = false;
     src.audioEngine.sampleRate = 96000;
     src.audioEngine.frameCount = 128;
+    src.audioEngine.queueFrames = 192;
     src.vibration.enable = false;
     src.vibration.outputMax = 199;
     src.stm.midiChannel = 9;
@@ -74,7 +76,7 @@ TEST_CASE("SettingsIo: full settings round-trip", "[settings][io]") {
     src.usbAudioEnabled = true;
     src.usbSerialGuard = false;
     src.Kit = 4;
-    src.launcherStyle = LauncherStyle::List;
+    src.launcherStyle = LauncherStyle::Grid;
     src.touchSensitivity = TouchSensitivity::High;
 
     SettingsIoResult wrote = settingsExportAll(src, file.c_str());
@@ -88,7 +90,7 @@ TEST_CASE("SettingsIo: full settings round-trip", "[settings][io]") {
     REQUIRE(read.version == kSettingsFileVersion);
 
     REQUIRE(dst.keypad.enableKeypad == false);
-    REQUIRE(dst.launcherStyle == LauncherStyle::List);
+    REQUIRE(dst.launcherStyle == LauncherStyle::Grid);
     REQUIRE(dst.touchSensitivity == TouchSensitivity::High);
     REQUIRE(dst.keypad.noteOffOnRelease == true);
     REQUIRE(dst.keypad.upperRowFunctions == true);
@@ -109,6 +111,7 @@ TEST_CASE("SettingsIo: full settings round-trip", "[settings][io]") {
     REQUIRE(dst.masterFX.delay.bypass == true);
     REQUIRE(dst.audioEngine.sampleRate == 96000);
     REQUIRE(dst.audioEngine.frameCount == 128);
+    REQUIRE(dst.audioEngine.queueFrames == 192);
     REQUIRE(dst.vibration.enable == false);
     REQUIRE(dst.vibration.outputMax == 199);
     REQUIRE(dst.stm.midiChannel == 9);
@@ -140,6 +143,10 @@ TEST_CASE("SettingsIo: pad tuning round-trip", "[settings][io]") {
     src.stm.analogMinMs = 24;
     src.stm.analogDelta = 5;
     src.stm.pressDebounceMs = 8;
+    src.stm.hitMode = 1;
+    src.stm.hitMinMs = 3;
+    src.stm.hitPeakDrop = 40;
+    src.stm.hitPeakSamples = 4;
 #if defined(PAD_CONFIG_PER_PAD)
     for (int i = 0; i < Stm32Settings::kPads; ++i) {
         src.stm.padSensitivity[i] = (uint16_t)(100 + i);
@@ -173,6 +180,10 @@ TEST_CASE("SettingsIo: pad tuning round-trip", "[settings][io]") {
     REQUIRE(dst.stm.analogMinMs == 24);
     REQUIRE(dst.stm.analogDelta == 5);
     REQUIRE(dst.stm.pressDebounceMs == 8);
+    REQUIRE(dst.stm.hitMode == 1);
+    REQUIRE(dst.stm.hitMinMs == 3);
+    REQUIRE(dst.stm.hitPeakDrop == 40);
+    REQUIRE(dst.stm.hitPeakSamples == 4);
 #if defined(PAD_CONFIG_PER_PAD)
     for (int i = 0; i < Stm32Settings::kPads; ++i) {
         REQUIRE(dst.stm.padSensitivity[i] == (uint16_t)(100 + i));
@@ -318,6 +329,7 @@ TEST_CASE("SettingsIo: out-of-range values are clamped", "[settings][io]") {
              "{\"kind\":\"crosspad-pads\",\"version\":1,\"pads\":{"
              "\"velFloorDef\":900,\"velCurveDef\":9,\"ccPressBase\":500,\"panCcEn\":4,"
              "\"pressDebounceMs\":0,"
+             "\"hitMode\":7,\"hitMinMs\":99,\"hitPeakDrop\":-1,\"hitPeakSamples\":0,"
              "\"padSensitivity\":[99999,0,-3],"
              "\"padLrRatio\":[0,250,50],"
              "\"padAnalogMode\":[9,1,2],"
@@ -333,6 +345,10 @@ TEST_CASE("SettingsIo: out-of-range values are clamped", "[settings][io]") {
     REQUIRE(dst.stm.ccPressBase == 127);
     REQUIRE(dst.stm.panCcEn == 1);
     REQUIRE(dst.stm.pressDebounceMs == Stm32Settings::kPressDebounceMinMs);
+    REQUIRE(dst.stm.hitMode == 1);
+    REQUIRE(dst.stm.hitMinMs == Stm32Settings::kPressDebounceMaxMs);
+    REQUIRE(dst.stm.hitPeakDrop == 0);
+    REQUIRE(dst.stm.hitPeakSamples == 1);
 #if defined(PAD_CONFIG_PER_PAD)
     REQUIRE(dst.stm.padSensitivity[0] == 4095);   // saturates instead of wrapping
     REQUIRE(dst.stm.padSensitivity[1] == 1);

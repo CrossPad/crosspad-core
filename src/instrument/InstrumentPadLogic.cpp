@@ -24,6 +24,7 @@ void InstrumentPadLogic::onPadPress(PadManager& pm, uint8_t pad, uint8_t velocit
     if (!p) return;
 
     const PlaySettings& ps = instrumentPlayState().play;
+    if (ps.padSilent & (1u << pad)) return;        // past the end of a chord list
     uint8_t notes[kChord] = {};
     uint8_t n = 0;
     const uint8_t have = ps.padChordCount[pad];

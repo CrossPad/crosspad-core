@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 #include "crosspad/platform/CrosspadPlatformInit.hpp"
 #include "crosspad/platform/PlatformServices.hpp"
 #include "crosspad/platform/PlatformCapabilities.hpp"
@@ -81,6 +82,7 @@ void crosspad_platform_reset() {
     s_initialized = false;
     auto& svc = getPlatformServices();
     svc = PlatformServices{};
+    svc.setFileSystem(nullptr);
     setPlatformCapabilities(Capability::None);
 }
 

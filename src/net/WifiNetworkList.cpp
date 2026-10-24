@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 #include "crosspad/net/WifiNetworkList.hpp"
 #include <cstring>
 #include <initializer_list>

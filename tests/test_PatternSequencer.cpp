@@ -823,6 +823,25 @@ TEST_CASE("sequencer: PLAY after a STOP plays on from where it stopped", "[seq][
     REQUIRE(r.clock.positionSamples() == 0);
 }
 
+TEST_CASE("sequencer: out of a take nothing due is skipped", "[seq][take]") {
+    Rig r;
+    r.seq.setSceneBars(0, 1);
+    REQUIRE(r.seq.addEventTicks(0, kTicksPerBeat, 2, 100));
+    r.seq.setCountIn(false);
+    r.seq.playback();
+    r.seq.overdub();
+    r.run(kBeat - kBlock);
+    /* The clock passes the note's beat with no poll in between -- the poll
+     * thread is late -- and PLAY punches out right then. */
+    std::vector<float> out(kBlock * 2);
+    r.clock.mix(out.data(), kBlock);
+    r.clock.mix(out.data(), kBlock);
+    r.seq.playback();
+    r.seq.poll();
+    REQUIRE(r.fired == std::vector<uint8_t>{2});
+    r.seq.stop();
+}
+
 // ── laid on a song cut into blocks ─────────────────────────────────────────
 
 TEST_CASE("sequencer: a song map plays the scene only under its blocks", "[seq][songmap]") {
@@ -835,6 +854,23 @@ TEST_CASE("sequencer: a song map plays the scene only under its blocks", "[seq][
     r.seq.setSongMap({{0, bar, 0}, {2 * bar, 3 * bar, 0}}, 0, 0);
     r.run(3 * bar);
     REQUIRE(r.fired == std::vector<uint8_t>{1, 2, 1, 2});   // bar two is a gap
+}
+
+TEST_CASE("sequencer: out of an overdub the song map keeps its place", "[seq][songmap]") {
+    Rig r;
+    r.seq.setSceneBars(0, 1);
+    REQUIRE(r.seq.addEventTicks(0, 0, 1, 100));
+    REQUIRE(r.seq.addEventTicks(0, kTicksPerBeat, 2, 100));
+    r.seq.setCountIn(false);
+    const uint32_t bar = r.loop(1);
+    r.seq.playbackAt(0);
+    r.seq.setSongMap({{0, bar, 0}, {2 * bar, 3 * bar, 0}}, 0, 0);
+    r.seq.overdub();
+    r.run(bar + bar / 2);                     // half-way into the gap
+    r.seq.playback();                         // PLAY: out of the layering
+    r.run(bar + bar / 2);
+    /* Taken back to the song's bar one, the gap played bar zero's block. */
+    REQUIRE(r.fired == std::vector<uint8_t>{1, 2, 1, 2});
 }
 
 TEST_CASE("sequencer: a block plays the scene from its own bar of it", "[seq][songmap]") {
@@ -861,6 +897,211 @@ TEST_CASE("sequencer: a song map wraps where the song does", "[seq][songmap]") {
     r.run(2 * bar);
     REQUIRE(r.fired.size() == 2);
     r.seq.clearSongMap();
+    r.seq.stop();
+}
+
+TEST_CASE("sequencer: a block with notes of its own plays them, not the scene", "[seq][songmap]") {
+    Rig r;
+    r.seq.setSceneBars(0, 1);
+    REQUIRE(r.seq.addEventTicks(0, 0, 1, 100));          // the scene: pad 1 on beat one
+    const uint32_t bar = r.loop(1);
+    auto own = std::make_shared<std::vector<PatternSequencer::SongNote>>();
+    own->push_back({0, 0, 5, 100, 0});
+    own->push_back({kBeat, 0, 6, 100, 0});
+    PatternSequencer::SongSpan block;
+    block.a = bar;
+    block.b = 3 * bar;
+    block.notes = own;
+    block.loop = bar;                                     // one bar of notes, played round
+    r.seq.playbackAt(0);
+    r.seq.setSongMap({{0, bar, 0}, block}, 0, 0);
+    r.run(3 * bar);
+    REQUIRE(r.fired == std::vector<uint8_t>{1, 5, 6, 5, 6});
+}
+
+TEST_CASE("sequencer: a muted song map plays nothing and keeps its place", "[seq][songmap]") {
+    Rig r;
+    r.seq.setSceneBars(0, 1);
+    REQUIRE(r.seq.addEventTicks(0, 0, 1, 100));
+    const uint32_t bar = r.loop(1);
+    r.seq.playbackAt(0);
+    r.seq.setSongMap({{0, 2 * bar, 0}}, 0, 0);
+    r.seq.setSongMapMuted(true);
+    r.run(bar);
+    REQUIRE(r.fired.empty());
+    CHECK(r.seq.songMapPosition() == bar);
+    r.seq.setSongMapMuted(false);
+    r.run(bar);
+    REQUIRE(r.fired == std::vector<uint8_t>{1});
+}
+
+namespace {
+/// What a routed sink was handed: route, pad, on.
+struct Routed { uint8_t route; uint8_t pad; bool on; };
+std::vector<Routed>* g_routed = nullptr;
+void routedSink(void*, uint8_t route, uint8_t pad, uint8_t, bool on, PadPerformance)
+{
+    if (g_routed) g_routed->push_back({route, pad, on});
+}
+std::vector<std::pair<uint8_t, uint8_t>> routedOns(const std::vector<Routed>& v)
+{
+    std::vector<std::pair<uint8_t, uint8_t>> out;
+    for (const Routed& r : v) if (r.on) out.push_back({r.route, r.pad});
+    return out;
+}
+} // namespace
+
+TEST_CASE("sequencer: each block plays on its own track's route", "[seq][songmap][route]") {
+    Rig r;
+    std::vector<Routed> got;
+    g_routed = &got;
+    r.seq.setSink(&routedSink, nullptr);
+    const uint32_t bar = r.loop(1);
+    auto a = std::make_shared<std::vector<PatternSequencer::SongNote>>();
+    a->push_back({0, 0, 1, 100, 0});
+    auto b = std::make_shared<std::vector<PatternSequencer::SongNote>>();
+    b->push_back({0, 0, 1, 100, 0});
+    PatternSequencer::SongSpan kit;
+    kit.b = bar; kit.notes = a; kit.loop = bar;
+    PatternSequencer::SongSpan second = kit;
+    second.notes = b;
+    second.route = 1;
+    r.seq.playbackAt(0);
+    r.seq.setSongMap({kit, second}, 0, 0);
+    r.run(bar);
+    /* The same pad on both tracks: two notes, one each, neither cut. */
+    REQUIRE(routedOns(got) == std::vector<std::pair<uint8_t, uint8_t>>{{0, 1}, {1, 1}});
+    g_routed = nullptr;
+}
+
+TEST_CASE("sequencer: a route muted keeps the other playing", "[seq][songmap][route]") {
+    Rig r;
+    std::vector<Routed> got;
+    g_routed = &got;
+    r.seq.setSink(&routedSink, nullptr);
+    r.seq.setSceneBars(0, 1);
+    REQUIRE(r.seq.addEventTicks(0, 0, 2, 100));
+    const uint32_t bar = r.loop(1);
+    auto own = std::make_shared<std::vector<PatternSequencer::SongNote>>();
+    own->push_back({0, 0, 7, 100, 0});
+    PatternSequencer::SongSpan first;   // the scene, on the pads' route
+    first.b = 2 * bar;
+    PatternSequencer::SongSpan second;
+    second.b = 2 * bar; second.notes = own; second.loop = bar; second.route = 1;
+    r.seq.playbackAt(0);
+    r.seq.setSongMap({first, second}, 0, 0);
+    r.seq.setSongRoutesMuted(1u << 1);
+    r.run(bar);
+    REQUIRE(routedOns(got) == std::vector<std::pair<uint8_t, uint8_t>>{{0, 2}});
+    got.clear();
+    r.seq.setSongRoutesMuted(1u << 0);
+    r.run(bar);
+    REQUIRE(routedOns(got) == std::vector<std::pair<uint8_t, uint8_t>>{{1, 7}});
+    g_routed = nullptr;
+}
+
+TEST_CASE("sequencer: a held note lets go on its own route", "[seq][songmap][route]") {
+    Rig r;
+    std::vector<Routed> got;
+    g_routed = &got;
+    r.seq.setSink(&routedSink, nullptr);
+    const uint32_t bar = r.loop(1);
+    auto own = std::make_shared<std::vector<PatternSequencer::SongNote>>();
+    own->push_back({0, kBeat, 3, 100, 0});               // held a beat
+    PatternSequencer::SongSpan s;
+    s.b = bar; s.notes = own; s.loop = bar; s.route = 1;
+    r.seq.playbackAt(0);
+    r.seq.setSongMap({s}, 0, 0);
+    r.run(bar);
+    REQUIRE(got.size() == 2);
+    CHECK(got[0].route == 1);
+    CHECK(got[0].on);
+    CHECK(got[1].route == 1);
+    CHECK(got[1].pad == 3);
+    CHECK_FALSE(got[1].on);
+    g_routed = nullptr;
+}
+
+TEST_CASE("sequencer: the scene plays on the scene route, and a pads-only sink drops another", "[seq][route]") {
+    Rig r;
+    std::vector<Routed> got;
+    g_routed = &got;
+    r.seq.setSink(&routedSink, nullptr);
+    r.seq.setSceneBars(0, 1);
+    REQUIRE(r.seq.addEventTicks(0, 0, 4, 100));
+    const uint32_t bar = r.loop(1);
+    r.seq.setSceneRoute(1);
+    r.seq.playback();
+    r.run(bar);
+    REQUIRE(routedOns(got) == std::vector<std::pair<uint8_t, uint8_t>>{{1, 4}});
+    r.seq.stop();
+    g_routed = nullptr;
+
+    /* A sink that knows only the pads hears nothing of a second kit. */
+    Rig plain;
+    plain.seq.setSceneBars(0, 1);
+    REQUIRE(plain.seq.addEventTicks(0, 0, 4, 100));
+    plain.seq.setSceneRoute(1);
+    plain.seq.playback();
+    plain.run(plain.loop(1));
+    REQUIRE(plain.fired.empty());
+    plain.seq.setSceneRoute(0);
+    plain.run(plain.loop(1));
+    REQUIRE(plain.fired == std::vector<uint8_t>{4});
+}
+
+TEST_CASE("sequencer: a take onto the song keeps a hit where the song is", "[seq][songtake]") {
+    Rig r;
+    r.seq.setCountIn(false);
+    const uint32_t bar = r.loop(1);
+    r.seq.playbackAt(5 * bar);                            // the song's bar six; the scene loops four
+    r.seq.setSongMap({}, 0, 0);
+    REQUIRE(r.seq.beginSongTake(16));
+    r.run(kBeat + 100);                                   // a hair after beat two
+    r.seq.noteIn(3, 100);
+    r.run(kBeat / 2);
+    r.seq.noteOut(3);
+    r.run(kBlock);
+    std::vector<PatternSequencer::SongTakeNote> got;
+    r.seq.takeSongNotes(got, true);
+    REQUIRE(got.size() == 1);
+    CHECK(got[0].pos == 5 * bar + kBeat);                 // on the song's grid
+    CHECK(got[0].pad == 3);
+    CHECK(got[0].vel == 100);
+    CHECK(got[0].len >= kBeat / 2 - kBlock);
+    CHECK(got[0].len <= kBeat / 2 + kBlock);
+    CHECK(got[0].lap == 0);
+    /* Nothing of it went into a scene. */
+    CHECK(r.seq.eventCount(0) == 0);
+    r.seq.endSongTake();
+    r.seq.stop();
+}
+
+TEST_CASE("sequencer: a take round a region counts its laps and ends a held note at the wrap", "[seq][songtake]") {
+    Rig r;
+    r.seq.setCountIn(false);
+    const uint32_t bar = r.loop(1);
+    r.seq.playbackAt(0);
+    r.seq.setSongMap({}, bar, 0);                         // the song goes round its bar one
+    REQUIRE(r.seq.beginSongTake(16));
+    r.run(bar - kBeat);
+    r.seq.noteIn(2, 90);                                  // beat four, held over the wrap
+    r.run(kBeat * 2);
+    CHECK(r.seq.songTakeLaps() == 1);
+    r.seq.noteOut(2);
+    r.seq.noteIn(4, 80);                                  // lap two, beat two
+    r.run(kBlock);
+    std::vector<PatternSequencer::SongTakeNote> got;
+    r.seq.takeSongNotes(got, true);
+    REQUIRE(got.size() == 2);
+    CHECK(got[0].pad == 2);
+    CHECK(got[0].lap == 0);
+    CHECK(got[0].pos == bar - kBeat);
+    CHECK(got[0].len == kBeat);                           // to the region's end, no further
+    CHECK(got[1].pad == 4);
+    CHECK(got[1].lap == 1);
+    CHECK(got[1].pos == kBeat);
+    r.seq.endSongTake();
     r.seq.stop();
 }
 
@@ -967,4 +1208,95 @@ TEST_CASE("sequencer: note lengths travel in the sequence file, hits stay triple
     REQUIRE(b.seq.eventCount(0) == 2);
     REQUIRE(b.seq.eventLengthTicks(0, 0) == 0);
     REQUIRE(b.seq.eventLengthTicks(0, 1) == 3 * kTicksPerBeat / 2);
+}
+
+TEST_CASE("sequencer: a 16 levels take keeps what each hit sounded as", "[seq][levels]") {
+    /* What the pad logic says a hit is when it comes in -- here 16 levels of
+     * pitch on pad 4, with Full level -- is kept with the hit and handed back
+     * on playback, whatever the pads would make of it by then. */
+    struct Perf {
+        static PadPerformance of(void*, uint8_t, uint8_t& vel) {
+            vel = 127;
+            PadPerformance p;
+            p.levels = PadLevels::Pitch;
+            p.source = 4;
+            return p;
+        }
+    };
+    struct Heard { uint8_t pad; uint8_t vel; PadPerformance perf; };
+    std::vector<Heard> heard;
+
+    Rig r;
+    r.seq.setPerformanceSource(&Perf::of, nullptr);
+    r.seq.setSink([](void* ctx, uint8_t pad, uint8_t vel, bool on, PadPerformance perf) {
+        if (on) static_cast<std::vector<Heard>*>(ctx)->push_back({pad, vel, perf});
+    }, &heard);
+    r.seq.setCountIn(false);
+    r.seq.setSceneBars(0, 1);
+    r.seq.record();
+    r.run(kBlock);
+    r.seq.noteIn(7, 40);                  // pad 7 is the source, a fifth up
+    r.run(kBlock);
+    r.seq.noteOut(7);
+    r.run(kBlock);
+    REQUIRE(r.seq.eventCount(0) == 1);
+    uint32_t pos = 0; uint8_t pad = 0, vel = 0;
+    REQUIRE(r.seq.eventAt(0, 0, pos, pad, vel));
+    REQUIRE(pad == 7);                    // the lane is the level that was hit
+    REQUIRE(vel == 127);                  // at the velocity that sounded
+    REQUIRE(r.seq.eventPerformance(0, 0).levels == PadLevels::Pitch);
+    REQUIRE(r.seq.eventPerformance(0, 0).source == 4);
+
+    /* Played back with the source gone: what was recorded, not what the pads
+     * would make of pad 7 now. */
+    r.seq.setPerformanceSource(nullptr, nullptr);
+    r.seq.stop();
+    heard.clear();
+    r.seq.playbackAt(0);
+    r.run(r.loop(1));
+    r.seq.stop();
+    REQUIRE_FALSE(heard.empty());
+    REQUIRE(heard[0].pad == 7);
+    REQUIRE(heard[0].vel == 127);
+    REQUIRE(heard[0].perf.levels == PadLevels::Pitch);
+    REQUIRE(heard[0].perf.source == 4);
+}
+
+TEST_CASE("sequence file: a hit's performance travels with it", "[seq][store][levels]") {
+    const char* path = "cp_seq_levels.json";
+    PadPerformance pitch;
+    pitch.levels = PadLevels::Pitch;
+    pitch.source = 9;
+    PadPerformance velo;
+    velo.levels = PadLevels::Velocity;
+    velo.source = 2;
+
+    Rig a;
+    a.seq.setSceneBars(0, 1);
+    REQUIRE(a.seq.addEventTicks(0, 0, 3, 100));                         // plain hit
+    REQUIRE(a.seq.addEventTicks(0, kTicksPerBeat, 5, 90, 0, pitch));    // a hit at a level
+    REQUIRE(a.seq.addEventTicks(0, kTicksPerBeat * 2, 6, 47, kTicksPerBeat, velo));
+    REQUIRE(SequenceStore::save(a.seq, path));
+
+    Rig b;
+    REQUIRE(SequenceStore::load(b.seq, path));
+    std::remove(path);
+    REQUIRE(b.seq.eventCount(0) == 3);
+    REQUIRE(b.seq.eventPerformance(0, 0).plain());
+    REQUIRE(b.seq.eventPerformance(0, 1).levels == PadLevels::Pitch);
+    REQUIRE(b.seq.eventPerformance(0, 1).source == 9);
+    REQUIRE(b.seq.eventLengthTicks(0, 1) == 0);                         // still a hit
+    REQUIRE(b.seq.eventPerformance(0, 2).levels == PadLevels::Velocity);
+    REQUIRE(b.seq.eventPerformance(0, 2).source == 2);
+    REQUIRE(b.seq.eventLengthTicks(0, 2) == kTicksPerBeat);
+}
+
+TEST_CASE("PadPerformance packs into one byte and back", "[seq][levels]") {
+    PadPerformance p;
+    REQUIRE(p.pack() == 0);
+    p.levels = PadLevels::Pitch;
+    p.source = 15;
+    REQUIRE(PadPerformance::unpack(p.pack()).levels == PadLevels::Pitch);
+    REQUIRE(PadPerformance::unpack(p.pack()).source == 15);
+    REQUIRE(PadPerformance::unpack(0x70).plain());     // a mode it does not know
 }

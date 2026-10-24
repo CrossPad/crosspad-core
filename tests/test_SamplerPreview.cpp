@@ -134,9 +134,9 @@ TEST_CASE("Audition plays a file outside the kit on its own output", "[sampleren
 
     float kitPeak = 0.0f;
     const float pk = rig.run(20, &kitPeak);
-    /* 8000/32768 at unity gain, centred: -3 dB a side, as a pad at centre. */
-    REQUIRE(pk > kLevel(8000) * 0.7071f - 1e-4f);
-    REQUIRE(pk <= kLevel(8000) * 0.7072f);
+    /* 8000/32768 at unity gain, centred: unity a side, as a pad at centre. */
+    REQUIRE(pk > kLevel(8000) - 1e-4f);
+    REQUIRE(pk <= kLevel(8000) + 1e-4f);
     REQUIRE(kitPeak == 0.0f);                  // nothing on the kit's channel
     REQUIRE(rig.kitSrc.describes == 0);        // and nothing through the kit's source
     REQUIRE(rig.engine.counters().notesStarted == 0);
@@ -197,7 +197,7 @@ TEST_CASE("Audition: the next one replaces the one sounding", "[samplerengine][p
     REQUIRE(rig.engine.previewStart("/sdcard/b.wav"));
     rig.run(10);
     REQUIRE(rig.engine.previewBusy());
-    REQUIRE(std::fabs(rig.lastL - kLevel(2000) * 0.70710678f) < 1e-3f);   // b, centred
+    REQUIRE(std::fabs(rig.lastL - kLevel(2000)) < 1e-3f);   // b, centred
     /* One ring at a time: a's was given back before b's was taken. */
     REQUIRE(rig.pool.stats().blocksUsed <= crosspad::StreamWindow::kDefaultBlocks);
 }
@@ -390,7 +390,7 @@ TEST_CASE("Audition replaced in a gap gives way to the next one", "[samplerengin
     rig.run(3);                                // a ends at once
     rig.src.stall = false;
     rig.run(6);
-    REQUIRE(std::fabs(rig.lastL - kLevel(2000) * 0.70710678f) < 1e-3f);
+    REQUIRE(std::fabs(rig.lastL - kLevel(2000)) < 1e-3f);
 }
 
 TEST_CASE("Audition stopped while it is still priming never sounds", "[samplerengine][preview][fail]") {
@@ -418,7 +418,7 @@ TEST_CASE("Audition: a second one while the first is priming takes its place", "
     REQUIRE(rig.engine.previewStart("/sdcard/b.wav"));
     rig.src.stall = false;
     rig.run(6);
-    REQUIRE(std::fabs(rig.lastL - kLevel(2000) * 0.70710678f) < 1e-3f);
+    REQUIRE(std::fabs(rig.lastL - kLevel(2000)) < 1e-3f);
     REQUIRE(rig.pool.stats().blocksUsed <= crosspad::StreamWindow::kDefaultBlocks);
 }
 

@@ -23,25 +23,15 @@
 #include "crosspad/song/SongEngine.hpp"
 
 #include "crosspad/audio/WavWriter.hpp"
+#include "crosspad/dsp/TimeStretch.hpp"
 #include "crosspad/instrument/WavPcm.hpp"
 #include "crosspad/kit/IKitManager.hpp"
 #include "crosspad/kit/KitInfo.hpp"
+#include "crosspad/platform/IFileSystem.hpp"
 #include "crosspad/platform/PlatformServices.hpp"
 #include "crosspad/sequencer/MetronomeNode.hpp"
 #include "crosspad/sequencer/PatternSequencer.hpp"
 #include "crosspad/song/LiveSet.hpp"
-
-#ifdef _WIN32
-#include <chrono>
-#include <fcntl.h>
-#include <filesystem>
-#include <io.h>
-#else
-#include <dirent.h>
-#include <fcntl.h>
-#include <sys/stat.h>
-#include <unistd.h>
-#endif
 
 #include <algorithm>
 #include <atomic>
@@ -60,28 +50,23 @@
 #include <vector>
 
 namespace crosspad {
+
+static_assert(AudioSong::kSeqPpq == PatternSequencer::kPpq,
+              "a song's seq notes and a scene's events count the same ticks");
+static_assert(AudioSong::kSeqBlockBars == PatternSequencer::kMaxBars &&
+              AudioSong::kSeqBlockNotes == PatternSequencer::kMaxEvents,
+              "a block a take lays must fit the scene the seq view opens it in");
 namespace {
 
 constexpr int      kTracks           = AudioSong::kTracks;
-constexpr uint32_t kBounceRingFrames = 32768;  // 128 kB, ~0.7 s of card stall
 constexpr uint32_t kBounceMinFrames  = 8192;   // 32 kB (~170 ms), the least a bounce starts with
-/* The tracks are mixed by the worker into one ring, not played from a ring
- * each: four rings were 128 kB of PSRAM, more than the board has free with an
- * app open, and play simply did not start. The price is that a mute or a
- * track fader is heard a ring's depth late.
- *
- * ~370 ms ahead, not the ~170 it was: moving round the UI while a song played
- * emptied it 21 times in three seconds (08.10.2026) -- the worker was off the
- * card longer than that. The ring takes what memory gives down to the prime,
- * so a board short of PSRAM plays as it did; the prime, and with it the wait
- * before the first note, is the same 4096 frames as before. */
-constexpr uint32_t kSongRingFrames   = 16384;  // 64 kB, ~370 ms ahead
-constexpr uint32_t kChunkFrames      = 1024;   // 4 kB per card access
-/// A bounce's first piece fills up the 4 kB the WAV header starts, so every
-/// piece after it ends on a 4 kB boundary of the file.
-constexpr uint32_t kFirstChunkFrames = (kChunkFrames * 4 - WavWriter::kHeaderBytes) / 4;
 static_assert(WavWriter::kHeaderBytes % 4 == 0, "the WAV header is whole frames");
 constexpr uint32_t kPrimeFrames      = 4096;
+/// The tracks' meters: the loudest frame of each track in every hop of the
+/// ring, kept for long enough that what RT is playing is still there.
+constexpr uint32_t kMeterHop         = 1024;   // ~23 ms
+constexpr uint32_t kMeterSlots       = 32;     // twice the ring
+constexpr uint32_t kMeterRead        = 3;      // hops a read looks back: a UI tick's worth
 /// A project name, as a folder on the card and a row in a list.
 constexpr size_t   kMaxNameLen       = 32;
 /// The kit's part of a clip's file name.
@@ -93,6 +78,17 @@ constexpr uint32_t kStreamPollMs     = 3;
 /// A commit is saved once nothing has been committed for this long: a fader
 /// turned is dozens of commits, and each one a card write under playback.
 constexpr uint32_t kSaveDelayMs      = 400;
+/// Undo: steps kept each way, and how close changes come to be one step.
+constexpr size_t   kUndoDepth        = 24;
+/// A take onto the seq track: notes the sequencer keeps between two worker
+/// passes (it is emptied every few ms -- this is a stall's worth of hits),
+/// and how far past its end the song runs while a take is open.
+constexpr size_t   kTakeRoom         = 256;
+constexpr uint32_t kTakeHorizonBars  = 999;
+/// Patterns kept as samples for the sequencer: blocks sharing notes, and a
+/// commit that changed nothing about them, convert none again.
+constexpr size_t   kNoteCacheSize    = 32;
+constexpr int64_t  kUndoMergeUs      = 700000;
 /// requestTempo(): the tempi a song may have.
 constexpr float    kMinBpm           = 20.0f;
 constexpr float    kMaxBpm           = 400.0f;
@@ -107,6 +103,13 @@ constexpr uint32_t kPeakHop          = 1024;
 constexpr uint32_t kPeakChunkFrames  = 4096;
 /// Beside clips/: <file>.pk per clip, so a waveform is read from its WAV once.
 constexpr const char* kPeaksDir      = ".peaks";
+/// Under clips/: a stretched track's blocks, fitted to the song's tempo.
+constexpr const char* kStretchDir    = ".stretch";
+/// A freeze's renders, in clips/, named by what they play (pieceKey()).
+constexpr const char* kFreezeDir     = ".freeze";
+/// Within this of 1:1 a block plays as recorded -- a copy would be the same
+/// sound, a card read later.
+constexpr double      kStretchSame   = 0.005;
 
 /// A name that stays one folder under the songs root.
 bool valid_name(const std::string& n)
@@ -115,111 +118,35 @@ bool valid_name(const std::string& n)
            n.find_first_of("/\\") == std::string::npos;
 }
 
-/// The few file operations the engine needs: POSIX where there is POSIX (the
-/// board, Linux, macOS), the CRT and std::filesystem on Windows. Paths are
-/// UTF-8.
+/// The few file operations the engine needs, on the platform's file system.
 namespace fsx {
-#ifdef _WIN32
-std::filesystem::path native(const std::string& p) { return std::filesystem::u8path(p); }
-int  openRead(const std::string& p) { return ::_wopen(native(p).c_str(), _O_RDONLY | _O_BINARY); }
-long readSome(int fd, void* dst, size_t n) { return ::_read(fd, dst, (unsigned)n); }
-bool seek(int fd, uint32_t at) { return ::_lseeki64(fd, at, SEEK_SET) >= 0; }
-void close(int fd) { ::_close(fd); }
-bool exists(const std::string& p) { std::error_code ec; return std::filesystem::exists(native(p), ec); }
+IFileSystem& fs() { return getFileSystem(); }
+int  openRead(const std::string& p) { return fs().openRead(p.c_str()); }
+long readSome(int fd, void* dst, size_t n) { return fs().read(fd, dst, n); }
+bool seek(int fd, uint32_t at) { return fs().seek(fd, at); }
+void close(int fd) { fs().close(fd); }
+bool exists(const std::string& p) { return fs().exists(p.c_str()); }
 /// @p p's size, and when it was last written in unix seconds.
 bool fileInfo(const std::string& p, uint64_t& bytes, int64_t& modified)
 {
-    std::error_code ec;
-    bytes = std::filesystem::file_size(native(p), ec);
-    if (ec) return false;
-    const auto t = std::filesystem::last_write_time(native(p), ec);
-    if (ec) return false;
-    const auto sys = t - std::filesystem::file_time_type::clock::now() + std::chrono::system_clock::now();
-    modified = std::chrono::duration_cast<std::chrono::seconds>(sys.time_since_epoch()).count();
+    FileStat st;
+    if (fs().stat(p.c_str(), &st) != FsStat::Found) return false;
+    bytes = st.size;
+    modified = st.modified;
     return true;
 }
-bool rename(const std::string& from, const std::string& to)
-{
-    std::error_code ec;
-    std::filesystem::rename(native(from), native(to), ec);
-    return !ec;
-}
-/// @p dir and everything in it.
-template <typename Y> bool removeTree(const std::string& dir, Y)
-{
-    std::error_code ec;
-    std::filesystem::remove_all(native(dir), ec);
-    return !ec;
-}
-bool makeDir(const std::string& p)
-{
-    std::error_code ec;
-    if (std::filesystem::is_directory(native(p), ec)) return true;
-    return std::filesystem::create_directory(native(p), ec);
-}
+bool rename(const std::string& from, const std::string& to) { return fs().rename(from.c_str(), to.c_str()); }
+bool makeDir(const std::string& p) { return fs().makeDir(p.c_str()); }
 /// @p each(name, isDir) for every entry of @p dir.
 template <typename F> void listDir(const std::string& dir, F each)
 {
-    std::error_code ec;
-    for (const auto& e : std::filesystem::directory_iterator(native(dir), ec)) {
-        const auto u8 = e.path().filename().u8string();
-        std::error_code dec;
-        each(std::string(u8.begin(), u8.end()), e.is_directory(dec));
-    }
+    fs().forEach(dir, [&](const char* name, bool isDir) { each(std::string(name), isDir); });
 }
-#else
-int  openRead(const std::string& p) { return ::open(p.c_str(), O_RDONLY); }
-long readSome(int fd, void* dst, size_t n) { return (long)::read(fd, dst, n); }
-bool seek(int fd, uint32_t at) { return ::lseek(fd, (off_t)at, SEEK_SET) >= 0; }
-void close(int fd) { ::close(fd); }
-bool exists(const std::string& p) { struct stat st; return stat(p.c_str(), &st) == 0; }
-/// @p p's size, and when it was last written in unix seconds.
-bool fileInfo(const std::string& p, uint64_t& bytes, int64_t& modified)
-{
-    struct stat st;
-    if (stat(p.c_str(), &st) != 0) return false;
-    bytes = (uint64_t)st.st_size;
-    modified = (int64_t)st.st_mtime;
-    return true;
-}
-bool rename(const std::string& from, const std::string& to) { return std::rename(from.c_str(), to.c_str()) == 0; }
-bool makeDir(const std::string& p)
-{
-    struct stat st;
-    if (stat(p.c_str(), &st) == 0) return S_ISDIR(st.st_mode);
-    return mkdir(p.c_str(), 0775) == 0;
-}
-/// @p each(name, isDir) for every entry of @p dir.
-template <typename F> void listDir(const std::string& dir, F each)
-{
-    DIR* d = opendir(dir.c_str());
-    if (!d) return;
-    while (dirent* e = readdir(d)) {
-        const std::string path = dir + "/" + e->d_name;
-        struct stat st;
-        each(std::string(e->d_name), stat(path.c_str(), &st) == 0 && S_ISDIR(st.st_mode));
-    }
-    closedir(d);
-}
-/// @p dir and everything in it, @p yield() after each file. The names are
-/// read before anything goes: removing while a directory is open for
-/// reading is not something every filesystem survives.
+/// @p dir and everything in it, @p yield() after each entry.
 template <typename Y> bool removeTree(const std::string& dir, Y yield)
 {
-    std::vector<std::pair<std::string, bool>> entries;
-    listDir(dir, [&](const std::string& name, bool isDir) {
-        if (name != "." && name != "..") entries.emplace_back(name, isDir);
-    });
-    bool ok = true;
-    for (const auto& e : entries) {
-        const std::string path = dir + "/" + e.first;
-        if (e.second) ok = removeTree(path, yield) && ok;
-        else          ok = ::unlink(path.c_str()) == 0 && ok;
-        yield();
-    }
-    return ::rmdir(dir.c_str()) == 0 && ok;
+    return fs().removeTree(dir, [](void* y) { (*static_cast<Y*>(y))(); }, &yield);
 }
-#endif
 } // namespace fsx
 
 /// Stereo int16 frames, one writer and one reader, counters that only grow
@@ -231,7 +158,7 @@ template <typename Y> bool removeTree(const std::string& dir, Y yield)
 struct FrameRing {
     ISongEnginePlatform* platform = nullptr;
     static constexpr uint32_t kSegFrames = 4096;       // 16 kB
-    static constexpr uint32_t kMaxSegs   = 16;
+    static constexpr uint32_t kMaxSegs   = 64;         // 1 MB: the largest ring a platform sizes
     int16_t* seg[kMaxSegs] = {};
     uint32_t segs = 0;
     uint32_t cap = 0;
@@ -240,13 +167,14 @@ struct FrameRing {
     static constexpr size_t kSegBytes = kSegFrames * 4;
 
     /// As many segments as memory gives, up to @p frames, at least @p
-    /// minFrames.
+    /// minFrames. A segment past the minimum is asked for with missingSegs
+    /// 0, so a platform can keep more back for those.
     bool alloc(uint32_t frames, uint32_t minFrames) {
         release();
         const uint32_t want = std::min(kMaxSegs, (frames + kSegFrames - 1) / kSegFrames);
         const uint32_t need = (minFrames + kSegFrames - 1) / kSegFrames;
         while (segs < want) {
-            void* p = platform->allocRingSegment(kSegBytes, segs < need ? need - segs : 1);
+            void* p = platform->allocRingSegment(kSegBytes, segs < need ? need - segs : 0);
             if (!p) break;
             seg[segs++] = static_cast<int16_t*>(p);
         }
@@ -429,7 +357,7 @@ enum class Play : uint8_t { Idle, Priming, Armed, Counting, Running, Ended };
 
 struct SongEngine::Impl {
     Impl(ISongEnginePlatform& platform, MetronomeNode& clock, PatternSequencer& sequencer)
-        : p(platform), clk_(clock), seq_(sequencer) {
+        : p(platform), clk_(clock), seq_(sequencer), sz(checkedSizes(platform.sizes())) {
         ring_.platform = &p;
         bRing_.platform = &p;
     }
@@ -437,6 +365,20 @@ struct SongEngine::Impl {
     ISongEnginePlatform& p;
     MetronomeNode& clk_;
     PatternSequencer& seq_;
+    const SongEngineSizes sz;
+
+    /// Rings no smaller than what they start with; a chunk longer than the
+    /// WAV header.
+    static SongEngineSizes checkedSizes(SongEngineSizes s) {
+        s.bounceRingFrames = std::max(s.bounceRingFrames, kBounceMinFrames);
+        s.songRingFrames = std::max(s.songRingFrames, kPrimeFrames);
+        s.chunkFrames = std::max(s.chunkFrames, WavWriter::kHeaderBytes / 4 + 1);
+        return s;
+    }
+
+    /// A bounce's first piece fills up the chunk the WAV header starts, so
+    /// every piece after it ends on a chunk boundary of the file.
+    uint32_t firstChunkFrames() const { return (sz.chunkFrames * 4 - WavWriter::kHeaderBytes) / 4; }
 
     /// printf into the platform's log.
     void logf(bool warning, const char* fmt, ...) {
@@ -557,8 +499,19 @@ struct SongEngine::Impl {
     }
 
     /// The pads bus, one block. Only while a bounce is armed.
+    bool capturing() const { return bArmed_.load(std::memory_order_seq_cst); }
+    bool captureBacklogged() const { return bRing_.cap && bRing_.used() * 2 > bRing_.cap; }
+
     void rtCapture(const float* bus, uint32_t frames) {
         RtSection rt(rtGen_);
+        /* The seq track's meter: its notes play through the pads, live. */
+        float pl = 0.0f, pr = 0.0f;
+        for (uint32_t i = 0; i < frames; ++i) {
+            pl = std::max(pl, std::fabs(bus[i * 2]));
+            pr = std::max(pr, std::fabs(bus[i * 2 + 1]));
+        }
+        if (pl > padsPeak_[0].load(std::memory_order_relaxed)) padsPeak_[0].store(pl, std::memory_order_relaxed);
+        if (pr > padsPeak_[1].load(std::memory_order_relaxed)) padsPeak_[1].store(pr, std::memory_order_relaxed);
         if (!bArmed_.load(std::memory_order_seq_cst)) return;
         if (!bCapturing_) {
             /* Start on the block in which the clock started, so sample 0 of
@@ -568,9 +521,18 @@ struct SongEngine::Impl {
             if (!clk.running() || clk.countingIn() || at == 0 || at > frames) return;
             bCapturing_ = true;
         }
-        const uint32_t n = std::min(frames, bLeft_);
+        /* A freeze's run-in: played, so it rings into what is recorded, and
+         * not recorded itself. */
+        uint32_t off = 0;
+        if (bSkip_) {
+            off = std::min(frames, bSkip_);
+            bSkip_ -= off;
+            if (off == frames) return;
+        }
+        const uint32_t n = std::min(frames - off, bLeft_);
         if (n * 2 > capture_.size()) { bOverflow_.store(true); return; }
         int16_t* dst = capture_.data();
+        bus += off * 2;
         for (uint32_t i = 0; i < n * 2; ++i) {
             float v = bus[i] * 32767.0f;
             dst[i] = (int16_t)(v > 32767.0f ? 32767.0f : (v < -32768.0f ? -32768.0f : v));
@@ -593,8 +555,8 @@ struct SongEngine::Impl {
         if (workerStarted_.load()) return true;
         /* The one card buffer the worker uses, for whichever job it is on,
          * and the sum the tracks are mixed into. */
-        if (!io_) io_ = static_cast<int16_t*>(p.allocScratch(kChunkFrames * 4));
-        if (!acc_) acc_ = static_cast<int32_t*>(p.allocScratch(kChunkFrames * 8));
+        if (!io_) io_ = static_cast<int16_t*>(p.allocScratch(sz.chunkFrames * 4));
+        if (!acc_) acc_ = static_cast<int32_t*>(p.allocScratch(sz.chunkFrames * 8));
         if (!io_ || !acc_) return false;
         workerStarted_.store(p.startWorker(worker_entry, this));
         return workerStarted_.load();
@@ -609,6 +571,7 @@ struct SongEngine::Impl {
 
     bool requestOpen(const std::string& name) {
         if (!valid_name(name) || !ensureWorker()) return false;
+        yieldFreeze();          // or the open waits out the whole freeze
         {
             std::lock_guard<std::recursive_mutex> l(songMutex_);
             openName_ = name;
@@ -652,6 +615,44 @@ struct SongEngine::Impl {
         return requestEdit(kEditMerge);
     }
     uint8_t editProgress() const { return editProgress_.load(); }
+    uint32_t stretchWaiting() const { return stretchCount_.load(); }
+    uint8_t stretchProgress() const { return stretchProg_.load(); }
+    bool undo() { return step(undo_, redo_); }
+    bool redo() { return step(redo_, undo_); }
+    uint32_t undoSteps() const { return undoCount_.load(); }
+    uint32_t redoSteps() const { return redoCount_.load(); }
+
+    /// Track @p t's level now, 0..1 a side: an audio track's loudest frame
+    /// in the last few hops RT has played (its gain applied), the seq
+    /// track's the pads' since the last ask. 0 while stopped.
+    void trackLevels(int t, float& left, float& right) {
+        left = right = 0.0f;
+        if (t < 0 || t >= kTracks) return;
+        /* A seq track's are its engine's, where the platform can tell the
+         * engines apart; else the pads', which only the pads' route plays. */
+        const int8_t route = seqRoute_[t].load(std::memory_order_relaxed);
+        const bool seq = route >= 0;
+        float pl = 0.0f, pr = 0.0f;
+        if (seq && !p.seqLevel((uint8_t)route, pl, pr) && route == 0) {
+            pl = padsPeak_[0].exchange(0.0f, std::memory_order_relaxed);
+            pr = padsPeak_[1].exchange(0.0f, std::memory_order_relaxed);
+        }
+        if (play_.load(std::memory_order_relaxed) != Play::Running) return;
+        if (seq) {
+            left = std::min(1.0f, pl);
+            right = std::min(1.0f, pr);
+            return;
+        }
+        const uint32_t hop = ring_.tail.load(std::memory_order_acquire) / kMeterHop;
+        uint32_t m[2] = {0, 0};
+        for (uint32_t back = 0; back < kMeterRead && back <= hop; ++back) {
+            const Meter& s = meter_[(hop - back) % kMeterSlots];
+            if (s.hop.load(std::memory_order_acquire) != hop - back) continue;
+            for (int c = 0; c < 2; ++c) m[c] = std::max<uint32_t>(m[c], s.peak[t][c].load(std::memory_order_relaxed));
+        }
+        left = (float)m[0] / 32767.0f;
+        right = (float)m[1] / 32767.0f;
+    }
 
     bool requestExportLiveSet() {
         if (!ensureWorker() || !claimEdit()) return false;
@@ -812,23 +813,61 @@ struct SongEngine::Impl {
         return endBars(song_);
     }
 
+    /// A seq track's bounce takes only the bars its blocks sound in: the
+    /// take is played in real time, and a one-bar block in a 64-bar song was
+    /// 64 bars of waiting, nearly all of it silence (20.10.2026). A track
+    /// that plays its scene over everything is the whole song, as before.
+    /// Arrange's BOUNCE: a freeze (runFreeze()) whose blocks become the
+    /// track's audio -- the same renders, found on the card where they are
+    /// (a track frozen as it is bounces at once), off the clock where not.
     bool bounceSeqTrack(uint8_t track) {
         if (track >= kTracks) return false;
         uint8_t scene = 0;
+        uint32_t from = 0, to = 0, key = 0;
         {
             std::lock_guard<std::recursive_mutex> l(songMutex_);
             const SongTrack& t = song_.tracks[track];
-            if (!t.inUse || t.kind != TrackKind::Seq) return false;
+            if (!t.inUse || t.kind != TrackKind::Seq || song_.seqRoute(track) < 0) return false;
             scene = t.scene;
+            seqRange(song_, track, from, to);
+            key = seqKey(song_, track);
         }
-        return requestBounce(scene, track, playEndBars());
+        return requestBounce(scene, track, to - from, from, key, true);
+    }
+
+    bool freezeTrack(uint8_t track) {
+        if (track >= kTracks) return false;
+        uint8_t scene = 0;
+        uint32_t from = 0, to = 0, key = 0;
+        {
+            std::lock_guard<std::recursive_mutex> l(songMutex_);
+            const SongTrack& t = song_.tracks[track];
+            if (!t.inUse || t.kind != TrackKind::Seq || song_.seqRoute(track) < 0) return false;
+            scene = t.scene;
+            seqRange(song_, track, from, to);
+            key = seqKey(song_, track);
+        }
+        return requestBounce(scene, track, to - from, from, key);
+    }
+
+    FreezeState freezeState(uint8_t track) {
+        if (track >= kTracks) return FreezeState::None;
+        if (busy_.load() && bFreeze_ && bTrack_ == track) return FreezeState::Freezing;
+        std::lock_guard<std::recursive_mutex> l(songMutex_);
+        const SongTrack& t = song_.tracks[track];
+        if (t.kind != TrackKind::Seq || t.freeze.empty()) return FreezeState::None;
+        return t.freezeKey == seqKey(song_, track) ? FreezeState::Frozen : FreezeState::Stale;
     }
 
     bool bounceScene(uint8_t scene, uint8_t track) { return requestBounce(scene, track, 0); }
 
-    /// @p bars 0: one pass of the scene; otherwise that many bars, the scene
-    /// looping over them, onto @p track from bar one.
-    bool requestBounce(uint8_t scene, uint8_t track, uint32_t bars) {
+    /// @p bars 0: one pass of the scene; otherwise that many bars of the
+    /// song from bar @p fromBar, the scene looping over them, onto @p track
+    /// on that bar.
+    /// @p freezeKey set: a freeze (freezeTrack()), the track's engine alone
+    /// into SongTrack::freeze, stamped with it.
+    bool requestBounce(uint8_t scene, uint8_t track, uint32_t bars, uint32_t fromBar = 0,
+                       uint32_t freezeKey = 0, bool toAudio = false) {
         if (track >= kTracks || !ensureWorker()) return false;
         /* A scene's bounce is audio for an audio track; only a seq track's own
          * bounce lands on the seq track. */
@@ -836,6 +875,7 @@ struct SongEngine::Impl {
             std::lock_guard<std::recursive_mutex> l(songMutex_);
             if (audioTarget(track, false) < 0) return false;
         }
+        if (!freezeKey) yieldFreeze();   // a bounce asked for goes before a freeze
         if (busy_.exchange(true)) return false;
         {
             std::lock_guard<std::mutex> l(statusMutex_);
@@ -845,6 +885,10 @@ struct SongEngine::Impl {
         bScene_ = scene;
         bTrack_ = track;
         bBars_ = bars;
+        bFrom_ = bars ? fromBar : 0;
+        bFreeze_ = bars && freezeKey;
+        bFreezeKey_ = freezeKey;
+        bToAudio_ = bFreeze_ && toAudio;
         bCancel_.store(false);
         bounceReq_.store(true);
         p.wake();
@@ -875,8 +919,25 @@ struct SongEngine::Impl {
         }
     }
 
+    /// A freeze running gives way to anything asked of the worker -- PLAY,
+    /// a take, an open, an edit, a bounce: cancelled, the track plays live,
+    /// and this returns once the worker has put the sequencer back (a take
+    /// or playback started under the freeze's restore lost its song map to
+    /// it). A bounce does not give way: false.
+    bool yieldFreeze() {
+        if (!busy_.load()) return true;
+        if (!bFreeze_) return false;
+        bCancel_.store(true);
+        p.wake();
+        /* A piece stops at its next 4 kB, then closes its file and removes
+         * it: well under this on the board, which only a card stalled in a
+         * write runs out. */
+        for (int i = 0; i < 600 && busy_.load(); ++i) p.sleepMs(5);
+        return !busy_.load();
+    }
+
     bool playWithTake(uint32_t fromBar, SyncTake take) {
-        if (!ensureWorker() || busy_.load()) return false;           // a bounce owns the transport
+        if (!ensureWorker() || !yieldFreeze()) return false;   // a bounce owns the transport
         /* A seq track's length is its scene's, which the seq view changes
          * without a commit: taken again from a stop, not from the last one. */
         if (!playing()) {
@@ -913,9 +974,161 @@ struct SongEngine::Impl {
     }
 
     uint32_t framesPlayed() const { return played_.load(std::memory_order_acquire); }
+    uint32_t positionFrames() const { return pos_.load(std::memory_order_relaxed); }
 
     uint32_t underruns() const { return underruns_.load(); }
     uint32_t openFailures() const { return openFailures_.load(); }
+
+    // ── Takes onto the seq track (Arrange's REC and DUB) ──────────────────
+    bool recordSeq(uint32_t fromBar, SyncTake take, uint8_t beats) {
+        if (take == SyncTake::None || playing() || !ensureWorker() || !yieldFreeze()) return false;
+        {
+            std::lock_guard<std::recursive_mutex> l(songMutex_);
+            if (!opened_ || seqTake_.load() != SyncTake::None) return false;
+            if (!openTake(take)) return false;
+            /* Round a region, from its start: the passes are its laps. */
+            if (takeCycle_) fromBar = song_.loopStart;
+            takeFrom_ = fromBar * song_.samplesPerBar(sampleRate_);
+        }
+        if (playCountedIn(fromBar, SyncTake::None, beats)) return true;
+        std::lock_guard<std::recursive_mutex> l(songMutex_);
+        closeTake();
+        return false;
+    }
+
+    bool seqPunch(SyncTake take) {
+        std::lock_guard<std::recursive_mutex> l(songMutex_);
+        const SyncTake now = seqTake_.load();
+        if (take == now) return true;
+        /* Into a song playing with the sequencer locked to it: that is
+         * what keeps the hits and counts where the song is. */
+        if (take != SyncTake::None && !seqPunchable()) return false;
+        if (now != SyncTake::None) {
+            finishTake();
+            takeBound_ = false;
+        }
+        if (take == SyncTake::None) return true;
+        if (!openTake(take)) return false;
+        takeFrom_ = seq_.songMapPosition();
+        takeBound_ = true;
+        return true;
+    }
+
+    SyncTake seqTake() const { return seqTake_.load(); }
+
+    // ── The seq view of a block ───────────────────────────────────────────
+    bool openSeqEdit(uint8_t track, uint32_t bar, uint8_t scene) {
+        std::lock_guard<std::recursive_mutex> l(songMutex_);
+        closeSeqEdit();
+        if (track >= kTracks || scene >= PatternSequencer::kNumSequences) return false;
+        SongTrack& tr = song_.tracks[track];
+        if (!tr.inUse || tr.kind != TrackKind::Seq) return false;
+        /* Read before it is written over: the scene may be the very one
+         * the track's older blocks play. */
+        const int adopted = song_.adoptSceneNotes(track, scenePattern(tr.scene), endBars(song_));
+        tr.seqBlocks = true;
+        const int i = blockAt(tr, bar);
+        SeqPatternPtr notes = i >= 0 ? tr.clips[(size_t)i].notes : nullptr;
+        if (notes && (notes->bars > PatternSequencer::kMaxBars || notes->notes.size() > PatternSequencer::kMaxEvents)) {
+            logf(true, "seq view: T%u block on bar %u is %u bars, %u notes: more than a scene holds",
+                 (unsigned)track + 1, (unsigned)tr.clips[(size_t)i].bar + 1, (unsigned)notes->bars,
+                 (unsigned)notes->notes.size());
+            if (adopted) commit();
+            return false;
+        }
+        seq_.clearSeq(scene, 127);
+        seq_.setSceneBars(scene, notes ? (uint8_t)notes->bars : PatternSequencer::kDefaultBars);
+        if (notes) {
+            for (const SeqNote& n : notes->notes)
+                seq_.addEventTicks(scene, n.tick, n.pad, n.vel, n.len, PadPerformance::unpack(n.perf));
+        }
+        editTrack_ = track;
+        editBar_ = i >= 0 ? tr.clips[(size_t)i].bar : bar;
+        editScene_ = scene;
+        editBound_ = i >= 0;
+        editGen_ = seq_.editGeneration();
+        /* The view plays the scene on its own clock: through the track's kit. */
+        seq_.setSceneRoute((uint8_t)std::max(0, song_.seqRoute(track)));
+        logf(false, "seq view: T%u bar %u, %s: %u notes into scene %u", (unsigned)track + 1,
+             (unsigned)editBar_ + 1, i >= 0 ? "a block" : "no block", notes ? (unsigned)notes->notes.size() : 0u,
+             (unsigned)scene);
+        if (adopted) commit();
+        return true;
+    }
+
+    void syncSeqEdit() { syncSeqEditNow(false); }
+
+    /// The scene back onto the block it edits. Not while the seq view's REC
+    /// runs -- every hit would be a commit -- unless the view is letting go.
+    void syncSeqEditNow(bool evenRecording) {
+        if (editTrack_ < 0 || seq_.editGeneration() == editGen_) return;
+        if (!evenRecording && seq_.isRecording()) return;
+        std::lock_guard<std::recursive_mutex> l(songMutex_);
+        if (editTrack_ < 0) return;
+        editGen_ = seq_.editGeneration();
+        const int track = editTrack_.load();
+        SongTrack& tr = song_.tracks[track];
+        if (!tr.inUse || tr.kind != TrackKind::Seq) { editTrack_ = -1; return; }
+        const SeqPatternPtr now = scenePattern(editScene_);
+        int i = -1;
+        for (size_t k = 0; k < tr.clips.size() && i < 0; ++k)
+            if (tr.clips[k].bar == editBar_) i = (int)k;
+        if (i < 0) {
+            /* The block went (deleted, undone) while it was being edited:
+             * nothing is put back in its place. */
+            if (editBound_ || now->notes.empty()) {
+                if (editBound_) editTrack_ = -1;
+                return;
+            }
+            /* The first notes of a new block: on its bar, as long as the
+             * scene, never over the next block. */
+            SongClip c;
+            c.bar = editBar_;
+            c.bars = std::min<uint32_t>(now->bars, roomAt(tr, editBar_));
+            c.notes = now;
+            song_.addClip(track, c);
+            editBound_ = true;
+            commit();
+            return;
+        }
+        SongClip& c = tr.clips[(size_t)i];
+        if (samePattern(c.notes, now)) return;
+        /* Notes leaving a block is what the player loses: said each time. */
+        const size_t had = c.notes ? c.notes->notes.size() : 0;
+        if (now->notes.size() < had) {
+            logf(true, "seq view: T%u block on bar %u: %u notes -> %u", (unsigned)track + 1, (unsigned)c.bar + 1,
+                 (unsigned)had, (unsigned)now->notes.size());
+        }
+        /* A block as long as its notes stays so when the scene grows or
+         * shrinks (x2, /2, its length): what the seq view shows is the block.
+         * One the notes go round in several times keeps its length until x2
+         * makes them longer than it is: then it grows with them, so x2 in
+         * the seq view always lengthens the block in Arrange too. */
+        if (c.notes && c.notes->bars) {
+            const uint32_t want = std::min<uint32_t>(now->bars, roomAt(tr, c.bar));
+            if (c.bars == c.notes->bars) c.bars = (uint16_t)want;
+            else if (c.bars % c.notes->bars == 0 && want > c.bars) c.bars = (uint16_t)want;
+        }
+        c.notes = now;
+        commit();
+    }
+
+    void closeSeqEdit() {
+        /* Left with its REC still on -- ARR, the MODE map, another clip: the
+         * take lands as far as it got. The next transport claim stops it a
+         * moment later, and by then nothing is bound to write it back; it was
+         * lost, and the block in Arrange kept its old notes (13.10.2026). */
+        syncSeqEditNow(true);
+        std::lock_guard<std::recursive_mutex> l(songMutex_);
+        editTrack_ = -1;
+        seq_.setSceneRoute(0);
+    }
+
+    int32_t seqEditBar() const { return editTrack_ >= 0 ? (int32_t)editBar_ : -1; }
+
+    bool seqPunchable() const {
+        return play_.load() == Play::Running && syncing_.load() && seq_.state() == SequencerState::Running;
+    }
 
     /// Stop playback, cancel any bounce and give both rings back, before the
     /// engine arena they may live in is wiped. Waits for song_io; never call
@@ -1045,6 +1258,7 @@ private:
 
     /// Publish a claimed edit; its parameters are written before this.
     bool requestEdit(uint8_t edit) {
+        yieldFreeze();          // or the edit waits out the whole freeze
         editReq_.store(edit);
         p.wake();
         return true;
@@ -1119,6 +1333,12 @@ private:
     /// the one open stays -- nothing then saves an empty song over it.
     SongOpState doOpen(const std::string& name) {
         if (!p.storageReady()) return SongOpState::Failed;
+        /* The song open now has its last edits written first: a save waits
+         * kSaveDelayMs after a commit, and the song it would have written is
+         * replaced below -- a kit picked a moment before another song was
+         * opened was lost, and so was any edit inside that window. Before
+         * the read, too: reopening the same song reads what this writes. */
+        if (saveReq_.exchange(false)) doSave();
         const std::string root = p.songsRoot();
         const std::string dir = root + "/" + name;
         if (!fsx::makeDir(root) || !fsx::makeDir(dir) || !fsx::makeDir(dir + "/" + AudioSong::clipsDir())) {
@@ -1132,12 +1352,28 @@ private:
         fresh.name = name;
         endPlayback();
         {
+            std::lock_guard<std::mutex> l(stretchMutex_);
+            stretchReady_.clear();
+            stretchSkip_.clear();
+        }
+        {
             std::lock_guard<std::recursive_mutex> l(songMutex_);
             song_ = std::move(fresh);
+            /* Another song: nothing of the last one's to undo. */
+            undo_.clear();
+            redo_.clear();
+            undoCount_.store(0);
+            redoCount_.store(0);
+            pack(song_, last_);
+            lastChangeUs_ = 0;
             rebuild();
         }
         opened_ = true;
         p.saveCurrent(name);
+        {
+            std::lock_guard<std::recursive_mutex> l(songMutex_);
+            p.songOpened(song_);
+        }
         return SongOpState::Ready;
     }
 
@@ -1226,6 +1462,9 @@ private:
         copy.bpm = bpm;
         const uint32_t spBar = copy.samplesPerBar(sampleRate_);
         for (auto& tr : copy.tracks) {
+            /* A stretched track keeps its blocks' bars: its audio is fitted
+             * to them (doStretch), not they to it. */
+            if (tr.stretch != StretchMode::Off && tr.kind == TrackKind::Audio) continue;
             for (auto& c : tr.clips) {
                 /* A seq block is bars of the scene: it keeps its length. */
                 if (c.file.empty()) continue;
@@ -1313,7 +1552,7 @@ private:
         ClipReader rd[kTracks];
         bool ok = true;
         for (uint32_t f = a; f < b && ok;) {
-            const uint32_t n = std::min(kChunkFrames, b - f);
+            const uint32_t n = std::min(sz.chunkFrames, b - f);
             std::memset(acc_, 0, n * 8);
             for (int t = 0; t < kTracks; ++t) {
                 if (!(mask & (1u << t))) continue;
@@ -1511,14 +1750,14 @@ private:
         w.reserve(total);
         bool ok = true;
         uint32_t done = 0;
-        std::memset(io_, 0, kChunkFrames * 4);
+        std::memset(io_, 0, sz.chunkFrames * 4);
         while (ok && done < lead) {
-            const uint32_t n = std::min(kChunkFrames, lead - done);
+            const uint32_t n = std::min(sz.chunkFrames, lead - done);
             ok = w.write(io_, n);
             done += n;
         }
         for (uint32_t f = a; ok && f < b;) {
-            const uint32_t n = std::min(kChunkFrames, b - f);
+            const uint32_t n = std::min(sz.chunkFrames, b - f);
             r.read(f, io_, n);
             ok = w.write(io_, n);
             f += n;
@@ -1582,27 +1821,351 @@ private:
     /// @p song as sample ranges. A later block cuts the one it lands on, as
     /// on any timeline, and the song's length -- or the loop region, where it
     /// reaches further -- cuts everything past it.
-    /// The seq track that plays with the song, or -1: in use, a seq, and
-    /// not muted -- muted, the sequencer is simply not started with it.
-    static int seqTrackOf(const AudioSong& song, bool evenMuted = false) {
-        for (int t = 0; t < kTracks; ++t) {
-            const SongTrack& tr = song.tracks[t];
-            if (tr.inUse && tr.kind == TrackKind::Seq && (evenMuted || !tr.muted)) return t;
-        }
-        return -1;
-    }
-
     /// AudioSong::playEnd(), and with no length set at least one pass of the
     /// seq track's scene: that is how long a song of only a seq track is.
     uint32_t endBars(const AudioSong& song) const {
         uint32_t end = song.playEnd();
         if (song.length) return end;
-        const int t = seqTrackOf(song, true);
-        if (t >= 0) {
+        /* Only a track that plays its scene over everything: one cut into
+         * blocks is as long as its blocks, like an audio track. The second
+         * kit's track always is (AudioSong::addSeqTrack()). */
+        for (int t = 0; t < kTracks; ++t) {
+            if (song.seqRoute(t) < 0 || song.tracks[t].seqBlocks) continue;
             const uint8_t bars = seq_.sceneBars(song.tracks[t].scene);
             end = std::max<uint32_t>(end, bars ? bars : 1);
         }
         return end;
+    }
+
+    /// The bars a seq track's bounce or freeze takes, [@p from, @p to): one
+    /// cut into blocks from its first block's bar to its last one's end, one
+    /// playing its scene everywhere over the whole song.
+    void seqRange(const AudioSong& song, int track, uint32_t& from, uint32_t& to) const {
+        const SongTrack& t = song.tracks[track];
+        from = 0;
+        to = endBars(song);
+        if (!t.seqBlocks || t.clips.empty()) return;
+        const uint32_t cut = std::max<uint32_t>(to, song.hasRegion() ? song.loopEnd : 0);
+        const auto& cs = t.clips;
+        from = cs.front().bar;
+        to = from;
+        for (size_t i = 0; i < cs.size(); ++i) {
+            uint32_t end = cs[i].bar + cs[i].bars;
+            if (i + 1 < cs.size()) end = std::min(end, cs[i + 1].bar);
+            to = std::max(to, std::min(end, cut));
+        }
+        if (to <= from) { from = 0; to = endBars(song); }
+    }
+
+    /// What a freeze of seq track @p track is made of: its bars, its blocks
+    /// and their notes (the scene's, for a block without), what it plays
+    /// through and the tempo. A freeze plays only while this is unchanged.
+    uint32_t seqKey(const AudioSong& song, int track) const {
+        uint32_t h = 2166136261u;
+        auto mix = [&h](const void* v, size_t n) {
+            const uint8_t* b = static_cast<const uint8_t*>(v);
+            for (size_t i = 0; i < n; ++i) { h ^= b[i]; h *= 16777619u; }
+        };
+        auto text = [&](const std::string& v) { mix(v.data(), v.size()); mix("", 1); };
+        auto notes = [&](const SeqPatternPtr& pt) {
+            if (!pt) { mix("", 1); return; }
+            mix(&pt->bars, sizeof pt->bars);
+            for (const SeqNote& n : pt->notes) {
+                mix(&n.tick, 4); mix(&n.len, 4); mix(&n.pad, 1); mix(&n.vel, 1); mix(&n.perf, 1);
+            }
+        };
+        const SongTrack& t = song.tracks[track];
+        uint32_t from = 0, to = 0;
+        seqRange(song, track, from, to);
+        mix(&from, 4); mix(&to, 4);
+        mix(&song.bpm, sizeof song.bpm);
+        mix(&song.beatsPerBar, 1);
+        mix(&sampleRate_, sizeof sampleRate_);
+        const uint8_t head[3] = {(uint8_t)t.source, t.scene, (uint8_t)(t.seqBlocks ? 1 : 0)};
+        mix(head, sizeof head);
+        text(t.source == SeqSource::Pitch ? song.instrument : t.kit.empty() ? song.kit : t.kit);
+        SeqPatternPtr scene;
+        if (!t.seqBlocks) scene = scenePattern(t.scene);
+        for (const auto& c : t.clips) {
+            mix(&c.bar, 4); mix(&c.bars, 2); mix(&c.from, 2);
+            if (!c.notes && !scene) scene = scenePattern(t.scene);
+            notes(c.notes ? c.notes : scene);
+        }
+        if (!t.seqBlocks) notes(scene);
+        return h ? h : 1;
+    }
+
+    /// One render of a freeze: the song's bars [w0, w0 + pre + cap) of the
+    /// track, the first @p pre not recorded (what rings into the bars that
+    /// are), and the audio blocks it gives -- offsets into its file.
+    struct FreezePiece {
+        uint32_t w0 = 0, pre = 0, cap = 0;
+        std::vector<SongClip> emit;
+    };
+    static constexpr uint32_t kFreezePreBars  = 1;   ///< rung into the first bar recorded
+    static constexpr uint32_t kFreezeTailBars = 1;   ///< what rings on after a block, into a gap
+
+    /// How seq track @p track is frozen: a block whose notes go round is
+    /// rendered for two of its passes only -- the first as it starts, the
+    /// second as every later one sounds, tails of the one before included --
+    /// and that second pass plays as often as the block goes round. A block
+    /// no longer than two passes is rendered whole. A block followed by a gap
+    /// gets what rings on into it. A track with no blocks plays its scene
+    /// over the song: one block of it.
+    std::vector<FreezePiece> freezePlan(const AudioSong& song, int track, uint32_t spb) const {
+        std::vector<FreezePiece> plan;
+        const SongTrack& t = song.tracks[track];
+        const uint32_t songEnd = endBars(song);
+        const uint32_t cut = std::max<uint32_t>(songEnd, song.hasRegion() ? song.loopEnd : 0);
+        const uint8_t sb = seq_.sceneBars(t.scene);
+        struct Block { uint32_t bar, end, pass, next; };
+        std::vector<Block> blocks;
+        if (t.seqBlocks && !t.clips.empty()) {
+            const auto& cs = t.clips;
+            for (size_t i = 0; i < cs.size(); ++i) {
+                uint32_t end = cs[i].bar + cs[i].bars;
+                const uint32_t next = i + 1 < cs.size() ? cs[i + 1].bar : UINT32_MAX;
+                end = std::min(std::min(end, next), cut);
+                if (end <= cs[i].bar) continue;
+                const uint32_t pass = cs[i].notes ? cs[i].notes->bars : sb;
+                blocks.push_back({cs[i].bar, end, pass ? pass : 1u, next});
+            }
+        } else if (songEnd) {
+            blocks.push_back({0, songEnd, sb ? (uint32_t)sb : 1u, UINT32_MAX});
+        }
+        for (const Block& k : blocks) {
+            const uint32_t len = k.end - k.bar;
+            const uint32_t gapEnd = std::min(k.next, cut);
+            const uint32_t tail = k.end < gapEnd ? std::min(kFreezeTailBars, gapEnd - k.end) : 0;
+            const uint32_t pre = std::min(kFreezePreBars, k.bar);
+            FreezePiece first;
+            first.w0 = k.bar - pre;
+            first.pre = pre;
+            SongClip c;
+            c.bar = k.bar;
+            if (len <= 2 * k.pass) {
+                first.cap = len + tail;
+                c.bars = (uint16_t)(len + tail);
+                first.emit.push_back(c);
+                plan.push_back(std::move(first));
+                continue;
+            }
+            first.cap = 2 * k.pass;
+            c.bars = (uint16_t)k.pass;
+            first.emit.push_back(c);
+            for (uint32_t at = k.bar + k.pass; at < k.end; at += k.pass) {
+                SongClip again;
+                again.bar = at;
+                again.bars = (uint16_t)std::min(k.pass, k.end - at);
+                again.offset = k.pass * spb;
+                first.emit.push_back(again);
+            }
+            plan.push_back(std::move(first));
+            if (tail) {
+                FreezePiece ring;
+                ring.w0 = k.end - 1;
+                ring.pre = 1;
+                ring.cap = tail;
+                SongClip r;
+                r.bar = k.end;
+                r.bars = (uint16_t)tail;
+                ring.emit.push_back(r);
+                plan.push_back(std::move(ring));
+            }
+        }
+        return plan;
+    }
+
+    /// Track @p track's notes over the song's samples [w0, w1), moved to
+    /// start at 0 -- what the sequencer plays for one freeze render.
+    std::vector<PatternSequencer::SongSpan> windowSpans(const AudioSong& song, int track, uint32_t spb,
+                                                        uint32_t w0, uint32_t w1) const {
+        const SongTrack& t = song.tracks[track];
+        const int route = std::max(0, song.seqRoute(track));
+        std::vector<PatternSequencer::SongSpan> all;
+        if (t.seqBlocks) {
+            all = seqSpansOf(t, spb, song.seqTicksPerBar(), w1, (uint8_t)route);
+        } else {
+            PatternSequencer::SongSpan whole;
+            const SeqPatternPtr own = scenePattern(t.scene);
+            whole.b = w1;
+            whole.route = (uint8_t)route;
+            whole.notes = songNotes(own, spb, song.seqTicksPerBar());
+            whole.loop = (own->bars ? own->bars : 1) * spb;
+            all.push_back(std::move(whole));
+        }
+        std::vector<PatternSequencer::SongSpan> out;
+        for (auto& sp : all) {
+            if (sp.b <= w0 || sp.a >= w1) continue;
+            if (sp.a < w0) {
+                sp.scene += w0 - sp.a;            // where in its notes the window finds it
+                sp.a = w0;
+            }
+            sp.b = std::min(sp.b, w1);
+            sp.a -= w0;
+            sp.b -= w0;
+            out.push_back(std::move(sp));
+        }
+        return out;
+    }
+
+    /// What one freeze render plays, as a number: the window's notes where
+    /// they fall in it, the run-in and length, the sound (its name and
+    /// freezeSalt), the route and the tempo. Two renders with one key are the
+    /// same audio, so a block the same as another -- or as it was the last
+    /// time the track froze -- is rendered once and found on the card after.
+    uint32_t pieceKey(const AudioSong& song, int track, uint32_t spb, const FreezePiece& pc,
+                      const std::vector<PatternSequencer::SongSpan>& spans) const {
+        uint32_t h = 2166136261u;
+        auto mix = [&h](const void* v, size_t n) {
+            const uint8_t* b = static_cast<const uint8_t*>(v);
+            for (size_t i = 0; i < n; ++i) { h ^= b[i]; h *= 16777619u; }
+        };
+        auto text = [&](const std::string& v) { mix(v.data(), v.size()); mix("", 1); };
+        const SongTrack& t = song.tracks[track];
+        const uint32_t head[5] = {pc.pre, pc.cap, spb, (uint32_t)sampleRate_, t.freezeSalt};
+        mix(head, sizeof head);
+        const uint8_t src[2] = {(uint8_t)t.source, (uint8_t)std::max(0, song.seqRoute(track))};
+        mix(src, sizeof src);
+        text(t.source == SeqSource::Pitch ? song.instrument : t.kit.empty() ? song.kit : t.kit);
+        bool clockScene = false;
+        for (const auto& sp : spans) {
+            const uint32_t at = sp.loop ? sp.scene % sp.loop : sp.scene;
+            const uint32_t w[4] = {sp.a, sp.b, at, sp.loop};
+            mix(w, sizeof w);
+            mix(&sp.route, 1);
+            if (!sp.notes) { clockScene = true; continue; }
+            for (const auto& n : *sp.notes) {
+                mix(&n.pos, sizeof n.pos); mix(&n.len, sizeof n.len);
+                mix(&n.pad, 1); mix(&n.vel, 1); mix(&n.perf, 1);
+            }
+        }
+        if (clockScene) {
+            const SeqPatternPtr sc = scenePattern(t.scene);
+            for (const SeqNote& n : sc->notes) {
+                mix(&n.tick, 4); mix(&n.len, 4); mix(&n.pad, 1); mix(&n.vel, 1); mix(&n.perf, 1);
+            }
+        }
+        return h;
+    }
+
+    /// Worker: freeze track bTrack_ -- every piece of its freezePlan(), each
+    /// found on the card by its pieceKey() or rendered by runBounce(), then
+    /// the blocks they give put on the track together, with the key it was
+    /// asked for. Renders that finished stay when a later one fails or is
+    /// cancelled: the next freeze finds them and renders only the rest.
+    void runFreeze() {
+        std::vector<FreezePiece> plan;
+        uint32_t spb = 0;
+        std::string dir;
+        {
+            std::lock_guard<std::recursive_mutex> l(songMutex_);
+            const SongTrack& t = song_.tracks[bTrack_];
+            if (!t.inUse || t.kind != TrackKind::Seq) {
+                setStatus(BounceState::Failed, "not a seq track");
+                return;
+            }
+            spb = song_.samplesPerBar(sampleRate_);
+            plan = freezePlan(song_, bTrack_, spb);
+            dir = song_.clipPath(kFreezeDir);
+        }
+        if (plan.empty()) {
+            setStatus(BounceState::Failed, "nothing to freeze");
+            return;
+        }
+        fsx::makeDir(dir);
+        {
+            std::lock_guard<std::mutex> l(statusMutex_);
+            status_.pieces = (uint16_t)std::min<size_t>(plan.size(), 0xFFFF);
+            status_.piecesDone = 0;
+        }
+        std::vector<SongClip> clips;
+        std::vector<std::string> used;
+        uint32_t rendered = 0;
+        for (const FreezePiece& pc : plan) {
+            std::string file;
+            {
+                std::lock_guard<std::recursive_mutex> l(songMutex_);
+                bWinSpans_ = windowSpans(song_, bTrack_, spb, pc.w0 * spb, (pc.w0 + pc.pre + pc.cap) * spb);
+                char name[40];
+                std::snprintf(name, sizeof(name), "%s/FRZ%08X.wav", kFreezeDir,
+                              (unsigned)pieceKey(song_, bTrack_, spb, pc, bWinSpans_));
+                file = name;
+            }
+            std::string path;
+            {
+                std::lock_guard<std::recursive_mutex> l(songMutex_);
+                path = song_.clipPath(file);
+            }
+            if (!fsx::exists(path)) {
+                bWinTotal_ = pc.cap * spb;
+                bWinSkip_ = pc.pre * spb;
+                bPieceFile_ = file;
+                bPieceOk_ = false;
+                runBounce();
+                if (!bPieceOk_) return;                  // runBounce() said why
+                ++rendered;
+            }
+            used.push_back(file);
+            for (SongClip c : pc.emit) {
+                c.file = file;
+                clips.push_back(std::move(c));
+            }
+            std::lock_guard<std::mutex> l(statusMutex_);
+            ++status_.piecesDone;
+        }
+        {
+            std::lock_guard<std::recursive_mutex> l(songMutex_);
+            SongTrack& tr = song_.tracks[bTrack_];
+            if (tr.kind != TrackKind::Seq) {
+                setStatus(BounceState::Failed, "the track is not a seq track any more");
+                return;
+            }
+            /* What the track played before and plays no longer: one of 2.9's
+             * whole-track files, or a render no track names now -- in a freeze,
+             * or as a bounced track's audio. */
+            auto named = [&](const std::string& f) {
+                for (const auto& other : song_.tracks) {
+                    for (const auto& c : other.freeze)
+                        if (c.file == f) return true;
+                    for (const auto& c : other.clips)
+                        if (c.file == f) return true;
+                }
+                return false;
+            };
+            std::vector<std::string> old;
+            for (const auto& c : tr.freeze) old.push_back(c.file);
+            if (bToAudio_) {
+                /* A bounce: the renders are the track's audio now, its notes
+                 * gone with its seq blocks, the slot free for the next idea. */
+                song_.bounceSeqTrack(bTrack_);
+                for (const auto& c : clips) song_.addClip(bTrack_, c);
+            } else {
+                tr.freeze = std::move(clips);
+                tr.freezeKey = bFreezeKey_;
+            }
+            for (const auto& f : old)
+                if (!named(f)) std::remove(song_.clipPath(f).c_str());
+            std::vector<std::string> stray;
+            fsx::listDir(dir, [&](const std::string& name, bool isDir) {
+                if (!isDir && !named(std::string(kFreezeDir) + "/" + name)) stray.push_back(dir + "/" + name);
+            });
+            for (const auto& f : stray) std::remove(f.c_str());
+            logf(false, "%s track %u: %u renders of %u, %u blocks", bToAudio_ ? "bounced" : "froze",
+                 (unsigned)(bTrack_ + 1), (unsigned)rendered, (unsigned)used.size(),
+                 (unsigned)(bToAudio_ ? tr.clips.size() : tr.freeze.size()));
+            rebuild();
+        }
+        doSave();
+        setStatus(BounceState::Done, "");
+    }
+
+    /// Seq track @p track plays its freeze: one made, not armed, and still
+    /// what it is.
+    bool frozenPlays(const AudioSong& song, int track) const {
+        const SongTrack& t = song.tracks[track];
+        return t.kind == TrackKind::Seq && !t.freeze.empty() && song.armed != track &&
+               t.freezeKey == seqKey(song, track);
     }
 
     Arrangement flatten(const AudioSong& song) const {
@@ -1610,16 +2173,54 @@ private:
         a.samplesPerBar = song.samplesPerBar(sampleRate_);
         a.loop = song.loop;
         a.end = endBars(song) * a.samplesPerBar;
+        /* A take running past the song's last block runs the song on with
+         * it: at the old end it would wrap to bar one, or stop. */
+        if (takeHorizon_) a.end = std::max<uint32_t>(a.end, kTakeHorizonBars * a.samplesPerBar);
         if (song.hasRegion()) {
             a.loopA = song.loopStart * a.samplesPerBar;
             a.loopB = song.loopEnd * a.samplesPerBar;
         }
         const uint32_t cut = std::max(a.end, a.loopB);
-        const int seqTrack = seqTrackOf(song, true);
-        if (seqTrack >= 0 && song.tracks[seqTrack].seqBlocks) {
+        for (int t = 0; t < kTracks; ++t) {
+            const int route = song.seqRoute(t);
+            if (route < 0) continue;
+            /* Frozen: its file, as an audio track's block, and no notes. */
+            if (frozenPlays(song, t)) {
+                for (const SongClip& fz : song.tracks[t].freeze) {
+                    Segment s;
+                    s.start = fz.bar * a.samplesPerBar;
+                    s.end = std::min<uint32_t>((fz.bar + fz.bars) * a.samplesPerBar, cut);
+                    s.offset = fz.offset;
+                    s.path = song.clipPath(fz.file);
+                    if (s.end > s.start) a.tracks[t].push_back(s);
+                }
+                a.seqMapped = true;   // an empty map: the sequencer plays none of it
+                continue;
+            }
             /* On the song's grid: the song sets the clock's tempo when it
-             * starts the sequencer with it. */
-            a.seqSpans = seqSpansOf(song.tracks[seqTrack], a.samplesPerBar, cut);
+             * starts the sequencer with it. A track that plays its scene
+             * everywhere is one span of it over the whole song -- laid on the
+             * song like a cut one, so muting it silences its notes as it
+             * plays (applySeqSound()). Each track's notes on the route of the
+             * engine they play through. */
+            if (song.tracks[t].seqBlocks) {
+                auto spans = seqSpansOf(song.tracks[t], a.samplesPerBar, song.seqTicksPerBar(), cut, (uint8_t)route);
+                a.seqSpans.insert(a.seqSpans.end(), std::make_move_iterator(spans.begin()),
+                                  std::make_move_iterator(spans.end()));
+            } else {
+                PatternSequencer::SongSpan all;
+                all.b = cut;
+                all.route = (uint8_t)route;
+                /* The clock plays one scene, the pads' kit's: a Pitch track's
+                 * goes round as notes of its own, as it is now. */
+                if (route) {
+                    const SeqPatternPtr own = scenePattern(song.tracks[t].scene);
+                    const uint32_t bars = own->bars ? own->bars : 1;
+                    all.notes = songNotes(own, a.samplesPerBar, song.seqTicksPerBar());
+                    all.loop = bars * a.samplesPerBar;
+                }
+                a.seqSpans.push_back(std::move(all));
+            }
             a.seqMapped = true;
         }
         for (int t = 0; t < kTracks; ++t) {
@@ -1627,13 +2228,24 @@ private:
             const auto& cs = song.tracks[t].clips;
             for (size_t i = 0; i < cs.size(); ++i) {
                 Segment s;
-                s.path  = song.clipPath(cs[i].file);
                 s.start = cs[i].bar * a.samplesPerBar;
                 s.end   = (cs[i].bar + cs[i].bars) * a.samplesPerBar;
                 if (i + 1 < cs.size()) s.end = std::min(s.end, cs[i + 1].bar * a.samplesPerBar);
                 s.end = std::min(s.end, cut);
-                if (cs[i].frames) s.end = std::min(s.end, s.start + cs[i].frames);
-                s.offset = cs[i].offset;
+                /* A stretched track plays its block's fitted copy, which fills
+                 * the block's bars from its first frame -- once song_io has
+                 * made it. Known from memory, not the card: this runs under
+                 * the song's lock, on whatever thread committed. */
+                const StretchMode mode = song.tracks[t].stretch;
+                const std::string fitted = mode != StretchMode::Off
+                    ? song.clipPath(stretchName(cs[i], cs[i].bars * a.samplesPerBar, mode)) : std::string();
+                if (!fitted.empty() && stretchReady(fitted)) {
+                    s.path = fitted;
+                } else {
+                    s.path = song.clipPath(cs[i].file);
+                    if (cs[i].frames) s.end = std::min(s.end, s.start + cs[i].frames);
+                    s.offset = cs[i].offset;
+                }
                 if (s.end > s.start) a.tracks[t].push_back(s);
             }
         }
@@ -1641,20 +2253,64 @@ private:
     }
 
     /// A seq track's blocks as stretches of the song at @p spb samples a
-    /// bar: each from its bar to its end or the next block's, up to @p cut,
-    /// and the scene sample its bar of the scene starts on.
-    std::vector<PatternSequencer::SongSpan> seqSpansOf(const SongTrack& tr, uint32_t spb, uint32_t cut) const {
+    /// bar (@p tpb ticks): each from its bar to its end or the next block's,
+    /// up to @p cut, with its own notes as samples -- or, a block that plays
+    /// the scene, the scene sample its bar of the scene starts on. On
+    /// @p route 0 that is the scene sounding; on another, which never has the
+    /// clock's scene, the track's own scene as it is now, as notes.
+    std::vector<PatternSequencer::SongSpan> seqSpansOf(const SongTrack& tr, uint32_t spb, uint32_t tpb,
+                                                       uint32_t cut, uint8_t route = 0) const {
         std::vector<PatternSequencer::SongSpan> out;
         const uint8_t sb = seq_.sceneBars(tr.scene);
+        SeqPatternPtr own;   // the track's scene, for a block of it on another route
         const auto& cs = tr.clips;
         for (size_t i = 0; i < cs.size(); ++i) {
             uint32_t b = (cs[i].bar + cs[i].bars) * spb;
             if (i + 1 < cs.size()) b = std::min(b, cs[i + 1].bar * spb);
             if (cut) b = std::min(b, cut);
             const uint32_t a = cs[i].bar * spb;
-            if (b > a) out.push_back({a, b, (uint32_t)(cs[i].from % (sb ? sb : 1)) * spb});
+            if (b <= a) continue;
+            PatternSequencer::SongSpan s;
+            s.a = a;
+            s.b = b;
+            s.route = route;
+            if (!cs[i].notes && route && !own) own = scenePattern(tr.scene);
+            const SeqPatternPtr& notes = cs[i].notes || !route ? cs[i].notes : own;
+            if (notes) {
+                const uint32_t bars = notes->bars ? notes->bars : 1;
+                s.notes = songNotes(notes, spb, tpb);
+                s.loop = bars * spb;
+                s.scene = (uint32_t)(cs[i].from % bars) * spb;
+            } else {
+                s.scene = (uint32_t)(cs[i].from % (sb ? sb : 1)) * spb;
+            }
+            out.push_back(std::move(s));
         }
         return out;
+    }
+
+    /// @p p as the sequencer plays it, at @p spb samples (@p tpb ticks) a
+    /// bar. Made once per pattern and tempo: a block's copies share it, and
+    /// a commit that left the notes alone -- a fader -- converts nothing.
+    PatternSequencer::SongNotes songNotes(const SeqPatternPtr& p, uint32_t spb, uint32_t tpb) const {
+        std::lock_guard<std::mutex> l(noteCacheMutex_);
+        for (const auto& e : noteCache_)
+            if (e.pattern == p && e.spb == spb && e.tpb == tpb) return e.notes;
+        auto v = std::make_shared<std::vector<PatternSequencer::SongNote>>();
+        v->reserve(p->notes.size());
+        const uint32_t t = tpb ? tpb : 1;
+        for (const SeqNote& n : p->notes) {
+            PatternSequencer::SongNote o;
+            o.pos = (uint32_t)((uint64_t)n.tick * spb / t);
+            o.len = (uint32_t)((uint64_t)n.len * spb / t);
+            o.pad = n.pad;
+            o.vel = n.vel;
+            o.perf = n.perf;
+            v->push_back(o);
+        }
+        if (noteCache_.size() >= kNoteCacheSize) noteCache_.erase(noteCache_.begin());
+        noteCache_.push_back({p, spb, tpb, v});
+        return v;
     }
 
     /// The sequencer laid on what the song plays now: the seq track's blocks,
@@ -1676,15 +2332,215 @@ private:
         else        seq_.clearSongMap();
     }
 
+    // ── Undo ──────────────────────────────────────────────────────────────
+    /// An arrangement as bytes, and the seq blocks' notes it names by index.
+    /// Notes are shared and never changed in place, so a step holding the
+    /// pointer holds them as they were, and costs nothing until they are
+    /// replaced. Equal when the bytes and the very same notes are.
+    struct Snapshot {
+        std::vector<uint8_t> bytes;
+        std::vector<SeqPatternPtr> notes;
+        bool empty() const { return bytes.empty(); }
+        bool operator==(const Snapshot& o) const { return bytes == o.bytes && notes == o.notes; }
+    };
+
+    /// The arrangement as bytes -- tempo, metre, loop, length and the four
+    /// tracks with their blocks; not the project's name or folder, and not
+    /// the launcher's sets. One allocation, so a step costs PSRAM rather than
+    /// internal RAM for every block's name; and equal arrangements are equal
+    /// bytes, which is how a change is told from a commit that changed nothing.
+    static void pack(const AudioSong& s, Snapshot& out) {
+        out.bytes.clear();
+        out.notes.clear();
+        out.bytes.reserve(512);
+        auto put = [&](const void* v, size_t n) {
+            const uint8_t* b = static_cast<const uint8_t*>(v);
+            out.bytes.insert(out.bytes.end(), b, b + n);
+        };
+        auto str = [&](const std::string& v) {
+            const uint16_t n = (uint16_t)std::min<size_t>(v.size(), 0xFFFF);
+            put(&n, 2);
+            put(v.data(), n);
+        };
+        const uint8_t flags = (s.loop ? 1 : 0) | (s.syncSeq ? 2 : 0);
+        put(&s.bpm, sizeof s.bpm);
+        put(&s.beatsPerBar, 1);
+        put(&flags, 1);
+        put(&s.length, 4);
+        put(&s.loopStart, 4);
+        put(&s.loopEnd, 4);
+        for (const auto& t : s.tracks) {
+            const uint8_t head[5] = {
+                (uint8_t)((t.inUse ? 1 : 0) | (t.muted ? 2 : 0) | (t.solo ? 4 : 0) | (t.seqBlocks ? 8 : 0)),
+                (uint8_t)t.kind, (uint8_t)t.source, (uint8_t)t.stretch, t.scene};
+            put(head, sizeof head);
+            put(&t.volume, sizeof t.volume);
+            str(t.name);
+            str(t.kit);
+            const uint16_t n = (uint16_t)t.clips.size();
+            put(&n, 2);
+            for (const auto& c : t.clips) {
+                str(c.file);
+                put(&c.bar, 4);
+                put(&c.bars, 2);
+                put(&c.offset, 4);
+                put(&c.frames, 4);
+                put(&c.from, 2);
+                uint16_t ni = 0xFFFF;
+                if (c.notes) {
+                    const auto it = std::find(out.notes.begin(), out.notes.end(), c.notes);
+                    ni = (uint16_t)(it - out.notes.begin());
+                    if (it == out.notes.end()) out.notes.push_back(c.notes);
+                }
+                put(&ni, 2);
+            }
+        }
+    }
+
+    /// pack() undone, into @p s: its name, folder and sets are left alone.
+    static void unpack(const Snapshot& in, AudioSong& s) {
+        size_t at = 0;
+        auto get = [&](void* v, size_t n) { std::memcpy(v, in.bytes.data() + at, n); at += n; };
+        auto str = [&](std::string& v) {
+            uint16_t n = 0;
+            get(&n, 2);
+            v.assign(reinterpret_cast<const char*>(in.bytes.data()) + at, n);
+            at += n;
+        };
+        uint8_t flags = 0;
+        get(&s.bpm, sizeof s.bpm);
+        get(&s.beatsPerBar, 1);
+        get(&flags, 1);
+        s.loop = flags & 1;
+        s.syncSeq = flags & 2;
+        get(&s.length, 4);
+        get(&s.loopStart, 4);
+        get(&s.loopEnd, 4);
+        for (auto& t : s.tracks) {
+            uint8_t head[5] = {};
+            get(head, sizeof head);
+            t.inUse = head[0] & 1;
+            t.muted = head[0] & 2;
+            t.solo = head[0] & 4;
+            t.seqBlocks = head[0] & 8;
+            t.kind = (TrackKind)head[1];
+            t.source = (SeqSource)head[2];
+            t.stretch = (StretchMode)head[3];
+            t.scene = head[4];
+            get(&t.volume, sizeof t.volume);
+            str(t.name);
+            str(t.kit);
+            uint16_t n = 0;
+            get(&n, 2);
+            t.clips.assign(n, SongClip{});
+            for (auto& c : t.clips) {
+                str(c.file);
+                get(&c.bar, 4);
+                get(&c.bars, 2);
+                get(&c.offset, 4);
+                get(&c.frames, 4);
+                get(&c.from, 2);
+                uint16_t ni = 0xFFFF;
+                get(&ni, 2);
+                c.notes = ni < in.notes.size() ? in.notes[ni] : nullptr;
+            }
+        }
+    }
+
+    /// rebuild()'s first step, under songMutex_: if the arrangement moved
+    /// since it was last seen, what it was becomes an undo step -- one per
+    /// burst, so a fader pulled or a block nudged detent by detent goes back
+    /// at once -- and what could be redone is gone.
+    void noteChange() {
+        Snapshot now;
+        pack(song_, now);
+        if (now == last_) return;
+        const int64_t t = p.nowUs();
+        if (!last_.empty() && (undo_.empty() || t - lastChangeUs_ > kUndoMergeUs)) {
+            undo_.push_back(std::move(last_));
+            if (undo_.size() > kUndoDepth) undo_.erase(undo_.begin());
+        }
+        redo_.clear();
+        last_ = std::move(now);
+        lastChangeUs_ = t;
+        undoCount_.store((uint32_t)undo_.size());
+        redoCount_.store(0);
+    }
+
+    /// A job that took a copy of the song to write back: a step now would
+    /// be written over when it lands.
+    bool songJobRunning() {
+        return editReq_.load() != 0 || editState_.load() == SongOpState::Busy || openReq_.load() ||
+               bounceReq_.load() || bounceStatus().state == BounceState::Running ||
+               seqTake_.load() != SyncTake::None;
+    }
+
+    /// Back (or forward again) one step: what is there now goes on the other
+    /// stack. Only the arrangement moves -- the audio on the card is never
+    /// touched, so a block undone back in finds its file where it was.
+    bool step(std::vector<Snapshot>& from, std::vector<Snapshot>& to) {
+        if (songJobRunning()) return false;
+        float was = 0.0f, now = 0.0f;
+        {
+            std::lock_guard<std::recursive_mutex> l(songMutex_);
+            if (!opened_ || from.empty()) return false;
+            Snapshot cur;
+            pack(song_, cur);
+            to.push_back(std::move(cur));
+            if (to.size() > kUndoDepth) to.erase(to.begin());
+            was = song_.bpm;
+            unpack(from.back(), song_);
+            last_ = std::move(from.back());
+            from.pop_back();
+            lastChangeUs_ = 0;           // the next edit is a step of its own
+            now = song_.bpm;
+            undoCount_.store((uint32_t)undo_.size());
+            redoCount_.store((uint32_t)redo_.size());
+            rebuild();
+        }
+        /* A tempo undone is a tempo change: the song stops, as doTempo
+         * stops it, and the clock follows. */
+        if (std::fabs(now - was) > 0.01f) {
+            stop();
+            if (now > 0.0f) seq_.setClickBpm(now);
+        }
+        saveAtUs_.store(p.nowUs() + (int64_t)kSaveDelayMs * 1000);
+        saveReq_.store(true);
+        p.wake();
+        return true;
+    }
+    /// Worker: track @p t's loudest frames @p m (left, right) in hop @p hop
+    /// of the ring.
+    void meterPut(int t, uint32_t hop, const int32_t m[2]) {
+        Meter& s = meter_[hop % kMeterSlots];
+        if (s.hop.load(std::memory_order_relaxed) != hop) {
+            for (auto& tr : s.peak) for (auto& p : tr) p.store(0, std::memory_order_relaxed);
+            s.hop.store(hop, std::memory_order_release);
+        }
+        for (int c = 0; c < 2; ++c) {
+            const uint16_t v = (uint16_t)std::min<int32_t>(m[c], 32767);
+            if (v > s.peak[t][c].load(std::memory_order_relaxed)) s.peak[t][c].store(v, std::memory_order_relaxed);
+        }
+    }
+    /// A ring that starts again from frame 0 has no meters yet.
+    void meterReset() {
+        for (auto& s : meter_) s.hop.store(UINT32_MAX, std::memory_order_relaxed);
+    }
+
     /// The song for the worker, and the per-track gains and loop for RT --
     /// so a mute or a fader acts at once while playing. Caller holds
     /// songMutex_.
     void rebuild() {
+        noteChange();
         Arrangement a = flatten(song_);
         for (int t = 0; t < kTracks; ++t) {
             const auto& tr = song_.tracks[t];
-            gain_[t].store(tr.muted ? 0.0f : tr.volume);
+            gain_[t].store(song_.silenced(t) ? 0.0f : tr.volume);
         }
+        for (int t = 0; t < kTracks; ++t) seqRoute_[t].store((int8_t)song_.seqRoute(t), std::memory_order_relaxed);
+        /* Counted here too, not only by song_io: it asks only while
+         * stopped, and a tempo turned while playing must show at once. */
+        nextStretch(nullptr);
         /* The live transport has a grid of its own and no end; a commit
          * made while it runs (a fader, a mute) must not hand RT the
          * arrangement's. */
@@ -1703,6 +2559,267 @@ private:
             snap_ = std::move(a);
             snapGen_.fetch_add(1);
         }
+        applySeqSound();
+    }
+
+    /// The seq tracks as the arrangement has them while the song plays:
+    /// each one's fader on the engine its notes play through (setSeqGain,
+    /// setKitGain), and its notes silent while it is muted or another track
+    /// is soloed -- the pads a player hits stay theirs -- or under a REC,
+    /// which replaces them. A route at a time: the other kit track plays on.
+    /// Stopped, the engines as the Mixer has them. Caller holds songMutex_.
+    void applySeqSound() {
+        const bool on = playing();
+        uint8_t muted = 0;
+        float gain[3] = {1.0f, 1.0f, 1.0f};   // the pads' kit, the instrument, the second kit
+        for (int t = 0; t < kTracks; ++t) {
+            const int route = song_.seqRoute(t);
+            if (route < 0) continue;
+            const SongTrack& tr = song_.tracks[t];
+            if ((takeRecMute_ && t == takeTrack_) || (on && song_.silenced(t))) muted |= (uint8_t)(1u << route);
+            if (on) gain[tr.source == SeqSource::Pitch ? 1 : route ? 2 : 0] = tr.volume;
+        }
+        seq_.setSongRoutesMuted(muted);
+        for (int i = 0; i < 3; ++i) {
+            if (gain[i] == seqGain_[i]) continue;
+            seqGain_[i] = gain[i];
+            if (i == 1) p.setSeqGain(SeqSource::Pitch, gain[i]);
+            else        p.setKitGain(i == 2 ? 1 : 0, gain[i]);
+        }
+    }
+
+    /// Ready the song's armed seq track for a take (armedSeqTrack()): made
+    /// if there is none (the kit, on the lowest free track), its blocks given
+    /// the scene's notes as their own, and the sequencer keeping hits. A REC
+    /// is not heard under itself. Caller holds songMutex_.
+    bool openTake(SyncTake take) {
+        int t = song_.armedSeqTrack();
+        const bool made = t < 0;
+        if (made) {
+            t = song_.freeTrack();
+            /* A scene of its own, which the seq view edits the track's
+             * blocks in -- not the groove up in the Sequencer. With no room
+             * for another the one up is lent, as Arrange's SEQ card does. */
+            if (t < 0) return false;
+            const bool added = seq_.addScene();
+            const int scene = song_.sceneForNewSeq(seq_.sceneCount(), added);
+            if (scene < 0 || !song_.addSeqTrack(t, SeqSource::Kit, (uint8_t)scene)) return false;
+            /* A song that starts as a seq track has no clip to take its
+             * tempo from: its grid is the sequencer's. */
+            if (song_.bpm <= 0.0f) song_.bpm = seq_.getClickBpm();
+        }
+        if (!seq_.beginSongTake(kTakeRoom)) return false;
+        /* A track made for the take holds the take and nothing else; one
+         * that played its scene keeps playing what it played. */
+        if (!made) song_.adoptSceneNotes(t, scenePattern(song_.tracks[t].scene), endBars(song_));
+        song_.tracks[t].seqBlocks = true;
+        takeTrack_ = t;
+        takeCycle_ = song_.loop && song_.hasRegion();
+        takeReplaced_ = false;
+        takeLaps_ = 0;
+        takeNotes_.clear();
+        takeHorizon_ = !takeCycle_;
+        takeRecMute_ = take == SyncTake::Record;
+        seqTake_.store(take);
+        commit();
+        return true;
+    }
+
+    /// The block of @p tr sounding on @p bar, or -1.
+    static int blockAt(const SongTrack& tr, uint32_t bar) {
+        const auto& cs = tr.clips;
+        for (size_t i = 0; i < cs.size(); ++i) {
+            uint32_t end = cs[i].bar + cs[i].bars;
+            if (i + 1 < cs.size()) end = std::min(end, cs[i + 1].bar);
+            if (bar >= cs[i].bar && bar < end) return (int)i;
+        }
+        return -1;
+    }
+
+    /// Bars free on @p tr from @p bar up to its next block, at least one.
+    static uint32_t roomAt(const SongTrack& tr, uint32_t bar) {
+        uint32_t room = 0xFFFF;
+        for (const auto& c : tr.clips) if (c.bar > bar) room = std::min(room, c.bar - bar);
+        return std::max<uint32_t>(room, 1);
+    }
+
+    static bool samePattern(const SeqPatternPtr& a, const SeqPatternPtr& b) {
+        if (a == b) return true;
+        if (!a || !b || a->bars != b->bars || a->notes.size() != b->notes.size()) return false;
+        for (size_t i = 0; i < a->notes.size(); ++i) {
+            const SeqNote& x = a->notes[i];
+            const SeqNote& y = b->notes[i];
+            if (x.tick != y.tick || x.len != y.len || x.pad != y.pad || x.vel != y.vel || x.perf != y.perf) return false;
+        }
+        return true;
+    }
+
+    /// The take is off: the sequencer keeps no more hits, the track is heard
+    /// again and the song ends where its blocks do. Caller holds songMutex_.
+    void closeTake() {
+        seq_.endSongTake();
+        takeRecMute_ = false;
+        seqTake_.store(SyncTake::None);
+        applySeqSound();
+        takeTrack_ = -1;
+        takeNotes_.clear();
+        if (takeHorizon_) {
+            takeHorizon_ = false;
+            rebuild();
+        }
+    }
+
+    /// Scene @p scene's notes as a pattern of its own: what a block that
+    /// played the scene is given before a take changes it.
+    SeqPatternPtr scenePattern(uint8_t scene) const {
+        std::vector<SeqNote> notes;
+        const uint16_t n = seq_.eventCount(scene);
+        notes.reserve(n);
+        for (uint16_t i = 0; i < n; ++i) {
+            uint32_t ticks = 0;
+            uint8_t pad = 0, vel = 0;
+            if (!seq_.eventAtTicks(scene, i, ticks, pad, vel)) continue;
+            SeqNote o;
+            o.tick = ticks;
+            o.len = seq_.eventLengthTicks(scene, i);
+            o.pad = pad;
+            o.vel = vel;
+            o.perf = seq_.eventPerformance(scene, i).pack();
+            notes.push_back(o);
+        }
+        const uint8_t bars = seq_.sceneBars(scene);
+        return makeSeqPattern(bars ? bars : 1, std::move(notes));
+    }
+
+    /// Worker, while it streams: the hits taken so far are moved out of the
+    /// sequencer, and a lap of the region that is over lands.
+    void serviceTake() {
+        if (seqTake_.load() == SyncTake::None) return;
+        std::lock_guard<std::recursive_mutex> l(songMutex_);
+        if (seqTake_.load() == SyncTake::None) return;
+        seq_.takeSongNotes(takeNotes_, false);
+        const uint16_t laps = seq_.songTakeLaps();
+        if (takeCycle_ && laps != takeLaps_) landLaps(laps);
+    }
+
+    /// Every lap before @p upto lands, one pass each: a REC's first pass with
+    /// notes replaces the region, every pass after it is dubbed in -- and
+    /// once the first has landed the track is heard, so the next lap plays
+    /// along with what was just played. Caller holds songMutex_.
+    void landLaps(uint16_t upto) {
+        const uint32_t spb = song_.samplesPerBar(sampleRate_);
+        for (; takeLaps_ != upto; ++takeLaps_) {
+            std::vector<PatternSequencer::SongTakeNote> pass, rest;
+            for (const auto& n : takeNotes_) (n.lap == takeLaps_ ? pass : rest).push_back(n);
+            takeNotes_.swap(rest);
+            const bool replace = seqTake_.load() == SyncTake::Record && !takeReplaced_;
+            const uint32_t from = takeLaps_ == 0 ? takeFrom_ : song_.loopStart * spb;
+            if (landTake(pass, replace, from, song_.loopEnd * spb) && replace) {
+                takeReplaced_ = true;
+                takeRecMute_ = false;
+                applySeqSound();
+            }
+        }
+    }
+
+    /// A stretch of the take onto the track: REC as blocks from the bar
+    /// @p from is in to the bar @p to ends in, or past its last note if that
+    /// is later -- @p to == @p from is "to the bar of the last note" -- the seq
+    /// blocks under it gone; DUB into the blocks it fell under. Song samples.
+    /// Nothing played, nothing changes. Caller holds songMutex_.
+    bool landTake(const std::vector<PatternSequencer::SongTakeNote>& notes, bool replace,
+                  uint32_t from, uint32_t to) {
+        if (notes.empty() || takeTrack_ < 0) return false;
+        const uint32_t spb = song_.samplesPerBar(sampleRate_);
+        const uint32_t bpb = song_.beatsPerBar ? song_.beatsPerBar : AudioSong::kDefaultBeatsPerBar;
+        const uint32_t beat = spb / bpb ? spb / bpb : 1;
+        const uint32_t tpb = song_.seqTicksPerBar();
+        auto ticks = [&](uint32_t frames) {
+            return (uint32_t)(((uint64_t)frames * AudioSong::kSeqPpq + beat / 2) / beat);
+        };
+        if (!replace) {
+            std::vector<SeqNote> dub;
+            dub.reserve(notes.size());
+            for (const auto& n : notes) dub.push_back({ticks(n.pos), ticks(n.len), n.pad, n.vel, n.perf});
+            song_.dubSeqNotes(takeTrack_, dub);
+        } else {
+            const uint32_t fromBar = from / spb;
+            uint32_t last = fromBar + 1;   // the bar after the last note's
+            for (const auto& n : notes) last = std::max<uint32_t>(last, n.pos / spb + 1);
+            const uint32_t toBar = std::max<uint32_t>(last, (to + spb - 1) / spb);
+            std::vector<SeqNote> mine;
+            mine.reserve(notes.size());
+            for (const auto& n : notes) {
+                const uint32_t t = ticks(n.pos);
+                if (t < fromBar * tpb) continue;
+                mine.push_back({t - fromBar * tpb, ticks(n.len), n.pad, n.vel, n.perf});
+            }
+            /* Every hit before the bar it started on (in the count-in): nothing
+             * was played, and that changes nothing -- not an empty block over
+             * what was there. */
+            if (mine.empty()) return false;
+            /* Shorter than the loop it was played in, it goes round to the
+             * loop's end: one bar played into four is that bar four times,
+             * not a bar and then silence while the loop goes on (20.10.2026).
+             * The pattern is the shortest that both holds the notes and
+             * divides the loop, so it lands on its bar one every time round. */
+            const uint32_t fill = takeFillEnd(fromBar, last);
+            uint32_t pattern = 0;
+            if (fill > fromBar && mine.size() <= AudioSong::kSeqBlockNotes) {
+                const uint32_t room = fill - fromBar;
+                const uint32_t most = std::min<uint32_t>(room, AudioSong::kSeqBlockBars);
+                for (uint32_t d = last - fromBar; d <= most && !pattern; ++d)
+                    if (room % d == 0) pattern = d;
+            }
+            if (pattern) {
+                song_.putSeqTake(takeTrack_, fromBar, makeSeqPattern((uint16_t)pattern, std::move(mine)), spb,
+                                 fill - fromBar);
+            } else {
+                song_.putSeqTakeNotes(takeTrack_, fromBar, std::min<uint32_t>(toBar - fromBar, 0xFFFF),
+                                      std::move(mine), spb);
+            }
+        }
+        commit();
+        return true;
+    }
+
+    /// Where a REC's block from @p fromBar, its notes ending on bar @p last,
+    /// goes round to: the region it was taken round, or -- the song looping
+    /// as a whole -- the song's end, but only over bars where the track has
+    /// nothing else sounding. 0 = it ends with its notes. Caller holds
+    /// songMutex_.
+    uint32_t takeFillEnd(uint32_t fromBar, uint32_t last) const {
+        if (takeCycle_) return last <= song_.loopEnd ? song_.loopEnd : 0;
+        if (!song_.loop || takeTrack_ < 0) return 0;
+        uint32_t end = endBars(song_);
+        const auto& cs = song_.tracks[takeTrack_].clips;
+        for (size_t i = 0; i < cs.size(); ++i) {
+            uint32_t e = cs[i].bar + cs[i].bars;
+            if (i + 1 < cs.size()) e = std::min(e, cs[i + 1].bar);
+            if (e > last) end = std::min(end, std::max(cs[i].bar, last));
+        }
+        return end > last ? end : 0;
+    }
+
+    /// The take is over -- stopped, or punched out with the song playing on:
+    /// what is left of it lands. A REC ends with the bar its last note is in,
+    /// wherever STOP was pressed: a note on the last quarter of bar four is a
+    /// four-bar sequence, not five because the stop came in bar five
+    /// (13.10.2026; it ran to the stop before). A lap round a region is the
+    /// region's, and is landed whole as it wraps (landLaps()). Caller holds
+    /// songMutex_.
+    void finishTake() {
+        const SyncTake take = seqTake_.load();
+        if (take == SyncTake::None) return;
+        seq_.takeSongNotes(takeNotes_, true);
+        const uint32_t spb = song_.samplesPerBar(sampleRate_);
+        if (takeCycle_) {
+            const uint16_t laps = seq_.songTakeLaps();
+            if (laps != takeLaps_) landLaps(laps);
+        }
+        const uint32_t from = takeCycle_ && takeLaps_ ? song_.loopStart * spb : takeFrom_;
+        landTake(takeNotes_, take == SyncTake::Record && !takeReplaced_, from, from);
+        closeTake();
     }
 
     void setStatus(BounceState st, const std::string& err = std::string()) {
@@ -1717,10 +2834,12 @@ private:
             /* Waveforms are worked out only while nothing plays, one after
              * another without waiting. */
             const bool peaking = !streaming && peaksPending() && p.storageReady();
+            /* Stretched copies likewise, after the waveforms. */
+            const bool stretching = !streaming && !peaking && stretchPending() && p.storageReady();
             /* Until a project is open, look for the card once a second; with a
              * save waiting, back in time to make it. */
             p.waitWake(streaming ? kStreamPollMs
-                                 : peaking ? 0
+                                 : peaking || stretching ? 0
                                  : saveReq_.load() ? kSaveDelayMs : (lastTried_ ? UINT32_MAX : kCardPollMs));
             if (quit_.load()) break;
 
@@ -1746,6 +2865,15 @@ private:
             }
             if (playReq_.exchange(false)) {
                 startPlayback(playFrom_.load());
+                /* A take armed for this playback is its; one that never
+                 * started (no memory for the ring) is called off. */
+                if (seqTake_.load() != SyncTake::None) {
+                    takeBound_ = play_.load() != Play::Idle;
+                    if (!takeBound_) {
+                        std::lock_guard<std::recursive_mutex> l(songMutex_);
+                        closeTake();
+                    }
+                }
                 continue;
             }
             if (openReq_.exchange(false)) {
@@ -1782,13 +2910,148 @@ private:
              * waits for the stop, which is never far off on a loop. */
             if (!streaming && saveReq_.load() && p.nowUs() >= saveAtUs_.load() && saveReq_.exchange(false)) doSave();
             if (bounceReq_.exchange(false)) {
-                runBounce();
+                if (bFreeze_) runFreeze();
+                else runBounce();
                 busy_.store(false);
                 continue;
             }
-            if (job_.load() == Job::Play && play_.load() != Play::Idle) fillRings();
+            if (job_.load() == Job::Play && play_.load() != Play::Idle) {
+                serviceTake();
+                fillRings();
+            }
             else if (peaksPending() && p.storageReady()) doPeaks();
+            else if (stretchPending() && p.storageReady()) doStretch();
         }
+    }
+
+    // ── Stretch ───────────────────────────────────────────────────────────
+    /// Where block @p c fitted to @p outFrames lives: clips/.stretch/, named
+    /// for its file, the part of it the block plays, the length it is made
+    /// to and how (an "r" for repitched) -- a tempo, a cut or a mode that
+    /// changes any of them is another file, so a stale copy is never played.
+    static std::string stretchName(const SongClip& c, uint32_t outFrames, StretchMode mode) {
+        std::string stem = c.file;
+        const size_t dot = stem.rfind('.');
+        if (dot != std::string::npos) stem.resize(dot);
+        char tail[48];
+        std::snprintf(tail, sizeof(tail), "_%u_%u_%u%s.wav", (unsigned)c.offset, (unsigned)c.frames,
+                      (unsigned)outFrames, mode == StretchMode::Repitch ? "r" : "");
+        return std::string(kStretchDir) + "/" + stem + tail;
+    }
+
+    bool stretchReady(const std::string& path) const {
+        std::lock_guard<std::mutex> l(stretchMutex_);
+        return stretchReady_.count(path) != 0;
+    }
+
+    struct StretchJob { std::string src, dst; uint32_t offset = 0, frames = 0, outFrames = 0; bool repitch = false; };
+
+    /// The blocks of stretched tracks still without a copy, and the first of
+    /// them in @p job. Counted for stretchWaiting().
+    uint32_t nextStretch(StretchJob* job) {
+        std::lock_guard<std::recursive_mutex> l(songMutex_);
+        if (!opened_) { stretchCount_.store(0); return 0; }
+        const uint32_t spb = song_.samplesPerBar(sampleRate_);
+        uint32_t pending = 0;
+        std::lock_guard<std::mutex> s(stretchMutex_);
+        for (const auto& tr : song_.tracks) {
+            if (!tr.inUse || tr.stretch == StretchMode::Off || tr.kind != TrackKind::Audio) continue;
+            for (const auto& c : tr.clips) {
+                if (c.file.empty()) continue;
+                const std::string dst = song_.clipPath(stretchName(c, c.bars * spb, tr.stretch));
+                if (stretchReady_.count(dst) || stretchSkip_.count(dst)) continue;
+                if (!pending++ && job) {
+                    job->src = song_.clipPath(c.file);
+                    job->dst = dst;
+                    job->offset = c.offset;
+                    job->frames = c.frames;
+                    job->outFrames = c.bars * spb;
+                    job->repitch = tr.stretch == StretchMode::Repitch;
+                }
+            }
+        }
+        stretchCount_.store(pending);
+        return pending;
+    }
+    bool stretchPending() { return nextStretch(nullptr) != 0; }
+
+    /// Worker: the first block still without its copy -- read, stretched or
+    /// repitched (TimeStretch) and written beside the clips, renamed in when
+    /// whole.
+    /// Only while nothing plays; a request coming in stops it, and it starts
+    /// again from the beginning after.
+    void doStretch() {
+        StretchJob j;
+        if (!nextStretch(&j)) return;
+        auto skip = [&](const char* why) {
+            std::lock_guard<std::mutex> l(stretchMutex_);
+            stretchSkip_.insert(j.dst);
+            if (why) logf(true, "stretch %s: %s", j.dst.c_str(), why);
+        };
+        auto ready = [&]() {
+            {
+                std::lock_guard<std::mutex> l(stretchMutex_);
+                stretchReady_.insert(j.dst);
+            }
+            std::lock_guard<std::recursive_mutex> l(songMutex_);
+            rebuild();
+        };
+        if (fsx::exists(j.dst)) { ready(); return; }
+        ClipReader r;
+        if (!r.open(j.src)) { skip("cannot read the clip"); return; }
+        const uint32_t rest = r.frames > j.offset ? r.frames - j.offset : 0;
+        const uint32_t in = j.frames ? std::min(j.frames, rest) : rest;
+        if (!in) { skip("nothing to stretch"); return; }
+        const double ratio = (double)j.outFrames / in;
+        if (std::fabs(ratio - 1.0) < kStretchSame) { skip(nullptr); return; }
+        if (ratio < TimeStretch::kMinRatio || ratio > TimeStretch::kMaxRatio) {
+            skip("too far from the song's tempo");
+            return;
+        }
+        /* The ring segments' allocator: the engine arena first, and never the
+         * last of the PSRAM the UI lives in. Given back below, and before any
+         * arena reset -- releaseRings() is a request, which stops the run. */
+        void* work = p.allocRingSegment(TimeStretch::workBytes(), 1);
+        if (!work) { skip("not enough memory"); return; }
+        const size_t slash = j.dst.find_last_of('/');
+        fsx::makeDir(j.dst.substr(0, slash));
+        const std::string tmp = j.dst + ".tmp";
+        WavWriter w;
+        if (!w.open(tmp.c_str(), sampleRate_, 2)) {
+            p.freeRingSegment(work);
+            skip("card write failed");
+            return;
+        }
+        struct Ctx { Impl* self; ClipReader* r; WavWriter* w; uint32_t offset; uint32_t hops; };
+        Ctx ctx{this, &r, &w, j.offset, 0};
+        stretchProg_.store(0);
+        const bool ok = (j.repitch ? TimeStretch::repitch : TimeStretch::run)(in, j.outFrames, work,
+            [](void* c, uint32_t frame, int16_t* dst, uint32_t n) {
+                auto* x = static_cast<Ctx*>(c);
+                x->r->read(x->offset + frame, dst, n);
+                return true;
+            },
+            [](void* c, const int16_t* src, uint32_t n) { return static_cast<Ctx*>(c)->w->write(src, n); },
+            [](void* c, uint32_t done, uint32_t total) {
+                /* The streamer and the screen first: a breath every few hops,
+                 * and out at once when anything else is asked of song_io. */
+                auto* x = static_cast<Ctx*>(c);
+                x->self->stretchProg_.store((uint8_t)((uint64_t)done * 100 / (total ? total : 1)));
+                if ((++x->hops & 3) == 0) x->self->p.sleepMs(1);
+                if ((x->hops & 15) == 0) x->self->p.yieldIo();
+                return !x->self->requestWaiting();
+            },
+            &ctx);
+        p.freeRingSegment(work);
+        r.close();
+        const bool closed = w.close();
+        if (!ok || !closed || !fsx::rename(tmp, j.dst)) {
+            std::remove(tmp.c_str());
+            if (ok) skip("card write failed");   // stopped by a request: tried again after it
+            return;
+        }
+        logf(false, "%s %s x%.3f", j.repitch ? "repitched" : "stretched", j.dst.c_str(), ratio);
+        ready();
     }
 
     /// Worker: anything asked for that goes before a waveform.
@@ -1945,15 +3208,16 @@ private:
              * since it was opened would play at gain zero. */
             for (int t = 0; t < kTracks; ++t) {
                 const auto& tr = song_.tracks[t];
-                gain_[t].store(tr.muted ? 0.0f : tr.volume);
+                gain_[t].store(song_.silenced(t) ? 0.0f : tr.volume);
             }
         }
         if (!spb) return;
-        if (!ring_.alloc(kSongRingFrames, kPrimeFrames)) {
+        if (!ring_.alloc(sz.songRingFrames, kPrimeFrames)) {
             logf(true, "live: not enough memory for the song ring (%u kB free)",
                  (unsigned)(p.freeMemoryBytes() / 1024));
             return;
         }
+        meterReset();
         liveSpb_.store(spb);
         liveCycle_.store((0xFFFF0000u / spb) * spb);
         writePos_ = 0;
@@ -2003,12 +3267,17 @@ private:
             /* A seq track is the sequencer playing its scene with the song --
              * SYNC on or off; SYNC on without one plays the scene in use. */
             std::lock_guard<std::recursive_mutex> l(songMutex_);
-            /* A take asked for with the song (the seq view of a track) runs
-             * the sequencer even with the track muted: it is being recorded. */
-            const bool take = playTake_.load() != SyncTake::None;
-            const int t = seqTrackOf(song_, take);
-            if (t >= 0) seqScene = song_.tracks[t].scene;
-            sync = song_.syncSeq || seqScene >= 0 || take;
+            /* Muted or not: its mute silences its notes as the song plays
+             * (applySeqSound()), so unmuting it mid-song brings them back. */
+            const bool take = playTake_.load() != SyncTake::None || seqTake_.load() != SyncTake::None;
+            /* The scene the clock runs: the one the seq view edits while it is
+             * open -- a part recorded there goes into its block, whichever kit
+             * track it is on -- else the pads' track's, which a block playing
+             * the scene that sounds plays. */
+            const int t = song_.seqTrackOnRoute(0);
+            if (editTrack_ >= 0)  seqScene = editScene_;
+            else if (t >= 0)      seqScene = song_.tracks[t].scene;
+            sync = song_.syncSeq || song_.seqTracks() > 0 || take;
             bpm = song_.bpm;
         }
         {
@@ -2023,7 +3292,7 @@ private:
             std::lock_guard<std::recursive_mutex> l(songMutex_);
             for (int t = 0; t < kTracks; ++t) {
                 const auto& tr = song_.tracks[t];
-                gain_[t].store(tr.muted ? 0.0f : tr.volume);
+                gain_[t].store(song_.silenced(t) ? 0.0f : tr.volume);
             }
         }
         {
@@ -2031,11 +3300,12 @@ private:
             if (!snap_.end && !snap_.loopB) return;
             const uint32_t from = std::min(fromBar * snap_.samplesPerBar,
                                            std::max(snap_.end, snap_.loopB) - 1);
-            if (!ring_.alloc(kSongRingFrames, kPrimeFrames)) {
+            if (!ring_.alloc(sz.songRingFrames, kPrimeFrames)) {
                 logf(true, "play: not enough memory for the song ring (%u kB free)",
                      (unsigned)(p.freeMemoryBytes() / 1024));
                 return;
             }
+            meterReset();
             writePos_ = from;
             debt_.store(0);
             pos_.store(from);
@@ -2063,12 +3333,26 @@ private:
         played_.store(0);
         job_.store(Job::Play);
         play_.store(Play::Priming, std::memory_order_seq_cst);
+        std::lock_guard<std::recursive_mutex> l(songMutex_);
+        applySeqSound();
     }
 
     void endPlayback() {
         lastFillUs_ = 0;
+        /* A take this playback ran lands before the sequencer stops: where
+         * the song is when it stops is where the take ends. */
+        if (takeBound_) {
+            std::lock_guard<std::recursive_mutex> l(songMutex_);
+            finishTake();
+            takeBound_ = false;
+        }
         if (play_.load() == Play::Idle && job_.load() != Job::Play) return;
         play_.store(Play::Idle, std::memory_order_seq_cst);
+        {
+            /* The engines back to the Mixer's level, and the notes heard. */
+            std::lock_guard<std::recursive_mutex> l(songMutex_);
+            applySeqSound();
+        }
         /* The song took the sequencer along; it takes it back down. */
         if (syncing_) {
             seq_.stop();
@@ -2104,10 +3388,10 @@ private:
         }
         /* An edit while it plays moves the seq blocks with the audio. */
         if (syncing_ && play_.load() != Play::Priming && snapGen_.load() != mapSentGen_) pushSeqMap();
-        while (ring_.space() >= kChunkFrames) {
+        while (ring_.space() >= sz.chunkFrames) {
             if (stopReq_.load()) return;
             uint32_t wp = writePos_;
-            uint32_t n = kChunkFrames;
+            uint32_t n = sz.chunkFrames;
             /* Where each track's blocks fall in this chunk -- a block is at
              * least a bar, so two at most, and a third for safety. The path
              * is copied into the piece rather than a string: this runs every
@@ -2182,6 +3466,9 @@ private:
                 }
             }
             std::memset(acc, 0, n * 8);
+            /* Where this chunk's first frame lands in the ring, which is how
+             * RT will count it when it plays it: the meters' clock. */
+            const uint32_t at0 = ring_.head.load(std::memory_order_relaxed);
             for (int t = 0; t < kTracks; ++t) {
                 /* A track with nothing under this chunk gives its file back:
                  * the sample player shares the card's handful of descriptors,
@@ -2201,7 +3488,18 @@ private:
                      * card held by someone else. */
                     dbgMax(dbgReadMaxUs_, p.nowUs() - r0);
                     int32_t* d = acc + pc.at * 2;
-                    for (uint32_t k = 0; k < pc.len * 2; ++k) d[k] += (int32_t)((float)chunk[k] * g);
+                    for (uint32_t k = 0; k < pc.len;) {
+                        const uint32_t f = at0 + pc.at + k;
+                        const uint32_t run = std::min(pc.len - k, kMeterHop - f % kMeterHop);
+                        int32_t m[2] = {0, 0};
+                        for (uint32_t j = k * 2; j < (k + run) * 2; ++j) {
+                            const int32_t v = (int32_t)((float)chunk[j] * g);
+                            d[j] += v;
+                            m[j & 1] = std::max(m[j & 1], v < 0 ? -v : v);
+                        }
+                        meterPut(t, f / kMeterHop, m);
+                        k += run;
+                    }
                     /* The card is the sampler's streamer's first -- while this
                      * ring has half of itself in hand. Below that it is the
                      * song that is about to run dry: yielding up to 3 ms a
@@ -2277,7 +3575,14 @@ private:
          * name and wrote over that clip. */
         if (kit.size() > kMaxClipPrefix) kit.resize(kMaxClipPrefix);
         std::string file, path;
-        for (int n = 1; n < 1000; ++n) {
+        if (bFreeze_) {
+            /* Its name is what it plays (runFreeze()): written under a
+             * working name, so a render cut short is never found as done. */
+            file = bPieceFile_;
+            std::lock_guard<std::recursive_mutex> l(songMutex_);
+            path = song_.clipPath(file) + ".part";
+        }
+        for (int n = 1; !bFreeze_ && n < 1000; ++n) {
             char buf[80];
             std::snprintf(buf, sizeof(buf), "%s_S%u_%02d.wav", kit.c_str(), (unsigned)(bScene_ + 1), n);
             file = buf;
@@ -2294,7 +3599,7 @@ private:
         /* A sixth of a second of card stall is the least worth recording
          * with; a card that stalls longer than the ring holds fails the take
          * as "card too slow" rather than writing it with holes. */
-        if (!bRing_.alloc(kBounceRingFrames, kBounceMinFrames)) {
+        if (!bRing_.alloc(sz.bounceRingFrames, kBounceMinFrames)) {
             w.close();
             std::remove(path.c_str());
             char why[64];
@@ -2318,13 +3623,22 @@ private:
         };
         seq.stop();
         seq.setCountIn(false);
-        p.beginPadsCapture();
+        if (bFreeze_) {
+            int route = 0;
+            {
+                std::lock_guard<std::recursive_mutex> l(songMutex_);
+                route = std::max(0, song_.seqRoute(bTrack_));
+            }
+            p.beginRouteCapture((uint8_t)route);
+        } else {
+            p.beginPadsCapture();
+        }
         seq.selectScene(bScene_);
 
         /* One pass of the scene, or -- a seq track's bounce -- the scene
          * looping over the song's bars, which is what was heard. */
         const uint32_t bars = bBars_ ? bBars_ : (seq.sceneBars(bScene_) ? seq.sceneBars(bScene_) : 1);
-        const uint32_t total = clk.samplesPerBeat() * clk.beatsPerBar() * bars;
+        const uint32_t total = bFreeze_ ? bWinTotal_ : clk.samplesPerBeat() * clk.beatsPerBar() * bars;
         if (!w.reserve(total)) {
             restore();
             bRing_.release();
@@ -2335,15 +3649,43 @@ private:
         }
         bBpm_ = seq.getClickBpm();
         /* A seq track cut into blocks is bounced as it plays: the scene only
-         * under them, on the clock's bars from the song's bar one. */
-        if (bBars_) {
+         * under them, on the clock's bars from the song's bar bFrom_ -- the
+         * clock's sample 0. */
+        if (bFreeze_) {
+            seq.setSongMap(bWinSpans_, 0, 0);       // runFreeze()'s window, run-in first
+        } else if (bBars_) {
             std::vector<PatternSequencer::SongSpan> spans;
             bool mapped = false;
             {
                 std::lock_guard<std::recursive_mutex> l(songMutex_);
                 const SongTrack& tr = song_.tracks[bTrack_];
-                if (tr.kind == TrackKind::Seq && tr.seqBlocks) {
-                    spans = seqSpansOf(tr, clk.samplesPerBeat() * clk.beatsPerBar(), total);
+                /* A track off the pads' route never plays the clock's scene:
+                 * its notes are mapped whether it has blocks or not. */
+                if (tr.kind == TrackKind::Seq && (tr.seqBlocks || song_.seqRoute(bTrack_) > 0)) {
+                    const int route = song_.seqRoute(bTrack_);
+                    const uint32_t spb = clk.samplesPerBeat() * clk.beatsPerBar();
+                    const uint32_t off = bFrom_ * spb;
+                    std::vector<PatternSequencer::SongSpan> all;
+                    if (tr.seqBlocks) {
+                        all = seqSpansOf(tr, spb, song_.seqTicksPerBar(), off + total,
+                                         (uint8_t)(route > 0 ? route : 0));
+                    } else {
+                        /* Its scene over the whole song, as flatten() lays it. */
+                        PatternSequencer::SongSpan whole;
+                        const SeqPatternPtr own = scenePattern(tr.scene);
+                        whole.b = off + total;
+                        whole.route = (uint8_t)route;
+                        whole.notes = songNotes(own, spb, song_.seqTicksPerBar());
+                        whole.loop = (own->bars ? own->bars : 1) * spb;
+                        all.push_back(std::move(whole));
+                    }
+                    /* bFrom_ is the first block's bar: none starts before it. */
+                    for (auto& sp : all) {
+                        if (sp.a < off) continue;
+                        sp.a -= off;
+                        sp.b -= off;
+                        spans.push_back(std::move(sp));
+                    }
                     mapped = true;
                 }
             }
@@ -2355,15 +3697,20 @@ private:
             status_.file = file;
         }
         bLeft_ = total;
+        bSkip_ = bFreeze_ ? bWinSkip_ : 0;
         bCapturing_ = false;
         bOverflow_.store(false);
         bDone_.store(false);
         bArmed_.store(true, std::memory_order_seq_cst);
+        /* A bounce or a freeze is a render to a file, not to the speakers:
+         * off the clock, as fast as the card lets it, where the platform can
+         * (ISongEnginePlatform::beginOffline()); in real time where not. */
+        const bool offline = p.beginOffline();
         seq.playback();
 
         int16_t* chunk = io_;
         const int64_t deadline = p.nowUs() +
-                                 (int64_t)total * 1000000 / sampleRate_ + 3000000;
+                                 (int64_t)(total + bSkip_) * 1000000 / sampleRate_ + 3000000;
         const char* error = nullptr;
         char why[80];
         uint32_t done = 0;
@@ -2377,6 +3724,10 @@ private:
              * first, so a ring that overflowed and then drained is never
              * reported as a finished clip. */
             if (bOverflow_.load()) { tooSlow = true; break; }
+            /* Before the next piece, not only once the ring runs dry: while
+             * it records there is always a piece, and PLAY or REC waiting on
+             * a freeze to let go waited the take out (yieldFreeze()). */
+            if (bCancel_.load()) { error = "cancelled"; break; }
             /* The take is complete the moment RT has its last frame: stop the
              * scene there, not when the card has caught up. */
             if (!seqStopped && bDone_.load()) { seq.stop(); seqStopped = true; }
@@ -2385,7 +3736,7 @@ private:
              * piece ending mid-sector made the filesystem read that sector
              * back before writing it, and a short piece is a card command
              * for less than it costs. */
-            const uint32_t want = done ? kChunkFrames : kFirstChunkFrames;
+            const uint32_t want = done ? sz.chunkFrames : firstChunkFrames();
             const uint32_t n = bRing_.used() >= want || bDone_.load() ? bRing_.pop(chunk, want) : 0;
             if (n) {
                 const int64_t t0 = p.nowUs();
@@ -2430,6 +3781,7 @@ private:
 
         bArmed_.store(false, std::memory_order_seq_cst);
         restore();
+        if (offline) p.endOffline();
         waitRtOut();
         bRing_.release();
         const bool closed = w.close();
@@ -2440,6 +3792,21 @@ private:
             return;
         }
         logf(false, "bounced scene %u to %s (%u frames)", (unsigned)(bScene_ + 1), file.c_str(), (unsigned)done);
+        if (bFreeze_) {                              // one piece of runFreeze()'s
+            std::string done;
+            {
+                std::lock_guard<std::recursive_mutex> l(songMutex_);
+                done = song_.clipPath(file);
+            }
+            std::remove(done.c_str());
+            if (!fsx::rename(path, done)) {
+                std::remove(path.c_str());
+                fail("card write failed");
+                return;
+            }
+            bPieceOk_ = true;
+            return;
+        }
         /* Onto its track, after the last block. An empty song takes the tempo
          * of the clip it is given -- its grid is only ever as right as its
          * first clip, and a song whose blocks were all deleted is a new start,
@@ -2462,9 +3829,9 @@ private:
             bTrack_ = (uint8_t)target;
             SongClip c;
             c.file = file;
-            /* A seq track's bounce is the song from its bar one; a scene's
-             * goes after the track's last block. */
-            c.bar  = bBars_ ? 0 : song_.trackEnd(bTrack_);
+            /* A seq track's bounce sits where its first block did; a
+             * scene's goes after the track's last block. */
+            c.bar  = bBars_ ? bFrom_ : song_.trackEnd(bTrack_);
             c.bars = std::max<uint32_t>(1, (done + spBar - 1) / spBar);
             song_.addClip(bTrack_, c);
             /* A seq track's bounce: its notes are this clip now, and the slot
@@ -2494,6 +3861,36 @@ private:
     std::atomic<uint32_t> playFrom_{0};
     std::atomic<SyncTake> playTake_{SyncTake::None};
     SyncTake    take_ = SyncTake::None;          // worker: what the sequencer starts doing
+    /* A take onto the seq track (recordSeq, seqPunch): what it is, and --
+     * under songMutex_ -- its track, the song sample it began on, whether it
+     * goes round the region, the laps landed, whether a REC's pass has
+     * replaced what was there, the notes moved out of the sequencer and not
+     * landed yet, and whether the song runs on past its end for it. */
+    std::atomic<SyncTake> seqTake_{SyncTake::None};
+    int         takeTrack_ = -1;
+    uint32_t    takeFrom_ = 0;
+    bool        takeCycle_ = false;
+    uint16_t    takeLaps_ = 0;
+    bool        takeReplaced_ = false;
+    std::vector<PatternSequencer::SongTakeNote> takeNotes_;
+    bool        takeHorizon_ = false;
+    bool        takeBound_ = false;              // worker: the playback running is the take's
+    bool        takeRecMute_ = false;            // a REC's pass not landed yet: not heard under it
+    /* What applySeqSound() last gave setSeqGain(), kit and pitch; under
+     * songMutex_. */
+    float       seqGain_[3] = {1.0f, 1.0f, 1.0f};
+    /* The seq view's block (openSeqEdit), under songMutex_: its track (-1
+     * none), the bar it starts on, the scene it is edited in, whether it is
+     * on the track yet, and the sequencer's edit count last handed over. */
+    std::atomic<int> editTrack_{-1};
+    uint32_t    editBar_ = 0;
+    uint8_t     editScene_ = 0;
+    bool        editBound_ = false;
+    std::atomic<uint32_t> editGen_{0};
+    /* songNotes(): patterns as samples, the oldest dropped first. */
+    struct NoteCache { SeqPatternPtr pattern; uint32_t spb, tpb; PatternSequencer::SongNotes notes; };
+    mutable std::vector<NoteCache> noteCache_;
+    mutable std::mutex noteCacheMutex_;
     static constexpr uint8_t kEditRename = 1, kEditTempo = 2, kEditMerge = 3, kEditImport = 4,
                              kEditDelete = 5, kEditExport = 6;
     uint32_t    importA_ = 0, importB_ = 0, importBar_ = 0, importLead_ = 0;   // owned by claimEdit()'s caller until editReq_
@@ -2546,6 +3943,14 @@ private:
     uint32_t    writePos_ = 0;
     std::atomic<uint32_t> debt_{0};
     std::atomic<float>    gain_[kTracks] = {};
+    /// One hop of the ring's meters: which hop it holds, and each track's peak.
+    struct Meter {
+        std::atomic<uint32_t> hop{UINT32_MAX};
+        std::atomic<uint16_t> peak[kTracks][2] = {};
+    };
+    Meter                 meter_[kMeterSlots];
+    std::atomic<float>    padsPeak_[2] = {};
+    std::atomic<int8_t>   seqRoute_[kTracks] = {{-1}, {-1}, {-1}, {-1}};   ///< AudioSong::seqRoute(), per track
     std::atomic<Play>     play_{Play::Idle};
     std::atomic<bool>     syncing_{false};         // this playback runs the sequencer
     uint32_t              startPos_ = 0;           // song sample playback started at
@@ -2577,6 +3982,17 @@ private:
     uint32_t              bLeft_ = 0;              // RT only while armed
     uint8_t               bScene_ = 0, bTrack_ = 0;
     uint32_t              bBars_ = 0;                // 0 = one pass of the scene
+    uint32_t              bFrom_ = 0;                // the song's bar the take starts on
+    bool                  bFreeze_ = false;          // a freeze (freezeTrack()), not a bounce
+    bool                  bToAudio_ = false;         // ... whose blocks become the track's audio (bounceSeqTrack())
+    uint32_t              bFreezeKey_ = 0;           // seqKey() when it was asked for
+    /* runFreeze()'s piece for runBounce(): the window's notes, the frames
+     * recorded and the run-in before them; what the piece made. */
+    std::vector<PatternSequencer::SongSpan> bWinSpans_;
+    uint32_t              bWinTotal_ = 0, bWinSkip_ = 0;
+    uint32_t              bSkip_ = 0;                // RT only while armed: run-in frames left
+    bool                  bPieceOk_ = false;
+    std::string           bPieceFile_;
     float                 bBpm_ = 120.0f;
     std::atomic<bool>     busy_{false};
     BounceStatus          status_;
@@ -2588,6 +4004,20 @@ private:
     std::mutex            workerMutex_;
     std::atomic<bool>     workerStarted_{false};
     std::atomic<bool>     quit_{false};
+
+    // Stretch: the copies made (or found) on the card, and the blocks that
+    // need none or cannot have one -- by path, cleared when a project opens.
+    mutable std::mutex    stretchMutex_;
+    std::set<std::string> stretchReady_, stretchSkip_;
+    std::atomic<uint32_t> stretchCount_{0};
+    std::atomic<uint8_t>  stretchProg_{0};   ///< the block being fitted, 0..100
+
+    // Undo: steps back and forward, and the arrangement as last seen (all
+    // under songMutex_); the counts for the screen.
+    std::vector<Snapshot> undo_, redo_;
+    Snapshot              last_;
+    int64_t               lastChangeUs_ = 0;
+    std::atomic<uint32_t> undoCount_{0}, redoCount_{0};
 };
 
 SongEngine::SongEngine(ISongEnginePlatform& platform, MetronomeNode& clock, PatternSequencer& seq)
@@ -2604,6 +4034,8 @@ void SongEngine::onPrepare(uint32_t maxFrames, uint32_t sr) { impl_->onPrepare(m
 void SongEngine::onSampleRateChange(uint32_t sr) { impl_->onSampleRateChange(sr); }
 void SongEngine::mix(float* out, uint32_t frames) { impl_->mix(out, frames); }
 void SongEngine::rtCapture(const float* padsBus, uint32_t frames) { impl_->rtCapture(padsBus, frames); }
+bool SongEngine::capturing() const { return impl_->capturing(); }
+bool SongEngine::captureBacklogged() const { return impl_->captureBacklogged(); }
 void SongEngine::releaseRings() { impl_->releaseRings(); }
 const char* SongEngine::debugLine() const { return impl_->debugLine(); }
 bool SongEngine::liveStart() { return impl_->liveStart(); }
@@ -2624,6 +4056,8 @@ std::vector<ClipInfo> SongEngine::clips() { return impl_->clips(); }
 uint32_t SongEngine::listGeneration() const { return impl_->listGeneration(); }
 bool SongEngine::bounceScene(uint8_t scene, uint8_t track) { return impl_->bounceScene(scene, track); }
 bool SongEngine::bounceSeqTrack(uint8_t track) { return impl_->bounceSeqTrack(track); }
+bool SongEngine::freezeTrack(uint8_t track) { return impl_->freezeTrack(track); }
+FreezeState SongEngine::freezeState(uint8_t track) { return impl_->freezeState(track); }
 uint32_t SongEngine::playEndBars() { return impl_->playEndBars(); }
 BounceStatus SongEngine::bounceStatus() { return impl_->bounceStatus(); }
 void SongEngine::cancelBounce() { impl_->cancelBounce(); }
@@ -2633,6 +4067,13 @@ bool SongEngine::requestTempo(float bpm) { return impl_->requestTempo(bpm); }
 SongOpState SongEngine::editState() const { return impl_->editState(); }
 bool SongEngine::requestMerge(uint8_t mask, uint32_t fromBar, uint32_t toBar) { return impl_->requestMerge(mask, fromBar, toBar); }
 uint8_t SongEngine::editProgress() const { return impl_->editProgress(); }
+uint32_t SongEngine::stretchWaiting() const { return impl_->stretchWaiting(); }
+void SongEngine::trackLevels(int track, float& left, float& right) { impl_->trackLevels(track, left, right); }
+bool SongEngine::undo() { return impl_->undo(); }
+bool SongEngine::redo() { return impl_->redo(); }
+uint32_t SongEngine::undoSteps() const { return impl_->undoSteps(); }
+uint32_t SongEngine::redoSteps() const { return impl_->redoSteps(); }
+uint8_t SongEngine::stretchProgress() const { return impl_->stretchProgress(); }
 bool SongEngine::requestExportLiveSet() { return impl_->requestExportLiveSet(); }
 std::vector<std::string> SongEngine::editReport() { return impl_->editReport(); }
 bool SongEngine::clipPeaks(const std::string& file, ClipPeaks& out) { return impl_->clipPeaks(file, out); }
@@ -2654,7 +4095,16 @@ void SongEngine::stop() { impl_->stop(); }
 bool SongEngine::playing() const { return impl_->playing(); }
 double SongEngine::positionBars() const { return impl_->positionBars(); }
 uint32_t SongEngine::framesPlayed() const { return impl_->framesPlayed(); }
+uint32_t SongEngine::positionFrames() const { return impl_->positionFrames(); }
 uint32_t SongEngine::underruns() const { return impl_->underruns(); }
 uint32_t SongEngine::openFailures() const { return impl_->openFailures(); }
+bool SongEngine::recordSeq(uint32_t fromBar, SyncTake take, uint8_t beats) { return impl_->recordSeq(fromBar, take, beats); }
+bool SongEngine::seqPunch(SyncTake take) { return impl_->seqPunch(take); }
+SyncTake SongEngine::seqTake() const { return impl_->seqTake(); }
+bool SongEngine::seqPunchable() const { return impl_->seqPunchable(); }
+bool SongEngine::openSeqEdit(uint8_t track, uint32_t bar, uint8_t scene) { return impl_->openSeqEdit(track, bar, scene); }
+void SongEngine::syncSeqEdit() { impl_->syncSeqEdit(); }
+void SongEngine::closeSeqEdit() { impl_->closeSeqEdit(); }
+int32_t SongEngine::seqEditBar() const { return impl_->seqEditBar(); }
 
 } // namespace crosspad

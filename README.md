@@ -34,8 +34,8 @@ include/crosspad/
   app/          App registry, registrar macros, lifecycle, flags, app versions
   audio/        Audio modules and nodes, ring buffer, format conversion, peak meter, scope tap, WAV writer, output EQ
   config/       Board configuration (Configuration.h, boards), feature-flag schema
-  drivers/      DRV2605 haptic driver (ESP only)
-  dsp/          FFT seam (portable + esp-dsp) and factory, pitch detection, rate conversion, scope trigger
+  control/      State behind the control verbs (pad input, kit/wave/pitched status, mixer levels) the board and the simulator both answer
+  dsp/          FFT seam (portable; accelerated backend registered by the platform), pitch detection, rate conversion (whole or streaming), scope trigger, spectrum bars
   event/        Event bus interface, event types, implementations
   fw/           Firmware library and update logic (semver, catalog, store, schedule)
   imu/          IMU-to-MIDI mapping
@@ -58,6 +58,8 @@ include/crosspad/
   status/       System status tracking
   stm32/        STM32 manager, register bus, config sync, note map, velocity curve
   synth/        Synth engine, audio output/input interfaces
+  transport/    Song transport (tempo, play/stop, locate)
+  util/         Small shared helpers
   transport/    Song and sequencer transport
   util/         Small helpers
   core.h        Master include

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
 #include <cstdint>
 #include <cstddef>
@@ -61,7 +62,7 @@ public:
     /**
      * Battery percentage using piecewise-linear approximation of a typical
      * single-cell Li-Ion/LiPo discharge curve (no-load / light-load).
-     * Returns -1 if voltage is below 3200 mV (no battery / dead).
+     * Returns -1 if voltage is below 3200 mV (no battery, or fully discharged).
      *
      * Curve points (mV → %):
      *   3300→0, 3500→5, 3600→10, 3670→20, 3710→30, 3750→40,

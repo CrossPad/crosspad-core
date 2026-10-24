@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What This Is
 
-**crosspad-core** is the portable C++17 library for the CrossPad hardware — a musical MIDI controller/sampler/sequencer with 16 pressure-sensitive pads, RGB LEDs, rotary encoder, and an STM32 co-processor. It holds the interfaces and the logic; platform-specific implementations live in the consumer projects. It is *mostly* platform-agnostic: a few ESP/FreeRTOS pieces live here behind guards (see Important Conventions).
+**crosspad-core** is the portable C++17 library for the CrossPad hardware — a musical MIDI controller/sampler/sequencer with 16 pressure-sensitive pads, RGB LEDs, rotary encoder, and an STM32 co-processor. It holds the interfaces and the logic; platform-specific implementations live in the consumer projects. No ESP-IDF or FreeRTOS code is reachable from core: `EspEventBus`, `EspDspFft`, the DRV2605 driver and `FreeRtosEventBus` live in the platforms, and an accelerated FFT or render kernel is registered at runtime (`setFftBackend()`, `dsp::setAudioKernels()`).
 
 User-facing docs live on https://crosspad.app/docs/: [Architecture](https://crosspad.app/docs/concepts/architecture/), [Where code belongs](https://crosspad.app/docs/concepts/where-code-belongs/), [Platform parity](https://crosspad.app/docs/concepts/platform-parity/), [Manifesto](https://crosspad.app/docs/concepts/manifesto/). The README keeps the library reference (layout, interfaces, platform init, capabilities, app registration). A change that breaks a docs page (command, output, path) opens an issue in CrossPad/crosspad-docs.
 
@@ -14,11 +14,9 @@ This library is consumed three ways:
 
 **ESP-IDF component** — [platform-idf](https://github.com/CrossPad/platform-idf), as a git submodule at `components/crosspad-core/`:
 - `CMakeLists.txt` uses `GLOB_RECURSE` on `src/*.cpp`, so new `.cpp` files are picked up automatically
-- `REQUIRES` ArduinoJson, `freertos`, `esp_event`, plus `espressif__esp-dsp` on esp32s3 (which also sets `CROSSPAD_USE_ESP_DSP=1` PUBLIC)
+- `REQUIRES` ArduinoJson only; the same `CMakeLists.txt` is the plain CMake build below
 
-**Plain CMake glob** — [crosspad-pc](https://github.com/CrossPad/crosspad-pc), as a submodule at `lib/crosspad-core/`:
-- its own `CMakeLists.txt` globs `lib/crosspad-core/src/*.cpp` and filters out `EspEventBus.cpp`, `SyncEventBus.cpp` and `Stm32Manager.cpp`; it uses `FreeRtosEventBus`
-- a new file that cannot compile on the desktop needs a guard here or a filter there
+**Plain CMake** — top-level or `add_subdirectory()`: the static library target `crosspad-core` (`-DCROSSPAD_CORE_USE_LVGL=ON` when the consumer builds with `USE_LVGL`); `tests/` links it. [crosspad-pc](https://github.com/CrossPad/crosspad-pc) (submodule at `lib/crosspad-core/`) still globs `lib/crosspad-core/src/*.cpp` itself, filters out `SyncEventBus.cpp` and `Stm32Manager.cpp`, and brings its own `FreeRtosEventBus` (`src/pc_stubs/`)
 
 **PlatformIO** (`library.json`, frameworks `arduino` + `espidf`) — the Arduino firmware ([platform-arduino](https://crosspad.app/docs/legacy/esp32-s3-arduino/), the legacy ESP32-S3 project):
 - `library.json` controls which `.cpp` files are compiled via `srcFilter` (not all sources are built by default)
@@ -26,7 +24,7 @@ This library is consumed three ways:
 
 ## Tests
 
-Standalone Catch2 v3.5.0 suite in `tests/` (portable sources only, `SyncEventBus`, ArduinoJson via FetchContent; no FreeRTOS, ESP-IDF or SDL2):
+Standalone Catch2 v3.5.0 suite in `tests/` (links the `crosspad-core` target, `SyncEventBus`, ArduinoJson via FetchContent; no FreeRTOS, ESP-IDF or SDL2):
 
 ```bash
 cd tests
@@ -35,7 +33,7 @@ cmake --build build
 ./build/crosspad_core_tests --reporter compact      # or a tag filter, e.g. "[audio]"
 ```
 
-Windows: `tests\build.bat` (VS 2022 vcvarsall + VS cmake). `tests/test_*.cpp` files are globbed, but the core sources under test are listed one by one in `CORE_SOURCES` in `tests/CMakeLists.txt`: a test for a new `.cpp` needs it added there. CI (`.github/workflows/audio-tests.yml`) runs the same commands in the `crosspad-ci` image, but only when `include/crosspad/audio/**`, `include/crosspad/synth/**`, `AudioEngineSettings.hpp`, `tests/**` or the workflow change — run the suite yourself for other changes. There is no lint step.
+Windows: `tests\build.bat` (VS 2022 vcvarsall + VS cmake). `tests/test_*.cpp` files are globbed and link the whole library (`add_subdirectory` of the repo root), so a new `.cpp` is under test with no list to edit. CI (`.github/workflows/audio-tests.yml`) runs the same commands in the `crosspad-ci` image, but only when `include/crosspad/audio/**`, `include/crosspad/synth/**`, `AudioEngineSettings.hpp`, `tests/**` or the workflow change — run the suite yourself for other changes. There is no lint step.
 
 ## Versioning and Releases
 
@@ -55,7 +53,7 @@ Every hardware/platform dependency is behind a pure virtual interface (`I` prefi
 
 | Interface | Purpose | platform-idf | crosspad-pc |
 |-----------|---------|--------------|-------------|
-| `IEventBus` | Async event dispatch | `EspEventBus` (esp_event, in core) | `FreeRtosEventBus` (in core) |
+| `IEventBus` | Async event dispatch | `EspEventBus` (esp_event, in crosspad-platform-idf) | `FreeRtosEventBus` (`src/pc_stubs/`) |
 | `ILedStrip` | LED hardware control | `EspLedStrip` | `PcLedStrip` |
 | `IKeyValueStore` | Persistent settings | `NvsSettingsStore` | `PcKeyValueStore` (JSON file) |
 | `IStm32Transport` | UART to STM32 | `EspStm32Transport` | — (no co-processor) |
@@ -75,7 +73,7 @@ Global singletons are accessed via free functions: `crosspad::getEventBus()`, `c
 - Pub/sub with `EventType` enum: NoteOn, NoteOff, PadPressed, PadReleased, AppChanged, TempoChanged, etc.
 - `EventSource` tracks origin (PadManager, MidiInput, App, SequencerCallback, etc.) to prevent feedback loops
 - Post = async (queued), Send = sync (ISR-safe)
-- Three implementations of `IEventBus` live here: `EspEventBus` (ESP-IDF event loop, ESP32 / Arduino-ESP32), `FreeRtosEventBus` (FreeRTOS queue; the PC simulator), `SyncEventBus` (synchronous immediate dispatch; the host tests)
+- `IEventBus` is implemented by each platform (`EspEventBus` in crosspad-platform-idf, `FreeRtosEventBus` in crosspad-pc); core ships `SyncEventBus` (synchronous immediate dispatch; the host tests)
 
 ### App System (`app/`)
 - `IApp`: base interface with lifecycle hooks (`onAppInit`, `onAppDeinit`, `onAppUpdate`, `onAppActivated`)
@@ -88,13 +86,13 @@ Global singletons are accessed via free functions: `crosspad::getEventBus()`, `c
 - `PadManager`: central orchestrator for 16 pads — handles press/release, MIDI mapping, chord notes, delegates to `PadLedController` and `PadAnimator`
 - `IPadLogicHandler`: apps register custom pad behavior; `PadManager` swaps active handler on app switch
 - `PadLedController`: per-pad color state machine (default/pressed/playing colors, velocity-based colors, feedback modes, brightness)
-- `PadAnimator`: LED animations (progress bar, boot, success, error, charging, frame) using `ILedStrip` + `IClock`
+- `PadAnimator`: LED animations (progress bar, boot, success, error, charging, still frames) using `ILedStrip` + `IClock`. One runs at a time and every start takes the pads; each start returns an `AnimToken` -- `owns(token)`, `updateFrame(token, …)` and `stop(token)` act only on the caller's own animation, `stopAll()` is for system paths (soft-off, sleep)
 
 ### STM32 Protocol (`protocol/`, `stm32/`)
 - SysEx framing over UART (manufacturer ID 0x7D, `SysExProtocol.h`); on v2 boards also the I2C register map (`stm32/reg_map.h`, `IStm32RegisterBus`)
 - `Stm32CommandSender`: command interface (power off, brightness, routing matrix, keep-alive, DFU); `SysExStm32CommandSender` and `I2cStm32CommandSender` implement it
 - `Stm32MessageHandler`: parses incoming messages (pad events, encoder, buttons, battery status) and dispatches to `PadManager` and callbacks
-- `Stm32Manager`: FreeRTOS maintenance task (keep-alive, routing updates)
+- `Stm32Manager`: maintenance pass (keep-alive, routing updates, amp gate) the platform runs every `kTickPeriodMs` from its own task
 
 ### Settings (`settings/`)
 - `CrosspadSettings` singleton: keypad, routing (STM/ESP), wireless, audio (per-pad × 16 + preview + master FX), audio engine, vibration, IMU MIDI, STM config, theme colour, LCD and RGB brightness
@@ -123,7 +121,7 @@ Headers use `#pragma once`. C-compatible headers (like `SysExProtocol.h`) use `.
 ## Consumer Integration Pattern
 
 Platform projects initialize crosspad-core via a platform init function that:
-1. Creates its event bus (`EspEventBus` on ESP, `FreeRtosEventBus` on PC; static, with task params)
+1. Creates its `IEventBus` (ESP-IDF: `EspEventBus` in crosspad-platform-idf; PC: `FreeRtosEventBus`; static, with task params)
 2. Creates platform clock, MIDI output, LED strip implementations
 3. Constructs `PadLedController`, `PadAnimator` and `PadManager`
 4. Fills `CrosspadPlatformConfig` and calls `crosspad_platform_init()`, which wires them (order in the README § Platform initialization)
@@ -133,15 +131,13 @@ Platform projects initialize crosspad-core via a platform init function that:
 ## Dependencies
 
 - `ArduinoJson` (bblanchon) — settings serialization
-- `freertos` — task management (FreeRTOS types used in headers)
-- `esp_event` — EspEventBus implementation
 - `espressif__esp-dsp` — on esp32s3 only (`dsp/EspDspFft.cpp`, the SIMD pan accumulate in `PitchedInstrument`)
 - Host tests: Catch2 v3.5.0 and ArduinoJson v7.3.0 via FetchContent
 - C++17 standard library (`<functional>`, `<mutex>`, `<map>`, `<vector>`, `<string>`)
 
 ## Important Conventions
 
-- Platform variance goes through interfaces. The few exceptions are guarded and should not grow: `EspEventBus`, `FreeRtosEventBus`, the DRV2605 driver (`#ifdef ESP_PLATFORM`), the esp-dsp FFT (`CROSSPAD_USE_ESP_DSP`), `_WIN32` paths in `PortableKitLoader.cpp`
+- Platform variance goes through interfaces and runtime registration. The few exceptions are guarded and should not grow: `AlignedVector` (`ESP_PLATFORM`: internal/PSRAM caps), `_WIN32` paths in `PosixFileSystem.cpp`
 - `Pad` struct uses fixed arrays of 16 elements (pads are 0-indexed)
 - MIDI notes are `uint8_t`, velocities are `uint8_t`, channels are `uint8_t`
 - Color system: `RgbColor` (0-255 per channel) with HSL conversion support

@@ -9,7 +9,7 @@ namespace crosspad {
 
 /// Which Arrange track the screen now open is filling.
 ///
-/// Arrange is where a song starts (UX 2000 §6): choosing AUDIO on a new track
+/// Arrange is where a song starts: choosing AUDIO on a new track
 /// opens the Recorder to record into it, choosing SEQ opens the sequencer on
 /// that track's scene, and a seq track's EDIT opens the Sampler or Pitch Play
 /// on the sound it plays. Each of those screens is the app that already does
@@ -19,7 +19,7 @@ namespace crosspad {
 /// Set by Arrange immediately before it hands over, cleared when the way back
 /// is taken or when one of those apps is opened from the MODE map instead.
 /// @c track == @c kNone means nobody handed anything over, and every screen
-/// then behaves exactly as it did before Arrange existed.
+/// then behaves as it does when opened on its own.
 struct ArrangeFocus {
     static constexpr int kNone = -1;
 
@@ -30,6 +30,9 @@ struct ArrangeFocus {
     /// The seq view's BOUNCE: Arrange opens on "Bounce T<n> to audio?" for
     /// this track, the dialog over the arrangement it changes.
     bool    bounce = false;
+    /// Where Arrange's playhead stood, 0-based: an audio track's take, with
+    /// the song, starts on this bar.
+    uint32_t bar = 0;
 
     bool held() const { return track >= 0 && track < AudioSong::kTracks; }
     void clear() { *this = ArrangeFocus{}; }

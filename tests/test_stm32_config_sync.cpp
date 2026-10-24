@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 #include <catch2/catch_test_macros.hpp>
 #include "test_helpers.hpp"
 #include "crosspad/stm32/Stm32ConfigSync.hpp"
@@ -77,6 +78,27 @@ TEST_CASE("Stm32ConfigSync::pushAll carries the press debounce the unit keeps", 
     REQUIRE(sync.pushAll(s) == true);
     REQUIRE(bus.lastByteAt(REG_CTL_BTN_PRESS_DB_MS) == 9);
     for (const auto& w : bus.writes) REQUIRE(w.reg != REG_CTL_BTN_RELEASE_DB_MS);
+}
+
+TEST_CASE("Stm32ConfigSync::pushAll carries the hit window", "[stm][sync]") {
+    MockStm32Bus bus;
+    Stm32ConfigSync sync(bus);
+    Stm32Settings s;
+    REQUIRE(sync.pushAll(s) == true);
+    REQUIRE(bus.lastByteAt(REG_CTL_BTN_HIT_MODE) == 0);
+    REQUIRE(bus.lastByteAt(REG_CTL_BTN_HIT_MIN_MS) == 2);
+    REQUIRE(bus.lastByteAt(REG_CTL_BTN_HIT_PEAK_DROP) == 32);
+    REQUIRE(bus.lastByteAt(REG_CTL_BTN_HIT_PEAK_SAMPLES) == 2);
+
+    s.hitMode = 1;
+    s.hitMinMs = 3;
+    s.hitPeakDrop = 48;
+    s.hitPeakSamples = 4;
+    REQUIRE(sync.pushAll(s) == true);
+    REQUIRE(bus.lastByteAt(REG_CTL_BTN_HIT_MODE) == 1);
+    REQUIRE(bus.lastByteAt(REG_CTL_BTN_HIT_MIN_MS) == 3);
+    REQUIRE(bus.lastByteAt(REG_CTL_BTN_HIT_PEAK_DROP) == 48);
+    REQUIRE(bus.lastByteAt(REG_CTL_BTN_HIT_PEAK_SAMPLES) == 4);
 }
 
 TEST_CASE("Stm32ConfigSync::readBootCount", "[stm][sync]") {

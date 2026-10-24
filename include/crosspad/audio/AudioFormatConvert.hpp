@@ -7,7 +7,7 @@
  *
  * Internal pipeline is float32 in [-1.0, 1.0]. Conversions only happen at
  * IAudioStream push/pull boundaries. Header-only so platforms can inline
- * tight loops; ESP-DSP SIMD path can be opted in via CROSSPAD_USE_ESP_DSP.
+ * tight loops.
  *
  * Sample counts here are in *samples* (not frames). For interleaved stereo,
  * pass frames * 2 as count.
@@ -16,13 +16,6 @@
 #include "crosspad/audio/AudioFormat.hpp"
 #include <cstdint>
 #include <cstring>
-
-#if defined(CROSSPAD_USE_ESP_DSP) && __has_include(<esp_dsp.h>)
-  #include <esp_dsp.h>
-  #define CROSSPAD_HAS_ESP_DSP 1
-#else
-  #define CROSSPAD_HAS_ESP_DSP 0
-#endif
 
 namespace crosspad {
 
@@ -40,9 +33,8 @@ inline float clampFloat(float v) {
 
 // ─── float → int16 ───────────────────────────────────────────────────────
 inline void floatToInt16(const float* src, int16_t* dst, uint32_t count) {
-    // Scalar loop is already auto-vectorized by GCC on Xtensa LX7 with -O2
-    // (FMA + clamp get fused). ESP-DSP doesn't expose a vector helper for
-    // float→int16 narrowing — keeping single-pass clamp+scale.
+    // The reference: the S3's render runs dsp::floatToInt16
+    // (dsp/AudioKernels.hpp), which is held to this one bit for bit.
     for (uint32_t i = 0; i < count; ++i) {
         float v = clampFloat(src[i]) * kFloatScaleToInt16;
         dst[i] = static_cast<int16_t>(v);

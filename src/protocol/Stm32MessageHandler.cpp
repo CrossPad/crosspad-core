@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 #include "crosspad/protocol/Stm32MessageHandler.hpp"
 #include "crosspad/status/CrosspadStatus.hpp"
 #include "crosspad/pad/PadManager.hpp"
@@ -24,39 +25,43 @@ void Stm32MessageHandler::handleMessage(const uint8_t* data, unsigned size) {
     case CROSSPAD_CMD_BRIGHTNESS:
         break;
 
-    case CROSSPAD_CMD_ENCODER_COUNTER:
+    case CROSSPAD_CMD_ENCODER_COUNTER: {
         if (size < 5) break;
         // Frame length says which STM generation sent this:
-        //   6 bytes → detent index 0..15 plus a sub-detent phase byte.
-        //   5 bytes → legacy raw LPTIM CNT 0..63; the detent index and phase
-        //     are derived here so downstream code stays firmware-agnostic.
-        //     Assumes the legacy encoder also rests at CNT ≡ 1 (mod 4).
+        //   6 bytes → detent index 0..15 plus a sub-detent phase byte with
+        //     the live A/B lines, which EncoderDetents decodes.
+        //   5 bytes → a rev 1.x STM's raw LPTIM count 0..60 and nothing else:
+        //     no A/B lines, so the steps come from the count. It moves
+        //     kLegacyCountsPerDetent per click (PCB 1.9: every click 2).
+        int steps;
         if (size >= 6) {
             input.encoderTop   = (data[3] & 0x0F);
             input.encoderPhase = data[4];
+            steps = encoderDetents_.update(input.encoderPhase);
         } else {
-            uint8_t cnt  = data[3] & 0x3F;
-            uint8_t mod4 = cnt & 0x03;
-            uint8_t a, b;
-            switch (mod4) {                 // Gray map, rest (mod4==1) = (A,B)=(1,1)
-                case 1:  a = 1; b = 1; break;
-                case 2:  a = 0; b = 1; break;
-                case 3:  a = 0; b = 0; break;
-                default: a = 1; b = 0; break;
-            }
-            input.encoderTop   = ((cnt + 1) >> 2) & 0x0F;
-            input.encoderPhase = mod4 | (a << 2) | (b << 3) | (mod4 == 1 ? 0x10 : 0);
+            const uint8_t cnt  = data[3] & 0x3F;
+            steps = legacyEncoderSteps(cnt);
+            input.encoderTop   = (legacyDetent_ / kLegacyCountsPerDetent) & 0x0F;
+            input.encoderPhase = cnt & 0x03;
         }
         input.encoderPressed = (data[3] >> 6) & 0x01;
-        if (const int steps = encoderDetents_.update(input.encoderPhase)) {
+        if (steps) {
             encoderSteps_.fetch_add(steps);
             encoderDetent_.fetch_add(steps);
         }
         break;
+    }
 
     case CROSSPAD_CMD_BUTTONS_DIGITAL:
         if (size < 7) break;
         parseDigitalButtons(data, size);
+        break;
+
+    case CROSSPAD_CMD_PAD_TOUCH:
+        // [F0 7D 22 pad touching F7]: an STM that measures a velocity says
+        // when a finger lands, before the note-on that carries it.
+        if (size < 6 || data[3] >= 16) break;
+        padManager_->handlePadTouch(data[3], data[4] != 0);
         break;
 
     case CROSSPAD_CMD_BUTTONS_ANALOG:
@@ -64,6 +69,13 @@ void Stm32MessageHandler::handleMessage(const uint8_t* data, unsigned size) {
         break;
 
     case CROSSPAD_CMD_STATUS_REGISTER:
+        // A rev 1.x STM built before CMD_VERSION_REPLY answers the version
+        // request with [F0 7D pcb api F7]: the PCB number where the command
+        // byte belongs. PCB 1.9 is 0x13, and a real status frame is 7 bytes.
+        if (size == 5) {
+            if (versionReplyCb_) versionReplyCb_(data[2], data[3]);
+            break;
+        }
         if (size < 6) break;
         status_->stm32.SetStm32Status(data[3], data[4]);
         break;
@@ -108,8 +120,9 @@ void Stm32MessageHandler::handleMessage(const uint8_t* data, unsigned size) {
         break;
 
     case CROSSPAD_CMD_VERSION_REPLY:
-        // [pcb_rev, api_ver] — informational, no consumer yet.
+        // [pcb_rev, api_ver]
         if (size < 6) break;
+        if (versionReplyCb_) versionReplyCb_(data[3], data[4]);
         break;
 
     case CROSSPAD_CMD_DFU_REQUEST:
@@ -128,6 +141,35 @@ void Stm32MessageHandler::handleMessage(const uint8_t* data, unsigned size) {
     default:
         break;
     }
+}
+
+int Stm32MessageHandler::legacyEncoderSteps(uint8_t cnt) {
+    // The count runs 0..kLegacyCountMax and wraps, an odd number of states,
+    // so it is unwrapped into a position whose detents keep one parity. The
+    // first report is the knob's first count out of a detent: detents are
+    // the other parity. Steps are taken where the knob lands in one, from
+    // the last, so a wobble in a detent -- a count out and back -- is none.
+    constexpr int kStates = kLegacyCountMax + 1;
+    if (legacyRaw_ < 0) {
+        legacyRaw_ = cnt;
+        legacyPos_ = cnt;
+        legacyDetentParity_ = (cnt + 1) & 1;
+        return 0;
+    }
+    int d = (cnt - legacyRaw_) % kStates;
+    if (d < 0) d += kStates;
+    if (d > kStates / 2) d -= kStates;
+    legacyRaw_ = cnt;
+    legacyPos_ += d;
+    if ((legacyPos_ & 1) != legacyDetentParity_) return 0;
+    if (!legacyHaveDetent_) {
+        legacyHaveDetent_ = true;
+        legacyDetent_ = legacyPos_;
+        return 0;
+    }
+    const int steps = (legacyPos_ - legacyDetent_) / kLegacyCountsPerDetent;
+    legacyDetent_ = legacyPos_;
+    return steps;
 }
 
 void Stm32MessageHandler::parseDigitalButtons(const uint8_t* data, unsigned size) {
@@ -159,15 +201,15 @@ void Stm32MessageHandler::parseDigitalButtons(const uint8_t* data, unsigned size
         }
     }
 
-    // Presses do NOT call handlePadPress(): this path carries no velocity
-    // byte, and a fixed 127 would clobber what the MIDI note-on pipe already
-    // wrote. Releases do go through handlePadRelease(), which cleans up the
-    // LED and EventBus state and sends the NoteOff.
+    // Without a platform callback, presses do NOT call handlePadPress(): this
+    // path carries no velocity byte. Releases go through handlePadRelease(),
+    // which cleans up the LED and EventBus state and sends the NoteOff.
     for (int i = 0; i < 16; i++) {
-        if (keyPresses_[i] != oldPresses[i]) {
-            if (!keyPresses_[i]) {
-                padManager_->handlePadRelease(i);
-            }
+        if (keyPresses_[i] == oldPresses[i]) continue;
+        if (padEdgeCb_) {
+            padEdgeCb_(static_cast<uint8_t>(i), keyPresses_[i]);
+        } else if (!keyPresses_[i]) {
+            padManager_->handlePadRelease(i);
         }
     }
 }

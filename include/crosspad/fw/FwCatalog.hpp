@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
 #include <ArduinoJson.h>
 #include <cstddef>
@@ -8,12 +9,22 @@
 namespace crosspad {
 
 constexpr size_t kFwTagMax = 32;
-/// "CrossPad-" + tag (31) + "-v2-" + kit (15) + "-manifest.json" + NUL
+/// A release asset is CrossPad-<tag>-v<rev>-<kit><suffix>. The device never
+/// builds the name: it takes it from the catalog of its own board revision.
 constexpr size_t kFwAssetNameMax = 80;
+/// The widest revision is "v255" (CPFI's board_rev is one byte), the longest suffix "-manifest.json".
+static_assert(sizeof "CrossPad-" - 1 + (kFwTagMax - 1) + sizeof "-v255-" - 1 + (kFwKitMax - 1) +
+                      sizeof "-manifest.json" <= kFwAssetNameMax,
+              "the longest release asset name fits, NUL included");
 constexpr size_t kFwCatalogKits = 16;
 constexpr size_t kFwCatalogVersions = 8;
 /// A kit icon is a 48x48 LVGL image (~7 kB); anything larger is not one.
 constexpr uint32_t kFwIconBytesMax = 16u * 1024u;
+/// The one icon file the device draws: an LVGL v9 binary image, RGB565A8,
+/// 48x48 (tools/fw_icon.py) -- its 12-byte header, RGB565, then the alpha plane.
+constexpr uint32_t kFwIconSide = 48;
+constexpr size_t kFwIconHeaderBytes = 12;
+constexpr size_t kFwIconBytes = kFwIconHeaderBytes + kFwIconSide * kFwIconSide * 3;
 
 enum class FwChannel : uint8_t { Stable, Beta };
 enum class FwTier : uint8_t { Official, Community };
@@ -84,5 +95,16 @@ const FwCatalogVersion* fwCatalogPickUpdate(const FwCatalog& c, const char* kit,
 
 /// `version` compared as a version ("v1.3.0" finds "1.3.0").
 const FwCatalogVersion* fwCatalogFind(const FwCatalog& c, const char* kit, const char* version);
+
+/// The update server's base URL ("http(s)://host[:port]"), bytes incl. NUL.
+constexpr size_t kFwBaseUrlMax = 128;
+constexpr const char* kFwFileApi = "/api/device/file/";
+/// <base>/api/device/file/<tag>/<name> with every part at its limit, incl. NUL.
+constexpr size_t kFwFileUrlMax = kFwBaseUrlMax + sizeof("/api/device/file/") + kFwTagMax + 1 + kFwAssetNameMax;
+
+/// <baseUrl>/api/device/file/<tag>/<name>; tag and name were checked to be
+/// URL-safe by the catalog parser, so nothing is escaped. False when it did
+/// not fit `n`: a cut-off URL names another file.
+bool fwCatalogFileUrl(const char* baseUrl, const char* tag, const char* name, char* out, size_t n);
 
 } // namespace crosspad

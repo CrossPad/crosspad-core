@@ -9,6 +9,7 @@
 #include "crosspad/platform/NullImu.hpp"
 #include "crosspad/net/NullHttpClient.hpp"
 #include "crosspad/midi/NullBleMidi.hpp"
+#include "crosspad/platform/PosixFileSystem.hpp"
 
 // Interface headers for getter return types
 #include "crosspad/event/IEventBus.hpp"
@@ -39,6 +40,7 @@ static NullVibration    s_nullVibration;
 static NullImu          s_nullImu;
 static NullHttpClient   s_nullHttp;
 static NullBleMidi      s_nullBle;
+static PosixFileSystem  s_posixFs;
 
 // ── Singleton registry ──────────────────────────────────────────────────
 
@@ -52,6 +54,7 @@ static PlatformServices& initServices() {
     svc.imu = &s_nullImu;
     svc.httpClient = &s_nullHttp;
     svc.bleMidi = &s_nullBle;
+    svc.fileSystem = &s_posixFs;
     return svc;
 }
 
@@ -154,6 +157,10 @@ void PlatformServices::setHttpClient(IHttpClient* http) {
     }
 }
 
+void PlatformServices::setFileSystem(IFileSystem* fs) {
+    fileSystem = fs ? fs : &s_posixFs;
+}
+
 void PlatformServices::setBleMidi(IBleMidi* ble) {
     bleMidi = ble ? ble : &s_nullBle;
 
@@ -173,6 +180,10 @@ IEventBus& getEventBus() {
 
 IClock& getClock() {
     return *s_services.clock;
+}
+
+IFileSystem& getFileSystem() {
+    return *s_services.fileSystem;
 }
 
 ILedStrip& getLedStrip() {

@@ -284,10 +284,41 @@ TEST_CASE("sequencer transport: waiting -- REC and STOP cancel, PLAY and DUB do 
     REQUIRE(r.engine.stops == 1);
     REQUIRE(r.engine.records == 0);
 
+    /* An armed take cancelled is a take ended: back to bar one, like one
+     * recorded. */
     put(r, SequencerState::WaitNote, SequencerMode::Record);
     const int before = r.engine.rewinds;
     r.transport.stop();
     REQUIRE(r.engine.stops == 2);
+    REQUIRE(r.engine.rewinds == before + 1);
+
+    /* Waiting to play (a song-synced start) is no take: it stops in place. */
+    put(r, SequencerState::WaitForSync, SequencerMode::Playback);
+    r.transport.stop();
+    REQUIRE(r.engine.stops == 3);
+    REQUIRE(r.engine.rewinds == before + 1);
+}
+
+TEST_CASE("sequencer transport: a STOP that ends a take goes back to bar one", "[transport]")
+{
+    /* A first take: one bar played into a four-bar loop, STOP in bar 2.
+     * Resumed from there, PLAY gave three silent bars before the take came
+     * round, and it looked as if nothing had been recorded. */
+    for (auto mode : {SequencerMode::Record, SequencerMode::Overdub, SequencerMode::OverdubWait}) {
+        Rig r(4);
+        put(r, SequencerState::Running, mode);
+        const int before = r.engine.rewinds;
+        r.transport.stop();
+        REQUIRE(r.engine.stops == 1);
+        REQUIRE(r.engine.rewinds == before + 1);
+    }
+
+    /* Playing, STOP still stops in place; the second one rewinds. */
+    Rig r(4);
+    put(r, SequencerState::Running, SequencerMode::Playback);
+    const int before = r.engine.rewinds;
+    r.transport.stop();
+    REQUIRE(r.engine.stops == 1);
     REQUIRE(r.engine.rewinds == before);
 }
 
@@ -303,26 +334,28 @@ TEST_CASE("sequencer transport: playing -- REC punches in, DUB layers, PLAY does
     REQUIRE(r.engine.overdubs == 1);
 }
 
-TEST_CASE("sequencer transport: recording -- DUB layers, PLAY does nothing", "[transport]")
+TEST_CASE("sequencer transport: recording -- DUB layers, PLAY plays on", "[transport]")
 {
     Rig r(4);
     put(r, SequencerState::Running, SequencerMode::Record);
     r.transport.play();
-    REQUIRE(r.engine.plays == 0);
+    REQUIRE(r.engine.plays == 1);       // punched out, the loop on
+    put(r, SequencerState::Running, SequencerMode::Record);
     r.transport.overdub();
     REQUIRE(r.engine.overdubs == 1);
 }
 
-TEST_CASE("sequencer transport: overdubbing -- REC records, DUB plays, PLAY does nothing", "[transport]")
+TEST_CASE("sequencer transport: overdubbing -- REC records, DUB plays, PLAY plays on", "[transport]")
 {
     Rig r(4);
     put(r, SequencerState::Running, SequencerMode::Overdub);
     r.transport.play();
-    REQUIRE(r.engine.plays == 0);
+    REQUIRE(r.engine.plays == 1);       // out of the layering, the loop on
+    put(r, SequencerState::Running, SequencerMode::Overdub);
     r.transport.record();
     REQUIRE(r.engine.records == 1);
     r.transport.overdub();
-    REQUIRE(r.engine.plays == 1);
+    REQUIRE(r.engine.plays == 2);
     REQUIRE(r.engine.overdubs == 0);
 }
 
@@ -531,4 +564,100 @@ TEST_CASE("transport: a claim does not stop a holder that is already stopped", "
     REQUIRE(r.engine.rewinds == before);
     REQUIRE(r.engine.stops == 0);
     crosspad::transportRelease(&other);
+}
+
+// ── the song's transport: REC and DUB onto the seq track ───────────────────
+
+namespace {
+
+class TakeStub : public SongStub {
+public:
+    int records = 0, punches = 0;
+    uint32_t lastFrom = 0;
+    uint8_t  lastCountIn = 0xFF;
+    crosspad::SyncTake take = crosspad::SyncTake::None, lastPunch = crosspad::SyncTake::None;
+    bool punchable = true;
+
+    bool recordSeq(uint32_t fromBar, crosspad::SyncTake t, uint8_t beats) override
+    {
+        ++records; lastFrom = fromBar; lastCountIn = beats; take = t; isPlaying = true; return true;
+    }
+    bool seqPunch(crosspad::SyncTake t) override { ++punches; lastPunch = t; take = t; return true; }
+    crosspad::SyncTake seqTake() const override { return take; }
+    bool seqPunchable() const override { return punchable; }
+};
+
+} // namespace
+
+TEST_CASE("song transport: REC records from the playhead, DUB as well", "[transport][songtake]")
+{
+    TakeStub song;
+    SongScope scope(&song);
+    crosspad::SongTransport t;
+    t.setStartBar(4);                            // the marker on bar five
+    REQUIRE((t.caps() & crosspad::kTransportCanRecord));
+    REQUIRE((t.caps() & crosspad::kTransportCanOverdub));
+    t.record();
+    REQUIRE(song.records == 1);
+    REQUIRE(song.lastFrom == 4);
+    REQUIRE(song.take == crosspad::SyncTake::Record);
+    REQUIRE(t.state() == TransportState::Recording);
+    song.stop();
+    song.take = crosspad::SyncTake::None;
+    t.overdub();
+    REQUIRE(song.records == 2);
+    REQUIRE(song.take == crosspad::SyncTake::Overdub);
+    REQUIRE(t.state() == TransportState::Overdubbing);
+}
+
+TEST_CASE("song transport: looping a region, a take starts at the region", "[transport][songtake]")
+{
+    TakeStub song;
+    SongScope scope(&song);
+    {
+        std::lock_guard<std::recursive_mutex> l(song.songMutex());
+        song.song().loop = true;
+        song.song().loopStart = 2;
+        song.song().loopEnd = 4;
+    }
+    crosspad::SongTransport t;
+    t.setStartBar(7);
+    t.record();
+    REQUIRE(song.lastFrom == 2);
+}
+
+TEST_CASE("song transport: playing, REC punches in and out, PLAY plays on", "[transport][songtake]")
+{
+    TakeStub song;
+    SongScope scope(&song);
+    crosspad::SongTransport t;
+    song.isPlaying = true;
+    REQUIRE(t.state() == TransportState::Playing);
+    t.record();
+    REQUIRE(song.lastPunch == crosspad::SyncTake::Record);
+    t.overdub();                                 // a REC turned into a DUB from here
+    REQUIRE(song.lastPunch == crosspad::SyncTake::Overdub);
+    t.overdub();                                 // out again
+    REQUIRE(song.lastPunch == crosspad::SyncTake::None);
+    t.record();
+    t.play();                                    // PLAY ends the take, the song plays on
+    REQUIRE(song.lastPunch == crosspad::SyncTake::None);
+    REQUIRE(song.isPlaying);
+    REQUIRE(song.records == 0);
+}
+
+TEST_CASE("song transport: no track for a take, no REC", "[transport][songtake]")
+{
+    TakeStub song;
+    SongScope scope(&song);
+    {
+        std::lock_guard<std::recursive_mutex> l(song.songMutex());
+        for (int i = 0; i < crosspad::AudioSong::kTracks; ++i) REQUIRE(song.song().addAudioTrack(i));
+    }
+    crosspad::SongTransport t;
+    REQUIRE_FALSE((t.caps() & crosspad::kTransportCanRecord));
+    /* Playing without the sequencer locked to it: nothing to punch into. */
+    song.isPlaying = true;
+    song.punchable = false;
+    REQUIRE_FALSE((t.caps() & crosspad::kTransportCanRecord));
 }

@@ -64,12 +64,10 @@ public:
          *
          * They must outlive the pages, and on the device the pages come from a
          * pool that is wiped wholesale by re-registering it -- the two sample
-         * engines take turns owning it. A table allocated out of that pool is
-         * a dangling pointer the moment the pool is reset, and the symptom is
-         * not a crash: `reserve()` reads a page array that is no longer its
-         * own, decides it already has pages, and hands out nothing. Measured
-         * on the board as every streaming voice refused its ring
-         * (`norings=187`) while the card was never read at all.
+         * engines take turns owning it. A table allocated out of that pool
+         * would dangle the moment the pool is reset, and `reserve()` would
+         * then read a page array that is no longer its own and hand out
+         * nothing.
          *
          * So the tables get an allocator of their own -- a couple of kilobytes
          * from the ordinary heap, which nobody resets. Null falls back to

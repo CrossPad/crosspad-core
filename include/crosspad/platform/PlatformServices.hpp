@@ -5,14 +5,13 @@
  * @file PlatformServices.hpp
  * @brief Centralized service registry for all CrossPad platform services.
  *
- * Replaces per-platform singleton getter boilerplate. Platforms create their
- * concrete implementations and pass them via CrosspadPlatformConfig — the
- * common init function populates this registry. Runtime service swaps (e.g.,
- * connecting MIDI after init) use the typed setters, which also auto-update
- * PlatformCapabilities flags.
+ * Platforms create their concrete implementations and pass them via
+ * CrosspadPlatformConfig; the common init function populates this registry.
+ * Runtime service swaps (e.g., connecting MIDI after init) use the typed
+ * setters, which also update the PlatformCapabilities flags.
  *
- * Getter functions (getClock(), getMidiOutput(), etc.) are defined once in
- * PlatformServices.cpp — platforms no longer need to implement them.
+ * The getter functions (getClock(), getMidiOutput(), etc.) read this
+ * registry; platforms do not implement them.
  */
 
 #include <cstdint>
@@ -32,6 +31,7 @@ class IKeyValueStore;
 class IVibration;
 class IImu;
 class IHttpClient;
+class IFileSystem;
 class ISettingsUI;
 class IKitManager;
 class IBleMidi;
@@ -46,9 +46,14 @@ class ISongEngine;
 class ISampleTools;
 class IInputGain;
 class IInputPairs;
+class IOutputLevels;
+class IAudioBuffer;
 class IPadMix;
+class IPadPerformance;
 class PitchedInstrument;
 class IInstrumentHost;
+class ISecondKit;
+class IKitPicker;
 class Stm32MessageHandler;
 
 /**
@@ -81,6 +86,7 @@ struct PlatformServices {
     IVibration*       vibration       = nullptr;  // defaults to NullVibration
     IImu*             imu             = nullptr;  // defaults to NullImu
     IHttpClient*      httpClient      = nullptr;  // defaults to NullHttpClient
+    IFileSystem*      fileSystem      = nullptr;  // defaults to PosixFileSystem
     ISettingsUI*      settingsUI      = nullptr;
     IKitManager*      kitManager      = nullptr;
     SequencerController* sequencer   = nullptr;
@@ -91,9 +97,14 @@ struct PlatformServices {
     ISampleTools*     sampleTools     = nullptr;   ///< recording, previewing and slicing samples
     IInputGain*       inputGain       = nullptr;   ///< the inputs' preamp gain (mics, line-in)
     IInputPairs*      inputPairs      = nullptr;   ///< which inputs the ADCs hear; null when all always do
+    IOutputLevels*    outputLevels    = nullptr;   ///< the speakers' and jacks' analog levels; null where the board has none
+    IAudioBuffer*     audioBuffer     = nullptr;   ///< block and output queue, chosen live; null where fixed
     /// Per-pad level and pan of whichever engine plays the pads now; the
     /// engine that takes over the pads registers itself here.
     IPadMix*          padMix          = nullptr;
+    /// The pads' 16 levels, for an app other than the one that has them (the
+    /// Sequencer records a part in it). Null where nothing offers one.
+    IPadPerformance*  padPerformance  = nullptr;
     IBleMidi*         bleMidi         = nullptr;  // defaults to NullBleMidi
 
     /// The varispeed sample engine, when the platform runs one. Portable apps
@@ -104,6 +115,14 @@ struct PlatformServices {
     /// Lends that engine to an app with an instrument of its own, and keeps
     /// the app's instrument library. Null where the platform has none.
     IInstrumentHost*  instrumentHost  = nullptr;
+
+    /// The kit a song's second kit track plays, in an engine of its own
+    /// beside the pads' one. Null where the platform has only the one.
+    ISecondKit*       secondKit       = nullptr;
+
+    /// The kit browser, for an app that picks a kit of its own (a song's
+    /// kit tracks). Null where the platform has none.
+    IKitPicker*       kitPicker       = nullptr;
 
     /// Decoder of the CrossPad SysEx catalog (STM32 frames and host frames
     /// alike). A portable app hangs its host-protocol callback here
@@ -137,6 +156,9 @@ struct PlatformServices {
 
     /// Set HTTP client + toggle Capability::Http.
     void setHttpClient(IHttpClient* http);
+
+    /// Set the file system; nullptr puts the portable POSIX one back.
+    void setFileSystem(IFileSystem* fs);
 
     /// Publish the pitched sample engine. No capability flag: the engine is a
     /// concrete object a port owns, not an interface a port may or may not have.

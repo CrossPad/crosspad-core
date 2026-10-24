@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
+#include <cstring>
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/matchers/catch_matchers_floating_point.hpp>
 
@@ -147,6 +148,47 @@ TEST_CASE("SampleCursor walks from the head into the stream without a seam", "[c
     w.close(pool);
 }
 
+TEST_CASE("SampleCursor reads a head that starts inside the file, then the stream after it", "[cursor][trim]") {
+    BlockPool pool;
+    BlockPool::Config pc;
+    pc.blockBytes = 1024; pc.pageBytes = 8192; pc.maxPages = 4;
+    pc.alloc = &heapAlloc; pc.free = &heapFree;
+    REQUIRE(pool.configure(pc));
+    REQUIRE(pool.reserve(8) >= 4);
+
+    /* A trim starting at frame 5000: the head holds 5000..5299. */
+    const uint32_t start = 5000, head = 300, total = 8000;
+    RampSource src(total, 1);
+    std::vector<int16_t> headBuf(head);
+    REQUIRE(src.read("x.wav", start, head, headBuf.data()) == head);
+
+    StreamWindow w;
+    REQUIRE(w.open(pool, "x.wav", 1, start + head, total, 4));
+    SampleCursor c;
+    c.bind(headBuf.data(), start, head, 1, total, &w);
+    REQUIRE(c.readableFrames() == start + head);
+
+    float l = 0, r = 0;
+    /* The first frame of the trim, at once and interpolated: the tap before
+     * it is the trim's edge, not a frame that is not here. */
+    REQUIRE(c.sample(start, l, r));
+    REQUIRE(l == static_cast<float>(start * 2));
+    REQUIRE(c.read(static_cast<uint64_t>(start) * kOne, l, r));
+    REQUIRE(l == static_cast<float>(start * 2));
+
+    uint32_t f = start;
+    while (f + 3 < total) {
+        if (!c.read(static_cast<uint64_t>(f) * kOne, l, r)) {
+            REQUIRE(w.service(src, f, 2) > 0);
+            continue;
+        }
+        REQUIRE(l == static_cast<float>(f * 2));
+        ++f;
+    }
+    REQUIRE(f + 3 >= total);
+    w.close(pool);
+}
+
 TEST_CASE("SampleCursor interpolates across a block boundary", "[cursor]") {
     BlockPool pool;
     BlockPool::Config pc;
@@ -205,4 +247,30 @@ TEST_CASE("SampleCursor transposes without resampling the file", "[cursor]") {
     const double seconds = static_cast<double>(rendered) / 44100.0;
     const double hz = crossings / 2.0 / seconds;
     REQUIRE_THAT(hz, Catch::Matchers::WithinRel(1000.0, 0.02));
+}
+
+TEST_CASE("SampleCursor's integer Catmull-Rom is the float one, to the bit", "[cursor]") {
+    /* The run walk works the coefficients out in integers; that is only the
+     * same render if every one of them is exact in float for int16 taps. The
+     * extremes, then a spread of random taps and fractions. */
+    auto same = [](int32_t a, int32_t b, int32_t c, int32_t d, float f) {
+        const float i = SampleCursor::hermite4i(a, b, c, d, f);
+        const float x = SampleCursor::hermite4(static_cast<float>(a), static_cast<float>(b),
+                                               static_cast<float>(c), static_cast<float>(d), f);
+        uint32_t bi, bx;
+        std::memcpy(&bi, &i, sizeof bi);
+        std::memcpy(&bx, &x, sizeof bx);
+        return bi == bx;
+    };
+    const int32_t edge[] = {-32768, -32767, -1, 0, 1, 32766, 32767};
+    for (int32_t a : edge) for (int32_t b : edge) for (int32_t c : edge) for (int32_t d : edge)
+        for (float f : {0.0f, 0.25f, 0.5f, 0.999999f}) REQUIRE(same(a, b, c, d, f));
+    uint32_t seed = 12345u;
+    auto next = [&seed]() { seed = seed * 1103515245u + 12345u; return seed; };
+    for (int k = 0; k < 200000; ++k) {
+        const int32_t a = static_cast<int16_t>(next() >> 8), b = static_cast<int16_t>(next() >> 8);
+        const int32_t c = static_cast<int16_t>(next() >> 8), d = static_cast<int16_t>(next() >> 8);
+        const float f = static_cast<float>(next()) * SampleCursor::kFracNorm;
+        REQUIRE(same(a, b, c, d, f));
+    }
 }

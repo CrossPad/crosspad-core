@@ -31,6 +31,13 @@ public:
     /// The pads-only bus, one block, from the render. Does nothing unless a
     /// bounce is armed.
     void rtCapture(const float* padsBus, uint32_t frames);
+    /// A bounce or a freeze is armed or recording: rtCapture() needs the pads
+    /// tap this block. Without one it only keeps the pads' peak, which a
+    /// platform whose seqLevel() answers never reads.
+    bool capturing() const;
+    /// RT: the capture's ring is past half full -- an offline render waits
+    /// here for the card to catch up instead of overflowing it.
+    bool captureBacklogged() const;
     /// Stop playback, cancel any bounce and give both rings back; returns
     /// once they are. Never from the worker.
     void releaseRings();
@@ -52,6 +59,13 @@ public:
     SongOpState editState() const override;
     bool requestMerge(uint8_t trackMask, uint32_t fromBar, uint32_t toBar) override;
     uint8_t editProgress() const override;
+    uint32_t stretchWaiting() const override;
+    void trackLevels(int track, float& left, float& right) override;
+    uint8_t stretchProgress() const override;
+    bool undo() override;
+    bool redo() override;
+    uint32_t undoSteps() const override;
+    uint32_t redoSteps() const override;
     bool requestExportLiveSet() override;
     std::vector<std::string> editReport() override;
     bool clipPeaks(const std::string& file, ClipPeaks& out) override;
@@ -61,6 +75,8 @@ public:
                        uint8_t track, uint32_t bar, uint32_t lead) override;
     bool bounceScene(uint8_t scene, uint8_t track) override;
     bool bounceSeqTrack(uint8_t track) override;
+    bool freezeTrack(uint8_t track) override;
+    FreezeState freezeState(uint8_t track) override;
     uint32_t playEndBars() override;
     bool liveStart() override;
     bool liveLaunch(uint8_t track, const std::string& file, uint16_t bars) override;
@@ -77,8 +93,17 @@ public:
     bool playing() const override;
     double positionBars() const override;
     uint32_t framesPlayed() const override;
+    uint32_t positionFrames() const override;
     uint32_t underruns() const override;
     uint32_t openFailures() const override;
+    bool recordSeq(uint32_t fromBar, SyncTake take, uint8_t beats) override;
+    bool seqPunch(SyncTake take) override;
+    SyncTake seqTake() const override;
+    bool seqPunchable() const override;
+    bool openSeqEdit(uint8_t track, uint32_t bar, uint8_t scene) override;
+    void syncSeqEdit() override;
+    void closeSeqEdit() override;
+    int32_t seqEditBar() const override;
 
 private:
     struct Impl;

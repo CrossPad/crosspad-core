@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/catch_approx.hpp>
 
@@ -284,6 +285,28 @@ TEST_CASE("kit json: a pad's pitch and filters survive a round trip, and 0 is no
     CHECK(json.find("\"hp\":0") == std::string::npos);
 }
 
+TEST_CASE("kit json: a zone keeps its start and loop crossfade", "[kit][instrument]") {
+    KitInfo kit = parse(R"({"engine":"pitched","instrument":{"zones":[
+        {"sample":"a.wav","root":60,"start":40,"loop_start":100,"loop_end":900,"loop_xfade":80},
+        {"sample":"b.wav","root":62,"loop_start":100,"loop_end":900},
+        {"sample":"c.wav","root":64,"loop_start":100,"loop_end":0}
+        ]},"pads":[]})");
+
+    REQUIRE(kit.instrument.zones[0].start == 40);
+    REQUIRE(kit.instrument.zones[0].loopXfade == 80);
+    // Written before "start" existed: a looped note began at its loop start,
+    // and still does; a one-shot began at 0.
+    REQUIRE(kit.instrument.zones[1].start == 100);
+    REQUIRE(kit.instrument.zones[1].loopXfade == 0);
+    REQUIRE(kit.instrument.zones[2].start == 0);
+
+    KitInfo back = parse(serialize(kit).c_str(), false);
+    REQUIRE(back.instrument.zones[0].start == 40);
+    REQUIRE(back.instrument.zones[0].loopXfade == 80);
+    REQUIRE(back.instrument.zones[1].start == 100);
+    REQUIRE(back.instrument.zones[2].start == 0);
+}
+
 TEST_CASE("kit json: crosspad.app's \"mode\" maps onto playbackMode and cycle", "[kit]") {
     const KitInfo kit = parse(R"({ "name": "APP", "pads": [
         { "mode": "tap" }, { "mode": "hold" }, { "mode": "toggle" }, { "mode": "cycle" },
@@ -306,4 +329,46 @@ TEST_CASE("kit json: a saved crosspad.app kit is written in the firmware's keys"
     const KitInfo back = parse(json.c_str());
     CHECK(back.pads[0].playbackMode == 1);
     CHECK(back.pads[1].cycle);
+}
+
+TEST_CASE("kit json: a Slice kit is one file in regions, and comes back as it went", "[kitjson][slice]") {
+    const char* json = R"({
+      "name": "AMEN", "author": "CrossPad Slicer", "category": "slice", "engine": "slice", "pitch": -2,
+      "pads": [
+        { "samples": [ { "sample": "loop.wav", "start": 0, "end": 5000 } ], "attack": 4 },
+        { "samples": [ { "sample": "loop.wav", "start": 5000, "end": 9000 } ] }
+      ]
+    })";
+    KitInfo kit = parse(json);
+    CHECK(kit.engine == KitEngine::Slice);
+    CHECK(kit.playsOnSampler());
+    CHECK(kit.pitch == -2);
+    CHECK(std::string(kit.engineName()) == "slice");
+    REQUIRE(kit.pads[1].samples.size() == 1);
+    CHECK(kit.pads[1].samples[0].start == 5000);
+    CHECK(kit.pads[1].samples[0].end == 9000);
+    CHECK(kit.pads[0].attack == 4);
+    CHECK(kit.pads[1].attack == 0);
+
+    JsonDocument out;
+    REQUIRE(crosspad::kit_serialize(kit, out));
+    std::string text;
+    serializeJson(out, text);
+    KitInfo back = parse(text.c_str());
+    CHECK(back.engine == KitEngine::Slice);
+    CHECK(back.pitch == -2);
+    CHECK(back.pads[0].attack == 4);
+    CHECK(back.pads[1].samples[0].start == 5000);
+}
+
+TEST_CASE("kit json: drums are told by their category, any case", "[kitjson]") {
+    KitInfo kit;
+    kit.category = "DRUMS";
+    CHECK(kit.isDrums());
+    CHECK(kit.voiceCap() == KitInfo::kDrumVoices);
+    kit.category = "drum";
+    CHECK(kit.isDrums());
+    kit.category = "drumsets";
+    CHECK_FALSE(kit.isDrums());
+    CHECK(kit.voiceCap() == 0);
 }

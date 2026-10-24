@@ -1,22 +1,19 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "crosspad/sampler/SamplerKit.hpp"
 
-#include <cmath>
-
 namespace crosspad {
 
 void SamplerKit::panGains(float balance, float& l, float& r)
 {
     if (balance < -1.0f) balance = -1.0f;
     if (balance >  1.0f) balance =  1.0f;
-    /* Equal power: the two gains are the cosine and sine of a quarter turn, so
-     * their squares sum to one and a pad swept across the image keeps its
-     * loudness. A linear pan dips 3 dB in the middle, which on a kit where
-     * one pad is panned and its neighbour is not reads as the panned one
-     * being quieter rather than as it being to one side. */
-    const float a = (balance + 1.0f) * 0.25f * 3.14159265358979f;   // 0 .. pi/2
-    l = std::cos(a);
-    r = std::sin(a);
+    /* Balance, as the mixer's channels: unity at the centre, and turning only
+     * takes level from the other side. The equal-power law this replaced put
+     * every centred pad -- nearly all of them -- 3 dB under the same sample
+     * auditioned in the Slicer, played by the engine before this one, or
+     * through any channel of the mixer (09.10.2026). */
+    l = balance > 0.0f ? 1.0f - balance : 1.0f;
+    r = balance < 0.0f ? 1.0f + balance : 1.0f;
 }
 
 } // namespace crosspad

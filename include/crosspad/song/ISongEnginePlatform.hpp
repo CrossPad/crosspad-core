@@ -1,10 +1,14 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
 
+#include "crosspad/song/AudioSong.hpp"
+
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
 #include <string>
+
+#include "crosspad/song/SongEngineSizes.hpp"
 
 namespace crosspad {
 
@@ -24,10 +28,13 @@ public:
     virtual void waitWake(uint32_t timeoutMs) = 0;
     virtual void sleepMs(uint32_t ms) = 0;
     virtual int64_t nowUs() = 0;
+    /// The engine's ring and card-access sizes, read once at construction.
+    virtual SongEngineSizes sizes() { return {}; }
 
     /// One ring segment of @p bytes, or nullptr. @p missingSegs is how many
     /// the ring still needs to reach its minimum, for a platform that keeps a
-    /// reserve for its UI.
+    /// reserve for its UI; 0 is a segment past the minimum, which such a
+    /// platform may refuse sooner.
     virtual void* allocRingSegment(size_t bytes, uint32_t missingSegs) = 0;
     virtual void  freeRingSegment(void* p) = 0;
     /// The worker's card buffer and mix-down sum, allocated once.
@@ -66,6 +73,47 @@ public:
     /// what the player had.
     virtual void beginPadsCapture() = 0;
     virtual void endPadsCapture() = 0;
+    /// A freeze's capture: only the engine on @p route (0 the pads' kit, 1
+    /// the second kit, 2 the Pitch instrument), so fingers on another
+    /// track's engine stay out of the take. endPadsCapture() ends it. A
+    /// platform without a tap per engine takes the pads as a bounce does.
+    virtual void beginRouteCapture(uint8_t route) { (void)route; beginPadsCapture(); }
+    /// A bounce's or a freeze's render off the clock, as fast as the platform can go: the
+    /// outputs fall silent, the render runs the clock and the captured
+    /// channels only, and holds back only for the card -- the capture's
+    /// writer (SongEngine::captureBacklogged()) and the streamed samples. True
+    /// when it does; false and the freeze runs in real time, as a bounce.
+    /// endOffline() puts the clock back on the outputs.
+    virtual bool beginOffline() { return false; }
+    virtual void endOffline() {}
+
+    /// The seq track's fader on the engine its notes play through -- @p
+    /// source's: the kit's engines, or the pitched instrument -- while the
+    /// song plays, on top of what the Mixer has for it; 1 when it stops, so
+    /// a bounce, which stops it first, records at the Mixer's level. Called
+    /// only when it changes. A platform without a mixer leaves it alone.
+    virtual void setSeqGain(SeqSource source, float gain) { (void)source; (void)gain; }
+    /// The same for a kit track, by the engine it plays through
+    /// (AudioSong::seqRoute()): 0 the pads' kit -- setSeqGain(Kit) unless a
+    /// platform has more than one --, 1 the second kit's.
+    virtual void setKitGain(uint8_t route, float gain)
+    {
+        if (route == 0) setSeqGain(SeqSource::Kit, gain);
+    }
+    /// Seq route @p route's loudest sample since the last ask, 0..1 a side,
+    /// from the engine it plays through alone. False where the platform
+    /// cannot tell: route 0's meter then reads the pads bus.
+    virtual bool seqLevel(uint8_t route, float& left, float& right)
+    {
+        (void)route;
+        left = right = 0.0f;
+        return false;
+    }
+
+    /// A song has opened (or was made): @p song is it, read under the song's
+    /// lock on the engine's worker -- copy what is needed and return. The
+    /// platform loads the sounds it names (AudioSong::kit, ::instrument).
+    virtual void songOpened(const AudioSong& song) { (void)song; }
 
     virtual void log(bool warning, const char* msg) = 0;
 };

@@ -6,12 +6,10 @@
  * @brief What the native engine's take needs from a kit, copied out of it.
  *
  * A take reads every header and every resident head off the card -- seconds
- * on its own worker -- and it used to read the kit model (`KitInfo`) all that
- * time through the kit manager's current-kit pointer. The model is not the
- * worker's: a kit load that finishes meanwhile retires it, and the UI thread
- * frees a retired kit's pads (`releaseRetiredKit()`) while the take is still
- * walking them. And a take asked for during another was refused with nothing
- * to retry it, so the engine kept the old kit under the new one's name.
+ * on its own worker. It does not read the kit model (`KitInfo`) through the
+ * kit manager's current-kit pointer meanwhile: the model is not the worker's.
+ * A kit load that finishes meanwhile retires it, and the UI thread frees a
+ * retired kit's pads (`releaseRetiredKit()`).
  *
  * So the thread that asks -- the one that knows the kit is current right then
  * -- copies what the take reads into a `TakeSpec`, plain data with no pointer
@@ -20,7 +18,8 @@
  * sample's name is kept as the kit wrote it and resolved on the worker).
  *
  * `WorkerGate` is the other half: start the worker or leave the request for
- * the one running, with no request lost to a worker on its way out.
+ * the one running, with no request lost to a worker on its way out -- a take
+ * asked for during another is taken after it.
  */
 
 #include "crosspad/kit/KitInfo.hpp"
@@ -48,7 +47,8 @@ struct TakePad {
     uint8_t  choke = 0;        ///< Pad::choke_group
     int16_t  volume = 100;
     int16_t  pan    = 0;       ///< signed offset from centre, as the kit stores it
-    int8_t   pitch  = 0;       ///< semitones
+    int8_t   pitch  = 0;       ///< semitones: the pad's own plus the kit's (KitInfo::pitch)
+    uint16_t attack = 0;       ///< ms; 0 = the engine's own (Pad::attack)
     uint16_t hp = 0, lp = 0;
     bool     reverse = false;
     bool     cycle   = false;
@@ -71,6 +71,7 @@ struct TakeSpec {
     char     name[40] = {};
     uint16_t layerCount = 0;
     uint16_t layersDropped = 0;   ///< past kMaxLayers, or a name too long to keep
+    uint8_t  voiceCap = 0;        ///< KitInfo::voiceCap(): 0 = the engine's own
     TakePad  pads[SamplerKit::kPads];
     TakeLayer layers[kMaxLayers];
 };
@@ -88,6 +89,9 @@ struct TakePadSpec {
  * @brief Copy @p kit into @p out for a take. No I/O.
  * @return false for a kit no take plays: not parsed, or a pitched kit (it has
  *         an engine of its own). @p out is then left empty.
+ *
+ * A Slice kit's pads all cut each other (choke group 1: one voice), and the
+ * kit's own pitch is added to every pad's.
  */
 bool buildTakeSpec(const KitInfo& kit, int kitId, TakeSpec& out);
 

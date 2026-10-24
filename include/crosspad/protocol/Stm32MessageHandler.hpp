@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
 
 #include <atomic>
@@ -45,6 +46,16 @@ public:
     /// The platform answers on the same MIDI port with 0x02/0x03 reply chunks.
     using CompanionCallback = std::function<void(const uint8_t* args, unsigned len)>;
 
+    /// Callback for a pad edge in CMD_BUTTONS_DIGITAL: @p pressed true on a
+    /// press, false on a release. Only a UART-only STM (rev 1.x) sends these
+    /// frames, and they are its only pad events -- no note-on, no velocity --
+    /// so the platform plays them the way it plays an STM note-on.
+    using PadEdgeCallback = std::function<void(uint8_t pad, bool pressed)>;
+
+    /// Callback for CROSSPAD_CMD_VERSION_REPLY: what a UART-only STM (rev 1.x)
+    /// reports where a rev 2 STM has registers -- its PCB and protocol version.
+    using VersionReplyCallback = std::function<void(uint8_t pcbRev, uint8_t apiVersion)>;
+
     Stm32MessageHandler() = default;
 
     /**
@@ -80,6 +91,17 @@ public:
     void setCompanionCallback(CompanionCallback cb) { companionCb_ = std::move(cb); }
 
     /**
+     * @brief Set callback for pad edges in digital button frames (platform-specific).
+     * Unset, a release goes to PadManager::handlePadRelease() and a press is dropped.
+     */
+    void setPadEdgeCallback(PadEdgeCallback cb) { padEdgeCb_ = std::move(cb); }
+
+    /**
+     * @brief Set callback for the STM's version reply (platform-specific)
+     */
+    void setVersionReplyCallback(VersionReplyCallback cb) { versionReplyCb_ = std::move(cb); }
+
+    /**
      * @brief Handle a raw SysEx message from STM32
      * @param data Pointer to message bytes (including F0 header)
      * @param size Number of bytes
@@ -97,7 +119,7 @@ public:
 
     struct Stm32InputState {
         int8_t  encoderTop = 0;     // the STM's detent index 0..15, from its count -- which slips; steps: takeEncoderSteps()
-        uint8_t encoderPhase = 0;   // sub-detent: [1:0]=CNT mod4, [2]=A, [3]=B, [4]=settled gate
+        uint8_t encoderPhase = 0;   // sub-detent: [1:0]=CNT mod4, [2]=A, [3]=B, [4]=settled gate (rev 1.x: [1:0] only)
         int8_t  encoderLeft = 0;
         bool encoderPressed = false;
         bool powerBtnPressed = false;
@@ -120,7 +142,21 @@ public:
     int encoderDetent() const { return encoderDetent_.load(); }
 
 private:
+    /// A rev 1.x STM's LPTIM counts per encoder click.
+    static constexpr int kLegacyCountsPerDetent = 2;
+    /// Its count's top: the STM starts the LPTIM with TIM_CHANNEL_ALL (0x3C)
+    /// where the HAL takes the period, so it runs 0..60 and wraps.
+    static constexpr int kLegacyCountMax = 60;
+
+    /// Steps from a rev 1.x STM's raw count, + where it rises.
+    int legacyEncoderSteps(uint8_t cnt);
+
     EncoderDetents encoderDetents_;
+    int  legacyRaw_ = -1;             ///< the last raw count, -1 before the first
+    int  legacyPos_ = 0;              ///< the count unwrapped
+    int  legacyDetentParity_ = 0;     ///< the parity of legacyPos_ in a detent
+    bool legacyHaveDetent_ = false;
+    int  legacyDetent_ = 0;           ///< legacyPos_ of the detent the knob was last in
     std::atomic<int> encoderSteps_{0};
     std::atomic<int> encoderDetent_{0};
     PadManager* padManager_ = nullptr;
@@ -130,6 +166,8 @@ private:
     AudioRouteCallback audioRouteCb_;
     DawCallback dawCb_;
     CompanionCallback companionCb_;
+    PadEdgeCallback padEdgeCb_;
+    VersionReplyCallback versionReplyCb_;
     bool keyPresses_[16] = {};
 };
 

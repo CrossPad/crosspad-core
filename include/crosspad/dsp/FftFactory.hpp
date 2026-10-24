@@ -5,17 +5,17 @@
  * @file FftFactory.hpp
  * @brief The one FFT a process uses, chosen once at first call.
  *
- * A platform does not pick an implementation: it hands over memory and asks
- * for an IFft. The factory prefers EspDspFft when this build has esp-dsp
- * (ESP-IDF and Arduino-ESP32 both do) and its shared twiddle table can be
- * built; otherwise PortableFft, which needs nothing.
+ * A caller does not pick an implementation: it hands over memory and asks
+ * for an IFft. The factory prefers the backend the platform registered with
+ * setFftBackend() (the ESP-IDF platform registers esp-dsp's) whenever that
+ * backend can serve; otherwise PortableFft, which needs nothing.
  *
- * **A failed esp-dsp table does not latch.** The only runtime reason it fails
- * is the table's memory not being there, and that is scarcest exactly when
- * the first caller arrives -- during a kit load, with zones already resident.
- * Every createFft() call retries, so a later load gets the fast kernel back
- * instead of being told for the life of the process that this board has no
- * esp-dsp.
+ * **A backend that cannot serve does not latch.** esp-dsp's only runtime
+ * reason is its twiddle table's memory not being there, and that is scarcest
+ * exactly when the first caller arrives -- during a kit load, with zones
+ * already resident. Every createFft() call asks the backend again, so a later
+ * load gets the fast kernel back instead of being told for the life of the
+ * process that this board has none.
  */
 
 #include "crosspad/dsp/IFft.hpp"
@@ -40,12 +40,25 @@ struct FftMemory {
 };
 
 /**
+ * @brief A platform's accelerated FFT.
+ *
+ * Called by createFft() with that caller's memory. Returns the backend's one
+ * instance, or nullptr while it cannot serve; it is asked again on the next
+ * createFft() call.
+ */
+using FftBackend = IFft* (*)(const FftMemory& mem);
+
+/// Register the platform's FFT backend before the first createFft() call;
+/// nullptr leaves only PortableFft.
+void setFftBackend(FftBackend backend);
+
+/**
  * @brief The process-wide FFT, created on first call.
  *
  * Safe to call repeatedly and from more than one thread. The returned
  * reference stays valid for the life of the process; a later call may return
- * a *different* implementation if an esp-dsp table that previously failed
- * has since been built, so callers that cache the reference keep a working
+ * a *different* implementation if a backend that could not serve before has
+ * since become able to, so callers that cache the reference keep a working
  * FFT either way.
  */
 IFft& createFft(const FftMemory& mem);
