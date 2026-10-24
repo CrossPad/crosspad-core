@@ -44,6 +44,10 @@ bool SongEngine::Impl::clipPeaks(const std::string& file, ClipPeaks& out) {
     {
         std::lock_guard<std::recursive_mutex> l(songMutex_);
         dir = song_.dir;
+        /* An element's bake is no clip of the song: Arrange draws it no waveform. */
+        for (const auto& tr : song_.tracks)
+            for (const auto& c : tr.clips)
+                if (c.isElement() && c.file == file) return false;
     }
     if (dir.empty() || file.empty()) return false;
     {

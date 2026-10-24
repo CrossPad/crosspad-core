@@ -691,7 +691,10 @@ SongClip AudioSong::part(int track, const SongClip& c, uint32_t skip, uint32_t b
     SongClip o = c;
     o.bar  = c.bar + skip;
     o.bars = (uint16_t)bars;
-    if (tracks[track].kind == TrackKind::Seq) {
+    /* An element goes round its bake as a seq block goes round its notes:
+     * the cut moves where in the element it starts, and the pass -- the
+     * bake's length -- stays what it is. */
+    if (tracks[track].kind == TrackKind::Seq || c.isElement()) {
         o.from = (uint16_t)(c.from + skip);
         return o;
     }
@@ -752,10 +755,11 @@ void AudioSong::pasteRange(const std::vector<RangeClip>& clips, uint32_t at)
 {
     for (const auto& k : clips) {
         if (k.track < 0 || k.track >= kTracks) continue;
-        /* A seq block goes only where the seq is, an audio one only onto
+        /* A seq block goes only where the seq is, an audio one -- and an
+         * element, baked or not, which has no file until it is -- only onto
          * audio: a track that changed kind since the copy is skipped. */
         const bool seq = tracks[k.track].kind == TrackKind::Seq;
-        if (seq != k.clip.file.empty()) continue;
+        if (seq != (k.clip.file.empty() && !k.clip.isElement())) continue;
         SongClip c = k.clip;
         c.bar = at + k.rel;
         tracks[k.track].clips.push_back(c);

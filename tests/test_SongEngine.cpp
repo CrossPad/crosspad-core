@@ -2788,3 +2788,86 @@ TEST_CASE("song engine: undo brings an element clip back whole", "[song][undo][e
     CHECK(c.from == 1);
     CHECK(c.frames == 176400);
 }
+
+namespace {
+/// An element clip on track 0 of the open song: @p bake is its bake file
+/// (empty: not baked yet), one pass of it @p passBars bars long at 120 BPM.
+void placeElementClip(Rig& r, const std::string& bake, uint32_t passBars, uint32_t bar, uint32_t bars) {
+    std::lock_guard<std::recursive_mutex> l(r.engine->songMutex());
+    r.engine->song().bpm = 120.0f;
+    SongClip c;
+    c.element = ".elements/E00000001";
+    c.file = bake;
+    c.bar = bar;
+    c.bars = (uint16_t)bars;
+    if (!bake.empty()) c.frames = passBars * r.engine->song().samplesPerBar(kRate);
+    r.engine->song().addClip(0, c);
+}
+} // namespace
+
+TEST_CASE("song engine: an element clip goes round its bake", "[song][element]") {
+    Rig r;
+    REQUIRE(r.open("Demo"));
+    const std::string bake = "B0000000000000001.wav";
+    fs::create_directories(fs::path(r.platform.root) / AudioSong::bakeDir());
+    const uint32_t spb = 2 * kRate;   // a bar at 120 BPM
+    writeClip((fs::path(r.platform.root) / AudioSong::bakeDir() / bake).string(), 2 * spb, 16000);
+    placeElementClip(r, bake, 2, 0, 4);
+    r.engine->commit();
+    CHECK(segmentsOf(*r.engine, 0) == 2);
+    /* Bar 3 is in the second pass: silence there means it did not go round. */
+    REQUIRE(r.engine->play(3));
+    std::vector<float> out(kBlock * 2), bus(kBlock * 2, 0.0f);
+    REQUIRE(waitFor([&] {
+        r.block(out, bus);
+        return std::any_of(out.begin(), out.end(), [](float v) { return v != 0.0f; });
+    }));
+}
+
+TEST_CASE("song engine: an element clip with no bake yet is silent", "[song][element]") {
+    Rig r;
+    REQUIRE(r.open("Demo"));
+    placeElementClip(r, "", 0, 0, 4);
+    r.engine->commit();
+    CHECK(segmentsOf(*r.engine, 0) == 0);
+    REQUIRE(r.engine->play(0));
+    std::vector<float> out(kBlock * 2), bus(kBlock * 2, 0.0f);
+    for (int i = 0; i < 50; ++i) {
+        r.block(out, bus);
+        for (float v : out) CHECK(v == 0.0f);
+    }
+    CHECK(r.engine->openFailures() == 0);
+}
+
+TEST_CASE("song engine: a bake deleted from the cache plays silence and is counted", "[song][element]") {
+    Rig r;
+    REQUIRE(r.open("Demo"));
+    placeElementClip(r, "B00000000000000FF.wav", 2, 0, 4);
+    r.engine->commit();
+    REQUIRE(r.engine->play(0));
+    std::vector<float> out(kBlock * 2), bus(kBlock * 2, 0.0f);
+    REQUIRE(waitFor([&] {
+        r.block(out, bus);
+        return r.engine->openFailures() >= 1;
+    }));
+    for (float v : out) CHECK(v == 0.0f);
+}
+
+TEST_CASE("song engine: a new tempo leaves an element clip's bars alone", "[song][element]") {
+    Rig r;
+    REQUIRE(r.open("Demo"));
+    const std::string bake = "B0000000000000001.wav";
+    fs::create_directories(fs::path(r.platform.root) / AudioSong::bakeDir());
+    writeClip((fs::path(r.platform.root) / AudioSong::bakeDir() / bake).string(), 2 * 2 * kRate, 16000);
+    /* The same name in clips/ too: a tempo change that measured the clip by
+     * its file would find it there and resize the clip. */
+    writeClip((r.clipsDir("Demo") / bake).string(), 2 * 2 * kRate, 16000);
+    placeElementClip(r, bake, 2, 0, 6);
+    placeClip(r, "c.wav", 1000, 1, 0, 2);   // an audio clip beside it, on track 1
+    r.engine->commit();
+    REQUIRE(r.engine->requestTempo(240.0f));   // a bar is 1 s: the audio clip's 4 s is four bars
+    REQUIRE(editDone(r));
+    std::lock_guard<std::recursive_mutex> l(r.engine->songMutex());
+    CHECK(r.engine->song().tracks[0].clips[0].bars == 6);
+    CHECK(r.engine->song().tracks[1].clips[0].bars == 4);
+}

@@ -518,6 +518,8 @@ private:
     void finishTake();
     void setStatus(BounceState st, const std::string& err = std::string());
     void worker();
+    /// Where the bake named @p file lives: one cache for every song, under the songs root.
+    std::string bakePath(const std::string& file) const;
     static std::string stretchName(const SongClip& c, uint32_t outFrames, StretchMode mode);
     bool stretchReady(const std::string& path) const;
     struct StretchJob { std::string src, dst; uint32_t offset = 0, frames = 0, outFrames = 0; bool repitch = false; };

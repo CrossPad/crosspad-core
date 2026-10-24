@@ -542,6 +542,45 @@ TEST_CASE("AudioSong: a cut splits an audio block where it falls", "[song][cut]"
     REQUIRE(cs[1].frames == 0);
 }
 
+TEST_CASE("audio song: a cut moves an element clip's from and keeps its pass", "[song][cut][element]") {
+    AudioSong s = songAt120();
+    SongClip c;
+    c.element = ".elements/E00000001";
+    c.file = "B0000000000000001.wav";
+    c.bar = 2;
+    c.bars = 6;
+    c.from = 1;
+    c.frames = 3 * kSpb;
+    s.addClip(0, c);
+    REQUIRE(s.cutClip(0, 4, kSpb) == 1);
+    const auto& cs = s.tracks[0].clips;
+    REQUIRE(cs.size() == 2);
+    CHECK((cs[0].bar == 2 && cs[0].bars == 2 && cs[0].from == 1));
+    CHECK((cs[1].bar == 4 && cs[1].bars == 4 && cs[1].from == 3));
+    for (const auto& k : cs) {
+        CHECK(k.frames == 3 * kSpb);   // one pass of the element, whatever the cut
+        CHECK(k.offset == 0);
+        CHECK(k.element == c.element);
+        CHECK(k.file == c.file);
+    }
+}
+
+TEST_CASE("audio song: a pasted unbaked element clip lands on an audio track", "[song][cut][element]") {
+    AudioSong s = songAt120();
+    SongClip c;
+    c.element = ".elements/E00000001";
+    c.bars = 2;
+    std::vector<RangeClip> part;
+    part.push_back(RangeClip{0, 0, c});
+    part.push_back(RangeClip{1, 0, c});
+    REQUIRE(s.addSeqTrack(1, SeqSource::Kit, 0));
+    s.pasteRange(part, 4);
+    REQUIRE(s.tracks[0].clips.size() == 1);
+    CHECK(s.tracks[0].clips[0].bar == 4);
+    CHECK(s.tracks[0].clips[0].isElement());
+    CHECK(s.tracks[1].clips.empty());
+}
+
 TEST_CASE("AudioSong: a cut on a block's first bar or outside it does nothing", "[song][cut]") {
     AudioSong s = songAt120();
     s.addClip(0, {"a.wav", 2, 4});

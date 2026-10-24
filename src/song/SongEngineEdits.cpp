@@ -93,8 +93,10 @@ SongOpState SongEngine::Impl::doTempo(float bpm) {
          * to them (doStretch), not they to it. */
         if (tr.stretch != StretchMode::Off && tr.kind == TrackKind::Audio) continue;
         for (auto& c : tr.clips) {
-            /* A seq block is bars of the scene: it keeps its length. */
-            if (c.file.empty()) continue;
+            /* A seq block is bars of the scene, an element's bars are the
+             * block's own (its bake is made at the song's tempo): both keep
+             * their length. */
+            if (c.file.empty() || c.isElement()) continue;
             ClipReader r;
             if (!p.storageReady() || !r.open(copy.clipPath(c.file))) continue;   // missing: keep what it had
             /* What the block plays: from its offset, to a cut or the end. */
@@ -265,6 +267,15 @@ SongOpState SongEngine::Impl::doExport() {
     if (!opened_ || copy.dir.empty() || !p.storageReady()) {
         lines.push_back("No song open, or no card.");
         return finish(SongOpState::Failed);
+    }
+    /* An element has no clip file for Live to open (its bake is not the
+     * project's audio): it stays out, said so. */
+    for (auto& t : copy.tracks) {
+        for (const auto& c : t.clips) {
+            if (c.isElement()) lines.push_back("element " + c.element + " left out");
+        }
+        t.clips.erase(std::remove_if(t.clips.begin(), t.clips.end(), [](const SongClip& c) { return c.isElement(); }),
+                      t.clips.end());
     }
     endPlayback();
 

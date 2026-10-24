@@ -375,6 +375,25 @@ Arrangement SongEngine::Impl::flatten(const AudioSong& song) const {
             s.end   = (cs[i].bar + cs[i].bars) * a.samplesPerBar;
             if (i + 1 < cs.size()) s.end = std::min(s.end, cs[i + 1].bar * a.samplesPerBar);
             s.end = std::min(s.end, cut);
+            /* An element goes round its bake, a segment a pass: the first
+             * from the element bar the block starts on, the rest whole. Not
+             * baked yet (no file, no length) it plays nothing. Never fitted:
+             * the bake is made at the song's tempo. */
+            if (cs[i].isElement()) {
+                if (cs[i].file.empty() || !cs[i].frames) continue;
+                s.path = bakePath(cs[i].file);
+                s.offset = (uint32_t)((uint64_t)cs[i].from * a.samplesPerBar % cs[i].frames);
+                const uint32_t blockEnd = s.end;
+                for (uint32_t at = s.start; at < blockEnd;) {
+                    Segment pass = s;
+                    pass.start = at;
+                    pass.end = std::min(blockEnd, at + (cs[i].frames - pass.offset));
+                    a.tracks[t].push_back(pass);
+                    at = pass.end;
+                    s.offset = 0;
+                }
+                continue;
+            }
             /* A stretched track plays its block's fitted copy, which fills
              * the block's bars from its first frame -- once song_io has
              * made it. Known from memory, not the card: this runs under
@@ -393,6 +412,10 @@ Arrangement SongEngine::Impl::flatten(const AudioSong& song) const {
         }
     }
     return a;
+}
+
+std::string SongEngine::Impl::bakePath(const std::string& file) const {
+    return std::string(p.songsRoot()) + "/" + AudioSong::bakeDir() + "/" + file;
 }
 
 /// A seq track's blocks as stretches of the song at @p spb samples a
@@ -598,7 +621,7 @@ uint32_t SongEngine::Impl::nextStretch(StretchJob* job) {
     for (const auto& tr : song_.tracks) {
         if (!tr.inUse || tr.stretch == StretchMode::Off || tr.kind != TrackKind::Audio) continue;
         for (const auto& c : tr.clips) {
-            if (c.file.empty()) continue;
+            if (c.file.empty() || c.isElement()) continue;   // an element's bake is made at the song's tempo
             const std::string dst = song_.clipPath(stretchName(c, c.bars * spb, tr.stretch));
             if (stretchReady_.count(dst) || stretchSkip_.count(dst)) continue;
             if (!pending++ && job) {
