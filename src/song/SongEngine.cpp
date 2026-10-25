@@ -207,15 +207,22 @@ void SongEngine::Impl::worker() {
                            : edit == kEditRestore        ? doRestore()
                            : edit == kEditDropSnapshot   ? doDropSnapshot()
                            : edit == kEditEditHash       ? doEditHash()
+                           : edit == kEditCopyElements   ? doCopyElements()
+                           : edit == kEditDeleteElement  ? doDeleteElement()
                            : doMerge(editMask_.load(), editFrom_.load(), editTo_.load()));
             continue;
         }
         const uint8_t held = streaming ? kListsAfterStop : 0;
         if (const uint8_t lists = listReq_.fetch_and(held) & (uint8_t)~held) {
+            /* Every requestUses() counted by now was made before this scan reads the card. */
+            const uint32_t asked = usesAsked_.load();
             if (lists & kListProjects) doListProjects();
             if (lists & kListClips)    doListClips();
             if (lists & kListElements) doListElements();
-            if (lists & kListUses)     doListUses();
+            if (lists & kListUses) {
+                doListUses();
+                usesAnswered_.store(asked);
+            }
             listGen_.fetch_add(1);
             continue;
         }
@@ -332,6 +339,16 @@ uint64_t SongEngine::editHash() { return impl_->editHash(); }
 bool SongEngine::requestRestore(const std::string& ref) { return impl_->requestRestore(ref); }
 bool SongEngine::requestDropSnapshot(const std::string& ref) { return impl_->requestDropSnapshot(ref); }
 bool SongEngine::snapshotPending(const std::string& ref) { return impl_->snapshotPending(ref); }
+bool SongEngine::usesPending() const { return impl_->usesPending(); }
+ElementUses SongEngine::usesIndex() { return impl_->usesIndex(); }
+bool SongEngine::scenesSaved() const { return impl_->scenesSaved(); }
+bool SongEngine::requestCopyElements(const std::vector<ElementFork>& forks, const std::vector<std::string>& rewrites,
+                                     const std::map<std::string, std::string>& copied)
+{
+    return impl_->requestCopyElements(forks, rewrites, copied);
+}
+std::map<std::string, std::string> SongEngine::elementsCopied() { return impl_->elementsCopied(); }
+bool SongEngine::requestDeleteElement(const std::string& ref) { return impl_->requestDeleteElement(ref); }
 std::string SongEngine::elementMade() { return impl_->elementMade(); }
 ElementClipState SongEngine::elementClipState(uint8_t track, size_t clip) { return impl_->elementClipState(track, clip); }
 std::string SongEngine::elementClipWhy(uint8_t track, size_t clip) { return impl_->elementClipWhy(track, clip); }

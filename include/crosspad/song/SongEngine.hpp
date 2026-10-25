@@ -84,6 +84,13 @@ public:
     bool requestRestore(const std::string& ref) override;
     bool requestDropSnapshot(const std::string& ref) override;
     bool snapshotPending(const std::string& ref) override;
+    bool usesPending() const override;
+    ElementUses usesIndex() override;
+    bool scenesSaved() const override;
+    bool requestCopyElements(const std::vector<ElementFork>& forks, const std::vector<std::string>& rewrites,
+                             const std::map<std::string, std::string>& copied) override;
+    std::map<std::string, std::string> elementsCopied() override;
+    bool requestDeleteElement(const std::string& ref) override;
     std::string elementMade() override;
     ElementClipState elementClipState(uint8_t track, size_t clip) override;
     std::string elementClipWhy(uint8_t track, size_t clip) override;

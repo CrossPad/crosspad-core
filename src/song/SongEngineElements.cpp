@@ -18,6 +18,9 @@ namespace {
 /// The most a kit.json or an instrument.json is read whole for the hash.
 constexpr size_t kMaxHashedFileBytes = 1u << 20;
 constexpr size_t kHashReadChunk      = 512;
+/// A copy's progress moves one step for each this many pieces copied (4 kB each:
+/// a step a megabyte), so a long copy is seen to be going on.
+constexpr uint32_t kCopyPiecesPerStep = 256;
 /// An element's files as they were before an edit, in its own folder; the
 /// song's is written last, so one that is there is a whole snapshot.
 constexpr char kSongSnapshot[]   = "song.orig.json";
@@ -139,6 +142,17 @@ void SongEngine::Impl::doListUses() {
     }
     std::lock_guard<std::mutex> l(listMutex_);
     uses_ = std::move(out);
+}
+
+bool SongEngine::Impl::requestUses() {
+    if (!ensureWorker()) return false;
+    usesAsked_.fetch_add(1);
+    return request(kListUses);
+}
+
+ElementUses SongEngine::Impl::usesIndex() {
+    std::lock_guard<std::mutex> l(listMutex_);
+    return uses_;
 }
 
 std::vector<ElementUse> SongEngine::Impl::usesOf(const std::string& ref) {
@@ -625,8 +639,6 @@ SongOpState SongEngine::Impl::doEditHash() {
 }
 
 /// Worker: the snapshot back over the element -- see ISongEngine::requestRestore.
-/// The scenes go first and the snapshot goes last, so a card that fails half
-/// way still holds the snapshot to restore from again.
 SongOpState SongEngine::Impl::doRestore() {
     std::string ref, open;
     {
@@ -636,17 +648,25 @@ SongOpState SongEngine::Impl::doRestore() {
     }
     /* Not under a song that streams: its card is the ring's. */
     if (!p.storageReady() || ref == open || play_.load() != Play::Idle) return SongOpState::Failed;
-    const std::string dir = std::string(p.songsRoot()) + "/" + ref;
+    if (!restoreSnapshot(std::string(p.songsRoot()) + "/" + ref)) return SongOpState::Failed;
+    std::lock_guard<std::mutex> l(listMutex_);
+    snapshots_.erase(ref);
+    return SongOpState::Ready;
+}
+
+/// The scenes go first and the snapshot goes last, so a card that fails half
+/// way still holds the snapshot to restore from again.
+bool SongEngine::Impl::restoreSnapshot(const std::string& dir) {
     const std::string song = dir + "/" + AudioSong::fileName(), scenes = dir + "/" + kScenesFile;
     const std::string songKept = dir + "/" + kSongSnapshot, scenesKept = dir + "/" + kScenesSnapshot;
-    if (!fsx::exists(songKept)) return SongOpState::Failed;
+    if (!fsx::exists(songKept)) return false;
     const auto yield = [this] { p.yieldIo(); };
     const bool hadScenes = fsx::exists(scenesKept);
-    if (hadScenes && !song_copy_file(scenesKept, scenes, yield)) return SongOpState::Failed;
-    if (!song_copy_file(songKept, song, yield)) return SongOpState::Failed;
+    if (hadScenes && !song_copy_file(scenesKept, scenes, yield)) return false;
+    if (!song_copy_file(songKept, song, yield)) return false;
     /* The element had no scenes of its own when it was kept: one made since goes. */
-    if (!hadScenes && fsx::exists(scenes) && !fsx::fs().remove(scenes.c_str())) return SongOpState::Failed;
-    return doDropSnapshot();
+    if (!hadScenes && fsx::exists(scenes) && !fsx::fs().remove(scenes.c_str())) return false;
+    return dropSnapshotFiles(dir);
 }
 
 /// Worker: the snapshot taken off the card -- see ISongEngine::requestDropSnapshot.
@@ -657,14 +677,232 @@ SongOpState SongEngine::Impl::doDropSnapshot() {
         std::lock_guard<std::recursive_mutex> l(songMutex_);
         ref = editName_;
     }
-    if (!p.storageReady()) return SongOpState::Failed;
-    const std::string dir = std::string(p.songsRoot()) + "/" + ref;
-    for (const char* name : {kSongSnapshot, kScenesSnapshot}) {
-        const std::string path = dir + "/" + name;
-        if (fsx::exists(path) && !fsx::fs().remove(path.c_str())) return SongOpState::Failed;
-    }
+    if (!p.storageReady() || !dropSnapshotFiles(std::string(p.songsRoot()) + "/" + ref)) return SongOpState::Failed;
     std::lock_guard<std::mutex> l(listMutex_);
     snapshots_.erase(ref);
+    return SongOpState::Ready;
+}
+
+/// The song's goes first: it is what makes a snapshot whole.
+bool SongEngine::Impl::dropSnapshotFiles(const std::string& dir) {
+    for (const char* name : {kSongSnapshot, kScenesSnapshot}) {
+        const std::string path = dir + "/" + name;
+        if (fsx::exists(path) && !fsx::fs().remove(path.c_str())) return false;
+    }
+    return true;
+}
+
+bool SongEngine::Impl::requestCopyElements(const std::vector<ElementFork>& forks, const std::vector<std::string>& rewrites,
+                                           const std::map<std::string, std::string>& copied) {
+    for (const ElementFork& f : forks)
+        if (!is_element_ref(f.ref)) return false;
+    for (const std::string& r : rewrites)
+        if (!is_element_ref(r)) return false;
+    for (const auto& kv : copied)
+        if (!is_element_ref(kv.first) || !is_element_ref(kv.second)) return false;
+    if (!ensureWorker() || !claimEdit()) return false;
+    {
+        std::lock_guard<std::recursive_mutex> l(songMutex_);
+        copyForks_ = forks;
+        copyRewrites_ = rewrites;
+        copyRefs_ = copied;
+    }
+    {
+        std::lock_guard<std::mutex> l(reportMutex_);
+        copiesMade_.clear();
+    }
+    editProgress_.store(0);
+    return requestEdit(kEditCopyElements);
+}
+
+std::map<std::string, std::string> SongEngine::Impl::elementsCopied() {
+    std::lock_guard<std::mutex> l(reportMutex_);
+    return copiesMade_;
+}
+
+/// Worker: see ISongEngine::requestCopyElements. Everything is read before
+/// anything is written; the copies are new folders, so a failure takes them off
+/// the card and writes back what the elements re-pointed held. An original goes
+/// back to its snapshot last, once its copy is whole.
+SongOpState SongEngine::Impl::doCopyElements() {
+    std::vector<ElementFork> forks;
+    std::vector<std::string> rewrites;
+    std::map<std::string, std::string> refs;
+    std::string open;
+    {
+        std::lock_guard<std::recursive_mutex> l(songMutex_);
+        forks = copyForks_;
+        rewrites = copyRewrites_;
+        refs = copyRefs_;
+        open = song_.name;
+    }
+    {
+        std::lock_guard<std::mutex> l(reportMutex_);
+        report_.clear();
+        copiesMade_.clear();
+    }
+    const auto yield = [this] { p.yieldIo(); };
+    std::vector<std::string> made;    // the copies' folders
+    std::vector<AudioSong> written;   // elements re-pointed, as they were
+    auto fail = [&](const std::string& why) {
+        logf(true, "copy: %s", why.c_str());
+        for (const AudioSong& w : written) w.save();
+        for (const std::string& dir : made) fsx::removeTree(dir, yield);
+        std::lock_guard<std::mutex> l(reportMutex_);
+        report_.push_back(why);
+        return SongOpState::Failed;
+    };
+    if (!p.storageReady()) return fail("No card.");
+    const std::string root = p.songsRoot();
+    for (const ElementFork& f : forks) {
+        if (f.ref == open) return fail("Element " + f.ref + " is open.");
+        /* Not under a song that streams: its card is the ring's. */
+        if (f.restore && play_.load() != Play::Idle) return fail("The song is playing.");
+    }
+    for (const std::string& r : rewrites)
+        if (r == open) return fail("Element " + r + " is open.");
+
+    std::vector<AudioSong> copies(forks.size()), held(rewrites.size());
+    for (size_t i = 0; i < forks.size(); ++i)
+        if (copies[i].load(root + "/" + forks[i].ref) != SongLoad::Loaded)
+            return fail("Element " + forks[i].ref + " cannot be read.");
+    for (size_t i = 0; i < rewrites.size(); ++i)
+        if (held[i].load(root + "/" + rewrites[i]) != SongLoad::Loaded)
+            return fail("Element " + rewrites[i] + " cannot be read.");
+
+    /* What a copy is made again from, and the snapshot of an edit, stay behind. */
+    const std::string clips = std::string(AudioSong::clipsDir()) + "/";
+    const auto keep = [&](const std::string& rel) {
+        return rel.rfind(AudioSong::fileName(), 0) != 0 && rel.rfind(kSongSnapshot, 0) != 0 &&
+               rel.rfind(kScenesSnapshot, 0) != 0 && rel != clips + kFreezeDir && rel != clips + kStretchDir &&
+               rel != kPeaksDir;
+    };
+    uint32_t pieces = 0;
+    const auto copying = [&] {
+        if (++pieces % kCopyPiecesPerStep == 0 && editProgress_.load() + 1 < kBakeMixedPercent)
+            editProgress_.fetch_add(1);
+        p.yieldIo();
+    };
+    std::map<std::string, std::string> copied;
+    for (const ElementFork& f : forks) {
+        std::string dir;
+        const std::string ref = makeElementFolder(dir, false);
+        if (ref.empty()) return fail("The card would not take a new element's folder.");
+        made.push_back(dir);
+        if (!song_copy_tree(root + "/" + f.ref, dir, keep, copying)) return fail("Element " + f.ref + " could not be copied.");
+        copied[f.ref] = ref;
+    }
+    for (const auto& kv : copied) refs[kv.first] = kv.second;
+    const auto repoint = [&](AudioSong& s) {
+        bool any = false;
+        for (SongTrack& t : s.tracks) {
+            for (SongClip& c : t.clips) {
+                const auto to = c.isElement() ? refs.find(c.element) : refs.end();
+                if (to == refs.end()) continue;
+                c.element = to->second;
+                any = true;
+            }
+        }
+        return any;
+    };
+    for (size_t i = 0; i < forks.size(); ++i) {
+        AudioSong& s = copies[i];
+        s.dir = made[i];
+        s.name = copied[forks[i].ref];
+        s.title = forks[i].title;
+        s.armed = -1;
+        for (SongTrack& t : s.tracks) {
+            t.freeze.clear();
+            t.freezeKey = 0;
+        }
+        repoint(s);
+        if (!s.save()) return fail("The copy of " + forks[i].ref + " could not be written.");
+    }
+    for (size_t i = 0; i < rewrites.size(); ++i) {
+        AudioSong s = held[i];
+        if (!repoint(s)) continue;
+        if (!s.save()) return fail("Element " + rewrites[i] + " could not be written.");
+        written.push_back(held[i]);
+    }
+    for (const ElementFork& f : forks) {
+        if (!f.restore) continue;
+        if (!restoreSnapshot(root + "/" + f.ref)) return fail("Element " + f.ref + " could not be put back as it was.");
+        std::lock_guard<std::mutex> l(listMutex_);
+        snapshots_.erase(f.ref);
+    }
+    editProgress_.store(100);
+    /* The song's blocks of elements whose content moved under them take new bakes. */
+    relinkReq_.store(true);
+    logf(false, "copied %u elements, re-pointed %u", (unsigned)forks.size(), (unsigned)written.size());
+    std::lock_guard<std::mutex> l(reportMutex_);
+    copiesMade_ = copied;
+    return SongOpState::Ready;
+}
+
+bool SongEngine::Impl::requestDeleteElement(const std::string& ref) {
+    if (!is_element_ref(ref) || !ensureWorker() || !claimEdit()) return false;
+    {
+        std::lock_guard<std::recursive_mutex> l(songMutex_);
+        editName_ = ref;
+    }
+    return requestEdit(kEditDeleteElement);
+}
+
+/// Worker: see ISongEngine::requestDeleteElement. Who uses it is read afresh,
+/// here, so a scan made before a song placed it cannot let it go.
+SongOpState SongEngine::Impl::doDeleteElement() {
+    std::string ref, open;
+    {
+        std::lock_guard<std::recursive_mutex> l(songMutex_);
+        ref = editName_;
+        open = song_.name;
+    }
+    {
+        std::lock_guard<std::mutex> l(reportMutex_);
+        report_.clear();
+    }
+    auto fail = [&](const std::vector<std::string>& why) {
+        std::lock_guard<std::mutex> l(reportMutex_);
+        report_ = why;
+        return SongOpState::Failed;
+    };
+    if (!p.storageReady()) return fail({"No card."});
+    if (ref == open) return fail({"The element is open: leave it first."});
+    const uint32_t asked = usesAsked_.load();
+    doListUses();
+    usesAnswered_.store(asked);
+    listGen_.fetch_add(1);
+    const std::vector<ElementUse> users = usesOf(ref);
+    if (!users.empty()) {
+        std::vector<std::string> why{"Used in " + std::to_string(users.size()) +
+                                     (users.size() == 1 ? " place." : " places.")};
+        {
+            std::lock_guard<std::mutex> l(listMutex_);
+            for (const ElementUse& u : users) {
+                std::string name = u.user;
+                for (const ElementInfo& e : elements_)
+                    if (!u.song && e.ref == u.user && !e.title.empty()) name = e.title;
+                why.push_back(name);
+            }
+        }
+        return fail(why);
+    }
+    const std::string dir = std::string(p.songsRoot()) + "/" + ref;
+    if (fsx::exists(dir) && !fsx::removeTree(dir, [this] { p.yieldIo(); }))
+        return fail({"The card would not let go of the element."});
+    {
+        std::lock_guard<std::mutex> l(listMutex_);
+        elements_.erase(std::remove_if(elements_.begin(), elements_.end(),
+                                       [&](const ElementInfo& e) { return e.ref == ref; }),
+                        elements_.end());
+        snapshots_.erase(ref);
+        for (auto& kv : uses_)
+            kv.second.erase(std::remove_if(kv.second.begin(), kv.second.end(),
+                                           [&](const ElementUse& u) { return !u.song && u.user == ref; }),
+                            kv.second.end());
+    }
+    listGen_.fetch_add(1);
+    logf(false, "element %s deleted", ref.c_str());
     return SongOpState::Ready;
 }
 

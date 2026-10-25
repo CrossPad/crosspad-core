@@ -53,7 +53,9 @@ uint64_t element_content_hash(const AudioSong& song, const std::string& identity
 /// each track's kind, source, scene, levels, pan, mute, solo, input and kit;
 /// each block's file (an element block by its ref), place, cut and notes; the
 /// length, the metre, the kit's and the instrument's names; and @p scenes, the
-/// bytes of the project's sequences.json. Not the tempo, the stretch modes, the
+/// project's sequences.json less the tempo it was last saved at and the scene
+/// left selected (the store rewrites both when the clock moves or a scene is
+/// looked at). Not the tempo, the stretch modes, the
 /// freezes or the copies stretched to a tempo, which ElementNav's enter and
 /// leave rewrite on an element nobody touched. Memory and @p scenes only: it
 /// reads no file, so it is the same for the same edits however the card is.

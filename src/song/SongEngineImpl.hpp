@@ -390,7 +390,7 @@ struct SongEngine::Impl {
     bool requestElementFromRegion(uint32_t fromBar, uint32_t toBar);
     bool requestElementFromSong(const std::string& name, const std::vector<std::string>& openElements);
     bool requestElementDiscard(const std::string& ref);
-    bool requestUses() { return request(kListUses); }
+    bool requestUses();
     std::vector<ElementUse> usesOf(const std::string& ref);
     bool requestSnapshot(const std::string& ref) { return requestSnapshotEdit(ref, kEditSnapshot); }
     bool requestEditHash();
@@ -398,6 +398,13 @@ struct SongEngine::Impl {
     bool requestRestore(const std::string& ref) { return play_.load() == Play::Idle && requestSnapshotEdit(ref, kEditRestore); }
     bool requestDropSnapshot(const std::string& ref) { return requestSnapshotEdit(ref, kEditDropSnapshot); }
     bool snapshotPending(const std::string& ref);
+    bool usesPending() const { return (int32_t)(usesAsked_.load() - usesAnswered_.load()) > 0; }
+    ElementUses usesIndex();
+    bool scenesSaved() const { return !seq_.dirty(); }
+    bool requestCopyElements(const std::vector<ElementFork>& forks, const std::vector<std::string>& rewrites,
+                             const std::map<std::string, std::string>& copied);
+    std::map<std::string, std::string> elementsCopied();
+    bool requestDeleteElement(const std::string& ref);
     std::string elementMade();
     ElementClipState elementClipState(uint8_t track, size_t clip);
     std::string elementClipWhy(uint8_t track, size_t clip);
@@ -513,6 +520,14 @@ private:
     SongOpState doRestore();
     SongOpState doDropSnapshot();
     SongOpState doEditHash();
+    SongOpState doCopyElements();
+    SongOpState doDeleteElement();
+    /// The snapshot of the element at @p dir back over its files, then taken
+    /// off -- see ISongEngine::requestRestore. False with it still there to
+    /// restore from again.
+    bool restoreSnapshot(const std::string& dir);
+    /// The snapshot files in the element folder @p dir taken off; none is no failure.
+    bool dropSnapshotFiles(const std::string& dir);
     /// @p dir's snapshot is there and is byte for byte the files it was kept of.
     bool snapshotUnchanged(const std::string& dir);
     bool requestSnapshotEdit(const std::string& ref, uint8_t edit);
@@ -710,7 +725,7 @@ private:
     static constexpr uint8_t kEditRename = 1, kEditTempo = 2, kEditMerge = 3, kEditImport = 4,
                              kEditDelete = 5, kEditExport = 6, kEditBake = 7, kEditElementRegion = 8, kEditElementSong = 9,
                              kEditElementDiscard = 10, kEditSnapshot = 11, kEditRestore = 12, kEditDropSnapshot = 13,
-                             kEditEditHash = 14;
+                             kEditEditHash = 14, kEditCopyElements = 15, kEditDeleteElement = 16;
     uint32_t    importA_ = 0, importB_ = 0, importBar_ = 0, importLead_ = 0;   // owned by claimEdit()'s caller until editReq_
     uint8_t     importTrack_ = 0;
     std::atomic<uint8_t>  editMask_{0}, editProgress_{0};
@@ -720,10 +735,14 @@ private:
     std::atomic<float>    editBpm_{120.0f};
     std::string editName_;                        // under songMutex_
     std::vector<std::string> editRefs_;           // the breadcrumb an element from a song is checked against, under songMutex_
+    std::vector<ElementFork> copyForks_;          // requestCopyElements()'s, under songMutex_
+    std::vector<std::string> copyRewrites_;
+    std::map<std::string, std::string> copyRefs_;
     std::vector<std::string> report_;             // the last export's, under reportMutex_
     std::mutex  reportMutex_;
     ElementBake bake_;                            // the last bake's, under reportMutex_
     std::string elementMade_;                     // the last element made's ref, under reportMutex_
+    std::map<std::string, std::string> copiesMade_;   // the last requestCopyElements()'s, under reportMutex_
     /* The relink pass: asked for by an open and by a rebuild whose element
      * blocks or tempo moved (elementSig_, under songMutex_). What it found of
      * each element the open song's blocks use, and which of those blocks' bakes
@@ -784,6 +803,9 @@ private:
     std::map<std::string, std::vector<ElementUse>> uses_;   ///< by element ref; under listMutex_
     std::set<std::string> snapshots_;                       ///< refs with a snapshot on the card; under listMutex_
     std::atomic<uint64_t> editHash_{0};
+    /* requestUses() calls made, and how many of them the last finished scan
+     * answers: the ones counted before it began reading the card. */
+    std::atomic<uint32_t> usesAsked_{0}, usesAnswered_{0};
     std::mutex  listMutex_;
     Arrangement snap_;
     std::mutex  snapMutex_;

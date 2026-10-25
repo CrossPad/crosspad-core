@@ -3,6 +3,8 @@
 
 #include "crosspad/kit/KitPathUtils.hpp"
 
+#include <ArduinoJson.h>
+
 #include <cinttypes>
 #include <cmath>
 #include <cstdio>
@@ -23,6 +25,10 @@ constexpr float    kBpmScale  = 100.0f;
 constexpr float    kVolumeHashSteps = 10000.0f;
 /// A pan is hashed in steps of this, for the same reason as a fader.
 constexpr float    kPanHashSteps = 10000.0f;
+/// What sequences.json keeps beside the scenes that no edit of them is: the
+/// tempo they were last saved at (the store writes it again whenever the clock
+/// moves) and the scene left selected.
+constexpr const char* kScenesNotEdits[] = {"bpm", "active"};
 
 struct Fnv {
     uint64_t h = kFnvOffset;
@@ -72,6 +78,17 @@ void soundOf(Fnv& f, const ElementHashReader& rd, const AudioSong& song, const s
         f.text(file);
         fileStamp(f, rd, file);
     });
+}
+
+/// @p scenes, sequences.json's bytes, less what kScenesNotEdits names; a file
+/// that is no JSON object as it is.
+std::string scenesEdited(const std::string& scenes) {
+    JsonDocument doc;
+    if (deserializeJson(doc, scenes) != DeserializationError::Ok || !doc.is<JsonObject>()) return scenes;
+    for (const char* key : kScenesNotEdits) doc.remove(key);
+    std::string out;
+    serializeJson(doc, out);
+    return out;
 }
 
 } // namespace
@@ -140,7 +157,7 @@ uint64_t element_edit_hash(const AudioSong& song, const std::string& scenes) {
     f.value(song.beatsPerBar);
     f.text(song.kit);
     f.text(song.instrument);
-    f.text(scenes);
+    f.text(scenesEdited(scenes));
     return f.h;
 }
 
