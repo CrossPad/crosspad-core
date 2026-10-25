@@ -2767,6 +2767,41 @@ TEST_CASE("song engine: a bake mixes every heard track at its volume", "[song][e
     CHECK(r.platform.current == "Song 1");
 }
 
+TEST_CASE("song engine: a bake pans each track as the song plays it", "[song][element]") {
+    Rig r;
+    REQUIRE(r.open("Song 1"));
+    twoTracks(r);
+    {
+        std::lock_guard<std::recursive_mutex> l(r.engine->songMutex());
+        r.engine->song().tracks[0].pan = -0.5f;   // the quarter: left whole, right halved
+        r.engine->song().tracks[1].pan = 0.25f;   // the half at 0.5: right whole, left at three quarters
+    }
+    r.engine->commit();
+    constexpr float kLeft = 8192 + 8192 * 0.75f, kRight = 8192 * 0.5f + 8192;
+    constexpr float kFullScale = 32768.0f;   // the render's 1.0, a WAV sample's 32768
+    std::vector<float> out(kBlock * 2), bus(kBlock * 2, 0.0f);
+    REQUIRE(r.engine->play(0));
+    REQUIRE(waitFor([&] {
+        r.block(out, bus);
+        return out[0] != 0.0f;
+    }));
+    for (int i = 0; i < 20; ++i) r.block(out, bus);
+    const float live[2] = {out[0] * kFullScale, out[1] * kFullScale};
+    CHECK(std::abs(live[0] - kLeft) <= 1.0f);
+    CHECK(std::abs(live[1] - kRight) <= 1.0f);
+    r.engine->stop();
+    REQUIRE(waitFor([&] { return !r.engine->playing(); }));
+
+    REQUIRE(bakeAndWait(r));
+    REQUIRE(r.engine->editState() == SongOpState::Ready);
+    const auto pcm = readWavData(bakeFile(r).string());
+    REQUIRE(pcm.size() == (size_t)r.engine->bakeResult().frames * 2);
+    for (size_t i : {size_t(0), size_t(2 * 88200), pcm.size() - 2}) {
+        CHECK(std::abs(pcm[i] - live[0]) <= 1.0f);
+        CHECK(std::abs(pcm[i + 1] - live[1]) <= 1.0f);
+    }
+}
+
 TEST_CASE("song engine: a silenced track is not in the bake", "[song][element]") {
     Rig r;
     REQUIRE(r.open("Song 1"));

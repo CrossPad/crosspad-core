@@ -67,7 +67,7 @@ uint64_t hashOf(const AudioSong& s, FakeCard& card) { return element_content_has
 
 } // namespace
 
-TEST_CASE("element hash: a note, a volume or a recording changes it; bpm, name and title do not", "[element][hash]") {
+TEST_CASE("element hash: a note, a volume, a pan or a recording changes it; bpm, name and title do not", "[element][hash]") {
     FakeCard card = baseCard();
     const AudioSong base = baseSong();
     const uint64_t h = hashOf(base, card);
@@ -82,6 +82,10 @@ TEST_CASE("element hash: a note, a volume or a recording changes it; bpm, name a
 
     other = base;
     other.tracks[0].volume = 0.5f;
+    CHECK(hashOf(other, card) != h);
+
+    other = base;
+    other.tracks[0].pan = -0.25f;
     CHECK(hashOf(other, card) != h);
 
     other = base;
@@ -178,6 +182,7 @@ TEST_CASE("element hash: the same after song.json is saved and read back", "[ele
     for (int t = 0; t < 3; ++t) {
         s.tracks[t].inUse = true;
         s.tracks[t].volume = t == 0 ? 0.05f : t == 1 ? 1.0f / 3.0f : 0.123456789f;
+        s.tracks[t].pan = t == 0 ? -1.0f / 3.0f : t == 1 ? 0.0f : 0.987654321f;
     }
     FakeCard card;
     const uint64_t before = element_content_hash(s, kIdentity, card.reader());

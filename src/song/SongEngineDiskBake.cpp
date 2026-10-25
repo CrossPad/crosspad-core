@@ -276,7 +276,7 @@ void SongEngine::Impl::doDiskBake() {
     }
 }
 
-/// Worker: @p pieces summed at their gains into @p total frames at @p path, a
+/// Worker: @p pieces summed at their gains and pans into @p total frames at @p path, a
 /// chunk at a time, through BakeReaders. Out at once when anything else is
 /// asked of the worker -- PLAY among it -- with the .part removed. A source
 /// that cannot be opened, or gives fewer frames than it says it holds (cut
@@ -320,8 +320,10 @@ SongEngine::Impl::BakeRun SongEngine::Impl::mixDown(std::vector<BakedPiece> piec
                     run = BakeRun::Failed;
                     break;
                 }
+                float gs[2];
+                pan_side_gains(pc.gain, pc.pan, gs);
                 int32_t* d = acc_ + (x - f) * 2;
-                for (uint32_t k = 0; k < (y - x) * 2; ++k) d[k] += (int32_t)((float)io_[k] * pc.gain);
+                for (uint32_t k = 0; k < (y - x) * 2; ++k) d[k] += (int32_t)((float)io_[k] * gs[k & 1]);
             }
             if (run != BakeRun::Done) break;
             for (uint32_t k = 0; k < n * 2; ++k) {

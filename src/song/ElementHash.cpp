@@ -21,6 +21,8 @@ constexpr float    kBpmScale  = 100.0f;
 /// digits, so the float read back can differ from the one saved in its last
 /// bits, and a hash of those bits would change with every reopen.
 constexpr float    kVolumeHashSteps = 10000.0f;
+/// A pan is hashed in steps of this, for the same reason as a fader.
+constexpr float    kPanHashSteps = 10000.0f;
 
 struct Fnv {
     uint64_t h = kFnvOffset;
@@ -83,6 +85,7 @@ uint64_t element_content_hash(const AudioSong& song, const std::string& identity
         if (song.silenced(t)) { f.text(kSilent); continue; }
         f.value((uint8_t)tr.kind);
         f.value((int32_t)std::lround(tr.volume * kVolumeHashSteps));
+        f.value((int32_t)std::lround(tr.pan * kPanHashSteps));
         f.value((uint8_t)tr.stretch);
         for (const SongClip& c : tr.clips) {
             uint64_t childKey = 0;

@@ -337,6 +337,26 @@ TEST_CASE("disk bake: a bake made by leaving and one made from the card have one
     CHECK(readWavData((bakeDir(r) / left.file).string()) == pcm);
 }
 
+TEST_CASE("disk bake: each track is panned as the song plays it", "[song][element][diskbake]") {
+    Rig r;
+    {
+        AudioSong s = audioElement(r, kChild, {8000, 4000}, 2);
+        s.tracks[0].pan = -0.5f;   // left whole, right halved
+        s.tracks[1].pan = 0.75f;   // right whole, left at a quarter
+        REQUIRE(s.save());
+    }
+    writeSongWith(r, "Parent", kChild, 2, "");
+    REQUIRE(r.open("Parent"));
+    REQUIRE(idle(r));
+    REQUIRE(r.engine->elementClipState(0, 0) == ElementClipState::Fresh);
+    const auto pcm = readWavData((bakeDir(r) / block(r).file).string());
+    REQUIRE(pcm.size() == (size_t)2 * kBar * 2);
+    for (size_t i : {size_t(0), pcm.size() / 2, pcm.size() - 2}) {
+        CHECK(std::abs(pcm[i] - (8000 + 1000)) <= 1);
+        CHECK(std::abs(pcm[i + 1] - (4000 + 4000)) <= 1);
+    }
+}
+
 TEST_CASE("disk bake: four tracks at once are mixed through two descriptors", "[song][element][diskbake]") {
     HookFs counted;
     Rig r;

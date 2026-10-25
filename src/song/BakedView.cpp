@@ -95,6 +95,7 @@ std::vector<BakedPiece> baked_view(const AudioSong& song, const BakedViewEnv& en
                 p.end = std::min(bars_to_frames((uint64_t)fz.bar + fz.bars, spb), cut);
                 p.offset = fz.offset;
                 p.gain = tr.volume;
+                p.pan = tr.pan;
                 keep(out, std::move(p), a, b);
             }
             continue;
@@ -106,6 +107,7 @@ std::vector<BakedPiece> baked_view(const AudioSong& song, const BakedViewEnv& en
             s.start = bars_to_frames(c.bar, spb);
             s.end = clip_block_end(tr.clips, i, spb, cut);
             s.gain = tr.volume;
+            s.pan = tr.pan;
             if (c.isElement()) {
                 if (c.element == env.silentRef) continue;
                 const ResolvedElement* e = env.child ? env.child(c.element) : nullptr;

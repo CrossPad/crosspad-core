@@ -48,6 +48,9 @@ bake of it.
   segment a frame.
 - The element hash reads a kit or instrument named from the card's root
   where the card is mounted (`kitFsPath()`).
+- A bake -- the open song's and one mixed from the card -- pans each track
+  as the song's render does (`SongTrack::pan`, 2.21.0; `pan_side_gains()`,
+  `BakedPiece::pan`), and a heard track's pan is in the element hash.
 
 ## 2.22.0 — 2026-10-25
 

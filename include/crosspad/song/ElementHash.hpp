@@ -36,7 +36,7 @@ struct ElementHashReader {
 /// FNV-1a 64 over whose it is -- @p identity: the element's ref
 /// (.elements/E%08X), a song's project name -- and what @p song plays, each
 /// track that is heard in order: its
-/// kind, volume and stretch; each block's file (an audio block's with its
+/// kind, volume, pan and stretch; each block's file (an audio block's with its
 /// size and time on the card, an element's by the key of the bake it plays,
 /// or with no childKey the one it stores), place, cut
 /// and notes; a seq track's freeze (files and sizes). Then the length and

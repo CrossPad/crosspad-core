@@ -60,8 +60,21 @@ uint32_t clip_block_end(const std::vector<SongClip>& clips, size_t i, uint32_t s
 void element_passes(uint32_t from, uint32_t frames, uint32_t spb, uint32_t start, uint32_t blockEnd,
                     const std::function<void(uint32_t start, uint32_t end, uint32_t offset)>& each);
 
+/// The gains, left then right, of a track at @p gain panned @p pan (-1..+1,
+/// SongTrack::pan): a balance as the Mixer's pan, the side it moves away from
+/// turned down -- as the song's render and a merge apply it.
+inline void pan_side_gains(float gain, float pan, float out[2]) {
+    out[0] = gain * (pan > 0.0f ? 1.0f - pan : 1.0f);
+    out[1] = gain * (pan < 0.0f ? 1.0f + pan : 1.0f);
+}
+
 /// A stretch of one file on the song's timeline, in frames of the song.
-struct BakedPiece { std::string path; uint32_t start = 0, end = 0, offset = 0; float gain = 1.0f; };
+struct BakedPiece {
+    std::string path;
+    uint32_t start = 0, end = 0, offset = 0;
+    float gain = 1.0f;
+    float pan = 0.0f;   ///< the track's, SongTrack::pan
+};
 
 /// What the view could not give, so a caller knows it is not whole.
 struct BakedReport {
@@ -83,8 +96,8 @@ struct BakedViewEnv {
 /// @p song in [a, b) frames of its own time, from files alone: recordings (their
 /// stretched copy where the track stretches and it exists), frozen seq tracks
 /// from their freeze files, element blocks from their resolved bakes going
-/// round as flatten() has them; silenced tracks left out; gain is the track's
-/// volume. Pieces are cut to the window, their offsets moved with them.
+/// round as flatten() has them; silenced tracks left out; gain and pan are the
+/// track's volume and pan. Pieces are cut to the window, their offsets moved with them.
 std::vector<BakedPiece> baked_view(const AudioSong& song, const BakedViewEnv& env, uint32_t a, uint32_t b,
                                    BakedReport& report);
 

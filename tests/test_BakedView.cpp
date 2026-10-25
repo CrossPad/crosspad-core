@@ -55,8 +55,10 @@ TEST_CASE("baked view: recordings, a frozen seq track and an element going round
     View v;
     SongTrack& audio = v.track(0, TrackKind::Audio);
     audio.volume = 0.5f;
+    audio.pan = -0.5f;
     v.song.addClip(0, block("a.wav", 0, 2));
     SongTrack& seq = v.track(1, TrackKind::Seq);
+    seq.pan = 0.25f;
     seq.freeze.push_back(block("f.wav", 0, 2));
     seq.freeze.back().offset = 100;
     SongClip e = block("", 2, 3);
@@ -74,14 +76,17 @@ TEST_CASE("baked view: recordings, a frozen seq track and an element going round
     CHECK(p[0].start == 0);
     CHECK(p[0].end == 2 * kBar);
     CHECK(p[0].gain == 0.5f);
+    CHECK(p[0].pan == -0.5f);
     CHECK(p[1].path == "/songs/s/clips/f.wav");
     CHECK(p[1].offset == 100);
     CHECK(p[1].gain == 1.0f);
+    CHECK(p[1].pan == 0.25f);
     /* Starting on its bar 1 of 2: the rest of one pass, then a whole one cut by the block. */
     CHECK(p[2].path == "/songs/.bake/B0000000000000001.wav");
     CHECK(p[2].start == 2 * kBar);
     CHECK(p[2].end == 3 * kBar);
     CHECK(p[2].offset == kBar);
+    CHECK(p[2].pan == 0.0f);
     CHECK(p[3].start == 3 * kBar);
     CHECK(p[3].end == 5 * kBar);
     CHECK(p[3].offset == 0);

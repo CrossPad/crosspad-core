@@ -94,8 +94,8 @@ ElementBake SongEngine::Impl::bakeResult() {
 
 /// Worker: the open song mixed down into the bake cache -- see
 /// ISongEngine::requestBakeElement. Read from a copy and touching nothing of the
-/// song: no clip is placed, nothing is saved. The mix is merge's, over every
-/// track that is heard, from bar 0 to the song's end; a seq track is heard as its
+/// song: no clip is placed, nothing is saved. The mix is merge's -- each track
+/// at its volume and pan, as the song plays it -- over every track that is heard, from bar 0 to the song's end; a seq track is heard as its
 /// freeze, which plays in its place whether it is armed or not (a bake is not a
 /// take), and one that is not frozen cannot be mixed from the card.
 SongOpState SongEngine::Impl::doBakeElement() {
@@ -197,7 +197,8 @@ SongOpState SongEngine::Impl::doBakeElement() {
         std::memset(acc_, 0, n * 8);
         for (int t = 0; t < kTracks; ++t) {
             if (copy.silenced(t)) continue;
-            const float g = copy.tracks[t].volume;
+            float gs[2];
+            pan_side_gains(copy.tracks[t].volume, copy.tracks[t].pan, gs);
             for (const auto& sg : arr.tracks[t]) {
                 if (sg.end <= f) continue;
                 if (sg.start >= f + n) break;
@@ -205,7 +206,7 @@ SongOpState SongEngine::Impl::doBakeElement() {
                 if (rdr[t].path != sg.path && !(p.storageReady() && rdr[t].open(sg.path))) continue;
                 rdr[t].read(x - sg.start + sg.offset, io_, y - x);
                 int32_t* d = acc_ + (x - f) * 2;
-                for (uint32_t k = 0; k < (y - x) * 2; ++k) d[k] += (int32_t)((float)io_[k] * g);
+                for (uint32_t k = 0; k < (y - x) * 2; ++k) d[k] += (int32_t)((float)io_[k] * gs[k & 1]);
             }
         }
         for (uint32_t k = 0; k < n * 2; ++k) {
