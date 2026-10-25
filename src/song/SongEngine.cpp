@@ -203,6 +203,9 @@ void SongEngine::Impl::worker() {
                            : edit == kEditElementRegion ? doElementFromRegion()
                            : edit == kEditElementSong   ? doElementFromSong()
                            : edit == kEditElementDiscard ? doElementDiscard()
+                           : edit == kEditSnapshot       ? doSnapshot()
+                           : edit == kEditRestore        ? doRestore()
+                           : edit == kEditDropSnapshot   ? doDropSnapshot()
                            : doMerge(editMask_.load(), editFrom_.load(), editTo_.load()));
             continue;
         }
@@ -211,6 +214,7 @@ void SongEngine::Impl::worker() {
             if (lists & kListProjects) doListProjects();
             if (lists & kListClips)    doListClips();
             if (lists & kListElements) doListElements();
+            if (lists & kListUses)     doListUses();
             listGen_.fetch_add(1);
             continue;
         }
@@ -319,6 +323,13 @@ ElementBake SongEngine::bakeResult() { return impl_->bakeResult(); }
 bool SongEngine::requestElementFromRegion(uint32_t fromBar, uint32_t toBar) { return impl_->requestElementFromRegion(fromBar, toBar); }
 bool SongEngine::requestElementFromSong(const std::string& name, const std::vector<std::string>& openElements) { return impl_->requestElementFromSong(name, openElements); }
 bool SongEngine::requestElementDiscard(const std::string& ref) { return impl_->requestElementDiscard(ref); }
+bool SongEngine::requestUses() { return impl_->requestUses(); }
+std::vector<ElementUse> SongEngine::usesOf(const std::string& ref) { return impl_->usesOf(ref); }
+bool SongEngine::requestSnapshot(const std::string& ref) { return impl_->requestSnapshot(ref); }
+uint64_t SongEngine::snapshotKey() { return impl_->snapshotKey(); }
+bool SongEngine::requestRestore(const std::string& ref) { return impl_->requestRestore(ref); }
+bool SongEngine::requestDropSnapshot(const std::string& ref) { return impl_->requestDropSnapshot(ref); }
+bool SongEngine::snapshotPending(const std::string& ref) { return impl_->snapshotPending(ref); }
 std::string SongEngine::elementMade() { return impl_->elementMade(); }
 ElementClipState SongEngine::elementClipState(uint8_t track, size_t clip) { return impl_->elementClipState(track, clip); }
 std::string SongEngine::elementClipWhy(uint8_t track, size_t clip) { return impl_->elementClipWhy(track, clip); }

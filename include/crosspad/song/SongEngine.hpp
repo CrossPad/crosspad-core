@@ -76,6 +76,13 @@ public:
     bool requestElementFromRegion(uint32_t fromBar, uint32_t toBar) override;
     bool requestElementFromSong(const std::string& name, const std::vector<std::string>& openElements = {}) override;
     bool requestElementDiscard(const std::string& ref) override;
+    bool requestUses() override;
+    std::vector<ElementUse> usesOf(const std::string& ref) override;
+    bool requestSnapshot(const std::string& ref) override;
+    uint64_t snapshotKey() override;
+    bool requestRestore(const std::string& ref) override;
+    bool requestDropSnapshot(const std::string& ref) override;
+    bool snapshotPending(const std::string& ref) override;
     std::string elementMade() override;
     ElementClipState elementClipState(uint8_t track, size_t clip) override;
     std::string elementClipWhy(uint8_t track, size_t clip) override;

@@ -46,12 +46,19 @@ struct ElementInfo {
     std::vector<std::string> uses;   ///< the elements its own blocks play, each once
 };
 
+/// One user of an element (ISongEngine::usesOf()).
+struct ElementUse {
+    std::string user;                ///< a project's name, or the ref of an element whose own blocks play it
+    bool song = false;               ///< @c user is a project, not an element
+};
+
 /// A bake of the open song (ISongEngine::requestBakeElement()).
 struct ElementBake {
     std::string file;                ///< name inside the songs root's .bake/
     uint32_t    frames = 0;          ///< one pass, at the song's tempo
     uint16_t    bars = 0;
     bool        cached = false;      ///< found on the card, not written by this request
+    uint64_t    key = 0;             ///< what the bake is named by (element_bake_key()); the resolver's key of the element
 };
 
 /// A clip's waveform, for drawing it: the loudest sample of each run of
@@ -196,6 +203,34 @@ public:
     /// The ref (".elements/E%08X") the last requestElementFrom...() made;
     /// empty after one that failed.
     virtual std::string elementMade() { return {}; }
+    /// Read every project's song.json and every element's, on the worker (a
+    /// yield per file), for usesOf(); listGeneration() moves when done. The
+    /// open song or element is counted as it is in memory. A card with no
+    /// other copy of the library is all there is to count: the counts are this
+    /// card's.
+    virtual bool requestUses() { return false; }
+    /// Who plays the element @p ref in their own blocks, as of the last
+    /// requestUses(): projects first, each by name, then elements by ref.
+    virtual std::vector<ElementUse> usesOf(const std::string& ref) { (void)ref; return {}; }
+    /// Keep the element @p ref's song.json and sequences.json as they are on
+    /// the card, as song.orig.json and sequences.orig.json in its folder --
+    /// the element before an edit that others share. None is overwritten: one
+    /// already there is the original, and stays. An element with no song.json
+    /// yet has nothing to keep. Either way snapshotKey() is the element's key
+    /// as the card holds it. An edit.
+    virtual bool requestSnapshot(const std::string& ref) { (void)ref; return false; }
+    /// The key (ElementResolver) the element of the last requestSnapshot() had
+    /// on the card, at the open song's tempo; 0 when it could not be read.
+    virtual uint64_t snapshotKey() { return 0; }
+    /// The snapshot back over the element's song.json and sequences.json, then
+    /// removed. Refused for the element that is open; fails when there is no
+    /// snapshot. An edit.
+    virtual bool requestRestore(const std::string& ref) { (void)ref; return false; }
+    /// The snapshot of @p ref taken off the card; none is no failure. An edit.
+    virtual bool requestDropSnapshot(const std::string& ref) { (void)ref; return false; }
+    /// A snapshot of @p ref is on the card, as of the last requestElements()
+    /// and the last snapshot, restore or drop that finished -- not read now.
+    virtual bool snapshotPending(const std::string& ref) { (void)ref; return false; }
     /// What element block @p clip of @p track plays now against its element's
     /// current version at the song's tempo, as of the last relink pass -- the
     /// pass runs after every open and every commit that moves an element block

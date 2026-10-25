@@ -25,6 +25,8 @@ constexpr float kTempoEpsilon = 0.01f;
 /// The tempo a song plays at: a song never given one stores 0 and plays at the
 /// grid's default, which is what an element is fitted to and requestTempo can set.
 float effectiveBpm(const AudioSong& s) { return s.bpm > 0.0f ? s.bpm : AudioSong::kDefaultBpm; }
+/// Polls the card may take to keep an element as it is before it opens.
+constexpr uint32_t kSnapshotPolls = 1200;
 /// Polls the fitting of stretched blocks may go without one more done before
 /// the leave is given up: the card is gone, or the worker is.
 constexpr uint32_t kStretchStallPolls = 2400;
@@ -146,6 +148,7 @@ const char* ElementNav::stage() const
         case Phase::Making:
         case Phase::Listing:    return "copying";
         case Phase::Stopping:   return "stopping";
+        case Phase::Snapshotting: return "keeping";
         case Phase::Opening:
         case Phase::Retempo:    return "opening";
         case Phase::Refit:      return "fitting";
@@ -521,6 +524,13 @@ ElementNav::Result ElementNav::poll()
 {
     ISongEngine* se = songEngine();
     if (job_ == Job::None) {
+        /* The first tick: what the library says of itself, for the uses and the
+         * snapshots left by an edit a power cut ended. */
+        if (se && !usesAsked_) {
+            usesAsked_ = true;
+            se->requestElements();
+            se->requestUses();
+        }
         followFocusLength();
         return {};
     }
@@ -529,6 +539,7 @@ ElementNav::Result ElementNav::poll()
         case Phase::Making:     return making();
         case Phase::Listing:    return listing();
         case Phase::Stopping:   return stopped();
+        case Phase::Snapshotting: return snapshotting();
         case Phase::Opening:    return opened();
         case Phase::Retempo:    return retempo();
         case Phase::Refit:      return refit();
@@ -569,6 +580,40 @@ ElementNav::Result ElementNav::stopped()
         refusals_ = 0;
         return {};
     }
+    return openChild();
+}
+
+/// The element is kept as it is on the card before it opens, the first time
+/// only (the request keeps one already there), so that Copy has the original
+/// to go back to.
+ElementNav::Result ElementNav::toSnapshot()
+{
+    phase_ = Phase::Snapshotting;
+    asked_ = false;
+    refusals_ = 0;
+    return {};
+}
+
+ElementNav::Result ElementNav::snapshotting()
+{
+    ISongEngine* se = songEngine();
+    if (!asked_) {
+        if (!onLevel(path_.back().open)) return fail(kOtherSong);
+        wasPending_ = se->snapshotPending(ref_);
+        if (!se->requestSnapshot(ref_)) return refused("the element cannot be kept as it is now");
+        asked_ = true;
+        refusals_ = 0;
+        return {};
+    }
+    switch (se->editState()) {
+        case SongOpState::Busy:
+            if (++refusals_ < kSnapshotPolls) return {};
+            return fail("the card is not keeping the element as it is");
+        case SongOpState::Ready: break;
+        default:                 return fail("the element could not be kept as it is before its edit");
+    }
+    level_.hashAtEntry = se->snapshotKey();
+    level_.snapshotTaken = !wasPending_ && se->snapshotPending(ref_);
     return openChild();
 }
 
@@ -795,7 +840,7 @@ ElementNav::Result ElementNav::freezing()
     if (!asked_) {
         if (!onLevel(parentFreeze_ ? path_.back().open : ref_)) return fail(kOtherSong);
         freezeTrack_ = nextToFreeze();
-        if (freezeTrack_ >= AudioSong::kTracks && parentFreeze_) return openChild();
+        if (freezeTrack_ >= AudioSong::kTracks && parentFreeze_) return toSnapshot();
         if (freezeTrack_ >= AudioSong::kTracks) {
             phase_ = Phase::Stretching;
             lastWaiting_ = 0;
@@ -838,6 +883,8 @@ ElementNav::Result ElementNav::baking()
     /* A song opened while the bake was queued is what it mixed. */
     if (!onLevel(ref_)) return fail(kOtherSong);
     const ElementBake bake = se->bakeResult();
+    changed_ = bake.key != path_.back().hashAtEntry;
+    left_ = ref_;
     bakeFile_ = bake.file;
     bakeFrames_ = bake.frames;
     phase_ = Phase::Reopening;
@@ -881,6 +928,9 @@ ElementNav::Result ElementNav::linked()
         }
     }
     se->commit();
+    /* Edited inside, the element keeps what it was for the question that
+     * follows; left as it was entered, it has nothing to ask. */
+    if (!changed_ && path_.back().snapshotTaken) se->requestDropSnapshot(ref_);
     path_.pop_back();
     if (depth() > targetDepth_) {
         ref_ = path_.back().open;
@@ -890,6 +940,7 @@ ElementNav::Result ElementNav::linked()
      * heard around again (its stem unchanged by what was edited inside it,
      * so found in the cache). */
     askContext();
+    se->requestUses();
     return finish();
 }
 
@@ -902,6 +953,7 @@ void ElementNav::reset()
     parentFreeze_ = false;
     refusals_ = 0;
     contextBars_ = 0;
+    usesAsked_ = false;
     error_.clear();
 }
 

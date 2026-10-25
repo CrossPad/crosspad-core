@@ -1,6 +1,9 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include <catch2/catch_test_macros.hpp>
 
+#include <fstream>
+#include <iterator>
+
 #include "song_engine_rig.hpp"
 
 #include "crosspad/song/ElementNav.hpp"
@@ -1231,4 +1234,296 @@ TEST_CASE("element nav: a parent block says whether it is baked or frozen", "[el
     }
     CHECK(baked);
     CHECK(unbaked);
+}
+
+namespace {
+
+std::string slurp(const fs::path& p) {
+    std::ifstream in(p, std::ios::binary);
+    return std::string(std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>());
+}
+
+void spit(const fs::path& p, const std::string& bytes) {
+    std::ofstream out(p, std::ios::binary | std::ios::trunc);
+    out << bytes;
+}
+
+/// An edit request the worker has finished, as it ended.
+SongOpState editEnd(Rig& r) {
+    waitFor([&] { return r.engine->editState() != SongOpState::Busy; }, 10000);
+    return r.engine->editState();
+}
+
+fs::path elementDir(Rig& r, const std::string& ref) { return fs::path(r.platform.root) / ref; }
+
+/// kA with scenes of its own beside its song.json.
+void writeElementWithScenes(Rig& r, const std::string& ref) {
+    writeAudioElement(r, ref, "Intro", 2, 120.0f);
+    spit(elementDir(r, ref) / "sequences.json", "{\"scenes\":[1,2,3]}");
+}
+
+/// A block of the song open, laid in the element open inside it: a recording's
+/// worth of difference in what the element sounds.
+void editOpenElement(Rig& r) {
+    {
+        std::lock_guard<std::recursive_mutex> l(r.engine->songMutex());
+        AudioSong& s = r.engine->song();
+        s.tracks[2].inUse = true;
+        s.addClip(2, {"a.wav", 0, 1});
+    }
+    r.engine->commit();
+}
+
+std::vector<ElementUse> usesNow(Rig& r, const std::string& ref) {
+    const uint32_t gen = r.engine->listGeneration();
+    REQUIRE(r.engine->requestUses());
+    REQUIRE(waitFor([&] { return r.engine->listGeneration() != gen; }));
+    return r.engine->usesOf(ref);
+}
+
+} // namespace
+
+TEST_CASE("element uses: the songs and the elements that play an element are found", "[element][uses]") {
+    Rig r;
+    Services svc(r.engine.get(), nullptr);
+    NavGuard guard;
+    writeAudioElement(r, kA, "Hat", 2, 120.0f);
+    writeAudioElement(r, kB, "Groove", 2, 120.0f, {kA});
+    writeAudioElement(r, kC, "Lonely", 2, 120.0f);
+    {
+        AudioSong other;
+        other.dir = r.platform.root + "/Other";
+        fs::create_directories(fs::path(other.dir) / AudioSong::clipsDir());
+        other.tracks[1].inUse = true;
+        SongClip c;
+        c.element = kA;
+        c.bars = 2;
+        other.addClip(1, c);
+        c.bar = 4;
+        other.addClip(1, c);                              // twice in one song: one use
+        REQUIRE(other.save());
+    }
+    openDemo(r, kA);                                      // in memory only: the save is not due yet
+
+    const auto uses = usesNow(r, kA);
+    REQUIRE(uses.size() == 3);
+    CHECK(uses[0].user == "Demo");
+    CHECK(uses[0].song);
+    CHECK(uses[1].user == "Other");
+    CHECK(uses[1].song);
+    CHECK(uses[2].user == kB);
+    CHECK_FALSE(uses[2].song);
+    CHECK(r.engine->usesOf(kC).empty());
+    CHECK(r.engine->usesOf("../etc").empty());
+}
+
+TEST_CASE("element snapshot: song.json and sequences.json are kept beside the element, none overwritten", "[element][snapshot]") {
+    Rig r;
+    Services svc(r.engine.get(), nullptr);
+    NavGuard guard;
+    writeElementWithScenes(r, kA);
+    REQUIRE(r.open("Demo"));
+    const fs::path dir = elementDir(r, kA);
+    const std::string song = slurp(dir / "song.json"), scenes = slurp(dir / "sequences.json");
+    REQUIRE_FALSE(r.engine->snapshotPending(kA));
+
+    REQUIRE(r.engine->requestSnapshot(kA));
+    REQUIRE(editEnd(r) == SongOpState::Ready);
+    CHECK(slurp(dir / "song.orig.json") == song);
+    CHECK(slurp(dir / "sequences.orig.json") == scenes);
+    CHECK(r.engine->snapshotPending(kA));
+    CHECK(r.engine->snapshotKey() != 0);
+
+    spit(dir / "song.json", "changed");
+    REQUIRE(r.engine->requestSnapshot(kA));
+    REQUIRE(editEnd(r) == SongOpState::Ready);
+    CHECK(slurp(dir / "song.orig.json") == song);        // the first one is the original
+    CHECK_FALSE(fs::exists(dir / "song.orig.json.part"));
+}
+
+TEST_CASE("element snapshot: a ref or the open element that is no element's is refused", "[element][snapshot]") {
+    Rig r;
+    Services svc(r.engine.get(), nullptr);
+    NavGuard guard;
+    writeAudioElement(r, kA, "Intro", 2, 120.0f);
+    REQUIRE(r.open("Demo"));
+    CHECK_FALSE(r.engine->requestSnapshot("../Demo"));
+    CHECK_FALSE(r.engine->requestSnapshot(".elements/../Demo"));
+    CHECK_FALSE(r.engine->requestRestore("Demo"));
+    CHECK_FALSE(r.engine->requestDropSnapshot(".elements/x"));
+    REQUIRE(r.engine->requestOpenElement(kA));
+    REQUIRE(waitFor([&] { return r.engine->openState() == SongOpState::Ready && openName(r) == kA; }));
+    REQUIRE(r.engine->requestSnapshot(kA));               // the open one is not kept: it is not the card's
+    CHECK(editEnd(r) == SongOpState::Failed);
+    CHECK_FALSE(fs::exists(elementDir(r, kA) / "song.orig.json"));
+}
+
+TEST_CASE("element snapshot: restore puts the files back byte for byte and removes the snapshot", "[element][snapshot]") {
+    Rig r;
+    Services svc(r.engine.get(), nullptr);
+    NavGuard guard;
+    writeElementWithScenes(r, kA);
+    REQUIRE(r.open("Demo"));
+    const fs::path dir = elementDir(r, kA);
+    const std::string song = slurp(dir / "song.json"), scenes = slurp(dir / "sequences.json");
+
+    REQUIRE(r.engine->requestRestore(kA));
+    CHECK(editEnd(r) == SongOpState::Failed);             // nothing was kept
+
+    REQUIRE(r.engine->requestSnapshot(kA));
+    REQUIRE(editEnd(r) == SongOpState::Ready);
+    spit(dir / "song.json", "edited");
+    spit(dir / "sequences.json", "edited too");
+    REQUIRE(r.engine->requestRestore(kA));
+    REQUIRE(editEnd(r) == SongOpState::Ready);
+    CHECK(slurp(dir / "song.json") == song);
+    CHECK(slurp(dir / "sequences.json") == scenes);
+    CHECK_FALSE(fs::exists(dir / "song.orig.json"));
+    CHECK_FALSE(fs::exists(dir / "sequences.orig.json"));
+    CHECK_FALSE(r.engine->snapshotPending(kA));
+}
+
+TEST_CASE("element snapshot: scenes made after the snapshot go with the restore", "[element][snapshot]") {
+    Rig r;
+    Services svc(r.engine.get(), nullptr);
+    NavGuard guard;
+    writeAudioElement(r, kA, "Intro", 2, 120.0f);          // no scenes of its own
+    REQUIRE(r.open("Demo"));
+    const fs::path dir = elementDir(r, kA);
+    REQUIRE(r.engine->requestSnapshot(kA));
+    REQUIRE(editEnd(r) == SongOpState::Ready);
+    CHECK_FALSE(fs::exists(dir / "sequences.orig.json"));
+    spit(dir / "sequences.json", "made since");
+    REQUIRE(r.engine->requestRestore(kA));
+    REQUIRE(editEnd(r) == SongOpState::Ready);
+    CHECK_FALSE(fs::exists(dir / "sequences.json"));
+}
+
+TEST_CASE("element snapshot: a snapshot dropped leaves the element, and none is no failure", "[element][snapshot]") {
+    Rig r;
+    Services svc(r.engine.get(), nullptr);
+    NavGuard guard;
+    writeElementWithScenes(r, kA);
+    REQUIRE(r.open("Demo"));
+    const fs::path dir = elementDir(r, kA);
+    const std::string song = slurp(dir / "song.json");
+    REQUIRE(r.engine->requestSnapshot(kA));
+    REQUIRE(editEnd(r) == SongOpState::Ready);
+    REQUIRE(r.engine->requestDropSnapshot(kA));
+    REQUIRE(editEnd(r) == SongOpState::Ready);
+    CHECK_FALSE(r.engine->snapshotPending(kA));
+    CHECK_FALSE(fs::exists(dir / "song.orig.json"));
+    CHECK_FALSE(fs::exists(dir / "sequences.orig.json"));
+    CHECK(slurp(dir / "song.json") == song);
+    REQUIRE(r.engine->requestDropSnapshot(kA));
+    CHECK(editEnd(r) == SongOpState::Ready);
+}
+
+TEST_CASE("element snapshot: the list says which elements have one", "[element][snapshot]") {
+    Rig r;
+    Services svc(r.engine.get(), nullptr);
+    NavGuard guard;
+    writeAudioElement(r, kA, "Intro", 2, 120.0f);
+    writeAudioElement(r, kB, "Other", 2, 120.0f);
+    REQUIRE(r.open("Demo"));
+    spit(elementDir(r, kB) / "song.orig.json", "{}");      // left by a power cut
+    CHECK_FALSE(r.engine->snapshotPending(kB));            // not read yet
+    REQUIRE(listElements(r));
+    CHECK(r.engine->snapshotPending(kB));
+    CHECK_FALSE(r.engine->snapshotPending(kA));
+}
+
+TEST_CASE("element nav: entering keeps the element as it is, and leaving it unedited takes that off again", "[element][nav][snapshot]") {
+    Rig r;
+    Services svc(r.engine.get(), nullptr);
+    NavGuard guard;
+    writeElementWithScenes(r, kA);
+    openDemo(r, kA);
+    const fs::path dir = elementDir(r, kA);
+    const std::string song = slurp(dir / "song.json"), scenes = slurp(dir / "sequences.json");
+
+    REQUIRE(elementNav().enter(1, 0));
+    REQUIRE(runNav().ok);
+    CHECK(slurp(dir / "song.orig.json") == song);
+    CHECK(slurp(dir / "sequences.orig.json") == scenes);
+    CHECK(r.engine->snapshotPending(kA));
+    CHECK(elementNav().path()[1].hashAtEntry != 0);
+    CHECK(elementNav().path()[1].snapshotTaken);
+
+    REQUIRE(elementNav().leave());
+    REQUIRE(runNav().ok);
+    CHECK_FALSE(elementNav().changed());
+    CHECK(elementNav().left() == kA);
+    REQUIRE(waitFor([&] { return !r.engine->snapshotPending(kA); }, 5000));
+    CHECK_FALSE(fs::exists(dir / "song.orig.json"));
+    CHECK_FALSE(fs::exists(dir / "sequences.orig.json"));
+}
+
+TEST_CASE("element nav: an element edited inside is reported changed and keeps its snapshot, which restores it", "[element][nav][snapshot]") {
+    Rig r;
+    Services svc(r.engine.get(), nullptr);
+    NavGuard guard;
+    writeElementWithScenes(r, kA);
+    openDemo(r, kA);
+    const fs::path dir = elementDir(r, kA);
+    const std::string song = slurp(dir / "song.json"), scenes = slurp(dir / "sequences.json");
+
+    REQUIRE(elementNav().enter(1, 0));
+    REQUIRE(runNav().ok);
+    editOpenElement(r);
+    REQUIRE(elementNav().leave());
+    const auto out = runNav();
+    INFO("error: " << out.error);
+    REQUIRE(out.ok);
+    CHECK(elementNav().changed());
+    CHECK(r.engine->snapshotPending(kA));
+    CHECK(slurp(dir / "song.orig.json") == song);
+    CHECK(slurp(dir / "sequences.orig.json") == scenes);
+    REQUIRE(waitFor([&] { return !r.engine->backgroundBusy(); }, 10000));
+    REQUIRE(waitFor([&] { return slurp(dir / "song.json") != song; }, 5000));   // the edit is on the card
+
+    REQUIRE(r.engine->requestRestore(kA));
+    REQUIRE(editEnd(r) == SongOpState::Ready);
+    CHECK(slurp(dir / "song.json") == song);
+    CHECK(slurp(dir / "sequences.json") == scenes);
+    CHECK_FALSE(r.engine->snapshotPending(kA));
+}
+
+TEST_CASE("element nav: entering again never overwrites the snapshot of an edit still undecided", "[element][nav][snapshot]") {
+    Rig r;
+    Services svc(r.engine.get(), nullptr);
+    NavGuard guard;
+    writeAudioElement(r, kA, "Intro", 2, 120.0f);
+    openDemo(r, kA);
+    const fs::path dir = elementDir(r, kA);
+    const std::string song = slurp(dir / "song.json");
+
+    REQUIRE(elementNav().enter(1, 0));
+    REQUIRE(runNav().ok);
+    editOpenElement(r);
+    REQUIRE(elementNav().leave());
+    REQUIRE(runNav().ok);
+    REQUIRE(elementNav().changed());
+    REQUIRE(waitFor([&] { return slurp(dir / "song.json") != song; }, 5000));
+
+    REQUIRE(elementNav().enter(1, 0));
+    REQUIRE(runNav().ok);
+    CHECK_FALSE(elementNav().path()[1].snapshotTaken);     // it was there already
+    REQUIRE(elementNav().leave());
+    REQUIRE(runNav().ok);
+    CHECK_FALSE(elementNav().changed());
+    CHECK(slurp(dir / "song.orig.json") == song);          // still the original, not the first edit
+    CHECK(r.engine->snapshotPending(kA));
+}
+
+TEST_CASE("element nav: the uses are read after a leave and at the first poll", "[element][nav][uses]") {
+    Rig r;
+    Services svc(r.engine.get(), nullptr);
+    NavGuard guard;
+    writeAudioElement(r, kA, "Intro", 2, 120.0f);
+    openDemo(r, kA);
+    CHECK(r.engine->usesOf(kA).empty());
+    elementNav().poll();                                   // Arrange's first tick
+    REQUIRE(waitFor([&] { return !r.engine->usesOf(kA).empty(); }, 5000));
+    CHECK(r.engine->usesOf(kA).front().user == "Demo");
 }

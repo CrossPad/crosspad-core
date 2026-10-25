@@ -76,6 +76,13 @@ public:
         /// chosen, as that one plays it.
         std::vector<Occurrence> occurrences;
         size_t      chosen = 0;   ///< the pass PLAY goes round: the one under the bar entered, to begin with
+        /// The element's key (ElementResolver) as the card held it before this
+        /// level was entered; 0 on the song, and on an element that had no
+        /// song.json yet or was laid and baked at once.
+        uint64_t    hashAtEntry = 0;
+        /// This enter took the snapshot of the element (ISongEngine::requestSnapshot())
+        /// -- none was pending -- so a leave that finds it unedited takes it off again.
+        bool        snapshotTaken = false;
     };
     enum class Job : uint8_t { None, Enter, Leave, Insert, Make };
     /// What poll() has to say about a job that has just ended.
@@ -96,7 +103,8 @@ public:
     uint8_t progress() const;
     /// What the job is doing: "stopping", "opening", "fitting" (back to the
     /// song's tempo), "loading" (the kit and instrument), "freezing",
-    /// "baking", "linking", "copying" (an element being made); empty while
+    /// "baking", "linking", "copying" (an element being made), "keeping" (an
+    /// element as it is, before an enter opens it); empty while
     /// none runs.
     const char* stage() const;
 
@@ -138,6 +146,16 @@ public:
     /// nothing in it, and the reference stays an id.
     bool insertSong(int track, uint32_t bar, const std::string& songName);
 
+    /// The element the last leave left was edited inside: the bake it was
+    /// mixed to is not the one the card held when it was entered (hashAtEntry).
+    /// A leave through several levels says it of the last level left. False
+    /// before any leave. An element left unchanged has its snapshot taken off
+    /// again, unless an earlier enter's was already pending; one left changed
+    /// keeps it, for the question that follows (Copy restores from it).
+    bool changed() const { return changed_; }
+    /// The ref of the element the last leave left.
+    const std::string& left() const { return left_; }
+
     /// Walks the job one step; Arrange's timer calls it every ~50 ms. Cheap
     /// while none runs: then it only asks for the song around the element
     /// again when the element's length has changed.
@@ -152,7 +170,7 @@ public:
 
 private:
     enum class Phase : uint8_t {
-        Idle, Making, Listing, Stopping, Opening, Retempo, Refit, Sounds, Freezing, Stretching, Baking, Reopening
+        Idle, Making, Listing, Stopping, Snapshotting, Opening, Retempo, Refit, Sounds, Freezing, Stretching, Baking, Reopening
     };
 
     /// The engine the job runs on, or null with lastError() set.
@@ -183,6 +201,9 @@ private:
     /// another edit), then gives the job up.
     Result refused(const std::string& why);
     Result stopped();
+    /// The element is kept as it is on the card, and its key noted, before it opens.
+    Result snapshotting();
+    Result toSnapshot();
     Result opened();
     Result retempo();
     Result entered();
@@ -226,6 +247,10 @@ private:
     int         freezeTrack_ = 0;
     bool        parentFreeze_ = false;   ///< Freezing is the parent's, before the element opens
     uint32_t    lastWaiting_ = 0;     ///< stretched blocks still unfitted at the last poll
+    bool        wasPending_ = false;  ///< a snapshot of ref_ was on the card before this enter asked for one
+    bool        changed_ = false;     ///< changed(), of the last level left
+    std::string left_;
+    bool        usesAsked_ = false;   ///< the library and its uses were read at the first poll since the breadcrumb began
     std::string bakeFile_;
     uint32_t    bakeFrames_ = 0;
     uint32_t    contextBars_ = 0;     ///< the element's length (playEndBars()) when its stem was asked for
