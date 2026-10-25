@@ -431,6 +431,44 @@ TEST_CASE("element nav: a bake the card cannot take after a leave leaves the blo
     CHECK_FALSE(r.engine->elementClipWhy(1, 0).empty());
 }
 
+TEST_CASE("element nav: a leave that needs the engine and whose bake fails keeps you in the element", "[element][nav]") {
+    Rig r;
+    Services svc(r.engine.get(), nullptr);
+    NavGuard guard;
+    writeAudioElement(r, kA, "Intro", 2, 120.0f);
+    openDemo(r, kA);
+    REQUIRE(elementNav().enter(1, 0));
+    REQUIRE(runNav().ok);
+    {
+        /* A stretched recording whose length the song does not hold: only the
+         * engine can tell it is fitted, so the leave bakes before it goes up. */
+        std::lock_guard<std::recursive_mutex> l(r.engine->songMutex());
+        r.engine->song().tracks[0].volume = 0.5f;
+        r.engine->song().tracks[0].stretch = StretchMode::KeepPitch;
+        REQUIRE(r.engine->song().tracks[0].clips[0].frames == 0);
+    }
+    r.engine->commit();
+    REQUIRE(waitFor([&] { return r.engine->stretchWaiting() == 0 && !r.engine->backgroundBusy(); }, 10000));
+    {
+        fs::remove_all(fs::path(r.platform.root) / AudioSong::bakeDir());
+        std::FILE* f = std::fopen((fs::path(r.platform.root) / AudioSong::bakeDir()).string().c_str(), "wb");
+        REQUIRE(f);
+        std::fclose(f);                      // .bake is a file: nothing can be made in it
+    }
+    REQUIRE(elementNav().leave());
+    const auto out = runNav();
+    CHECK(out.done);
+    CHECK_FALSE(out.ok);
+    CHECK_FALSE(out.error.empty());
+    CHECK(elementNav().lastError() == out.error);
+    CHECK_FALSE(elementNav().busy());
+    CHECK(elementNav().depth() == 1);
+    CHECK(openName(r) == kA);
+    CHECK(out.error.find("bake") != std::string::npos);    // the engine's bake, not the background's
+    std::lock_guard<std::recursive_mutex> l(r.engine->songMutex());
+    CHECK(r.engine->song().tracks[0].volume == 0.5f);      // the edit is still there
+}
+
 TEST_CASE("element nav: a deleted bake comes back after enter and leave", "[element][nav]") {
     Rig r;
     Services svc(r.engine.get(), nullptr);

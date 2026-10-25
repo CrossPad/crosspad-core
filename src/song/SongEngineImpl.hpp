@@ -405,6 +405,7 @@ struct MixJob {
     std::vector<BakedPiece> pieces;
     uint32_t total = 0;
     std::string path, lost;
+    bool noMemory = false;          ///< no room for the span's sum: it never began
     WavWriter w;
     BakeReaders readers;
     size_t first = 0;               ///< pieces before it end before the span
@@ -893,8 +894,8 @@ private:
     std::atomic<uint32_t> bakeQueued_{0};
     std::atomic<uint8_t>  bakeProgress_{0};
     bool        bakeOther_ = false;   ///< the queue is another song's (idle baking), not the open one's
-    /// The mix under way, and the sum of its span (worker only, allocated the
-    /// first time a bake is mixed).
+    /// The mix under way, and the sum of its span (worker only, held while a
+    /// mix is).
     std::unique_ptr<MixJob> mix_;
     int32_t*    mixAcc_ = nullptr;
     bool        gaveWay_ = false;     ///< pace() met a request (worker only)

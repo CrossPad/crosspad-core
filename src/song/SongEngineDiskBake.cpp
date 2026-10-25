@@ -32,6 +32,9 @@ float effectiveBpm(const AudioSong& s) { return s.bpm > 0.0f ? s.bpm : AudioSong
 /// How the context mix asks the card whether a file is there (and holds at
 /// least so many bytes).
 using IsFile = std::function<bool(const std::string& path, uint64_t atLeast)>;
+/// Asked before the context mix reads a song.json: false when the work has
+/// given way, and nothing more is read.
+using GoOn = std::function<bool()>;
 
 /// What a baked view lacked, in words for the block's why.
 std::string lacking(const BakedReport& r) {
@@ -65,9 +68,9 @@ void throughTrack(BakedPiece& pc, const float outer[2]) {
 class ContextMix {
 public:
     ContextMix(std::string songsRoot, uint32_t sampleRate, float bpm, std::string focus, const ElementHashReader& rd,
-               IsFile isFile)
+               IsFile isFile, GoOn goOn)
         : root_(std::move(songsRoot)), rate_(sampleRate), bpm_(bpm), focus_(std::move(focus)), rd_(rd),
-          isFile_(std::move(isFile)), resolver_(root_, rate_, bpm_, rd) {
+          isFile_(std::move(isFile)), goOn_(std::move(goOn)), resolver_(root_, rate_, bpm_, rd) {
         rd_.childKey = [this](const std::string& ref, uint64_t& key) {
             key = childKey(ref);
             return true;
@@ -201,7 +204,7 @@ private:
         auto it = songs_.find(ref);
         if (it == songs_.end()) {
             auto song = std::make_unique<AudioSong>();
-            if (song->load(root_ + "/" + ref) != SongLoad::Loaded) song.reset();
+            if (!goOn_() || song->load(root_ + "/" + ref) != SongLoad::Loaded) song.reset();
             it = songs_.emplace(ref, std::move(song)).first;
         }
         return it->second.get();
@@ -247,6 +250,7 @@ private:
     std::string       focus_;
     ElementHashReader rd_;
     IsFile            isFile_;
+    GoOn              goOn_;
     ElementResolver   resolver_;
     std::map<std::string, std::unique_ptr<AudioSong>> songs_;   ///< null: not readable
     std::map<std::string, bool> holds_;
@@ -560,7 +564,11 @@ void SongEngine::Impl::startMix(std::unique_ptr<MixJob> job, std::vector<BakedPi
     std::stable_sort(pieces.begin(), pieces.end(),
                      [](const BakedPiece& a, const BakedPiece& b) { return a.start < b.start; });
     j.pieces = std::move(pieces);
-    if (!mixAcc_) mixAcc_ = static_cast<int32_t*>(p.allocScratch(sz.chunkFrames * kMixSpanChunks * 8));
+    /* The span's sum from the ring segments' allocator, as a stretch's work:
+     * the engine arena first, never the last of the PSRAM the UI lives in, and
+     * given back as the mix ends -- a release ends it (mixMustEnd()). */
+    mixAcc_ = static_cast<int32_t*>(p.allocRingSegment(sz.chunkFrames * kMixSpanChunks * 8, 1));
+    j.noMemory = !mixAcc_;
     if (!mixAcc_ || !fsx::makeDir(std::string(p.songsRoot()) + "/" + AudioSong::bakeDir()) ||
         !j.w.open((path + ".part").c_str(), sampleRate_, 2)) {
         endMix(BakeRun::Failed);
@@ -642,7 +650,12 @@ void SongEngine::Impl::stepMix() {
 void SongEngine::Impl::endMix(BakeRun run) {
     std::unique_ptr<MixJob> job = std::move(mix_);
     MixJob& j = *job;
+    if (mixAcc_) p.freeRingSegment(mixAcc_);
+    mixAcc_ = nullptr;
     for (ClipReader& r : j.readers.slot) r.close();
+    const std::string unwritten = j.noMemory ? "The bake was not made: not enough memory for its mix."
+                                : !j.lost.empty() ? j.lost + " could not be read from the card whole."
+                                : std::string();
     const std::string part = j.path + ".part";
     const bool closed = j.w.close();
     if (run == BakeRun::Done) {
@@ -661,8 +674,8 @@ void SongEngine::Impl::endMix(BakeRun run) {
             case BakeRun::GaveWay:
                 break;
             case BakeRun::Failed:
-                bakeFailed(j.ref, j.lost.empty() ? "The bake was not written: the card is full or would not take it."
-                                                 : j.lost + " could not be read from the card whole.");
+                bakeFailed(j.ref, unwritten.empty() ? "The bake was not written: the card is full or would not take it."
+                                                    : unwritten);
                 break;
         }
         return;
@@ -679,8 +692,8 @@ void SongEngine::Impl::endMix(BakeRun run) {
         }
         case BakeRun::Failed:
             contextDone(j.gen, {}, j.at, j.frames, j.bpm, ContextState::Incomplete,
-                        j.lost.empty() ? "The song around the element was not written: the card is full or would not take it."
-                                       : j.lost + " could not be read from the card whole.");
+                        unwritten.empty() ? "The song around the element was not written: the card is full or would not take it."
+                                          : unwritten);
             break;
     }
 }
@@ -824,7 +837,11 @@ void SongEngine::Impl::doContext() {
     const uint32_t frames = from < cut ? std::min(req.frames, cut - from) : 0;
 
     ContextMix mix(p.songsRoot(), sampleRate_, bpm, req.chain.back(), pacedHashReader(),
-                   [this](const std::string& path, uint64_t atLeast) { return pacedIsFile(path, atLeast); });
+                   [this](const std::string& path, uint64_t atLeast) { return pacedIsFile(path, atLeast); },
+                   [this] {
+                       pace();
+                       return !gaveWay_;
+                   });
     std::vector<BakedPiece> pieces;
     const float unity[2] = {1.0f, 1.0f};
     mix.pieces(song, name, name, -(int64_t)from, from, from + frames, unity, pieces);

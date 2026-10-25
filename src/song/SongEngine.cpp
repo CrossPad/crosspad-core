@@ -62,6 +62,7 @@ void SongEngine::Impl::shutdown() {
     quit_.store(true);
     p.wake();
     p.joinWorker();
+    if (mix_) endMix(BakeRun::GaveWay);   // its .part and its span's sum given back
 }
 
 // ── IAudioNode (render) ───────────────────────────────────────────────
