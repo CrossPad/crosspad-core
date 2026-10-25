@@ -181,7 +181,8 @@ private:
 
     /// What an element block of @p song plays in the stem: its element's bake
     /// as it is now, or -- not on the card yet -- the older bake the block
-    /// holds, as playback plays it, so staleness is never silence. With
+    /// holds, as playback plays it (varispeed, when it was made at another
+    /// tempo), so staleness is never silence. With
     /// neither, the resolver's answer, which baked_view reports as unbaked.
     const ResolvedElement* child(const AudioSong& song, const std::string& identity, const std::string& label,
                                  const std::string& ref) {
@@ -200,6 +201,7 @@ private:
                 old = now;
                 old.file = c.file;
                 old.frames = c.frames;
+                old.bpm = c.bakeBpm;
                 old.exists = true;
                 plays = &old;
                 lack(identity + "|older " + ref + " " + c.file, label + ": Element " + ref + " plays an older bake.");
@@ -426,9 +428,11 @@ void SongEngine::Impl::linkBlocks(const std::string& dir,
     for (SongTrack& tr : song_.tracks) {
         for (SongClip& c : tr.clips) {
             const auto it = c.isElement() ? links.find(c.element) : links.end();
-            if (it == links.end() || (c.file == it->second.first && c.frames == it->second.second)) continue;
+            if (it == links.end() || (c.file == it->second.first && c.frames == it->second.second && c.bakeBpm == bakeBpm_))
+                continue;
             c.file = it->second.first;
             c.frames = it->second.second;
+            c.bakeBpm = bakeBpm_;
             changed = true;
         }
     }
@@ -449,9 +453,11 @@ void SongEngine::Impl::linkOnCard(const std::string& dir,
     for (SongTrack& tr : s.tracks) {
         for (SongClip& c : tr.clips) {
             const auto it = c.isElement() ? links.find(c.element) : links.end();
-            if (it == links.end() || (c.file == it->second.first && c.frames == it->second.second)) continue;
+            if (it == links.end() || (c.file == it->second.first && c.frames == it->second.second && c.bakeBpm == bakeBpm_))
+                continue;
             c.file = it->second.first;
             c.frames = it->second.second;
+            c.bakeBpm = bakeBpm_;
             changed = true;
         }
     }
@@ -639,7 +645,7 @@ void SongEngine::Impl::stepMix() {
         const uint32_t to = std::min(pc.end, spanEnd);
         const uint32_t x = j.readAt, y = std::min(to, x + sz.chunkFrames);
         ClipReader* r = j.readers.get(pc.path);
-        if (!r || !r->readWhole(x - pc.start + pc.offset, io_, y - x)) {
+        if (!r || !readAt(*r, x - pc.start + pc.offset, pc.step, io_, y - x)) {
             j.lost = pc.path;
             endMix(BakeRun::Failed);
             return;

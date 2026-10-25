@@ -51,6 +51,20 @@ uint32_t min_bake_frames(uint32_t sampleRate) {
     return (uint32_t)((float)sampleRate * 60.0f / kMaxSongBpm);
 }
 
+uint32_t varispeed_frames(uint32_t frames, float bakeBpm, float bpm, uint32_t beat) {
+    if (!(bakeBpm > 0.0f) || !(bpm > 0.0f) || !beat || std::fabs(bakeBpm - bpm) <= kSameTempoBpm) return frames;
+    /* Counted in beats, not scaled: the bake is whole beats of its tempo, and a
+     * pass scaled by the tempi would miss the song's truncated beat a little
+     * every beat, drifting against the bars pass after pass. */
+    const double beats = std::max(1.0, std::round((double)frames * bakeBpm / ((double)beat * bpm)));
+    return (uint32_t)std::min<double>(beats * beat, UINT32_MAX);
+}
+
+uint64_t varispeed_step(uint32_t frames, uint32_t pass) {
+    if (!pass || pass == frames) return 0;
+    return ((uint64_t)frames << kVarispeedFracBits) / pass;
+}
+
 uint32_t clip_block_end(const std::vector<SongClip>& clips, size_t i, uint32_t spb, uint32_t cut) {
     uint32_t end = bars_to_frames((uint64_t)clips[i].bar + clips[i].bars, spb);
     if (i + 1 < clips.size()) end = std::min(end, bars_to_frames(clips[i + 1].bar, spb));
@@ -113,7 +127,11 @@ std::vector<BakedPiece> baked_view(const AudioSong& song, const BakedViewEnv& en
                 const ResolvedElement* e = env.child ? env.child(c.element) : nullptr;
                 if (!e || !e->exists || e->frames < minFrames) { noteOnce(report.unresolved, c.element); continue; }
                 s.path = bakes + e->file;
-                element_passes(c.from, e->frames, spb, s.start, s.end, [&](uint32_t from, uint32_t to, uint32_t offset) {
+                /* One made at another tempo laid as flatten() lays it: varispeed, a pass the element's bars here. */
+                const uint32_t beat = song.beatsPerBar ? spb / song.beatsPerBar : 0;
+                const uint32_t pass = varispeed_frames(e->frames, e->bpm, env.bpm, beat);
+                s.step = varispeed_step(e->frames, pass);
+                element_passes(c.from, pass, spb, s.start, s.end, [&](uint32_t from, uint32_t to, uint32_t offset) {
                     BakedPiece pass = s;
                     pass.start = from;
                     pass.end = to;

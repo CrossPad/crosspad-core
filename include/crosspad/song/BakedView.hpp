@@ -60,6 +60,23 @@ uint32_t clip_block_end(const std::vector<SongClip>& clips, size_t i, uint32_t s
 void element_passes(uint32_t from, uint32_t frames, uint32_t spb, uint32_t start, uint32_t blockEnd,
                     const std::function<void(uint32_t start, uint32_t end, uint32_t offset)>& each);
 
+/// Fraction bits of a varispeed step: frames of a file per frame of the song, fixed point.
+constexpr int kVarispeedFracBits = 32;
+
+/// One pass of a bake of @p frames made at @p bakeBpm, played in a song at
+/// @p bpm whose beat is @p beat frames (samplesPerBar / beatsPerBar): the same
+/// beats at the song's beat, so the pass lands on the song's bars as the
+/// song's own bake of it will (varispeed). @p frames as it is when the tempi
+/// are the same (kSameTempoBpm), when @p bakeBpm is 0 -- a block linked before
+/// bakes kept their tempo, taken as made at the song's -- or with no beat. A
+/// bake shorter than a beat is a beat.
+uint32_t varispeed_frames(uint32_t frames, float bakeBpm, float bpm, uint32_t beat);
+
+/// The step that reads a bake of @p frames over a pass of @p pass frames:
+/// frames of the file per frame played, with kVarispeedFracBits fraction bits;
+/// 0 when they are the same length, which reads the file sample for sample.
+uint64_t varispeed_step(uint32_t frames, uint32_t pass);
+
 /// The gains, left then right, of a track at @p gain panned @p pan (-1..+1,
 /// SongTrack::pan): a balance as the Mixer's pan, the side it moves away from
 /// turned down -- as the song's render and a merge apply it.
@@ -74,6 +91,10 @@ struct BakedPiece {
     uint32_t start = 0, end = 0, offset = 0;
     float gain = 1.0f;
     float pan = 0.0f;   ///< the track's, SongTrack::pan
+    /// An element's bake made at another tempo: varispeed_step(), from which
+    /// @c offset and every frame after it are frames of the song, not of the
+    /// file. 0: the file as it is.
+    uint64_t step = 0;
 };
 
 /// What the view could not give, so a caller knows it is not whole.
@@ -96,7 +117,8 @@ struct BakedViewEnv {
 /// @p song in [a, b) frames of its own time, from files alone: recordings (their
 /// stretched copy where the track stretches and it exists), frozen seq tracks
 /// from their freeze files, element blocks from their resolved bakes going
-/// round as flatten() has them; silenced tracks left out; gain and pan are the
+/// round as flatten() has them (one made at another tempo than the song's
+/// varispeed, ResolvedElement::bpm); silenced tracks left out; gain and pan are the
 /// track's volume and pan. Pieces are cut to the window, their offsets moved with them.
 std::vector<BakedPiece> baked_view(const AudioSong& song, const BakedViewEnv& env, uint32_t a, uint32_t b,
                                    BakedReport& report);

@@ -682,8 +682,10 @@ void ElementNav::snapshotParent(ISongEngine& se)
             if (!focus || !spb || unheard) continue;
             const uint32_t start = bars_to_frames(c.bar, spb);
             const uint32_t end = clip_block_end(tr.clips, i, spb, cut);
-            /* A block never baked plays once, over its own length. */
-            const uint32_t frames = c.frames ? c.frames : end - start;
+            /* A block never baked plays once, over its own length; one baked at
+             * another tempo goes round as flatten() lays it, varispeed. */
+            const uint32_t beat = song.beatsPerBar ? spb / song.beatsPerBar : 0;
+            const uint32_t frames = c.frames ? varispeed_frames(c.frames, c.bakeBpm, effectiveBpm(song), beat) : end - start;
             std::vector<Pass>& into = (t == level_.track && c.bar <= level_.bar && level_.bar < c.bar + c.bars)
                 ? entered : others;
             element_passes(c.from, frames, spb, start, end, [&](uint32_t at, uint32_t to, uint32_t offset) {
@@ -1254,6 +1256,7 @@ ElementNav::Result ElementNav::linked()
                 if (bakeFile_.empty()) continue;   // a leave that did not wait: the old bake plays until relinked
                 c.file = bakeFile_;
                 c.frames = bakeFrames_;
+                c.bakeBpm = songBpm_;   // the tempo refit() put back before the bake
             }
         }
     }

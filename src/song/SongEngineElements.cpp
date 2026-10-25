@@ -268,8 +268,9 @@ SongOpState SongEngine::Impl::doBakeElement() {
     ElementResolver children(p.songsRoot(), sampleRate_, bpm, rd);
     /* A block plays its element's bake as it is now when that is on the card,
      * and is named by it in the key; one whose element has no such bake yet is
-     * mixed and named by the bake it holds -- a bake of an older child is never
-     * named as one of the newer. */
+     * mixed and named by the bake it holds, varispeed when it was made at
+     * another tempo -- a bake of an older child is never named as one of the
+     * newer. */
     for (SongTrack& tr : copy.tracks) {
         for (SongClip& c : tr.clips) {
             if (!c.isElement()) continue;
@@ -277,6 +278,7 @@ SongOpState SongEngine::Impl::doBakeElement() {
             if (!e.exists) continue;
             c.file = e.file;
             c.frames = e.frames;
+            c.bakeBpm = e.bpm;
         }
     }
     rd.childKey = [&children](const std::string& ref, uint64_t& key) {
@@ -326,7 +328,7 @@ SongOpState SongEngine::Impl::doBakeElement() {
                 if (sg.start >= f + n) break;
                 const uint32_t x = std::max(sg.start, f), y = std::min(sg.end, f + n);
                 if (rdr[t].path != sg.path && !(p.storageReady() && rdr[t].open(sg.path))) continue;
-                rdr[t].read(x - sg.start + sg.offset, io_, y - x);
+                readAt(rdr[t], x - sg.start + sg.offset, sg.step, io_, y - x);
                 int32_t* d = acc_ + (x - f) * 2;
                 for (uint32_t k = 0; k < (y - x) * 2; ++k) d[k] += (int32_t)((float)io_[k] * gs[k & 1]);
             }

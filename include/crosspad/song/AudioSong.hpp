@@ -58,8 +58,10 @@ SeqPatternPtr makeSeqPattern(uint16_t bars, std::vector<SeqNote> notes);
 /// kept as a project of its own in the library, <songsRoot>/.elements/, and
 /// played from a bake of it (a WAV in <songsRoot>/.bake/). Then @c element names it, @c file is the
 /// bake's name (empty until it has been baked), @c frames one pass of the
-/// element at the bake's tempo (0 until baked) and @c from the element bar the
-/// block starts on; @c bar and @c bars are as for any block.
+/// element at the bake's tempo (0 until baked), @c bakeBpm that tempo and
+/// @c from the element bar the block starts on; @c bar and @c bars are as for
+/// any block. A bake made at another tempo than the song's plays varispeed
+/// until the song's own is made (varispeed_frames(), BakedView.hpp).
 struct SongClip {
     std::string file;        ///< name inside <project>/clips/; empty on a seq track
     uint32_t    bar  = 0;    ///< 0-based start bar
@@ -69,6 +71,7 @@ struct SongClip {
     uint16_t    from = 0;    ///< seq: the bar of its notes the block starts on
     SeqPatternPtr notes;     ///< seq: the block's own notes; null = the track's scene
     std::string element;     ///< element ref (.elements/E%08X); empty on every other block
+    float       bakeBpm = 0; ///< element: the tempo @c file was baked at; 0 = the song's (linked before bakes kept it)
 
     bool isElement() const { return !element.empty(); }
 };
@@ -209,7 +212,7 @@ public:
     static constexpr int kTracks = 4;
     /// 2: seq blocks carry notes of their own. 3: two seq tracks, a track
     /// with a kit of its own. 4: a Pitch track beside kit tracks. 5: element
-    /// clips (SongClip::element) and a title. Each written
+    /// clips (SongClip::element, ::bakeBpm) and a title. Each written
     /// only by a song that needs it, so the rest stay readable by firmware from
     /// before -- which refuses a newer one rather than open it and drop what it
     /// cannot hold on its next save.

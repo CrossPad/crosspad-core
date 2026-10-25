@@ -112,6 +112,9 @@ uint64_t element_content_hash(const AudioSong& song, const std::string& identity
             if (!c.isElement() && tr.kind == TrackKind::Audio) fileStamp(f, rd, song.clipPath(c.file));
             /* A resolved element's stored length is the bake's, which its key already says. */
             f.value(c.bar); f.value(c.bars); f.value(c.offset); f.value(resolved ? 0u : c.frames); f.value(c.from);
+            /* A bake held, not resolved, plays varispeed by the tempo it was made at.
+             * Left out at 0, so no key of a block linked before bakes kept it changes. */
+            if (!resolved && c.bakeBpm > 0.0f) f.value((int64_t)std::lround(c.bakeBpm * kBpmScale));
             notesOf(f, c.notes);
         }
         /* A freeze's sound moved under its name (a kit saved): the bake is of the old one.

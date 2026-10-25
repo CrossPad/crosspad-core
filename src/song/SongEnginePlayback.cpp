@@ -360,6 +360,8 @@ Arrangement SongEngine::Impl::flatten(const AudioSong& song) const {
      * tempo a song may have. One made before the song slowed down is shorter
      * than a bar and still goes round. */
     const uint32_t minBakeFrames = min_bake_frames(sampleRate_);
+    const float bpm = song.bpm > 0.0f ? song.bpm : AudioSong::kDefaultBpm;
+    const uint32_t beat = song.beatsPerBar ? a.samplesPerBar / song.beatsPerBar : 0;
     for (int t = 0; t < kTracks; ++t) {
         if (song.tracks[t].kind == TrackKind::Seq) continue;   // no audio of its own
         const auto& cs = song.tracks[t].clips;
@@ -370,13 +372,18 @@ Arrangement SongEngine::Impl::flatten(const AudioSong& song) const {
             /* An element goes round its bake, a segment a pass: the first
              * from the element bar the block starts on, the rest whole. Not
              * baked yet (no file, no length) it plays nothing. Never fitted:
-             * the bake is made at the song's tempo. A pass shorter than any
-             * bake can be is no bake (a song.json cut or edited by hand): as
-             * passes it would be millions of segments, under the song's lock. */
+             * the bake is made at the song's tempo -- one made at another,
+             * before the tempo changed, plays varispeed, its passes the
+             * element's bars at this one, until the relink pass links the
+             * bake at this tempo. A pass shorter than any bake can be is no
+             * bake (a song.json cut or edited by hand): as passes it would
+             * be millions of segments, under the song's lock. */
             if (cs[i].isElement()) {
                 if (cs[i].file.empty() || cs[i].frames < minBakeFrames) continue;
                 s.path = bakePath(cs[i].file);
-                element_passes(cs[i].from, cs[i].frames, a.samplesPerBar, s.start, s.end,
+                const uint32_t pass = varispeed_frames(cs[i].frames, cs[i].bakeBpm, bpm, beat);
+                s.step = varispeed_step(cs[i].frames, pass);
+                element_passes(cs[i].from, pass, a.samplesPerBar, s.start, s.end,
                                [&](uint32_t from, uint32_t to, uint32_t offset) {
                     Segment pass = s;
                     pass.start = from;
@@ -408,6 +415,13 @@ Arrangement SongEngine::Impl::flatten(const AudioSong& song) const {
 
 std::string SongEngine::Impl::bakePath(const std::string& file) const {
     return std::string(p.songsRoot()) + "/" + AudioSong::bakeDir() + "/" + file;
+}
+
+bool SongEngine::Impl::readAt(ClipReader& r, uint32_t clipFrame, uint64_t step, int16_t* dst, uint32_t n) {
+    if (!step) return r.readWhole(clipFrame, dst, n);
+    /* The file's position is the song's: a chunk goes on exactly where the last
+     * one ended, and a loop or a locate lands where it should. */
+    return r.readVarispeed((uint64_t)clipFrame * step, step, dst, n, vsrc_, sz.chunkFrames + kVarispeedGuard);
 }
 
 /// A seq track's blocks as stretches of the song at @p spb samples a
@@ -918,7 +932,7 @@ void SongEngine::Impl::fillRings() {
          * least a bar, so two at most, and a third for safety. The path
          * is copied into the piece rather than a string: this runs every
          * 20 ms, and small heap blocks come from internal RAM. */
-        struct Piece { char path[160]; uint32_t at, len, clipFrame; };
+        struct Piece { char path[160]; uint32_t at, len, clipFrame; uint64_t step; };
         Piece pieces[kTracks][3];
         int pieceCount[kTracks] = {};
         Piece ctxPieces[3];
@@ -957,6 +971,7 @@ void SongEngine::Impl::fillRings() {
                     pc.at = at;
                     pc.len = run;
                     pc.clipFrame = off;
+                    pc.step = 0;
                     at += run;
                     left -= run;
                     off = 0;
@@ -985,6 +1000,7 @@ void SongEngine::Impl::fillRings() {
                     pc.at = a - wp;
                     pc.len = b - a;
                     pc.clipFrame = a - sg.start + sg.offset;
+                    pc.step = sg.step;
                 }
             };
             for (int t = 0; t < kTracks; ++t) {
@@ -1015,7 +1031,7 @@ void SongEngine::Impl::fillRings() {
                     openFailures_.fetch_add(1, std::memory_order_relaxed);
                     continue;
                 }
-                readers_[t].read(pc.clipFrame, chunk, pc.len);
+                readAt(readers_[t], pc.clipFrame, pc.step, chunk, pc.len);
                 /* One card access (an open included): a long one is the
                  * card held by someone else. */
                 dbgMax(dbgReadMaxUs_, p.nowUs() - r0);
@@ -1051,7 +1067,7 @@ void SongEngine::Impl::fillRings() {
                 openFailures_.fetch_add(1, std::memory_order_relaxed);
                 continue;
             }
-            ctxReader_.read(pc.clipFrame, chunk, pc.len);
+            readAt(ctxReader_, pc.clipFrame, pc.step, chunk, pc.len);
             dbgMax(dbgReadMaxUs_, p.nowUs() - r0);
             int32_t* d = acc + pc.at * 2;
             for (uint32_t k = 0; k < pc.len * 2; ++k) d[k] += chunk[k];

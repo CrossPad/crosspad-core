@@ -289,6 +289,9 @@ SongLoad AudioSong::load(const std::string& projectDir)
             clip.frames = c["frames"] | 0u;
             clip.from = c["from"] | 0u;
             clip.element = c["element"] | "";
+            /* Nothing usable -- absent, as before bakes kept their tempo -- is the song's own. */
+            const float bakeBpm = c["bakeBpm"] | 0.0f;
+            if (clip.isElement() && bakeBpm > 0.0f) clip.bakeBpm = bakeBpm;
             /* A seq track's blocks have no file: they are notes, their own
              * or the track's scene. */
             const bool seq = tracks[t].kind == TrackKind::Seq;
@@ -455,6 +458,7 @@ bool AudioSong::save() const
             if (c.frames) co["frames"] = c.frames;
             if (c.from) co["from"] = c.from;
             if (c.isElement()) co["element"] = c.element;
+            if (c.isElement() && c.bakeBpm > 0.0f) co["bakeBpm"] = c.bakeBpm;
             if (t.kind == TrackKind::Seq && c.notes) {
                 JsonObject no = co["notes"].to<JsonObject>();
                 no["bars"] = c.notes->bars;

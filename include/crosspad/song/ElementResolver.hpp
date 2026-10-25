@@ -20,6 +20,7 @@ struct ResolvedElement {
     uint64_t    key = 0;
     std::string file;            ///< the bake's name in the cache (element_bake_file(key))
     uint32_t    frames = 0;      ///< one pass of it at the resolver's tempo and rate
+    float       bpm = 0.0f;      ///< the tempo @c frames and the bake are at (the resolver's); 0: the song's it plays in
     bool        exists = false;  ///< its bake is on the card
     bool        bakeable = false; ///< every heard seq track is frozen to files that are there and every child exists or is bakeable
     std::string why;             ///< the first thing that makes it not bakeable; empty when it is

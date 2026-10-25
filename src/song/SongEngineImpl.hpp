@@ -49,6 +49,9 @@ constexpr int      kTracks           = AudioSong::kTracks;
 constexpr uint32_t kBounceMinFrames  = 8192;   // 32 kB (~170 ms), the least a bounce starts with
 static_assert(WavWriter::kHeaderBytes % 4 == 0, "the WAV header is whole frames");
 constexpr uint32_t kPrimeFrames      = 4096;
+/// A varispeed read's source frames beyond a chunk: the second frame each
+/// interpolation takes, and the frame the next chunk goes on from.
+constexpr uint32_t kVarispeedGuard   = 2;
 /// The tracks' meters: the loudest frame of each track in every hop of the
 /// ring, kept for long enough that what RT is playing is still there.
 constexpr uint32_t kMeterHop         = 1024;   // ~23 ms
@@ -240,8 +243,20 @@ struct ClipReader {
     uint32_t    frames = 0;
     uint16_t    channels = 2;
     uint32_t    cursor = UINT32_MAX;   // frame the file position is at
+    /* readVarispeed(): the last two frames of the file it read, by where they
+     * are in it. A pass reads its next chunk on from them instead of seeking
+     * back for the frame two chunks' interpolations share; a jump or another
+     * pass is somewhere else in the file, and reads afresh. */
+    uint32_t    heldAt = UINT32_MAX;
+    int16_t     held[2 * kVarispeedGuard] = {};
 
-    void close() { if (fd >= 0) fsx::close(fd); fd = -1; path.clear(); cursor = UINT32_MAX; }
+    void close() {
+        if (fd >= 0) fsx::close(fd);
+        fd = -1;
+        path.clear();
+        cursor = UINT32_MAX;
+        heldAt = UINT32_MAX;
+    }
 
     bool readAll(void* dst, size_t n) { return fsx::readSome(fd, dst, n) == (long)n; }
 
@@ -313,12 +328,61 @@ struct ClipReader {
         if (got < n) std::memset(dst + got * 2, 0, (n - got) * 4);
         return got == want;
     }
+
+    /// readWhole() of a file played at another speed: @p n stereo frames from
+    /// @p pos on, @p step apart -- positions in the file with kVarispeedFracBits
+    /// fraction bits (varispeed_step()) -- each the two frames around it
+    /// interpolated in a straight line: a stop-gap until a bake at the song's
+    /// tempo replaces it, so plain and cheap. Read @p scratchFrames frames
+    /// (at least kVarispeedGuard) at a time through @p scratch; past the
+    /// file's end is silence.
+    bool readVarispeed(uint64_t pos, uint64_t step, int16_t* dst, uint32_t n, int16_t* scratch, uint32_t scratchFrames) {
+        constexpr int kFracBits = 15;   // of the weight: (difference x weight) stays inside 32 bits
+        bool whole = true;
+        for (uint32_t k = 0; k < n;) {
+            const uint64_t x = pos + (uint64_t)k * step;
+            const uint32_t first = (uint32_t)(x >> kVarispeedFracBits);
+            /* As many frames played as have both their file frames in scratch. */
+            const uint64_t limit = ((uint64_t)first + scratchFrames - 1) << kVarispeedFracBits;
+            const uint32_t m = (uint32_t)std::max<uint64_t>(1, std::min<uint64_t>(n - k, (limit - x + step - 1) / step));
+            const uint32_t last = (uint32_t)((x + (uint64_t)(m - 1) * step) >> kVarispeedFracBits) + 1;
+            whole = source(first, last - first + 1, scratch) && whole;
+            for (uint32_t j = 0; j < m; ++j) {
+                const uint64_t xj = x + (uint64_t)j * step;
+                const int16_t* a = scratch + ((uint32_t)(xj >> kVarispeedFracBits) - first) * 2;
+                const int32_t w = (int32_t)((xj & ((1ull << kVarispeedFracBits) - 1)) >> (kVarispeedFracBits - kFracBits));
+                int16_t* d = dst + (size_t)(k + j) * 2;
+                d[0] = (int16_t)(a[0] + (((a[2] - a[0]) * w) >> kFracBits));
+                d[1] = (int16_t)(a[1] + (((a[3] - a[1]) * w) >> kFracBits));
+            }
+            k += m;
+        }
+        return whole;
+    }
+
+private:
+    /// Frames [@p first, @p first + @p count) of the file into @p s, the two held
+    /// ones taken where they fall in it; at least kVarispeedGuard of them,
+    /// whose last two are held after.
+    bool source(uint32_t first, uint32_t count, int16_t* s) {
+        uint32_t have = 0;
+        if (heldAt != UINT32_MAX && first >= heldAt && first < heldAt + kVarispeedGuard) {
+            have = std::min(heldAt + kVarispeedGuard - first, count);
+            std::memcpy(s, held + (first - heldAt) * 2, have * 4);
+        }
+        const bool whole = have == count || readWhole(first + have, s + have * 2, count - have);
+        heldAt = first + count - kVarispeedGuard;
+        std::memcpy(held, s + (count - kVarispeedGuard) * 2, sizeof held);
+        return whole;
+    }
 };
 
 /// What playback plays: the song flattened to sample ranges, rebuilt on
 /// every commit. The worker reads it under snapMutex_; RT never does.
 /// A block as samples of the song, and where in its file it starts.
-struct Segment { std::string path; uint32_t start = 0, end = 0, offset = 0; };
+/// @c step: an element's bake made at another tempo, read varispeed
+/// (varispeed_step(); @c offset is then in frames of the song); 0 reads it as it is.
+struct Segment { std::string path; uint32_t start = 0, end = 0, offset = 0; uint64_t step = 0; };
 struct Arrangement {
     std::vector<Segment> tracks[kTracks];
     /// The context stem under an element being edited: one segment, played at
@@ -795,6 +859,10 @@ private:
     void worker();
     /// Where the bake named @p file lives: one cache for every song, under the songs root.
     std::string bakePath(const std::string& file) const;
+    /// @p n frames of @p r from @p clipFrame of a segment or piece read at
+    /// @p step (Segment::step): readWhole() at 0, else varispeed through vsrc_.
+    /// Worker only.
+    bool readAt(ClipReader& r, uint32_t clipFrame, uint64_t step, int16_t* dst, uint32_t n);
     bool stretchReady(const std::string& path) const;
     struct StretchJob { std::string src, dst; uint32_t offset = 0, frames = 0, outFrames = 0; bool repitch = false; };
     uint32_t nextStretch(StretchJob* job);
@@ -1028,6 +1096,7 @@ private:
     std::atomic<bool>     stopReq_{false};
     std::vector<int16_t>  scratch_;
     int16_t*              io_ = nullptr;           // worker's card buffer, PSRAM
+    int16_t*              vsrc_ = nullptr;         // worker's varispeed source frames (readAt()), PSRAM
     int32_t*              acc_ = nullptr;          // worker's mix-down sum, PSRAM
     uint32_t              sampleRate_ = 44100;
     // Bounce.

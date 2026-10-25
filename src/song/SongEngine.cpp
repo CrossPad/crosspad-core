@@ -83,7 +83,9 @@ bool SongEngine::Impl::ensureWorker() {
      * and the sum the tracks are mixed into. */
     if (!io_) io_ = static_cast<int16_t*>(p.allocScratch(sz.chunkFrames * 4));
     if (!acc_) acc_ = static_cast<int32_t*>(p.allocScratch(sz.chunkFrames * 8));
-    if (!io_ || !acc_) return false;
+    /* And a chunk of a file read at another speed, before it is interpolated into io_. */
+    if (!vsrc_) vsrc_ = static_cast<int16_t*>(p.allocScratch((sz.chunkFrames + kVarispeedGuard) * 4));
+    if (!io_ || !acc_ || !vsrc_) return false;
     workerStarted_.store(p.startWorker(worker_entry, this));
     return workerStarted_.load();
 }

@@ -45,6 +45,7 @@ ResolvedElement ElementResolver::make(const std::string& ref) {
     const bool apart = std::fabs((song.bpm > 0.0f ? song.bpm : AudioSong::kDefaultBpm) - bpm_) > kSameTempoBpm;
     const uint32_t spb = AudioSong::samplesPerBar(rate_, bpm_, song.beatsPerBar);
     r.frames = bars_to_frames(song.playEnd(), spb);
+    r.bpm = bpm_;
 
     /* Children first: their keys are part of this one's hash. */
     for (int t = 0; t < AudioSong::kTracks; ++t) {
