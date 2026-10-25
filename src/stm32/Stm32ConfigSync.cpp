@@ -56,6 +56,8 @@ bool Stm32ConfigSync::pushAll(const Stm32Settings& s) {
     w8(REG_CTL_BTN_HIT_MIN_MS, s.hitMinMs);
     w8(REG_CTL_BTN_HIT_PEAK_DROP, s.hitPeakDrop);
     w8(REG_CTL_BTN_HIT_PEAK_SAMPLES, s.hitPeakSamples);
+    // TRS MIDI OUT type (0x0355, STM 1.14; an older STM ignores the write).
+    w8(REG_CTL_MIDI_OUT_TYPE, s.midiOutType);
 
     // analog globals (0x033E..0x0344)
     w8(REG_CTL_VEL_CURVE_DEF, s.velCurveDef);

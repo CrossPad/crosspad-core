@@ -76,6 +76,9 @@ struct Stm32Settings {
     uint8_t hitMinMs       = 2;
     uint8_t hitPeakDrop    = 32;
     uint8_t hitPeakSamples = 2;
+    // TRS MIDI OUT wiring (REG_CTL_MIDI_OUT_TYPE, STM 1.14): 0 Type A (data
+    // on the tip), 1 Type B (data on the ring). An older STM ignores it.
+    uint8_t midiOutType = 0;
 
     // per-pad config — access ONLY via the accessors below.
 #if defined(PAD_CONFIG_PER_PAD)
@@ -161,6 +164,7 @@ struct Stm32Settings {
         hitMinMs       = s.readU8("cfg_stm", "hit_min_ms", hitMinMs);
         hitPeakDrop    = s.readU8("cfg_stm", "hit_drop", hitPeakDrop);
         hitPeakSamples = s.readU8("cfg_stm", "hit_samples", hitPeakSamples);
+        midiOutType    = s.readU8("cfg_stm", "midi_out", midiOutType);
 #if defined(PAD_CONFIG_PER_PAD)
         for (int i = 0; i < kPads; ++i) {
             char k[12];
@@ -208,6 +212,7 @@ struct Stm32Settings {
         s.saveU8("cfg_stm", "hit_min_ms", hitMinMs);
         s.saveU8("cfg_stm", "hit_drop", hitPeakDrop);
         s.saveU8("cfg_stm", "hit_samples", hitPeakSamples);
+        s.saveU8("cfg_stm", "midi_out", midiOutType);
 #if defined(PAD_CONFIG_PER_PAD)
         for (int i = 0; i < kPads; ++i) {
             char k[12];

@@ -11,7 +11,8 @@
  * config sync), crosspad-gui, the ESP-IDF stm32_hal component (which includes
  * this file through stm32_reg_map.h) and the Arduino Wire implementation.
  *
- * Last sync: 2026-10-04 (0x0010 adds REG_IDENT_SERIAL / REG_IDENT_OTP_BLOCK, the PCB serial from OTP).
+ * Last sync: 2026-10-25 (0x0012 adds REG_CTL_MIDI_* / REG_DEBUG_MIDI, TRS MIDI OUT).
+ * Previous: 2026-10-04 (0x0010 adds REG_IDENT_SERIAL / REG_IDENT_OTP_BLOCK, the PCB serial from OTP).
  * Previous: 2026-08-30 (0x000F adds REG_IDENT_FW_PCB, REG_IDENT_PCB_REV becomes the OTP board rev).
  * Previous: 2026-08-29 (0x000E adds REG_CMD_FW_UPDATE / FW_UPDATE_MAGIC —
  * the ESP-driven STM reflash). Previous: 2026-08-25 (mirror of STM 0x000B — REG_IDENT_BOOT_COUNT,
@@ -44,9 +45,10 @@ extern "C" {
  * block. Bumped 2026-08-25 to 0x000B for power-button wake-hold time and
  * active/qualified flags. Bumped 2026-08-28 to 0x000C for the link-watchdog
  * reset telemetry (REG_ESP_RST_WD_*). Bumped 2026-10-17 to 0x0011 for the
- * adaptive hit window (REG_CTL_BTN_HIT_*, STM 1.12). Keep in sync with
+ * adaptive hit window (REG_CTL_BTN_HIT_*, STM 1.12). Bumped 2026-10-25 to
+ * 0x0012 for TRS MIDI OUT (REG_CTL_MIDI_*, STM 1.14). Keep in sync with
  * CrossPad_STM32_r20 app/inc/reg_map.h. */
-#define STM32_PROTO_VERSION         0x0011
+#define STM32_PROTO_VERSION         0x0012
 
 /* Block bases. */
 #define REG_IDENTITY_BASE           0x0000
@@ -320,6 +322,24 @@ extern "C" {
 #define REG_CTL_SIM_PADS_LO         (REG_CONTROL_BASE + 0x53)  /* bits 0..7  */
 #define REG_CTL_SIM_PADS_SECS       (REG_CONTROL_BASE + 0x54)  /* arms; 0 = release */
 
+/* TRS MIDI OUT (RW, proto 0x0012, STM 1.14). Type A: data on the tip line
+ * (PA4), Type B: on the ring line (PA5). The skew and the bit-flip injector
+ * are bench hooks for an OUT -> IN loop; the STM resets them to off. */
+#define REG_CTL_MIDI_OUT_TYPE       (REG_CONTROL_BASE + 0x55)  /* 0 Type A, 1 Type B */
+#define REG_CTL_MIDI_TX_SKEW        (REG_CONTROL_BASE + 0x56)  /* int8: TX baud offset, 0.1 % steps */
+#define REG_CTL_MIDI_FLIP_SEG       (REG_CONTROL_BASE + 0x57)  /* MIDI_SEG_*, 0 = off */
+#define REG_CTL_MIDI_FLIP_B3        (REG_CONTROL_BASE + 0x58)  /* u32 BE: each bit flips with 1/N, */
+#define REG_CTL_MIDI_FLIP_B2        (REG_CONTROL_BASE + 0x59)  /* 0 = off; B0 commits */
+#define REG_CTL_MIDI_FLIP_B1        (REG_CONTROL_BASE + 0x5A)
+#define REG_CTL_MIDI_FLIP_B0        (REG_CONTROL_BASE + 0x5B)
+#define MIDI_SEG_OFF                0
+#define MIDI_SEG_TRS_OUT            1   /* bytes queued for the jack */
+#define MIDI_SEG_TRS_IN             2   /* bytes received on MIDI IN */
+#define MIDI_SEG_TO_ESP             3   /* bytes the STM hands the ESP */
+#define MIDI_SEG_TO_USB             4   /* bytes the STM hands the host */
+#define MIDI_SEG_USB_OUT            5   /* bytes the host sent, before routing */
+#define MIDI_SEG_ESP_IN             6   /* bytes from the ESP, before routing */
+
 /* Command (WO trigger — write any byte to fire). */
 #define REG_CMD_DFU                 (REG_COMMAND_BASE + 0x00)
 #define REG_CMD_POWEROFF            (REG_COMMAND_BASE + 0x01)
@@ -338,8 +358,15 @@ extern "C" {
 #define REG_CMD_VPAD                (REG_COMMAND_BASE + 0x0E)  /* 1 = start staged vpad run, 0 = stop */
 #define REG_CMD_FW_UPDATE           (REG_COMMAND_BASE + 0x0F)  /* write FW_UPDATE_MAGIC: STM enters its LPUART1 flasher (proto 0x000E) */
 #define FW_UPDATE_MAGIC             0xA5
+#define REG_CMD_MIDI_STATS_RESET    (REG_COMMAND_BASE + 0x10)  /* clear the REG_DEBUG_MIDI counters (proto 0x0012) */
 /* REG_DEBUG +0x58..0x78: vpad sent, remaining, short esp, short usb, esp DMA busy, usb busy, esp hwm, usb hwm, pressure sent */
 #define REG_DEBUG_VPAD              (REG_DEBUG_BASE + 0x58)
+/* REG_DEBUG +0x90..0xD3: MIDI path counters, u32 LE each, in this order:
+ * usb_out, trs_queued, trs_sent, trs_drop, in_rx, in_fe, in_ne, in_ore,
+ * in_drop, to_esp, to_esp_drop, to_usb, to_usb_drop, esp_in, flips,
+ * line_min (PA4 lowest ADC in bits 0..15, PA5 in 16..31), in_rearm. */
+#define REG_DEBUG_MIDI              (REG_DEBUG_BASE + 0x90)
+#define REG_DEBUG_MIDI_WORDS        17
 
 /* SysEx vendor command bytes — wire: F0 7D <CMD> <ARG...> F7. */
 #define CROSSPAD_SYSEX_PWR_IRQ      0x50   /* ARG = PWR_STATE_* — IRQ z STM */
