@@ -375,7 +375,7 @@ Arrangement SongEngine::Impl::flatten(const AudioSong& song) const {
         const auto& cs = song.tracks[t].clips;
         for (size_t i = 0; i < cs.size(); ++i) {
             Segment s;
-            s.start = cs[i].bar * a.samplesPerBar;
+            s.start = bars_to_frames(cs[i].bar, a.samplesPerBar);
             s.end   = clip_block_end(cs, i, a.samplesPerBar, cut);
             /* An element goes round its bake, a segment a pass: the first
              * from the element bar the block starts on, the rest whole. Not

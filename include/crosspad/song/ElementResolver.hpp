@@ -37,6 +37,9 @@ public:
 
     /// @p ref's element: <songsRoot>/<ref> is its project folder. The answer
     /// stays valid as long as the resolver.
+    ElementResolver(const ElementResolver&) = delete;   // the hash's childKey points back at it
+    ElementResolver& operator=(const ElementResolver&) = delete;
+
     const ResolvedElement& resolve(const std::string& ref);
 
 private:

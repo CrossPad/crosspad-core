@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include <catch2/catch_test_macros.hpp>
 
-#include "crosspad/song/ElementResolver.hpp"
+#include "crosspad/song/BakedView.hpp"
 
 #include <filesystem>
 #include <fstream>
@@ -122,6 +122,39 @@ TEST_CASE("resolver: an unfrozen seq track makes an element, and the one above i
     CHECK(rs.resolve(kC).why.find("Track 4") != std::string::npos);
     CHECK_FALSE(rs.resolve(kB).bakeable);
     CHECK(rs.resolve(kB).why.find(kC) != std::string::npos);
+}
+
+TEST_CASE("resolver: a stretched track not fitted yet, or a freeze at another tempo, is not bakeable", "[song][resolver]") {
+    Card card("cp_resolver_tempo");
+    card.write(kC, 100);
+    AudioSong s;
+    REQUIRE(s.load(card.root + "/" + kC) == SongLoad::Loaded);
+    s.tracks[0].stretch = StretchMode::KeepPitch;
+    s.tracks[0].clips[0].frames = 2 * 2 * kRate / 2;   // 2:1 against its two bars
+    REQUIRE(s.save());
+    ElementResolver unfitted(card.root, kRate, 120.0f, card.reader());
+    CHECK_FALSE(unfitted.resolve(kC).bakeable);
+    CHECK(unfitted.resolve(kC).why.find("not fitted") != std::string::npos);
+    const SongClip& c = s.tracks[0].clips[0];
+    const std::string copy = s.clipPath(stretchName(c, 2 * 2 * kRate, StretchMode::KeepPitch));
+    fs::create_directories(fs::path(copy).parent_path());
+    std::ofstream(copy) << "fitted";
+    ElementResolver fitted(card.root, kRate, 120.0f, card.reader());
+    CHECK(fitted.resolve(kC).bakeable);
+
+    s.tracks[3].inUse = true;
+    s.tracks[3].kind = TrackKind::Seq;
+    SongClip fz;
+    fz.file = "f.wav";
+    fz.bars = 2;
+    s.tracks[3].freeze.push_back(fz);
+    REQUIRE(s.save());
+    std::ofstream(s.clipPath("f.wav")) << "frozen";
+    ElementResolver same(card.root, kRate, 120.0f, card.reader());
+    CHECK(same.resolve(kC).bakeable);
+    ElementResolver other(card.root, kRate, 100.0f, card.reader());
+    CHECK_FALSE(other.resolve(kC).bakeable);
+    CHECK(other.resolve(kC).why.find("another tempo") != std::string::npos);
 }
 
 TEST_CASE("resolver: a cycle is reported, not followed", "[song][resolver]") {

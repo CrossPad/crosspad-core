@@ -107,7 +107,7 @@ TEST_CASE("baked view: a stretched track plays its fitted copy when there is one
     t.stretch = StretchMode::KeepPitch;
     SongClip c = block("a.wav", 0, 2);
     c.offset = 10;
-    c.frames = 1000;
+    c.frames = kBar;
     v.song.addClip(0, c);
     const std::string fitted = v.song.clipPath(stretchName(c, 2 * kBar, StretchMode::KeepPitch));
     v.files = {"/songs/s/clips/a.wav"};
@@ -115,10 +115,14 @@ TEST_CASE("baked view: a stretched track plays its fitted copy when there is one
     auto p = v.view(0, 2 * kBar, r);
     REQUIRE(p.size() == 1);
     CHECK(p[0].path == "/songs/s/clips/a.wav");
-    CHECK(p[0].end == 1000);
+    CHECK(p[0].end == kBar);
     CHECK(p[0].offset == 10);
+    CHECK_FALSE(r.complete());   // laid as recorded, but not fitted yet
+    CHECK(r.missingFiles == std::vector<std::string>{fitted});
     v.files.insert(fitted);
+    r = BakedReport{};
     p = v.view(0, 2 * kBar, r);
+    CHECK(r.complete());
     REQUIRE(p.size() == 1);
     CHECK(p[0].path == fitted);
     CHECK(p[0].end == 2 * kBar);
@@ -156,4 +160,45 @@ TEST_CASE("baked view: a silenced track and the silent element give nothing", "[
     v.env.silentRef = kElem;
     CHECK(v.view(0, 2 * kBar, r).empty());
     CHECK(r.complete());
+}
+
+TEST_CASE("baked view: a block already at its length needs no fitted copy", "[song][baked]") {
+    View v;
+    v.track(0, TrackKind::Audio).stretch = StretchMode::KeepPitch;
+    SongClip c = block("a.wav", 0, 2);
+    c.frames = 2 * kBar;
+    v.song.addClip(0, c);
+    v.files = {"/songs/s/clips/a.wav"};
+    BakedReport r;
+    CHECK(v.view(0, 2 * kBar, r).size() == 1);
+    CHECK(r.complete());
+}
+
+TEST_CASE("baked view: a freeze rendered at another tempo is reported, not laid", "[song][baked]") {
+    View v;
+    v.track(0, TrackKind::Seq).freeze.push_back(block("f.wav", 0, 2));
+    v.files = {"/songs/s/clips/f.wav"};
+    v.env.bpm = 90.0f;
+    BakedReport r;
+    CHECK(v.view(0, 4 * kBar, r).empty());
+    CHECK(r.unfrozenSeq == std::vector<int>{0});
+}
+
+TEST_CASE("baked view: corrupt bars and lengths end, with bounded pieces", "[song][baked]") {
+    View v;
+    v.track(0, TrackKind::Audio);
+    v.song.addClip(0, block("a.wav", 0xFFFFFF00u, 0xFFFF));
+    SongClip e = block("", 0, 0xFFFF);
+    e.element = kElem;
+    e.from = 0xFFFF;
+    v.song.addClip(0, e);
+    v.child.frames = 0xFFFFFFF0u;
+    v.files = {"/songs/s/clips/a.wav"};
+    BakedReport r;
+    CHECK(v.view(0, UINT32_MAX, r).size() < 8);
+    uint32_t n = 0;
+    element_passes(1, 0, kBar, 0, UINT32_MAX, [&](uint32_t, uint32_t, uint32_t) { ++n; });
+    CHECK(n == 0);
+    element_passes(0, 0xFFFFFFF0u, kBar, 0xFFFFFF00u, UINT32_MAX, [&](uint32_t, uint32_t, uint32_t) { ++n; });
+    CHECK(n == 1);
 }

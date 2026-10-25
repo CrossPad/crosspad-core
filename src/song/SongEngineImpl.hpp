@@ -90,9 +90,6 @@ constexpr uint32_t kPeakChunkFrames  = 4096;
 constexpr const char* kPeaksDir      = ".peaks";
 /// A freeze's renders, in clips/, named by what they play (pieceKey()).
 constexpr const char* kFreezeDir     = ".freeze";
-/// Within this of 1:1 a block plays as recorded -- a copy would be the same
-/// sound, a card read later.
-constexpr double      kStretchSame   = 0.005;
 
 /// A name that stays one folder under the songs root.
 inline bool valid_name(const std::string& n)

@@ -22,11 +22,29 @@ constexpr float kMaxSongBpm = 400.0f;
 /// Under clips/: a stretched track's blocks, fitted to the song's tempo.
 constexpr const char* kStretchDir = ".stretch";
 
+/// Two tempi this near are the same one: a freeze or a bake made at one is laid on the other's grid.
+constexpr float kSameTempoBpm = 0.01f;
+
+/// @p bars bars of @p spb samples, held at the most a frame count can be: a
+/// song.json cut or edited by hand can say any bar.
+uint32_t bars_to_frames(uint64_t bars, uint32_t spb);
+
+/// Whether block @p c of a stretched track needs a fitted copy to play at
+/// @p outFrames: not when its length is already within kStretchSame of the
+/// bars or the copy would be too far from it (the engine makes none then).
+/// A block that plays its file to the end has a length only the file knows, so
+/// it needs one.
+bool stretch_needs_copy(const SongClip& c, uint32_t outFrames);
+
 /// Where block @p c fitted to @p outFrames lives: clips/.stretch/, named for
 /// its file, the part of it the block plays, the length it is made to and how
 /// (an "r" for repitched) -- a tempo, a cut or a mode that changes any of them
 /// is another file, so a stale copy is never played.
 std::string stretchName(const SongClip& c, uint32_t outFrames, StretchMode mode);
+
+/// A block within this of its bars' length plays as recorded -- a copy would be
+/// the same sound, a card read later.
+constexpr double kStretchSame = 0.005;
 
 /// The shortest pass a bake can have: a bar of one beat at the fastest tempo a
 /// song may have.
