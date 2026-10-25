@@ -1848,6 +1848,7 @@ TEST_CASE("element copy: no answer calls the leave off and changes nothing", "[e
     const auto out = runNav();
     CHECK(out.done);
     CHECK_FALSE(out.ok);
+    CHECK(out.calledOff);
     CHECK(out.job == ElementNav::Job::Leave);
     CHECK(elementNav().depth() == 1);
     CHECK(openName(r) == kA);

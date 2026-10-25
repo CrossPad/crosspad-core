@@ -930,7 +930,11 @@ ElementNav::Result ElementNav::answered()
 {
     if (!chosen_) return {};
     switch (answer_) {
-        case Choice::None:    return fail(kCalledOff);
+        case Choice::None: {
+            Result r = fail(kCalledOff);
+            r.calledOff = true;
+            return r;
+        }
         case Choice::Replace: return toRefit();
         case Choice::Copy:    break;
     }

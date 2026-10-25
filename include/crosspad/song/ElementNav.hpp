@@ -125,6 +125,7 @@ public:
         bool        ok = false;
         Job         job = Job::None;
         std::string error;          ///< why it did not, when it did not
+        bool        calledOff = false;   ///< not a failure: choose(Choice::None) called the leave off
     };
 
     /// [0] is the song, open = its project name; each level after it an element
