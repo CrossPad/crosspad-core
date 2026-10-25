@@ -6,6 +6,76 @@ carries the same number) and consumers gate on it with
 `crosspad/RequireVersion.hpp`. This file starts at 1.45.0; earlier releases
 are described in their `chore: X.Y.Z` commits.
 
+## 2.25.0 — 2026-10-25
+
+Elements, stages 1b-4: an element made from a region or a song, the song
+around the one being edited, copy or replace for a shared one, and bakes that
+never make the player wait.
+
+### Added
+
+- An element from a region or a song: `ISongEngine::requestElementFromRegion()`
+  writes [from, to) of the open song as a new element of the library (blocks,
+  track settings, kit and instrument, recordings; seq blocks that played their
+  scene given its notes; no freezes), `requestElementFromSong()` copies a
+  project in, `requestElementDiscard()`, `elementMade()`.
+  `ElementNav::makeFromRegion()` lays it where the region was (cleared with
+  `AudioSong::clearRange()`, one block on a neutral host track, baked and
+  linked); `insertSong()`. `song_copy_file()` / `song_copy_tree()` /
+  `song_list_dirs()` (`SongFiles.hpp`). Clip names read from song.json are one
+  plain path component (`is_clip_file_name()`).
+- Disk bakes and the relink pass: `baked_view()` (`BakedView.hpp`) says what a
+  song on the card sounds like from files already rendered; `ElementResolver`
+  names each element's bake as it is now, children first, and whether it is on
+  the card or can be mixed from it. After every open and every commit that
+  moves an element block or the tempo, a relink pass links each block to its
+  element's bake where it exists and mixes one from the card where it can, in
+  the background (`elementClipState()` Fresh / Stale / Baking / Missing,
+  `elementClipWhy()`, `backgroundBusy()`, `backgroundProgress()`).
+- The context stem: inside an element the song around it -- every occurrence
+  of the element silent -- over the chosen pass, mixed from the card into
+  `.bake/C*.wav` and played under it (`requestContext()`, `contextSolo()`,
+  `contextState()`, `contextWhy()`, `context_bake_key()`); an element whose
+  bake is not made yet plays the older bake its block holds. `ElementNav`
+  keeps the parent's blocks and every pass of the focus (`Level::parentBlocks`,
+  `Level::occurrences`, `chooseOccurrence()`).
+- Copy or replace: leaving an element edited inside that something else plays
+  asks (`ElementNav::asking()`, `question()`, `choose()`); Replace keeps the
+  edit for everyone, Copy forks it (`requestCopyElements()`,
+  `elementsCopied()`, `plan_element_copies()`, `element_copy_title()`) and
+  puts the original back from its snapshot (`requestSnapshot()`,
+  `requestRestore()`, `requestDropSnapshot()`, `snapshotPending()`). A
+  snapshot found on entering is a draft (`draftWaiting()`, `resolveDraft()`).
+  Uses of an element (`requestUses()`, `usesOf()`, `usesIndex()`,
+  `usesPending()`), whether it changed (`element_edit_hash()`,
+  `requestEditHash()`, `ElementNav::changed()`), `requestDeleteElement()`
+  refused while anything plays it, `ElementNav::Result::calledOff`.
+- Never wait: disk bakes run while the song plays, a piece at a time with
+  playback's ring first; a leave whose seq tracks play their freezes and whose
+  recordings are fitted opens the parent at once, its blocks on the old bake
+  until relinked; with `idleBaking(true)` (stopped, no pad for `kIdleBakeMs`)
+  the other songs that play a changed element are relinked on the card.
+- The bake cache stays inside min(`kBakeCapBytes`, `kBakeCapShare` percent of
+  the card's free room), least recently used first (`.bake/usage.json`); what
+  the open song's tree plays and each element's newest bake
+  (`AudioSong::newestBake`) are never evicted.
+  `ISongEnginePlatform::freeStorageBytes()`.
+- A kit saved under its own name makes the freezes that play it stale
+  (`kit_saved_notify()`, `kit_saved_generation()`, `KitSaved.hpp`; the
+  freeze salt is in the element key).
+- Stale bakes played varispeed: `SongClip::bakeBpm` (song.json, written only
+  where set) is the tempo a block's bake was made at; after a tempo change the
+  old bake plays resampled, its passes the element's beats at the song's tempo
+  (`varispeed_frames()`, `varispeed_step()`), until the bake at the new tempo
+  is linked. A block linked before bakes kept their tempo plays as before.
+
+### Changed
+
+- An element's bake key names its folder; a heard track's pan is in it and
+  in the bake.
+- The worker runs a request made during another; a save due while the song
+  streams does not keep the worker from waiting.
+
 ## 2.24.0 — 2026-10-25
 
 TRS MIDI OUT on the STM (STM 1.14, register map 0x0012).
