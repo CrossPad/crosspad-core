@@ -57,11 +57,12 @@ std::string element_bake_file(uint64_t key);
 
 /// A context stem's key: @p content, the song's content hash with the open
 /// element silent wherever it plays, over [@p from, @p from + @p frames) of
-/// the song, @p whole when nothing it should hold was missing (a stem made
-/// short of something is never taken for the whole one), at @p bpm and
-/// @p sampleRate under kRenderVersion.
-uint64_t context_bake_key(uint64_t content, uint32_t from, uint32_t frames, bool whole, float bpm,
-                          uint32_t sampleRate);
+/// the song, with @p lacking -- every thing it should hold and was made
+/// without, or played from an older bake; empty when whole -- at @p bpm and
+/// @p sampleRate under kRenderVersion. A stem made short of something is
+/// another stem from the one made when that thing is there.
+uint64_t context_bake_key(uint64_t content, uint32_t from, uint32_t frames, const std::string& lacking,
+                          float bpm, uint32_t sampleRate);
 
 /// "C%016llX.wav", a context stem's name in the cache.
 std::string context_bake_file(uint64_t key);

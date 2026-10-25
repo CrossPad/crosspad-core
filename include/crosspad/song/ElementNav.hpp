@@ -139,7 +139,8 @@ public:
     bool insertSong(int track, uint32_t bar, const std::string& songName);
 
     /// Walks the job one step; Arrange's timer calls it every ~50 ms. Cheap
-    /// while none runs.
+    /// while none runs: then it only asks for the song around the element
+    /// again when the element's length has changed.
     Result poll();
     /// Another song was opened (from the list): the breadcrumb starts over.
     /// One opened anywhere else is noticed by path() on its own.
@@ -204,6 +205,9 @@ private:
     /// pass, one pass of the focus long; none at the song, and an element heard
     /// nowhere asks with no frames (the engine says why).
     void askContext();
+    /// askContext() again when the open element is no longer as long as the
+    /// stem asked for: one that grew would play past its end.
+    void followFocusLength();
 
     mutable std::vector<Level> path_;
     Job         job_ = Job::None;
@@ -224,6 +228,7 @@ private:
     uint32_t    lastWaiting_ = 0;     ///< stretched blocks still unfitted at the last poll
     std::string bakeFile_;
     uint32_t    bakeFrames_ = 0;
+    uint32_t    contextBars_ = 0;     ///< the element's length (playEndBars()) when its stem was asked for
     std::string error_;
 };
 

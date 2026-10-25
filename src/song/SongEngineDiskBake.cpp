@@ -70,9 +70,10 @@ void throughTrack(BakedPiece& pc, const float outer[2]) {
 /// The song around one element -- the focus -- from the card, worker only:
 /// every element whose tree plays the focus is read and mixed from its own
 /// sources in place of its bake, the focus's blocks are silent wherever they
-/// are, and everything else plays from files already rendered (baked_view).
-/// So every occurrence of the focus is left out, not only those on the way
-/// down to it.
+/// are, and everything else plays from files already rendered (baked_view),
+/// an element whose bake is not on the card yet from the older one its block
+/// holds. So every occurrence of the focus is left out, not only those on the
+/// way down to it.
 class ContextMix {
 public:
     ContextMix(std::string songsRoot, uint32_t sampleRate, float bpm, std::string focus, const ElementHashReader& rd)
@@ -93,17 +94,17 @@ public:
     }
 
     /// @p song's pieces in [@p a, @p b) of its own time, placed in the stem by
-    /// @p shift and heard through @p outer side gains, into @p out. @p label
-    /// names the song in what it lacks.
-    void pieces(const AudioSong& song, const std::string& label, int64_t shift, uint32_t a, uint32_t b,
-                const float outer[2], std::vector<BakedPiece>& out) {
+    /// @p shift and heard through @p outer side gains, into @p out. @p identity
+    /// is the song's (its project name or ref), @p label names it in what it lacks.
+    void pieces(const AudioSong& song, const std::string& identity, const std::string& label, int64_t shift,
+                uint32_t a, uint32_t b, const float outer[2], std::vector<BakedPiece>& out) {
         if (b <= a) return;
         BakedViewEnv env;
         env.songsRoot = root_;
         env.sampleRate = rate_;
         env.bpm = bpm_;
         env.exists = [](const std::string& path) { return fsx::isFile(path); };
-        env.child = [this](const std::string& ref) { return &resolver_.resolve(ref); };
+        env.child = [&](const std::string& ref) { return child(song, identity, label, ref); };
         env.silentRefs.push_back(focus_);
         for (int t = 0; t < AudioSong::kTracks; ++t)
             for (const SongClip& c : song.tracks[t].clips)
@@ -115,7 +116,12 @@ public:
             throughTrack(pc, outer);
             out.push_back(std::move(pc));
         }
-        if (!report.complete()) note(label + ": " + lacking(report));
+        if (!report.complete()) {
+            const std::string why = label + ": " + lacking(report);
+            for (int t : report.unfrozenSeq) lack(identity + "|unfrozen " + std::to_string(t), why);
+            for (const std::string& f : report.missingFiles) lack(identity + "|missing " + f, why);
+            for (const std::string& r : report.unresolved) lack(identity + "|unbaked " + r, why);
+        }
 
         const uint32_t spb = AudioSong::samplesPerBar(rate_, bpm_, song.beatsPerBar);
         uint32_t cut = bars_to_frames(song.playEnd(), spb);
@@ -130,12 +136,12 @@ public:
                 const SongClip& c = tr.clips[i];
                 if (!c.isElement() || c.element == focus_ || !holds(c.element)) continue;
                 if (std::find(walk_.begin(), walk_.end(), c.element) != walk_.end()) {
-                    note("Element " + c.element + " is in a cycle: it contains itself.");
+                    lack(identity + "|cycle " + c.element, "Element " + c.element + " is in a cycle: it contains itself.");
                     continue;
                 }
                 const AudioSong* el = load(c.element);
                 if (!el) {
-                    note("Element " + c.element + " cannot be read.");
+                    lack(identity + "|unreadable " + c.element, "Element " + c.element + " cannot be read.");
                     continue;
                 }
                 /* Laid as baked_view lays a bake: a pass the element's length at
@@ -148,21 +154,57 @@ public:
                     const uint32_t x = std::max(at, a), y = std::min(to, b);
                     if (y <= x) return;
                     walk_.push_back(c.element);
-                    pieces(*el, inner, shift + at - offset, x - at + offset, y - at + offset, through, out);
+                    pieces(*el, c.element, inner, shift + at - offset, x - at + offset, y - at + offset, through, out);
                     walk_.pop_back();
                 });
             }
         }
     }
 
-    /// Nothing the stem should hold was missing.
-    bool whole() const { return why_.empty(); }
-    /// The first thing it lacked.
+    /// Nothing the stem should hold was missing or played from an older bake.
+    bool whole() const { return lacking_.empty(); }
+    /// Every such thing, one line each, for the stem's key.
+    const std::string& lacks() const { return lacking_; }
+    /// The first of them, in words.
     const std::string& why() const { return why_; }
 
 private:
-    void note(const std::string& why) {
+    void lack(const std::string& item, const std::string& why) {
+        lacking_ += item;
+        lacking_ += '\n';
         if (why_.empty()) why_ = why;
+    }
+
+    /// What an element block of @p song plays in the stem: its element's bake
+    /// as it is now, or -- not on the card yet -- the older bake the block
+    /// holds, as playback plays it, so staleness is never silence. With
+    /// neither, the resolver's answer, which baked_view reports as unbaked.
+    const ResolvedElement* child(const AudioSong& song, const std::string& identity, const std::string& label,
+                                 const std::string& ref) {
+        const ResolvedElement& now = resolver_.resolve(ref);
+        if (now.exists) return &now;
+        const std::string at = identity + "|" + ref;
+        const auto known = played_.find(at);
+        if (known != played_.end()) return known->second;
+        const ResolvedElement* plays = &now;
+        for (const SongTrack& tr : song.tracks) {
+            for (const SongClip& c : tr.clips) {
+                if (c.element != ref || c.file.empty() || c.frames < min_bake_frames(rate_) ||
+                    !fsx::isFile(root_ + "/" + AudioSong::bakeDir() + "/" + c.file, 1))
+                    continue;
+                ResolvedElement& old = older_[at];
+                old = now;
+                old.file = c.file;
+                old.frames = c.frames;
+                old.exists = true;
+                plays = &old;
+                lack(identity + "|older " + ref + " " + c.file, label + ": Element " + ref + " plays an older bake.");
+                break;
+            }
+            if (plays != &now) break;
+        }
+        played_[at] = plays;
+        return plays;
     }
 
     /// @p ref's song as the card has it; null when it cannot be read.
@@ -222,6 +264,9 @@ private:
     std::map<std::string, uint64_t> keys_;
     std::set<std::string> hashing_;     ///< childKey() under way, likewise
     std::vector<std::string> walk_;     ///< the elements pieces() is inside
+    std::map<std::string, ResolvedElement> older_;           ///< by song|ref: an older bake a block holds
+    std::map<std::string, const ResolvedElement*> played_;   ///< by song|ref: what child() gave
+    std::string       lacking_;
     std::string       why_;
 };
 
@@ -655,13 +700,13 @@ void SongEngine::Impl::doContext() {
     ContextMix mix(p.songsRoot(), sampleRate_, bpm, req.chain.back(), cardHashReader());
     std::vector<BakedPiece> pieces;
     const float unity[2] = {1.0f, 1.0f};
-    mix.pieces(song, name, -(int64_t)from, from, from + frames, unity, pieces);
+    mix.pieces(song, name, name, -(int64_t)from, from, from + frames, unity, pieces);
     const ContextState done = mix.whole() ? ContextState::Ready : ContextState::Incomplete;
     if (pieces.empty()) {
         contextDone(gen, {}, req.focusFrame, frames, bpm, done, mix.why());
         return;
     }
-    const std::string file = context_bake_file(context_bake_key(mix.hash(song, name), from, frames, mix.whole(), bpm, sampleRate_));
+    const std::string file = context_bake_file(context_bake_key(mix.hash(song, name), from, frames, mix.lacks(), bpm, sampleRate_));
     const std::string path = bakePath(file);
     if (!fsx::isFile(path, 1)) {
         std::string lost;

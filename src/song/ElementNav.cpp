@@ -233,12 +233,13 @@ void ElementNav::askContext()
     ContextRequest r;
     if (path_.size() > 1) {
         for (const Level& lv : path_) r.chain.push_back(lv.open);
+        contextBars_ = se->playEndBars();
         const Level& focus = path_.back();
         if (!focus.occurrences.empty()) {
             /* One pass of the focus, from its frame 0 -- or from the song's
              * first frame, when the pass begins before the song does. */
             const Occurrence& o = focus.occurrences[focus.chosen];
-            const int64_t length = bars_to_frames(se->playEndBars(), se->framesPerBar());
+            const int64_t length = bars_to_frames(contextBars_, se->framesPerBar());
             const int64_t lead = o.songFrame < 0 ? -o.songFrame : 0;
             const int64_t at = o.songFrame + lead;
             if (lead < length && at < (int64_t)UINT32_MAX) {
@@ -249,6 +250,15 @@ void ElementNav::askContext()
         }
     }
     se->requestContext(r);
+}
+
+void ElementNav::followFocusLength()
+{
+    ISongEngine* se = songEngine();
+    if (!se) return;
+    syncRoot();
+    if (path_.size() < 2 || !onLevel(path_.back().open)) return;
+    if (se->playEndBars() != contextBars_) askContext();
 }
 
 bool ElementNav::enter(int track, uint32_t bar)
@@ -510,7 +520,10 @@ ElementNav::Result ElementNav::refused(const std::string& why)
 ElementNav::Result ElementNav::poll()
 {
     ISongEngine* se = songEngine();
-    if (job_ == Job::None) return {};
+    if (job_ == Job::None) {
+        followFocusLength();
+        return {};
+    }
     if (!se) return fail("no song engine in this firmware");
     switch (phase_) {
         case Phase::Making:     return making();
@@ -888,6 +901,7 @@ void ElementNav::reset()
     asked_ = false;
     parentFreeze_ = false;
     refusals_ = 0;
+    contextBars_ = 0;
     error_.clear();
 }
 
