@@ -513,6 +513,11 @@ void AudioSong::sortTrack(int track)
 
 uint32_t AudioSong::samplesPerBar(uint32_t sampleRate) const
 {
+    return samplesPerBar(sampleRate, bpm, beatsPerBar);
+}
+
+uint32_t AudioSong::samplesPerBar(uint32_t sampleRate, float bpm, uint8_t beatsPerBar)
+{
     /* The beat truncated first, the way MetronomeNode counts it: a bounce is
      * exactly bars * beatsPerBar of those beats, and a bar computed any other
      * way drifts a few samples per bar against the clips laid on it. */

@@ -300,6 +300,8 @@ public:
 
     /// Samples in one bar at the song's tempo, at @p sampleRate.
     uint32_t samplesPerBar(uint32_t sampleRate) const;
+    /// The same for a tempo and metre given: what a tempo that is not the song's own is laid out on.
+    static uint32_t samplesPerBar(uint32_t sampleRate, float bpm, uint8_t beatsPerBar);
 
     // ── tracks a player makes ──────────────────────────────────────────────
     /// Tracks that may hold a seq at once: one per engine (seqRoute()) --

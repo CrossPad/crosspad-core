@@ -369,16 +369,14 @@ Arrangement SongEngine::Impl::flatten(const AudioSong& song) const {
     /* The shortest pass a bake can have: a bar of one beat at the fastest
      * tempo a song may have. One made before the song slowed down is shorter
      * than a bar and still goes round. */
-    const uint32_t minBakeFrames = (uint32_t)((float)sampleRate_ * 60.0f / kMaxBpm);
+    const uint32_t minBakeFrames = min_bake_frames(sampleRate_);
     for (int t = 0; t < kTracks; ++t) {
         if (song.tracks[t].kind == TrackKind::Seq) continue;   // no audio of its own
         const auto& cs = song.tracks[t].clips;
         for (size_t i = 0; i < cs.size(); ++i) {
             Segment s;
             s.start = cs[i].bar * a.samplesPerBar;
-            s.end   = (cs[i].bar + cs[i].bars) * a.samplesPerBar;
-            if (i + 1 < cs.size()) s.end = std::min(s.end, cs[i + 1].bar * a.samplesPerBar);
-            s.end = std::min(s.end, cut);
+            s.end   = clip_block_end(cs, i, a.samplesPerBar, cut);
             /* An element goes round its bake, a segment a pass: the first
              * from the element bar the block starts on, the rest whole. Not
              * baked yet (no file, no length) it plays nothing. Never fitted:
@@ -388,16 +386,14 @@ Arrangement SongEngine::Impl::flatten(const AudioSong& song) const {
             if (cs[i].isElement()) {
                 if (cs[i].file.empty() || cs[i].frames < minBakeFrames) continue;
                 s.path = bakePath(cs[i].file);
-                s.offset = (uint32_t)((uint64_t)cs[i].from * a.samplesPerBar % cs[i].frames);
-                const uint32_t blockEnd = s.end;
-                for (uint32_t at = s.start; at < blockEnd;) {
+                element_passes(cs[i].from, cs[i].frames, a.samplesPerBar, s.start, s.end,
+                               [&](uint32_t from, uint32_t to, uint32_t offset) {
                     Segment pass = s;
-                    pass.start = at;
-                    pass.end = std::min(blockEnd, at + (cs[i].frames - pass.offset));
+                    pass.start = from;
+                    pass.end = to;
+                    pass.offset = offset;
                     a.tracks[t].push_back(pass);
-                    at = pass.end;
-                    s.offset = 0;
-                }
+                });
                 continue;
             }
             /* A stretched track plays its block's fitted copy, which fills
@@ -594,20 +590,6 @@ void SongEngine::Impl::applySeqSound() {
 }
 
 // ── Stretch ───────────────────────────────────────────────────────────
-/// Where block @p c fitted to @p outFrames lives: clips/.stretch/, named
-/// for its file, the part of it the block plays, the length it is made
-/// to and how (an "r" for repitched) -- a tempo, a cut or a mode that
-/// changes any of them is another file, so a stale copy is never played.
-std::string SongEngine::Impl::stretchName(const SongClip& c, uint32_t outFrames, StretchMode mode) {
-    std::string stem = c.file;
-    const size_t dot = stem.rfind('.');
-    if (dot != std::string::npos) stem.resize(dot);
-    char tail[48];
-    std::snprintf(tail, sizeof(tail), "_%u_%u_%u%s.wav", (unsigned)c.offset, (unsigned)c.frames,
-                  (unsigned)outFrames, mode == StretchMode::Repitch ? "r" : "");
-    return std::string(kStretchDir) + "/" + stem + tail;
-}
-
 bool SongEngine::Impl::stretchReady(const std::string& path) const {
     std::lock_guard<std::mutex> l(stretchMutex_);
     return stretchReady_.count(path) != 0;

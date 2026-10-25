@@ -20,6 +20,7 @@
 #include "crosspad/platform/PlatformServices.hpp"
 #include "crosspad/sequencer/MetronomeNode.hpp"
 #include "crosspad/sequencer/PatternSequencer.hpp"
+#include "crosspad/song/BakedView.hpp"
 #include "crosspad/song/LiveSet.hpp"
 
 #include <algorithm>
@@ -75,7 +76,7 @@ constexpr size_t   kNoteCacheSize    = 32;
 constexpr int64_t  kUndoMergeUs      = 700000;
 /// requestTempo(): the tempi a song may have.
 constexpr float    kMinBpm           = 20.0f;
-constexpr float    kMaxBpm           = 400.0f;
+constexpr float    kMaxBpm           = kMaxSongBpm;
 /// releaseRings(): how often it logs that it is still waiting (a bounce
 /// notices a cancel within one card write).
 constexpr uint32_t kReleaseWaitMs    = 3000;
@@ -87,8 +88,6 @@ constexpr uint32_t kPeakHop          = 1024;
 constexpr uint32_t kPeakChunkFrames  = 4096;
 /// Beside clips/: <file>.pk per clip, so a waveform is read from its WAV once.
 constexpr const char* kPeaksDir      = ".peaks";
-/// Under clips/: a stretched track's blocks, fitted to the song's tempo.
-constexpr const char* kStretchDir    = ".stretch";
 /// A freeze's renders, in clips/, named by what they play (pieceKey()).
 constexpr const char* kFreezeDir     = ".freeze";
 /// Within this of 1:1 a block plays as recorded -- a copy would be the same
@@ -536,7 +535,6 @@ private:
     void worker();
     /// Where the bake named @p file lives: one cache for every song, under the songs root.
     std::string bakePath(const std::string& file) const;
-    static std::string stretchName(const SongClip& c, uint32_t outFrames, StretchMode mode);
     bool stretchReady(const std::string& path) const;
     struct StretchJob { std::string src, dst; uint32_t offset = 0, frames = 0, outFrames = 0; bool repitch = false; };
     uint32_t nextStretch(StretchJob* job);

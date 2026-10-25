@@ -84,9 +84,13 @@ uint64_t element_content_hash(const AudioSong& song, const ElementHashReader& rd
         f.value((int32_t)std::lround(tr.volume * kVolumeHashSteps));
         f.value((uint8_t)tr.stretch);
         for (const SongClip& c : tr.clips) {
-            f.text(c.file);
+            uint64_t childKey = 0;
+            const bool resolved = c.isElement() && rd.childKey && rd.childKey(c.element, childKey);
+            if (resolved) { f.text(c.element); f.value(childKey); }
+            else f.text(c.file);
             if (!c.isElement() && tr.kind == TrackKind::Audio) fileStamp(f, rd, song.clipPath(c.file));
-            f.value(c.bar); f.value(c.bars); f.value(c.offset); f.value(c.frames); f.value(c.from);
+            /* A resolved element's stored length is the bake's, which its key already says. */
+            f.value(c.bar); f.value(c.bars); f.value(c.offset); f.value(resolved ? 0u : c.frames); f.value(c.from);
             notesOf(f, c.notes);
         }
         for (const SongClip& z : tr.freeze) {

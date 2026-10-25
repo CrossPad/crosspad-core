@@ -27,11 +27,16 @@ struct ElementHashReader {
     /// @p each(path) for every file directly in @p dir, @p path in full. Unset
     /// leaves a kit's or an instrument's folder out of the hash.
     std::function<void(const std::string& dir, const std::function<void(const std::string& path)>& each)> list;
+    /// The key of the bake @p ref plays now (ElementResolver). Set, an element
+    /// block is hashed by it, so a change deep in a nest reaches every element
+    /// above; unset, by the bake name the block stores.
+    std::function<bool(const std::string& ref, uint64_t& key)> childKey;
 };
 
 /// FNV-1a 64 over what @p song plays, each track that is heard in order: its
 /// kind, volume and stretch; each block's file (an audio block's with its
-/// size and time on the card, an element's by the bake it plays), place, cut
+/// size and time on the card, an element's by the key of the bake it plays,
+/// or with no childKey the one it stores), place, cut
 /// and notes; a seq track's freeze (files and sizes). Then the length and
 /// metre, and the kit and the instrument with every file in their folders.
 /// A silenced track gives its index and a marker. Not the tempo, the names,
