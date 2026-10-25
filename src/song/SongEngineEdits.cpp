@@ -184,6 +184,10 @@ SongOpState SongEngine::Impl::doMerge(uint8_t mask, uint32_t fromBar, uint32_t t
         for (int t = 0; t < kTracks; ++t) {
             if (!(mask & (1u << t))) continue;
             const float g = copy.tracks[t].volume / refVolume;
+            /* Each track's pan goes into the clip, but the target's own
+             * while it keeps blocks: that one plays on at the track. */
+            const float pan = t == target && targetKeepsBlocks ? 0.0f : copy.tracks[t].pan;
+            const float gs[2] = {g * (pan > 0.0f ? 1.0f - pan : 1.0f), g * (pan < 0.0f ? 1.0f + pan : 1.0f)};
             for (const auto& sg : arr.tracks[t]) {
                 if (sg.end <= f) continue;
                 if (sg.start >= f + n) break;
@@ -191,7 +195,7 @@ SongOpState SongEngine::Impl::doMerge(uint8_t mask, uint32_t fromBar, uint32_t t
                 if (rd[t].path != sg.path && !(p.storageReady() && rd[t].open(sg.path))) continue;
                 rd[t].read(x - sg.start + sg.offset, io_, y - x);
                 int32_t* d = acc_ + (x - f) * 2;
-                for (uint32_t k = 0; k < (y - x) * 2; ++k) d[k] += (int32_t)((float)io_[k] * g);
+                for (uint32_t k = 0; k < (y - x) * 2; ++k) d[k] += (int32_t)((float)io_[k] * gs[k & 1]);
             }
         }
         for (uint32_t k = 0; k < n * 2; ++k) {
@@ -228,7 +232,10 @@ SongOpState SongEngine::Impl::doMerge(uint8_t mask, uint32_t fromBar, uint32_t t
         c.bar = fromBar;
         c.bars = (uint16_t)std::max<uint32_t>(1, toBar - fromBar);
         song_.addClip(target, c);
-        if (!targetKeepsBlocks) song_.tracks[target].volume = 1.0f;
+        if (!targetKeepsBlocks) {
+            song_.tracks[target].volume = 1.0f;
+            song_.tracks[target].pan = 0.0f;
+        }
         rebuild();
     }
     doSave();
@@ -462,6 +469,7 @@ void SongEngine::Impl::pack(const AudioSong& s, Snapshot& out) {
             (uint8_t)t.kind, (uint8_t)t.source, (uint8_t)t.stretch, t.scene};
         put(head, sizeof head);
         put(&t.volume, sizeof t.volume);
+        put(&t.pan, sizeof t.pan);
         str(t.name);
         str(t.kit);
         const uint16_t n = (uint16_t)t.clips.size();
@@ -515,6 +523,7 @@ void SongEngine::Impl::unpack(const Snapshot& in, AudioSong& s) {
         t.stretch = (StretchMode)head[3];
         t.scene = head[4];
         get(&t.volume, sizeof t.volume);
+        get(&t.pan, sizeof t.pan);
         str(t.name);
         str(t.kit);
         uint16_t n = 0;

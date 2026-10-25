@@ -503,6 +503,7 @@ void SongEngine::Impl::rebuild() {
     for (int t = 0; t < kTracks; ++t) {
         const auto& tr = song_.tracks[t];
         gain_[t].store(song_.silenced(t) ? 0.0f : tr.volume);
+        pan_[t].store(tr.pan);
     }
     for (int t = 0; t < kTracks; ++t) seqRoute_[t].store((int8_t)song_.seqRoute(t), std::memory_order_relaxed);
     /* Counted here too, not only by song_io: it asks only while
@@ -530,8 +531,8 @@ void SongEngine::Impl::rebuild() {
 }
 
 /// The seq tracks as the arrangement has them while the song plays:
-/// each one's fader on the engine its notes play through (setSeqGain,
-/// setKitGain), and its notes silent while it is muted or another track
+/// each one's fader and pan on the engine its notes play through
+/// (setSeqGain / setKitGain, setSeqPan / setKitPan), and its notes silent while it is muted or another track
 /// is soloed -- the pads a player hits stay theirs -- or under a REC,
 /// which replaces them. A route at a time: the other kit track plays on.
 /// Stopped, the engines as the Mixer has them. Caller holds songMutex_.
@@ -539,19 +540,30 @@ void SongEngine::Impl::applySeqSound() {
     const bool on = playing();
     uint8_t muted = 0;
     float gain[3] = {1.0f, 1.0f, 1.0f};   // the pads' kit, the instrument, the second kit
+    float pan[3] = {0.0f, 0.0f, 0.0f};
     for (int t = 0; t < kTracks; ++t) {
         const int route = song_.seqRoute(t);
         if (route < 0) continue;
         const SongTrack& tr = song_.tracks[t];
         if ((takeRecMute_ && t == takeTrack_) || (on && song_.silenced(t))) muted |= (uint8_t)(1u << route);
-        if (on) gain[tr.source == SeqSource::Pitch ? 1 : route ? 2 : 0] = tr.volume;
+        if (on) {
+            const int e = tr.source == SeqSource::Pitch ? 1 : route ? 2 : 0;
+            gain[e] = tr.volume;
+            pan[e] = tr.pan;
+        }
     }
     seq_.setSongRoutesMuted(muted);
     for (int i = 0; i < 3; ++i) {
-        if (gain[i] == seqGain_[i]) continue;
-        seqGain_[i] = gain[i];
-        if (i == 1) p.setSeqGain(SeqSource::Pitch, gain[i]);
-        else        p.setKitGain(i == 2 ? 1 : 0, gain[i]);
+        if (gain[i] != seqGain_[i]) {
+            seqGain_[i] = gain[i];
+            if (i == 1) p.setSeqGain(SeqSource::Pitch, gain[i]);
+            else        p.setKitGain(i == 2 ? 1 : 0, gain[i]);
+        }
+        if (pan[i] != seqPan_[i]) {
+            seqPan_[i] = pan[i];
+            if (i == 1) p.setSeqPan(SeqSource::Pitch, pan[i]);
+            else        p.setKitPan(i == 2 ? 1 : 0, pan[i]);
+        }
     }
 }
 
@@ -712,6 +724,7 @@ void SongEngine::Impl::startLive() {
         for (int t = 0; t < kTracks; ++t) {
             const auto& tr = song_.tracks[t];
             gain_[t].store(song_.silenced(t) ? 0.0f : tr.volume);
+            pan_[t].store(tr.pan);
         }
     }
     if (!spb) return;
@@ -796,6 +809,7 @@ void SongEngine::Impl::startPlayback(uint32_t fromBar) {
         for (int t = 0; t < kTracks; ++t) {
             const auto& tr = song_.tracks[t];
             gain_[t].store(song_.silenced(t) ? 0.0f : tr.volume);
+            pan_[t].store(tr.pan);
         }
     }
     {
@@ -978,6 +992,10 @@ void SongEngine::Impl::fillRings() {
              * and a pad that cannot open its sample goes silent. */
             if (!pieceCount[t] && readers_[t].fd >= 0) readers_[t].close();
             const float g = gain_[t].load(std::memory_order_relaxed);
+            /* The track's pan as the Mixer's: a balance, the side it
+             * moves away from turned down; the meter reads it after. */
+            const float pan = pan_[t].load(std::memory_order_relaxed);
+            const float gs[2] = {g * (pan > 0.0f ? 1.0f - pan : 1.0f), g * (pan < 0.0f ? 1.0f + pan : 1.0f)};
             for (int i = 0; i < pieceCount[t]; ++i) {
                 const Piece& pc = pieces[t][i];
                 const int64_t r0 = p.nowUs();
@@ -996,7 +1014,7 @@ void SongEngine::Impl::fillRings() {
                     const uint32_t run = std::min(pc.len - k, kMeterHop - f % kMeterHop);
                     int32_t m[2] = {0, 0};
                     for (uint32_t j = k * 2; j < (k + run) * 2; ++j) {
-                        const int32_t v = (int32_t)((float)chunk[j] * g);
+                        const int32_t v = (int32_t)((float)chunk[j] * gs[j & 1]);
                         d[j] += v;
                         m[j & 1] = std::max(m[j & 1], v < 0 ? -v : v);
                     }

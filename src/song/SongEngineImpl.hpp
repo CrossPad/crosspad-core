@@ -571,6 +571,7 @@ private:
     /* What applySeqSound() last gave setSeqGain(), kit and pitch; under
      * songMutex_. */
     float       seqGain_[3] = {1.0f, 1.0f, 1.0f};
+    float       seqPan_[3] = {0.0f, 0.0f, 0.0f};
     /* The seq view's block (openSeqEdit), under songMutex_: its track (-1
      * none), the bar it starts on, the scene it is edited in, whether it is
      * on the track yet, and the sequencer's edit count last handed over. */
@@ -633,6 +634,7 @@ private:
     uint32_t    writePos_ = 0;
     std::atomic<uint32_t> debt_{0};
     std::atomic<float>    gain_[kTracks] = {};
+    std::atomic<float>    pan_[kTracks] = {};     // -1..+1, with gain_: an audio track's balance
     /// One hop of the ring's meters: which hop it holds, and each track's peak.
     struct Meter {
         std::atomic<uint32_t> hop{UINT32_MAX};
