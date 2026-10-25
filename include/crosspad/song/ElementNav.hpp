@@ -10,6 +10,10 @@ namespace crosspad {
 /// Where Arrange is among the song's elements: the song, and the elements
 /// opened from it one inside the other -- the breadcrumb.
 ///
+/// An element entered to stay in (not one laid and baked at once) leaves the
+/// song above frozen: its heard seq tracks are frozen before the element opens,
+/// and the level keeps the song's blocks and every pass of the element in it.
+///
 /// Every move is a job of phases that poll() walks, requests to the song
 /// engine and reads of its state only, so Arrange's LVGL timer can drive it:
 /// the card is the engine worker's. Opening an element never saves it as the
@@ -33,12 +37,32 @@ namespace crosspad {
 /// the song the engine has open.
 class ElementNav {
 public:
+    /// A block of the level above, as the mini-map draws it.
+    struct MiniBlock {
+        uint8_t  track = 0;
+        uint32_t bar = 0;
+        uint16_t bars = 1;
+        bool     element = false;   ///< an element block
+        bool     seq = false;       ///< a block of a seq track
+        bool     focus = false;     ///< a block of the element the level is
+    };
+    /// One pass of the focus: where it starts in the level above and in the song.
+    struct Occurrence {
+        uint32_t parentBar = 0;     ///< the bar of the level above it starts on
+        uint32_t songFrame = 0;     ///< its start in the song, through every level above
+    };
     /// One step of the breadcrumb.
     struct Level {
         std::string open;      ///< what the engine opens: the project's name, or the element's ref
         std::string title;     ///< an element's title; empty on the song and on one not yet named
         int         track = -1;   ///< where the level above holds this element
         uint32_t    bar = 0;
+        /// The level above as it was when this one was entered (empty on the song).
+        std::vector<MiniBlock>  parentBlocks;
+        /// Every pass of this element in the level above, the one entered
+        /// through first; a pass the same pass of a level above, start to start.
+        std::vector<Occurrence> occurrences;
+        size_t      chosen = 0;   ///< the pass PLAY goes round
     };
     enum class Job : uint8_t { None, Enter, Leave, Insert, Make };
     /// What poll() has to say about a job that has just ended.
@@ -62,6 +86,11 @@ public:
     /// "baking", "linking", "copying" (an element being made); empty while
     /// none runs.
     const char* stage() const;
+
+    /// The pass of the focus PLAY goes round: occurrences[@p index] of the
+    /// level being edited. False, with lastError() saying why, at the song, with
+    /// a job running or for an index there is no pass at.
+    bool chooseOccurrence(size_t index);
 
     /// Open the element block sounding on @p bar of @p track of the open song.
     /// False, with lastError() saying why, when there is none or a job runs.
@@ -151,6 +180,10 @@ private:
     Result baking();
     Result reopening();
     Result linked();
+    /// What the level above is, taken while it is still open, into level_.
+    void snapshotParent(ISongEngine& se);
+    /// Asks the engine for the element a job enters, the parent snapshot taken.
+    Result openChild();
     /// Seq tracks of the open song a bake would find not frozen, from @c track_ on.
     int nextToFreeze();
 
@@ -169,6 +202,7 @@ private:
     uint32_t    bar_ = 0;
     uint32_t    regionBars_ = 0;
     int         freezeTrack_ = 0;
+    bool        parentFreeze_ = false;   ///< Freezing is the parent's, before the element opens
     uint32_t    lastWaiting_ = 0;     ///< stretched blocks still unfitted at the last poll
     std::string bakeFile_;
     uint32_t    bakeFrames_ = 0;

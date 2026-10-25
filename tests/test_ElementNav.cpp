@@ -938,7 +938,7 @@ TEST_CASE("element nav: a host that holds only the region is neutral, and the el
         CHECK(block.isElement());
         CHECK(s.tracks[0].volume == 1.0f);         // the bake has the source's volume and pan already
         CHECK(s.tracks[0].pan == 0.0f);
-        CHECK_FALSE(s.tracks[0].solo);
+        CHECK(s.tracks[0].solo);                   // the host's solo is the song's: other tracks stay silenced
         CHECK_FALSE(s.tracks[0].muted);
         CHECK(s.tracks[1].clips.empty());
     }
@@ -1027,4 +1027,103 @@ TEST_CASE("element nav: a song holding an element on the breadcrumb is refused b
     for (const auto& e : fs::directory_iterator(library)) { (void)e; ++folders; }
     CHECK(folders == 1);                             // Intro: the copy was never made
     CHECK(openName(r) == kA);
+}
+
+// ── the song heard around an element: parent blocks, passes, a frozen parent ──
+
+TEST_CASE("element nav: entering freezes the parent's live seq tracks before the element opens", "[element][nav]") {
+    Rig r;
+    Services svc(r.engine.get(), nullptr);
+    NavGuard guard;
+    writeAudioElement(r, kA, "Intro", 2, 120.0f);
+    openDemo(r, kA);
+    {
+        std::lock_guard<std::recursive_mutex> l(r.engine->songMutex());
+        AudioSong& s = r.engine->song();
+        REQUIRE(s.addSeqTrack(2, SeqSource::Kit, 0));
+        SeqNote n;
+        n.pad = 1; n.vel = 100;
+        s.putSeqTake(2, 0, makeSeqPattern(1, {n}), s.samplesPerBar(kRate));
+        s.armed = -1;
+    }
+    r.engine->commit();
+    REQUIRE(r.engine->freezeState(2) != FreezeState::Frozen);
+    REQUIRE(elementNav().enter(1, 0));
+    REQUIRE(pollTo(r, "freezing"));
+    CHECK(openName(r) == "Demo");                        // still the parent: nothing opened yet
+    const auto res = runRendering(r);
+    INFO("error: " << res.error);
+    REQUIRE(res.ok);
+    CHECK(openName(r) == kA);
+    REQUIRE(elementNav().leave());
+    REQUIRE(runRendering(r).ok);
+    CHECK(openName(r) == "Demo");
+    CHECK(r.engine->freezeState(2) == FreezeState::Frozen);
+}
+
+TEST_CASE("element nav: a level keeps the parent's blocks, the focus marked", "[element][nav]") {
+    Rig r;
+    Services svc(r.engine.get(), nullptr);
+    NavGuard guard;
+    writeAudioElement(r, kA, "Intro", 2, 120.0f);
+    openDemo(r, kA);
+    REQUIRE(elementNav().enter(1, 0));
+    REQUIRE(runNav().ok);
+    const auto& blocks = elementNav().path()[1].parentBlocks;
+    REQUIRE(blocks.size() == 1);
+    CHECK(blocks[0].track == 1);
+    CHECK(blocks[0].bar == 0);
+    CHECK(blocks[0].bars == 4);
+    CHECK(blocks[0].element);
+    CHECK_FALSE(blocks[0].seq);
+    CHECK(blocks[0].focus);
+    CHECK(elementNav().path()[0].parentBlocks.empty());
+}
+
+TEST_CASE("element nav: the focus has a pass for every round of its block, through every level", "[element][nav]") {
+    Rig r;
+    Services svc(r.engine.get(), nullptr);
+    NavGuard guard;
+    writeAudioElement(r, kB, "Hat", 2, 120.0f);
+    writeAudioElement(r, kA, "Groove", 0, 120.0f, {kB});
+    {
+        AudioSong a;
+        REQUIRE(a.load(r.platform.root + "/" + kA) == SongLoad::Loaded);
+        a.length = 2;
+        REQUIRE(a.save());
+    }
+    openDemo(r, kA);                                     // a 4-bar block of a 2-bar element: two passes
+    REQUIRE(elementNav().enter(1, 0));
+    REQUIRE(runNav().ok);
+    const auto& inA = elementNav().path()[1];
+    REQUIRE(inA.occurrences.size() == 2);
+    CHECK(inA.chosen == 0);
+    CHECK(inA.occurrences[0].parentBar == 0);
+    CHECK(inA.occurrences[0].songFrame == 0);
+    CHECK(inA.occurrences[1].parentBar == 2);
+    CHECK(inA.occurrences[1].songFrame == 2 * kBarFrames);
+
+    SECTION("a pass that is not the first, chosen, is where the level below counts from") {
+        REQUIRE(elementNav().chooseOccurrence(1));
+        CHECK(elementNav().path()[1].chosen == 1);
+        REQUIRE(elementNav().enter(1, 0));
+        REQUIRE(runNav().ok);
+        const auto& inB = elementNav().path()[2];
+        REQUIRE_FALSE(inB.occurrences.empty());
+        CHECK(inB.occurrences[0].parentBar == 0);
+        CHECK(inB.occurrences[0].songFrame == 2 * kBarFrames);
+    }
+    SECTION("a pass there is none of is refused") {
+        CHECK_FALSE(elementNav().chooseOccurrence(2));
+        CHECK_FALSE(elementNav().lastError().empty());
+        CHECK(elementNav().path()[1].chosen == 0);
+    }
+}
+
+TEST_CASE("element nav: no pass is chosen at the song", "[element][nav]") {
+    Rig r;
+    Services svc(r.engine.get(), nullptr);
+    NavGuard guard;
+    REQUIRE(r.open("Demo"));
+    CHECK_FALSE(elementNav().chooseOccurrence(0));
 }

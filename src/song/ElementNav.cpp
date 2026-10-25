@@ -3,6 +3,7 @@
 
 #include "crosspad/platform/PlatformServices.hpp"
 #include "crosspad/song/AudioSong.hpp"
+#include "crosspad/song/BakedView.hpp"
 #include "crosspad/song/ISongEngine.hpp"
 #include "crosspad/song/SongSounds.hpp"
 
@@ -64,8 +65,8 @@ std::string freshElementRef(ISongEngine& se)
 
 /// Where an element made of [@p from, @p to) goes: the lowest audio track the
 /// region touches that holds nothing outside it (its settings are then the
-/// region's own, and are set neutral: the element's bake carries every source
-/// track's volume, pan, mute and solo), else the lowest track nobody has
+/// region's own, and its volume, pan and mute are set neutral: the element's bake
+/// carries every source track's; its solo stays, or the tracks it silenced would sound), else the lowest track nobody has
 /// made. -1 when there is neither.
 int regionHost(const AudioSong& song, uint32_t from, uint32_t to, uint32_t spBar)
 {
@@ -212,6 +213,16 @@ void ElementNav::startLeave(Job job)
     refusals_ = 0;
     error_.clear();
     if (ISongEngine* se = songEngine()) se->stop();
+}
+
+bool ElementNav::chooseOccurrence(size_t index)
+{
+    if (busy()) return refuse("busy");
+    syncRoot();
+    if (depth() == 0) return refuse("there is no element to choose a pass of");
+    if (index >= path_.back().occurrences.size()) return refuse("no such pass");
+    path_.back().chosen = index;
+    return true;
 }
 
 bool ElementNav::enter(int track, uint32_t bar)
@@ -416,7 +427,6 @@ ElementNav::Result ElementNav::laidFromRegion()
             host.volume = 1.0f;
             host.pan = 0.0f;
             host.muted = false;
-            host.solo = false;
         } else {
             edited.addAudioTrack(track_);
         }
@@ -448,6 +458,7 @@ ElementNav::Result ElementNav::fail(const std::string& why)
     r.job = job_;
     r.error = why;
     error_ = why;
+    parentFreeze_ = false;
     job_ = Job::None;
     phase_ = Phase::Idle;
     return r;
@@ -509,7 +520,63 @@ ElementNav::Result ElementNav::stopped()
     ISongEngine* se = songEngine();
     if (se->playing()) return {};
     if (job_ == Job::Leave) return toLeaving();
+    /* One stays to be heard around: the song's seq tracks are frozen first, so
+     * the context baked from the card finds their freezes valid. */
+    if (!leaveAfterEnter_) {
+        phase_ = Phase::Freezing;
+        parentFreeze_ = true;
+        freezeTrack_ = 0;
+        asked_ = false;
+        refusals_ = 0;
+        return {};
+    }
+    return openChild();
+}
+
+/// Every block of the song above, and every pass the focus plays in it.
+void ElementNav::snapshotParent(ISongEngine& se)
+{
+    level_.parentBlocks.clear();
+    level_.occurrences.clear();
+    level_.chosen = 0;
+    std::lock_guard<std::recursive_mutex> l(se.songMutex());
+    const AudioSong& song = se.song();
+    const uint32_t spb = se.framesPerBar();
+    const uint32_t cut = bars_to_frames(song.playEnd(), spb);
+    /* The passes of the level above start where its own chosen pass does. */
+    const Level& above = path_.back();
+    const uint32_t base = above.occurrences.empty() ? 0 : above.occurrences[above.chosen].songFrame;
+    std::vector<Occurrence> entered, others;
+    for (int t = 0; t < AudioSong::kTracks; ++t) {
+        const SongTrack& tr = song.tracks[t];
+        for (size_t i = 0; i < tr.clips.size(); ++i) {
+            const SongClip& c = tr.clips[i];
+            const bool focus = c.element == ref_;
+            level_.parentBlocks.push_back({(uint8_t)t, c.bar, c.bars, c.isElement(), tr.kind == TrackKind::Seq, focus});
+            if (!focus || !spb) continue;
+            const uint32_t start = bars_to_frames(c.bar, spb);
+            const uint32_t end = clip_block_end(tr.clips, i, spb, cut);
+            /* A block never baked plays once, over its own length. */
+            const uint32_t frames = c.frames ? c.frames : end - start;
+            std::vector<Occurrence>& into = (t == level_.track && c.bar <= level_.bar && level_.bar < c.bar + c.bars)
+                ? entered : others;
+            element_passes(c.from, frames, spb, start, end, [&](uint32_t at, uint32_t, uint32_t) {
+                into.push_back({(uint32_t)((uint64_t)at / spb), base + at});
+            });
+        }
+    }
+    std::sort(others.begin(), others.end(),
+              [](const Occurrence& a, const Occurrence& b) { return a.songFrame < b.songFrame; });
+    level_.occurrences = std::move(entered);
+    level_.occurrences.insert(level_.occurrences.end(), others.begin(), others.end());
+}
+
+ElementNav::Result ElementNav::openChild()
+{
+    ISongEngine* se = songEngine();
+    snapshotParent(*se);
     if (!se->requestOpenElement(ref_)) return refused("the element cannot be opened now");
+    parentFreeze_ = false;
     phase_ = Phase::Opening;
     refusals_ = 0;
     return {};
@@ -663,8 +730,9 @@ ElementNav::Result ElementNav::freezing()
 {
     ISongEngine* se = songEngine();
     if (!asked_) {
-        if (!onLevel(ref_)) return fail(kOtherSong);
+        if (!onLevel(parentFreeze_ ? path_.back().open : ref_)) return fail(kOtherSong);
         freezeTrack_ = nextToFreeze();
+        if (freezeTrack_ >= AudioSong::kTracks && parentFreeze_) return openChild();
         if (freezeTrack_ >= AudioSong::kTracks) {
             phase_ = Phase::Stretching;
             lastWaiting_ = 0;
@@ -764,6 +832,7 @@ void ElementNav::reset()
     job_ = Job::None;
     phase_ = Phase::Idle;
     asked_ = false;
+    parentFreeze_ = false;
     refusals_ = 0;
     error_.clear();
 }
