@@ -168,6 +168,49 @@ TEST_CASE("element nav: enter opens the element, leave bakes it and links the pa
     CHECK(segmentsOf(*r.engine, 1) > 0);
 }
 
+TEST_CASE("element nav: a block laid and entered at once, while the background bakes it", "[element][nav]") {
+    Rig r;
+    Services svc(r.engine.get(), nullptr);
+    NavGuard guard;
+    writeAudioElement(r, kB, "Hat", 2, 120.0f);
+    writeAudioElement(r, kA, "Groove", 2, 120.0f, {kB});
+    REQUIRE(r.open("Demo"));
+    for (int round = 0; round < 3; ++round) {
+        {
+            /* No wait for the pass the commit asks for: the enter goes in beside it. */
+            std::lock_guard<std::recursive_mutex> l(r.engine->songMutex());
+            AudioSong& s = r.engine->song();
+            s.bpm = 120.0f;
+            s.tracks[1].inUse = true;
+            s.tracks[1].clips.clear();
+            SongClip c;
+            c.element = kA;
+            c.bars = 4;
+            s.addClip(1, c);
+        }
+        r.engine->commit();
+        REQUIRE(elementNav().enter(1, 0));
+        const auto in = runNav();
+        INFO("round " << round << " error: " << in.error);
+        REQUIRE(in.ok);
+        REQUIRE(elementNav().leave());
+        const auto out = runNav();
+        INFO("error: " << out.error);
+        REQUIRE(out.ok);
+        CHECK(clipOf(r, 1).file == r.engine->bakeResult().file);
+        REQUIRE(waitFor([&] { return !r.engine->backgroundBusy(); }, 10000));
+        CHECK(clipOf(r, 1).file == r.engine->bakeResult().file);
+        CHECK(r.engine->elementClipState(1, 0) == ElementClipState::Fresh);
+    }
+    /* B's bake and A's: the same two whoever made them. */
+    size_t bakes = 0;
+    for (const auto& e : fs::directory_iterator(fs::path(r.platform.root) / AudioSong::bakeDir())) {
+        (void)e;
+        ++bakes;
+    }
+    CHECK(bakes == 2);
+}
+
 TEST_CASE("element nav: leaving unchanged finds the bake in the cache", "[element][nav]") {
     Rig r;
     Services svc(r.engine.get(), nullptr);

@@ -23,6 +23,7 @@
 #include "crosspad/song/BakedView.hpp"
 #include "crosspad/song/ElementResolver.hpp"
 #include "crosspad/song/LiveSet.hpp"
+#include "crosspad/song/SeqFreezeKey.hpp"
 
 #include <algorithm>
 #include <atomic>
@@ -283,13 +284,20 @@ struct ClipReader {
     /// Up to @p n stereo frames from @p frame on; the rest past the file's end
     /// is silence. Returns frames written (always n).
     uint32_t read(uint32_t frame, int16_t* dst, uint32_t n) {
-        uint32_t got = 0;
+        readWhole(frame, dst, n);
+        return n;
+    }
+
+    /// read(); false when the card gave fewer of those frames than the file
+    /// says it holds -- cut short, or a read that failed.
+    bool readWhole(uint32_t frame, int16_t* dst, uint32_t n) {
+        uint32_t got = 0, want = 0;
         if (fd >= 0 && frame < frames) {
             if (cursor != frame) {
                 fsx::seek(fd, dataOffset + frame * channels * 2u);
                 cursor = frame;
             }
-            const uint32_t want = std::min(n, frames - frame);
+            want = std::min(n, frames - frame);
             const uint32_t fb = channels * 2u;
             const long r = fsx::readSome(fd, dst, want * fb);
             got = r > 0 ? (uint32_t)r / fb : 0;
@@ -299,7 +307,7 @@ struct ClipReader {
             cursor = r > 0 && (uint32_t)r == got * fb ? cursor + got : UINT32_MAX;
         }
         if (got < n) std::memset(dst + got * 2, 0, (n - got) * 4);
-        return n;
+        return got == want;
     }
 };
 
@@ -494,7 +502,7 @@ private:
     /// A disk bake's mix: Done, given way to a request (tried again after
     /// it), or Failed with no file left behind.
     enum class BakeRun : uint8_t { Done, GaveWay, Failed };
-    BakeRun mixDown(std::vector<BakedPiece> pieces, uint32_t total, const std::string& path);
+    BakeRun mixDown(std::vector<BakedPiece> pieces, uint32_t total, const std::string& path, std::string& lost);
     /// The resolver's answer for @p ref, or the bake this queue has made of it since.
     const ResolvedElement& bakeView(const std::string& ref);
     void bakeMade(const std::string& ref, const ResolvedElement& e);
@@ -513,6 +521,9 @@ private:
     SongOpState doExport();
     SongOpState doImport();
     void doSave();
+    /// The sequencer's scenes, as SeqFreezeKey.hpp asks for them.
+    SceneLookup scenes() const;
+    /// song_end_bars(), seq_freeze_range() and seq_freeze_key() over the sequencer's scenes.
     uint32_t endBars(const AudioSong& song) const;
     void seqRange(const AudioSong& song, int track, uint32_t& from, uint32_t& to) const;
     uint32_t seqKey(const AudioSong& song, int track) const;

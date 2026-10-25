@@ -2,6 +2,7 @@
 #include <catch2/catch_test_macros.hpp>
 
 #include "crosspad/song/BakedView.hpp"
+#include "crosspad/song/SeqFreezeKey.hpp"
 
 #include <filesystem>
 #include <fstream>
@@ -70,6 +71,22 @@ struct Card {
         REQUIRE(s.save());
     }
 };
+
+/// A seq track on @p t of @p s playing its own notes, frozen to f.wav as the
+/// engine would have stamped it.
+void frozenSeqTrack(AudioSong& s, int t) {
+    REQUIRE(s.addSeqTrack(t, SeqSource::Kit, 0));
+    SeqNote n;
+    n.pad = 1;
+    n.vel = 100;
+    s.putSeqTake(t, 0, makeSeqPattern(1, {n}), s.samplesPerBar(kRate), 2);
+    SongClip fz;
+    fz.file = "f.wav";
+    fz.bars = 2;
+    s.tracks[t].freeze = {fz};
+    s.tracks[t].freezeKey = seq_freeze_key(s, t, kRate, SceneLookup{});
+    std::ofstream(s.clipPath("f.wav")) << "frozen";
+}
 
 } // namespace
 
@@ -142,14 +159,8 @@ TEST_CASE("resolver: a stretched track not fitted yet, or a freeze at another te
     ElementResolver fitted(card.root, kRate, 120.0f, card.reader());
     CHECK(fitted.resolve(kC).bakeable);
 
-    s.tracks[3].inUse = true;
-    s.tracks[3].kind = TrackKind::Seq;
-    SongClip fz;
-    fz.file = "f.wav";
-    fz.bars = 2;
-    s.tracks[3].freeze.push_back(fz);
+    frozenSeqTrack(s, 3);
     REQUIRE(s.save());
-    std::ofstream(s.clipPath("f.wav")) << "frozen";
     ElementResolver same(card.root, kRate, 120.0f, card.reader());
     CHECK(same.resolve(kC).bakeable);
     ElementResolver other(card.root, kRate, 100.0f, card.reader());
@@ -165,6 +176,35 @@ TEST_CASE("resolver: a recording that keeps its speed is not bakeable at another
     ElementResolver other(card.root, kRate, 100.0f, card.reader());
     CHECK_FALSE(other.resolve(kC).bakeable);
     CHECK(other.resolve(kC).why.find("not fitted") != std::string::npos);
+}
+
+TEST_CASE("resolver: a freeze older than its notes, or with no stamp, is not bakeable", "[song][resolver]") {
+    Card card("cp_resolver_freeze_key");
+    card.write(kC, 100);
+    AudioSong s;
+    REQUIRE(s.load(card.root + "/" + kC) == SongLoad::Loaded);
+    frozenSeqTrack(s, 1);
+    REQUIRE(s.save());
+    CHECK(ElementResolver(card.root, kRate, 120.0f, card.reader()).resolve(kC).bakeable);
+
+    SECTION("notes edited and never frozen again") {
+        SeqNote n;
+        n.pad = 2;
+        n.vel = 90;
+        s.putSeqTake(1, 0, makeSeqPattern(1, {n}), s.samplesPerBar(kRate), 2);
+    }
+    SECTION("the stamp cleared (a kit picked since)") {
+        s.tracks[1].freezeKey = 0;
+    }
+    SECTION("a block playing the scene, which no sequencer here can tell") {
+        s.tracks[1].clips[0].notes = nullptr;
+        s.tracks[1].freezeKey = seq_freeze_key(s, 1, kRate, SceneLookup{});
+        CHECK(s.tracks[1].freezeKey == 0);
+    }
+    REQUIRE(s.save());
+    ElementResolver rs(card.root, kRate, 120.0f, card.reader());
+    CHECK_FALSE(rs.resolve(kC).bakeable);
+    CHECK(rs.resolve(kC).why.find("older than its notes") != std::string::npos);
 }
 
 TEST_CASE("resolver: a cycle is reported, not followed", "[song][resolver]") {

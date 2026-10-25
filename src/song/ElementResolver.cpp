@@ -2,6 +2,7 @@
 #include "crosspad/song/ElementResolver.hpp"
 
 #include "crosspad/song/BakedView.hpp"
+#include "crosspad/song/SeqFreezeKey.hpp"
 
 #include <cmath>
 #include <utility>
@@ -42,8 +43,7 @@ ResolvedElement ElementResolver::make(const std::string& ref) {
     }
     /* A freeze was rendered, and a recording laid, on the grid of the tempo the element had. */
     const bool apart = std::fabs((song.bpm > 0.0f ? song.bpm : AudioSong::kDefaultBpm) - bpm_) > kSameTempoBpm;
-    song.bpm = bpm_;
-    const uint32_t spb = song.samplesPerBar(rate_);
+    const uint32_t spb = AudioSong::samplesPerBar(rate_, bpm_, song.beatsPerBar);
     r.frames = bars_to_frames(song.playEnd(), spb);
 
     /* Children first: their keys are part of this one's hash. */
@@ -53,6 +53,13 @@ ResolvedElement ElementResolver::make(const std::string& ref) {
         if (song.seqRoute(t) >= 0) {
             if (r.why.empty() && tr.freeze.empty()) r.why = "Track " + std::to_string(t + 1) + " is not frozen.";
             if (r.why.empty() && apart) r.why = "Track " + std::to_string(t + 1) + " is frozen at another tempo.";
+            /* A freeze is stamped with what it rendered, at the tempo the element
+             * has (song.bpm as read); notes or a kit changed since and never
+             * frozen again (SongSounds clears the stamp) are not in it. Without
+             * the sequencer's scenes a block playing one cannot be told: no
+             * key, not bakeable. */
+            if (r.why.empty() && (tr.freezeKey == 0 || tr.freezeKey != seq_freeze_key(song, t, rate_, SceneLookup{})))
+                r.why = "Track " + std::to_string(t + 1) + ": its freeze is older than its notes.";
             for (const SongClip& fz : tr.freeze) {
                 uint64_t bytes = 0;
                 int64_t modified = 0;

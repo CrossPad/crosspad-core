@@ -153,6 +153,10 @@ void SongEngine::Impl::linkBlocks(const std::string& dir,
      * back past it brings the old bake back, and the pass that undo's rebuild
      * asks for links it again. */
     noteChange();
+    /* Element blocks moved by an edit not committed yet are a pass of their
+     * own still: only a song the last rebuild had seen takes its link's
+     * signature as seen. */
+    const bool seen = elementSignature(song_) == elementSig_;
     bool changed = false;
     for (SongTrack& tr : song_.tracks) {
         for (SongClip& c : tr.clips) {
@@ -165,7 +169,7 @@ void SongEngine::Impl::linkBlocks(const std::string& dir,
     }
     if (!changed) return;
     pack(song_, last_);
-    elementSig_ = elementSignature(song_);   // its own link asks for no pass
+    if (seen) elementSig_ = elementSignature(song_);   // its own link asks for no pass
     rebuild();
     saveAtUs_.store(p.nowUs() + (int64_t)kSaveDelayMs * 1000);
     saveReq_.store(true);
@@ -257,7 +261,8 @@ void SongEngine::Impl::doDiskBake() {
         bakeFailed(ref, lacking(report));
         return;
     }
-    switch (mixDown(std::move(pieces), e.frames, bakePath(e.file))) {
+    std::string lost;
+    switch (mixDown(std::move(pieces), e.frames, bakePath(e.file), lost)) {
         case BakeRun::Done:
             logf(false, "baked %s into %s from the card", ref.c_str(), e.file.c_str());
             bakeMade(ref, e);
@@ -265,16 +270,20 @@ void SongEngine::Impl::doDiskBake() {
         case BakeRun::GaveWay:
             break;
         case BakeRun::Failed:
-            bakeFailed(ref, "The bake was not written: the card is full or would not take it.");
+            bakeFailed(ref, lost.empty() ? "The bake was not written: the card is full or would not take it."
+                                         : lost + " could not be read from the card whole.");
             break;
     }
 }
 
 /// Worker: @p pieces summed at their gains into @p total frames at @p path, a
 /// chunk at a time, through BakeReaders. Out at once when anything else is
-/// asked of the worker -- PLAY among it -- with the .part removed.
+/// asked of the worker -- PLAY among it -- with the .part removed. A source
+/// that cannot be opened, or gives fewer frames than it says it holds (cut
+/// short, gone since the view was made), fails the bake: silence in its place
+/// would be named as the element. @p lost names it.
 SongEngine::Impl::BakeRun SongEngine::Impl::mixDown(std::vector<BakedPiece> pieces, uint32_t total,
-                                                    const std::string& path) {
+                                                    const std::string& path, std::string& lost) {
     bakeProgress_.store(0);
     p.yieldIo();   // the streamer first
     if (requestWaiting()) return BakeRun::GaveWay;
@@ -305,9 +314,12 @@ SongEngine::Impl::BakeRun SongEngine::Impl::mixDown(std::vector<BakedPiece> piec
             for (const size_t i : live) {
                 const BakedPiece& pc = pieces[i];
                 ClipReader* r = readers.get(pc.path);
-                if (!r) { run = BakeRun::Failed; break; }
                 const uint32_t x = std::max(pc.start, f), y = std::min(pc.end, f + n);
-                r->read(x - pc.start + pc.offset, io_, y - x);
+                if (!r || !r->readWhole(x - pc.start + pc.offset, io_, y - x)) {
+                    lost = pc.path;
+                    run = BakeRun::Failed;
+                    break;
+                }
                 int32_t* d = acc_ + (x - f) * 2;
                 for (uint32_t k = 0; k < (y - x) * 2; ++k) d[k] += (int32_t)((float)io_[k] * pc.gain);
             }

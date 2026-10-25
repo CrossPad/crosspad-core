@@ -153,62 +153,12 @@ bool SongEngine::Impl::yieldFreeze() {
     return !busy_.load();
 }
 
-/// The bars a seq track's bounce or freeze takes, [@p from, @p to): one
-/// cut into blocks from its first block's bar to its last one's end, one
-/// playing its scene everywhere over the whole song.
 void SongEngine::Impl::seqRange(const AudioSong& song, int track, uint32_t& from, uint32_t& to) const {
-    const SongTrack& t = song.tracks[track];
-    from = 0;
-    to = endBars(song);
-    if (!t.seqBlocks || t.clips.empty()) return;
-    const uint32_t cut = std::max<uint32_t>(to, song.hasRegion() ? song.loopEnd : 0);
-    const auto& cs = t.clips;
-    from = cs.front().bar;
-    to = from;
-    for (size_t i = 0; i < cs.size(); ++i) {
-        uint32_t end = cs[i].bar + cs[i].bars;
-        if (i + 1 < cs.size()) end = std::min(end, cs[i + 1].bar);
-        to = std::max(to, std::min(end, cut));
-    }
-    if (to <= from) { from = 0; to = endBars(song); }
+    seq_freeze_range(song, track, scenes(), from, to);
 }
 
-/// What a freeze of seq track @p track is made of: its bars, its blocks
-/// and their notes (the scene's, for a block without), what it plays
-/// through and the tempo. A freeze plays only while this is unchanged.
 uint32_t SongEngine::Impl::seqKey(const AudioSong& song, int track) const {
-    uint32_t h = 2166136261u;
-    auto mix = [&h](const void* v, size_t n) {
-        const uint8_t* b = static_cast<const uint8_t*>(v);
-        for (size_t i = 0; i < n; ++i) { h ^= b[i]; h *= 16777619u; }
-    };
-    auto text = [&](const std::string& v) { mix(v.data(), v.size()); mix("", 1); };
-    auto notes = [&](const SeqPatternPtr& pt) {
-        if (!pt) { mix("", 1); return; }
-        mix(&pt->bars, sizeof pt->bars);
-        for (const SeqNote& n : pt->notes) {
-            mix(&n.tick, 4); mix(&n.len, 4); mix(&n.pad, 1); mix(&n.vel, 1); mix(&n.perf, 1);
-        }
-    };
-    const SongTrack& t = song.tracks[track];
-    uint32_t from = 0, to = 0;
-    seqRange(song, track, from, to);
-    mix(&from, 4); mix(&to, 4);
-    mix(&song.bpm, sizeof song.bpm);
-    mix(&song.beatsPerBar, 1);
-    mix(&sampleRate_, sizeof sampleRate_);
-    const uint8_t head[3] = {(uint8_t)t.source, t.scene, (uint8_t)(t.seqBlocks ? 1 : 0)};
-    mix(head, sizeof head);
-    text(t.source == SeqSource::Pitch ? song.instrument : t.kit.empty() ? song.kit : t.kit);
-    SeqPatternPtr scene;
-    if (!t.seqBlocks) scene = scenePattern(t.scene);
-    for (const auto& c : t.clips) {
-        mix(&c.bar, 4); mix(&c.bars, 2); mix(&c.from, 2);
-        if (!c.notes && !scene) scene = scenePattern(t.scene);
-        notes(c.notes ? c.notes : scene);
-    }
-    if (!t.seqBlocks) notes(scene);
-    return h ? h : 1;
+    return seq_freeze_key(song, track, sampleRate_, scenes());
 }
 
 /// How seq track @p track is frozen: a block whose notes go round is

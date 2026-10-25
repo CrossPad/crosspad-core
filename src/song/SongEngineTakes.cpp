@@ -233,6 +233,13 @@ void SongEngine::Impl::closeTake() {
     }
 }
 
+SceneLookup SongEngine::Impl::scenes() const {
+    SceneLookup l;
+    l.pattern = [this](uint8_t scene) { return scenePattern(scene); };
+    l.bars = [this](uint8_t scene) { return seq_.sceneBars(scene); };
+    return l;
+}
+
 /// Scene @p scene's notes as a pattern of its own: what a block that
 /// played the scene is given before a take changes it.
 SeqPatternPtr SongEngine::Impl::scenePattern(uint8_t scene) const {

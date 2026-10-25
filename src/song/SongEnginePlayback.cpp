@@ -298,17 +298,7 @@ bool SongEngine::Impl::liveState(ISongEngine::LiveState& out) {
 /// AudioSong::playEnd(), and with no length set at least one pass of the
 /// seq track's scene: that is how long a song of only a seq track is.
 uint32_t SongEngine::Impl::endBars(const AudioSong& song) const {
-    uint32_t end = song.playEnd();
-    if (song.length) return end;
-    /* Only a track that plays its scene over everything: one cut into
-     * blocks is as long as its blocks, like an audio track. Every track
-     * made since blocks had notes is (AudioSong::addSeqTrack()). */
-    for (int t = 0; t < kTracks; ++t) {
-        if (song.seqRoute(t) < 0 || song.tracks[t].seqBlocks) continue;
-        const uint8_t bars = seq_.sceneBars(song.tracks[t].scene);
-        end = std::max<uint32_t>(end, bars ? bars : 1);
-    }
-    return end;
+    return song_end_bars(song, scenes());
 }
 
 Arrangement SongEngine::Impl::flatten(const AudioSong& song) const {

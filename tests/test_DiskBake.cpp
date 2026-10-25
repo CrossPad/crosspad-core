@@ -6,6 +6,7 @@
 #include "song_engine_rig.hpp"
 
 #include "crosspad/platform/IFileSystem.hpp"
+#include "crosspad/song/SeqFreezeKey.hpp"
 
 #include <fstream>
 #include <iterator>
@@ -97,22 +98,32 @@ std::string slurp(const fs::path& p) {
     return std::string(std::istreambuf_iterator<char>(in), {});
 }
 
-/// Descriptors the engine holds open at once, at most, on the real card.
-struct CountingFs final : IFileSystem {
+/// The real card under the engine, watched: the descriptors it holds open at
+/// once, at most; a file it cannot open (@c unopenable); and @c fire, run once
+/// on the worker the first time it asks about @c target while @c armed. Set
+/// both before the engine's worker starts.
+struct HookFs final : IFileSystem {
     IFileSystem& base;
     IFileSystem* was;
     std::atomic<int> open{0}, most{0};
-    CountingFs() : base(getFileSystem()), was(getPlatformServices().fileSystem) {
+    std::string unopenable, target;
+    std::function<void()> fire;
+    std::atomic<bool> armed{false};
+    HookFs() : base(getFileSystem()), was(getPlatformServices().fileSystem) {
         getPlatformServices().setFileSystem(this);
     }
-    ~CountingFs() override { getPlatformServices().fileSystem = was; }
+    ~HookFs() override { getPlatformServices().fileSystem = was; }
     bool list(const char* dir, EntryFn each, void* ctx) override { return base.list(dir, each, ctx); }
-    FsStat stat(const char* path, FileStat* out) override { return base.stat(path, out); }
+    FsStat stat(const char* path, FileStat* out) override {
+        if (path == target && armed.exchange(false)) fire();
+        return base.stat(path, out);
+    }
     bool makeDir(const char* path) override { return base.makeDir(path); }
     bool remove(const char* path) override { return base.remove(path); }
     bool removeDir(const char* path) override { return base.removeDir(path); }
     bool rename(const char* from, const char* to) override { return base.rename(from, to); }
     int openRead(const char* path) override {
+        if (path == unopenable) return -1;
         const int fd = base.openRead(path);
         if (fd >= 0) {
             const int now = ++open;
@@ -125,6 +136,20 @@ struct CountingFs final : IFileSystem {
     bool seek(int fd, uint32_t offset) override { return base.seek(fd, offset); }
     void close(int fd) override { base.close(fd); --open; }
 };
+
+/// The child's recording, as audioElement() names it.
+std::string childClip(Rig& r, int track = 0) {
+    return r.platform.root + "/" + kChild + "/" + AudioSong::clipsDir() + "/t" + std::to_string(track) + ".wav";
+}
+
+/// A bake of the child that cannot be made from the card leaves the block on
+/// the old bake, Stale, with a why naming @p what, and no part file.
+void keptOld(Rig& r, const std::string& what) {
+    CHECK(block(r).file == kOldBake);
+    CHECK(r.engine->elementClipState(0, 0) == ElementClipState::Stale);
+    CHECK(r.engine->elementClipWhy(0, 0).find(what) != std::string::npos);
+    CHECK(bakes(r) == std::set<std::string>{kOldBake});
+}
 
 } // namespace
 
@@ -313,7 +338,7 @@ TEST_CASE("disk bake: a bake made by leaving and one made from the card have one
 }
 
 TEST_CASE("disk bake: four tracks at once are mixed through two descriptors", "[song][element][diskbake]") {
-    CountingFs counted;
+    HookFs counted;
     Rig r;
     REQUIRE(audioElement(r, kChild, {1000, 2000, 3000, 4000}, 2).save());
     writeSongWith(r, "Parent", kChild, 2, "");
@@ -366,4 +391,103 @@ TEST_CASE("disk bake: a new tempo keeps a block on its old bake while its record
     CHECK(block(r).frames == before.frames);
     CHECK(r.engine->elementClipWhy(0, 0).find("fitted") != std::string::npos);
     CHECK(bakes(r).size() == 1);
+}
+
+TEST_CASE("disk bake: a frozen seq track is mixed from its freeze until its notes move past it", "[song][element][diskbake]") {
+    Rig r;
+    writeOldBake(r);
+    AudioSong el = audioElement(r, kChild, {8000}, 2);
+    REQUIRE(el.addSeqTrack(1, SeqSource::Kit, 0));
+    SeqNote n;
+    n.pad = 1;
+    n.vel = 100;
+    el.putSeqTake(1, 0, makeSeqPattern(1, {n}), el.samplesPerBar(kRate), 2);
+    SongClip fz;
+    fz.file = "f.wav";
+    fz.bars = 2;
+    el.tracks[1].freeze = {fz};
+    el.tracks[1].freezeKey = seq_freeze_key(el, 1, kRate, SceneLookup{});
+    writeClip(el.clipPath("f.wav"), 2 * kBar, 4000);
+    REQUIRE(el.save());
+    writeSongWith(r, "Parent", kChild, 2, kOldBake);
+    REQUIRE(r.open("Parent"));
+    REQUIRE(idle(r));
+    const std::string frozen = block(r).file;
+    CHECK(frozen != kOldBake);
+    CHECK(r.engine->elementClipState(0, 0) == ElementClipState::Fresh);
+    bakeIs(r, frozen, 2 * kBar, 12000);
+
+    /* Edited inside and never left: new notes, the old freeze. */
+    n.pad = 2;
+    el.putSeqTake(1, 0, makeSeqPattern(1, {n}), el.samplesPerBar(kRate), 2);
+    REQUIRE(el.save());
+    REQUIRE(r.open("Parent"));
+    REQUIRE(idle(r));
+    CHECK(block(r).file == frozen);
+    CHECK(r.engine->elementClipState(0, 0) == ElementClipState::Stale);
+    CHECK(r.engine->elementClipWhy(0, 0).find("older than its notes") != std::string::npos);
+    CHECK(bakes(r) == std::set<std::string>{kOldBake, frozen});
+}
+
+TEST_CASE("disk bake: an element block laid while a pass links is resolved by a pass of its own", "[song][element][diskbake]") {
+    HookFs card;
+    Rig r;
+    writeAudioElement(r, kChild, 8000, 2);
+    writeAudioElement(r, kGrandchild, 5000, 2);
+    {
+        /* A recording is told apart by its name, size and time: another second. */
+        const std::string clip = r.platform.root + "/" + kGrandchild + "/" + AudioSong::clipsDir() + "/t0.wav";
+        fs::last_write_time(clip, fs::last_write_time(clip) + std::chrono::seconds(10));
+    }
+    card.target = (bakeDir(r) / kOldBake).string();
+    card.fire = [&r] {
+        /* The pass has resolved, and links next: an edit made under the lock and
+         * not committed yet -- the window of {lock; edit;} commit(). */
+        std::lock_guard<std::recursive_mutex> l(r.engine->songMutex());
+        SongClip c;
+        c.element = kGrandchild;
+        c.bar = 4;
+        c.bars = 2;
+        r.engine->song().addClip(0, c);
+    };
+    writeSongWith(r, "Parent", kChild, 2, "");
+    REQUIRE(r.open("Parent"));
+    REQUIRE(idle(r));
+    REQUIRE(r.open("Other"));
+    writeOldBake(r);
+    writeSongWith(r, "Parent", kChild, 2, kOldBake);         // a link for the pass to make
+    card.armed = true;
+    REQUIRE(r.open("Parent"));
+    REQUIRE(waitFor([&] { return !card.armed; }, kBakeWaitMs));
+    r.engine->commit();
+    REQUIRE(idle(r));
+    CHECK(block(r).file != kOldBake);
+    const SongClip laid = block(r, 0, 1);
+    CHECK(laid.element == kGrandchild);
+    CHECK_FALSE(laid.file.empty());
+    CHECK(r.engine->elementClipState(0, 1) == ElementClipState::Fresh);
+    bakeIs(r, laid.file, 2 * kBar, 5000);
+}
+
+TEST_CASE("disk bake: a recording cut short fails the bake and names it", "[song][element][diskbake]") {
+    Rig r;
+    writeOldBake(r);
+    writeAudioElement(r, kChild, 8000, 2);
+    fs::resize_file(childClip(r), fs::file_size(childClip(r)) / 2);   // the header still says two bars
+    writeSongWith(r, "Parent", kChild, 2, kOldBake);
+    REQUIRE(r.open("Parent"));
+    REQUIRE(idle(r));
+    keptOld(r, "t0.wav");
+}
+
+TEST_CASE("disk bake: a recording that cannot be opened fails the bake and names it", "[song][element][diskbake]") {
+    HookFs card;
+    Rig r;
+    card.unopenable = childClip(r);
+    writeOldBake(r);
+    writeAudioElement(r, kChild, 8000, 2);
+    writeSongWith(r, "Parent", kChild, 2, kOldBake);
+    REQUIRE(r.open("Parent"));
+    REQUIRE(idle(r));
+    keptOld(r, "t0.wav");
 }
