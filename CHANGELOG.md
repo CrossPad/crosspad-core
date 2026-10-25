@@ -31,7 +31,23 @@ bake of it.
   (`StretchMode::KeepPitch` on audio tracks that kept their speed); leaving
   freezes the seq tracks that are not frozen, waits for the fitted copies,
   bakes and links the bake into every block of the element in the parent.
-  An element cannot hold itself, directly or through another.
+  An element cannot hold itself, directly or through another. Every element
+  is fitted to and baked at the song's tempo: a tempo turned inside one is
+  put back before its bake. A song opened behind its back (the kit browser,
+  `ASONG OPEN`) starts the breadcrumb over, and stops a job before it freezes,
+  bakes or links anything in that song.
+- `PlatformServices::songSounds` and `SongSounds::settled()`: a leave waits
+  for the open level's kit and instrument before it freezes anything.
+
+### Changed
+
+- The elements' list waits for the stop while the song streams, as the save
+  does.
+- An element block whose pass is shorter than a bar of one beat at the
+  fastest tempo plays nothing (a corrupt song.json) instead of becoming a
+  segment a frame.
+- The element hash reads a kit or instrument named from the card's root
+  where the card is mounted (`kitFsPath()`).
 
 ## 2.22.0 — 2026-10-25
 

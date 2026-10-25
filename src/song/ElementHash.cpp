@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "crosspad/song/ElementHash.hpp"
 
+#include "crosspad/kit/KitPathUtils.hpp"
+
 #include <cinttypes>
 #include <cmath>
 #include <cstdio>
@@ -52,11 +54,13 @@ void notesOf(Fnv& f, const SeqPatternPtr& p) {
     }
 }
 
-/// A kit or instrument: the file the song names, whole, and every file beside it.
+/// A kit or instrument: the file the song names, whole, and every file beside
+/// it. One named from the card's root (/crosspad/kits/...) is read where the
+/// card is mounted; one without a leading '/' is in the song's own folder.
 void soundOf(Fnv& f, const ElementHashReader& rd, const AudioSong& song, const std::string& ref) {
     f.text(ref);
     if (ref.empty()) return;
-    const std::string path = ref[0] == '/' ? ref : song.dir + "/" + ref;
+    const std::string path = ref[0] == '/' ? kitFsPath(ref) : song.dir + "/" + ref;
     std::string bytes;
     if (rd.read && rd.read(path, bytes)) f.text(bytes);
     else f.text(kMissing);

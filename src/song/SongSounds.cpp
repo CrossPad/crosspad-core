@@ -186,6 +186,13 @@ void SongSounds::step()
     pending_.store(false);
 }
 
+bool SongSounds::settled() const
+{
+    if (pending() || !host_.kitsSettled()) return false;
+    const ISecondKit* k = getPlatformServices().secondKit;
+    return !k || k->state() != ISecondKit::State::Loading;
+}
+
 void SongSounds::kitLoaded()
 {
     ISongEngine* se = songs();

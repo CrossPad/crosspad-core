@@ -366,6 +366,10 @@ Arrangement SongEngine::Impl::flatten(const AudioSong& song) const {
         }
         a.seqMapped = true;
     }
+    /* The shortest pass a bake can have: a bar of one beat at the fastest
+     * tempo a song may have. One made before the song slowed down is shorter
+     * than a bar and still goes round. */
+    const uint32_t minBakeFrames = (uint32_t)((float)sampleRate_ * 60.0f / kMaxBpm);
     for (int t = 0; t < kTracks; ++t) {
         if (song.tracks[t].kind == TrackKind::Seq) continue;   // no audio of its own
         const auto& cs = song.tracks[t].clips;
@@ -378,9 +382,11 @@ Arrangement SongEngine::Impl::flatten(const AudioSong& song) const {
             /* An element goes round its bake, a segment a pass: the first
              * from the element bar the block starts on, the rest whole. Not
              * baked yet (no file, no length) it plays nothing. Never fitted:
-             * the bake is made at the song's tempo. */
+             * the bake is made at the song's tempo. A pass shorter than any
+             * bake can be is no bake (a song.json cut or edited by hand): as
+             * passes it would be millions of segments, under the song's lock. */
             if (cs[i].isElement()) {
-                if (cs[i].file.empty() || !cs[i].frames) continue;
+                if (cs[i].file.empty() || cs[i].frames < minBakeFrames) continue;
                 s.path = bakePath(cs[i].file);
                 s.offset = (uint32_t)((uint64_t)cs[i].from * a.samplesPerBar % cs[i].frames);
                 const uint32_t blockEnd = s.end;

@@ -16,15 +16,21 @@ namespace crosspad {
 /// project to open at boot (ISongEngine::requestOpenElement): a restart
 /// inside an element opens the song it was reached from.
 ///
-/// Entering stops the song, opens the element and, when it was made at
-/// another tempo, fits it to its parent's: its audio tracks that keep their
-/// speed (StretchMode::Off) become time-stretched, so a recording follows the
-/// song. Leaving stops, freezes every seq track that is not frozen, waits
-/// for the fitted copies of stretched tracks, bakes the element
-/// (ISongEngine::requestBakeElement) and opens the parent, where every block
-/// of the element takes the bake's file and length. A bake that fails, or
-/// anything else, stops the job where it is: a leave that failed leaves the
-/// engine on the element and path() as it was.
+/// One tempo, the song's: taken when the first element is entered, every
+/// element under the song is fitted to it and baked at it. Entering stops the
+/// song, opens the element and, when it was made at another tempo, fits it to
+/// the song's: its audio tracks that keep their speed (StretchMode::Off)
+/// become time-stretched, so a recording follows the song. Leaving stops,
+/// puts the element back at the song's tempo when it was turned inside it,
+/// waits for its kit and instrument to be loaded (PlatformServices::songSounds),
+/// freezes every seq track that is not frozen, waits for the fitted copies of
+/// stretched tracks, bakes the element (ISongEngine::requestBakeElement) and
+/// opens the parent, where every block of the element takes the bake's file
+/// and length. A bake that fails, or anything else, stops the job where it
+/// is: a leave that failed leaves the engine on the element and path() as it
+/// was. Another song opened behind its back stops it too, before it freezes,
+/// bakes or links anything in that song; idle, the breadcrumb starts over at
+/// the song the engine has open.
 class ElementNav {
 public:
     /// One step of the breadcrumb.
@@ -51,8 +57,9 @@ public:
     bool busy() const { return job_ != Job::None; }
     /// 0..100 of the job running: what its freeze or bake has come to.
     uint8_t progress() const;
-    /// What the job is doing: "stopping", "opening", "freezing", "baking",
-    /// "linking"; empty while none runs.
+    /// What the job is doing: "stopping", "opening", "fitting" (back to the
+    /// song's tempo), "loading" (the kit and instrument), "freezing",
+    /// "baking", "linking"; empty while none runs.
     const char* stage() const;
 
     /// Open the element block sounding on @p bar of @p track of the open song.
@@ -76,6 +83,7 @@ public:
     /// while none runs.
     Result poll();
     /// Another song was opened (from the list): the breadcrumb starts over.
+    /// One opened anywhere else is noticed by path() on its own.
     void reset();
     const std::string& lastError() const { return error_; }
 
@@ -83,12 +91,17 @@ public:
     static constexpr uint16_t kNewElementBars = 4;
 
 private:
-    enum class Phase : uint8_t { Idle, Stopping, Opening, Retempo, Freezing, Stretching, Baking, Reopening };
+    enum class Phase : uint8_t {
+        Idle, Stopping, Opening, Retempo, Refit, Sounds, Freezing, Stretching, Baking, Reopening
+    };
 
     /// The engine the job runs on, or null with lastError() set.
     class ISongEngine* engine();
-    /// Level 0 follows the project the engine has open while no job runs.
+    /// While no job runs, level 0 follows the project the engine has open,
+    /// and a path whose last level is not what it has open starts over there.
     void syncRoot() const;
+    /// The engine has @p open open: nothing opened it something else since.
+    bool onLevel(const std::string& open);
     bool refuse(const std::string& why);
     /// Lay an element block on @p track at @p bar of the open song.
     bool addBlock(int track, uint32_t bar, uint16_t bars, const std::string& ref);
@@ -103,6 +116,11 @@ private:
     Result opened();
     Result retempo();
     Result entered();
+    /// The level being left is on its way up: its tempo first.
+    Result toLeaving();
+    Result refit();
+    Result toSounds();
+    Result sounds();
     Result freezing();
     Result baking();
     Result reopening();
@@ -117,7 +135,7 @@ private:
     uint32_t    refusals_ = 0;
     std::string ref_;                 ///< the element the job enters or leaves
     Level       level_;               ///< the level an enter pushes
-    float       parentBpm_ = 0.0f;
+    float       songBpm_ = 0.0f;      ///< the song's tempo, taken as the first level is entered
     std::string newTitle_;            ///< insertNew's, set once entered
     bool        leaveAfterEnter_ = false;   ///< insertExisting: bake what was just laid
     int         targetDepth_ = 0;     ///< where a leave stops

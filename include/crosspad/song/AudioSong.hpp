@@ -55,8 +55,8 @@ SeqPatternPtr makeSeqPattern(uint16_t bars, std::vector<SeqNote> notes);
 /// way it moves the audio.
 ///
 /// On either kind of track it can instead be an element: another arrangement,
-/// kept as a project of its own under the song's .elements/ folder and played
-/// from a bake of it (WAV in .bake/). Then @c element names it, @c file is the
+/// kept as a project of its own in the library, <songsRoot>/.elements/, and
+/// played from a bake of it (a WAV in <songsRoot>/.bake/). Then @c element names it, @c file is the
 /// bake's name (empty until it has been baked), @c frames one pass of the
 /// element at the bake's tempo (0 until baked) and @c from the element bar the
 /// block starts on; @c bar and @c bars are as for any block.
@@ -225,8 +225,9 @@ public:
     static constexpr uint8_t kDefaultBeatsPerBar = 4;
     static const char* fileName() { return "song.json"; }
     static const char* clipsDir() { return "clips"; }
-    /// Where the song's elements live, one project folder each, inside the
-    /// song's own folder; and where their bakes are, next to them.
+    /// Where the elements live, one project folder each, under the songs
+    /// root beside the songs (the library every song shares); and where their
+    /// bakes are, next to them.
     static const char* elementsDir() { return ".elements"; }
     static const char* bakeDir() { return ".bake"; }
 

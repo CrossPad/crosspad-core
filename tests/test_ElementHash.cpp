@@ -2,6 +2,7 @@
 #include <catch2/catch_test_macros.hpp>
 
 #include "crosspad/song/ElementHash.hpp"
+#include "crosspad/kit/KitPathUtils.hpp"
 
 #include <filesystem>
 #include <map>
@@ -183,4 +184,23 @@ TEST_CASE("element hash: the same after song.json is saved and read back", "[ele
     back.dir = dir;
     CHECK(element_content_hash(back, card.reader()) == before);
     std::filesystem::remove_all(dir);
+}
+
+TEST_CASE("element hash: a kit named from the card's root is read where the card is mounted", "[element][hash]") {
+    struct Mount {
+        Mount() { setKitPathFsPrefix("/sdcard"); }
+        ~Mount() { setKitPathFsPrefix(""); }
+    } mount;
+    FakeCard card = baseCard();
+    card.files["/sdcard/crosspad/kits/K/kit.json"] = "{}";
+    card.files["/sdcard/crosspad/kits/K/kick.wav"] = "kick";
+    AudioSong s = baseSong();
+    s.kit = "/crosspad/kits/K/kit.json";
+    const uint64_t h = hashOf(s, card);
+    FakeCard edited = card;
+    edited.files["/sdcard/crosspad/kits/K/kit.json"] = "{ }";
+    CHECK(hashOf(s, edited) != h);
+    FakeCard swapped = card;
+    swapped.files["/sdcard/crosspad/kits/K/kick.wav"] = "kicks";
+    CHECK(hashOf(s, swapped) != h);
 }

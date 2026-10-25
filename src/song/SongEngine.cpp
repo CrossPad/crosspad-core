@@ -132,9 +132,10 @@ void SongEngine::Impl::worker() {
         /* Until a project is open, look for the card once a second; with a
          * save waiting, back in time to make it. */
         /* A request made while the last one was handled has had its wake-up
-         * used: it runs now, not at the next one. A save due is no such
-         * request while the song streams: the loop leaves it until the stop. */
-        if (!requestWaiting(!streaming))
+         * used: it runs now, not at the next one. A save due and the
+         * elements' list are no such requests while the song streams: the
+         * loop leaves them until the stop. */
+        if (!requestWaiting(streaming))
             p.waitWake(streaming ? kStreamPollMs
                                  : peaking || stretching ? 0
                                  : saveReq_.load() ? kSaveDelayMs : (lastTried_ ? UINT32_MAX : kCardPollMs));
@@ -198,7 +199,8 @@ void SongEngine::Impl::worker() {
                            : doMerge(editMask_.load(), editFrom_.load(), editTo_.load()));
             continue;
         }
-        if (const uint8_t lists = listReq_.exchange(0)) {
+        const uint8_t held = streaming ? kListsAfterStop : 0;
+        if (const uint8_t lists = listReq_.fetch_and(held) & (uint8_t)~held) {
             if (lists & kListProjects) doListProjects();
             if (lists & kListClips)    doListClips();
             if (lists & kListElements) doListElements();
@@ -225,11 +227,13 @@ void SongEngine::Impl::worker() {
     }
 }
 
-/// Worker: anything asked for that goes before a waveform.
-bool SongEngine::Impl::requestWaiting(bool saveCounts) const {
+/// Worker: anything asked for that goes before a waveform -- while the song
+/// @p streaming, not what waits for the stop.
+bool SongEngine::Impl::requestWaiting(bool streaming) const {
+    const uint8_t held = streaming ? kListsAfterStop : 0;
     return quit_.load() || releaseReq_.load() || stopReq_.load() || playReq_.load() || openReq_.load() ||
-           editReq_.load() != 0 || listReq_.load() != 0 || bounceReq_.load() ||
-           (saveCounts && saveReq_.load() && p.nowUs() >= saveAtUs_.load());
+           editReq_.load() != 0 || (listReq_.load() & (uint8_t)~held) != 0 || bounceReq_.load() ||
+           (!streaming && saveReq_.load() && p.nowUs() >= saveAtUs_.load());
 }
 
 SongEngine::SongEngine(ISongEnginePlatform& platform, MetronomeNode& clock, PatternSequencer& seq)

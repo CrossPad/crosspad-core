@@ -59,6 +59,7 @@ void SongEngine::Impl::doListElements() {
 
 bool SongEngine::Impl::requestBakeElement() {
     if (!ensureWorker() || !claimEdit()) return false;
+    editProgress_.store(0);
     return requestEdit(kEditBake);
 }
 

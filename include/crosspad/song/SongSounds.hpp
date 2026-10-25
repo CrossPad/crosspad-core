@@ -105,6 +105,11 @@ public:
     /// A step is still to come.
     bool pending() const { return pending_.load(std::memory_order_acquire); }
 
+    /// What is loaded is the open song's: no step to come, no kit load
+    /// running, the second kit not loading. A render of the song (a freeze)
+    /// made before would play the sounds of the song open before it.
+    bool settled() const;
+
 private:
     std::string logical(const std::string& dir);
     bool foregroundIs(const char* a, const char* b = nullptr);

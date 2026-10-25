@@ -4,6 +4,7 @@
 #include "song_engine_rig.hpp"
 
 #include "crosspad/song/ElementNav.hpp"
+#include "crosspad/song/SongSounds.hpp"
 
 namespace {
 
@@ -81,6 +82,37 @@ bool listElements(Rig& r) {
 
 fs::path bakeOf(Rig& r, const std::string& file) {
     return fs::path(r.platform.root) / AudioSong::bakeDir() / file;
+}
+
+/// The board's SongSounds over a host whose kit loads end when the test says.
+struct FakeSoundsHost final : ISongSoundsHost {
+    std::atomic<bool> kitsLoaded{true};
+    std::string cardRoot() override { return {}; }
+    bool kitsSettled() override { return kitsLoaded; }
+    void loadKit(int) override {}
+    void unloadKit() override {}
+    bool instrumentOwnsEngine() override { return false; }
+    const char* foregroundApp() override { return nullptr; }
+    void warn(const char*) override {}
+    void log(bool, const char*) override {}
+};
+
+struct SoundsGuard {
+    FakeSoundsHost host;
+    SongSounds sounds{host};
+    SongSounds* before;
+    SoundsGuard() : before(getPlatformServices().songSounds) { getPlatformServices().songSounds = &sounds; }
+    ~SoundsGuard() { getPlatformServices().songSounds = before; }
+};
+
+/// Polls the job, rendering as the board would, until it reaches @p stage.
+bool pollTo(Rig& r, const char* stage) {
+    std::vector<float> out(kBlock * 2), bus(kBlock * 2, 0.0f);
+    return waitFor([&] {
+        r.block(out, bus);
+        elementNav().poll();
+        return std::string(elementNav().stage()) == stage;
+    }, 10000);
 }
 
 } // namespace
@@ -486,4 +518,131 @@ TEST_CASE("element nav: a song never given a tempo is entered at the default one
     CHECK_FALSE(c.file.empty());
     CHECK(c.frames == 2 * kBarFrames);                       // two bars at 120, not at 90
     CHECK(fs::exists(bakeOf(r, c.file)));
+}
+
+TEST_CASE("element nav: a song opened behind its back starts the breadcrumb over", "[element][nav]") {
+    Rig r;
+    Services svc(r.engine.get(), nullptr);
+    NavGuard guard;
+    writeAudioElement(r, kA, "Intro", 2, 120.0f);
+    openDemo(r, kA);
+    REQUIRE(elementNav().enter(1, 0));
+    REQUIRE(runNav().ok);
+    REQUIRE(elementNav().depth() == 1);
+
+    SECTION("the song itself, from the kit browser's SONGS") {
+        REQUIRE(r.open("Demo"));
+        CHECK(elementNav().depth() == 0);
+        CHECK(elementNav().path()[0].open == "Demo");
+        /* A leave from the element it last knew would bake the song into the
+         * element's own blocks. */
+        CHECK_FALSE(elementNav().leave());
+        CHECK_FALSE(elementNav().busy());
+        CHECK(clipOf(r, 1).file.empty());
+    }
+    SECTION("another song") {
+        REQUIRE(r.open("Other"));
+        CHECK(elementNav().depth() == 0);
+        CHECK(elementNav().path()[0].open == "Other");
+        CHECK_FALSE(elementNav().leave());
+    }
+}
+
+TEST_CASE("element nav: a song opened during a leave is neither baked nor linked", "[element][nav]") {
+    Rig r;
+    Services svc(r.engine.get(), nullptr);
+    NavGuard guard;
+    SoundsGuard sounds;
+    writeAudioElement(r, kA, "Intro", 2, 120.0f);
+    openDemo(r, kA);
+    REQUIRE(elementNav().enter(1, 0));
+    REQUIRE(runNav().ok);
+    sounds.host.kitsLoaded = false;                          // the job waits for them: the window to open in
+    REQUIRE(elementNav().leave());
+    REQUIRE(pollTo(r, "loading"));
+    REQUIRE(r.open("Demo"));
+    sounds.host.kitsLoaded = true;
+    const auto out = runNav();
+    CHECK(out.done);
+    CHECK_FALSE(out.ok);
+    CHECK(out.error.find("another song") != std::string::npos);
+    CHECK(openName(r) == "Demo");
+    CHECK(clipOf(r, 1).file.empty());
+    CHECK_FALSE(fs::exists(fs::path(r.platform.root) / AudioSong::bakeDir()));
+    CHECK(elementNav().depth() == 0);
+}
+
+TEST_CASE("element nav: a tempo turned inside the element is put back before the bake", "[element][nav]") {
+    Rig r;
+    Services svc(r.engine.get(), nullptr);
+    NavGuard guard;
+    writeAudioElement(r, kA, "Intro", 2, 120.0f);
+    openDemo(r, kA);
+    REQUIRE(elementNav().enter(1, 0));
+    REQUIRE(runNav().ok);
+    REQUIRE(r.engine->requestTempo(100.0f));                 // the top bar's BPM, turned inside
+    REQUIRE(waitFor([&] { return r.engine->editState() != SongOpState::Busy; }, 10000));
+    REQUIRE(r.engine->editState() == SongOpState::Ready);
+    REQUIRE(elementNav().leave());
+    const auto out = runNav();
+    INFO("error: " << out.error);
+    REQUIRE(out.ok);
+    CHECK(openName(r) == "Demo");
+    CHECK(r.engine->bakeResult().frames == 2 * kBarFrames);  // two bars at the song's 120, not at 100
+    CHECK(clipOf(r, 1).frames == 2 * kBarFrames);
+}
+
+TEST_CASE("element nav: nothing is frozen before the level's sounds are loaded", "[element][nav]") {
+    Rig r;
+    Services svc(r.engine.get(), nullptr);
+    NavGuard guard;
+    SoundsGuard sounds;
+    writeAudioElement(r, kA, "Beat", 2, 120.0f);
+    openDemo(r, kA);
+    REQUIRE(elementNav().enter(1, 0));
+    REQUIRE(runNav().ok);
+    {
+        std::lock_guard<std::recursive_mutex> l(r.engine->songMutex());
+        AudioSong& s = r.engine->song();
+        REQUIRE(s.addSeqTrack(1, SeqSource::Kit, 0));
+        SeqNote n;
+        n.pad = 1; n.vel = 100;
+        s.putSeqTake(1, 0, makeSeqPattern(1, {n}), s.samplesPerBar(kRate));
+        s.armed = -1;
+    }
+    r.engine->commit();
+    sounds.sounds.songOpened();                              // a kit still to come, as after an open
+    REQUIRE(elementNav().leave());
+    REQUIRE(pollTo(r, "loading"));
+    std::vector<float> out(kBlock * 2), bus(kBlock * 2, 0.25f);
+    for (int i = 0; i < 100; ++i) {
+        r.block(out, bus);
+        REQUIRE_FALSE(elementNav().poll().done);
+    }
+    CHECK(std::string(elementNav().stage()) == "loading");
+    CHECK(r.engine->bounceStatus().state != BounceState::Running);
+    CHECK(r.engine->freezeState(1) != FreezeState::Frozen);
+
+    SECTION("loaded, the leave goes on") {
+        sounds.sounds.step();                                // no kit manager: the step has nothing to bring
+        REQUIRE(sounds.sounds.settled());
+        ElementNav::Result res;
+        REQUIRE(waitFor([&] {
+            r.block(out, bus);
+            res = elementNav().poll();
+            return res.done;
+        }, 20000));
+        INFO("error: " << res.error);
+        REQUIRE(res.ok);
+        CHECK(openName(r) == "Demo");
+        CHECK_FALSE(clipOf(r, 1).file.empty());
+    }
+    SECTION("never loaded, the leave is given up in the element") {
+        const auto res = runNav();
+        CHECK(res.done);
+        CHECK_FALSE(res.ok);
+        CHECK(res.error.find("did not load") != std::string::npos);
+        CHECK(elementNav().depth() == 1);
+        CHECK(openName(r) == kA);
+    }
 }

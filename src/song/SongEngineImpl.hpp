@@ -452,6 +452,9 @@ private:
     static constexpr uint8_t kListProjects = 1;
     static constexpr uint8_t kListClips    = 2;
     static constexpr uint8_t kListElements = 4;
+    /// Lists that wait for the stop while the song streams: the elements'
+    /// reads every element's song.json, longer than the ring lasts.
+    static constexpr uint8_t kListsAfterStop = kListElements;
     static void worker_entry(void* arg) { static_cast<Impl*>(arg)->worker(); }
     bool request(uint8_t list);
     bool claimEdit();
@@ -539,7 +542,7 @@ private:
     uint32_t nextStretch(StretchJob* job);
     bool stretchPending() { return nextStretch(nullptr) != 0; }
     void doStretch();
-    bool requestWaiting(bool saveCounts = true) const;
+    bool requestWaiting(bool streaming = false) const;
     bool peaksPending();
     void doPeaks();
     bool readPeaks(const std::string& wav, std::vector<uint8_t>& out);

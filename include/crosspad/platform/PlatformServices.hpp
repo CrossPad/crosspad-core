@@ -43,6 +43,7 @@ class CrosspadStatus;
 class SequencerController;
 class ISequencerEngine;
 class ISongEngine;
+class SongSounds;
 class ISampleTools;
 class IInputGain;
 class IInputPairs;
@@ -95,6 +96,10 @@ struct PlatformServices {
     /// The audio song: projects on the card, bouncing a scene, playing the
     /// four tracks back. Null where the platform has none (the simulator).
     ISongEngine*      songEngine      = nullptr;
+    /// What brings the board to the open song's kit and instrument: whoever
+    /// renders the song asks it whether they are loaded yet. Null where the
+    /// platform follows no song's sounds; then they count as loaded.
+    SongSounds*       songSounds      = nullptr;
     ISampleTools*     sampleTools     = nullptr;   ///< recording, previewing and slicing samples
     IInputGain*       inputGain       = nullptr;   ///< the inputs' preamp gain (mics, line-in)
     IInputPairs*      inputPairs      = nullptr;   ///< which inputs the ADCs hear; null when all always do

@@ -4,6 +4,7 @@
 #include "crosspad/platform/PlatformServices.hpp"
 #include "crosspad/song/AudioSong.hpp"
 #include "crosspad/song/ISongEngine.hpp"
+#include "crosspad/song/SongSounds.hpp"
 
 #include <algorithm>
 #include <chrono>
@@ -26,8 +27,26 @@ float effectiveBpm(const AudioSong& s) { return s.bpm > 0.0f ? s.bpm : AudioSong
 /// Polls the fitting of stretched blocks may go without one more done before
 /// the leave is given up: the card is gone, or the worker is.
 constexpr uint32_t kStretchStallPolls = 2400;
+/// Polls a level's kit and instrument may take to load before the leave is
+/// given up: a kit read from the card, an instrument built from its samples.
+constexpr uint32_t kSoundsPolls = 1200;
+constexpr char kOtherSong[] = "another song was opened meanwhile";
 
 ISongEngine* songEngine() { return getPlatformServices().songEngine; }
+
+/// A recording keeps to the song's tempo, not the one it was made at: the
+/// audio tracks that keep their speed become time-stretched. True when one did.
+bool keepRecordingsToTempo(AudioSong& song)
+{
+    bool changed = false;
+    for (SongTrack& t : song.tracks) {
+        if ((t.inUse || !t.clips.empty()) && t.kind == TrackKind::Audio && t.stretch == StretchMode::Off) {
+            t.stretch = StretchMode::KeepPitch;
+            changed = true;
+        }
+    }
+    return changed;
+}
 
 /// An id for a new element that no element in the library has.
 std::string freshElementRef(ISongEngine& se)
@@ -56,9 +75,21 @@ void ElementNav::syncRoot() const
 {
     ISongEngine* se = songEngine();
     if (path_.empty()) path_.emplace_back();
-    if (!se || job_ != Job::None || path_.size() != 1) return;
+    if (!se || job_ != Job::None) return;
     std::lock_guard<std::recursive_mutex> l(se->songMutex());
-    path_[0].open = se->song().name;
+    const std::string& open = se->song().name;
+    if (path_.back().open == open) return;
+    /* Another song opened behind the breadcrumb -- the kit browser's SONGS,
+     * ASONG OPEN, another app while Arrange was closed: a leave from the
+     * element it last knew would bake that song into the element's blocks. */
+    path_.assign(1, Level{open, {}, -1, 0});
+}
+
+bool ElementNav::onLevel(const std::string& open)
+{
+    ISongEngine* se = songEngine();
+    std::lock_guard<std::recursive_mutex> l(se->songMutex());
+    return se->song().name == open;
 }
 
 const std::vector<ElementNav::Level>& ElementNav::path() const
@@ -90,6 +121,8 @@ const char* ElementNav::stage() const
         case Phase::Stopping:   return "stopping";
         case Phase::Opening:
         case Phase::Retempo:    return "opening";
+        case Phase::Refit:      return "fitting";
+        case Phase::Sounds:     return "loading";
         case Phase::Freezing:   return "freezing";
         case Phase::Stretching:
         case Phase::Baking:     return "baking";
@@ -129,10 +162,9 @@ bool ElementNav::startEnter(const std::string& ref, int track, uint32_t bar, Job
 {
     ISongEngine* se = engine();
     if (!se) return false;
-    syncRoot();
-    {
+    if (depth() == 0) {
         std::lock_guard<std::recursive_mutex> l(se->songMutex());
-        parentBpm_ = effectiveBpm(se->song());
+        songBpm_ = effectiveBpm(se->song());
     }
     ref_ = ref;
     level_ = Level{ref, {}, track, bar};
@@ -277,6 +309,8 @@ ElementNav::Result ElementNav::poll()
         case Phase::Stopping:   return stopped();
         case Phase::Opening:    return opened();
         case Phase::Retempo:    return retempo();
+        case Phase::Refit:      return refit();
+        case Phase::Sounds:     return sounds();
         case Phase::Freezing:   return freezing();
         case Phase::Stretching: {
             /* Counted afresh, so a copy still to make is never read as none. */
@@ -297,18 +331,12 @@ ElementNav::Result ElementNav::poll()
     }
 }
 
-/// Entering opens the element once the song is quiet; leaving goes on to freeze.
+/// Entering opens the element once the song is quiet; leaving goes on up.
 ElementNav::Result ElementNav::stopped()
 {
     ISongEngine* se = songEngine();
     if (se->playing()) return {};
-    if (job_ == Job::Leave) {
-        phase_ = Phase::Freezing;
-        freezeTrack_ = 0;
-        asked_ = false;
-        refusals_ = 0;
-        return {};
-    }
+    if (job_ == Job::Leave) return toLeaving();
     if (!se->requestOpenElement(ref_)) return refused("the element cannot be opened now");
     phase_ = Phase::Opening;
     refusals_ = 0;
@@ -325,18 +353,18 @@ ElementNav::Result ElementNav::opened()
     }
     /* From here the engine is on the element: the breadcrumb says so, whatever
      * becomes of the tempo. */
-    bool apart = false;
+    bool apart = false, other = false;
     {
         std::lock_guard<std::recursive_mutex> l(se->songMutex());
-        level_.title = se->song().title;
-        apart = std::fabs(effectiveBpm(se->song()) - parentBpm_) > kTempoEpsilon;
-        /* A recording keeps to the song's tempo, not the one it was made at. */
-        if (apart) {
-            for (SongTrack& t : se->song().tracks)
-                if ((t.inUse || !t.clips.empty()) && t.kind == TrackKind::Audio && t.stretch == StretchMode::Off)
-                    t.stretch = StretchMode::KeepPitch;
+        AudioSong& song = se->song();
+        other = song.name != ref_;
+        if (!other) {
+            level_.title = song.title;
+            apart = std::fabs(effectiveBpm(song) - songBpm_) > kTempoEpsilon;
+            if (apart) keepRecordingsToTempo(song);
         }
     }
+    if (other) return fail(kOtherSong);
     path_.push_back(level_);
     if (!apart) return entered();
     se->commit();
@@ -350,7 +378,8 @@ ElementNav::Result ElementNav::retempo()
 {
     ISongEngine* se = songEngine();
     if (!asked_) {
-        if (!se->requestTempo(parentBpm_)) return refused("the tempo cannot be set now");
+        if (!onLevel(ref_)) return fail(kOtherSong);
+        if (!se->requestTempo(songBpm_)) return refused("the tempo cannot be set now");
         asked_ = true;
         return {};
     }
@@ -377,6 +406,64 @@ ElementNav::Result ElementNav::entered()
         path_.back().title = newTitle_;
     }
     if (!leaveAfterEnter_) return finish();
+    return toLeaving();
+}
+
+ElementNav::Result ElementNav::toLeaving()
+{
+    phase_ = Phase::Refit;
+    asked_ = false;
+    refusals_ = 0;
+    return {};
+}
+
+/// A tempo turned inside the element -- the top bar, a host's clock, an undo
+/// back past the enter -- is put back first: the bake is whole bars at the
+/// song's tempo, or its block drifts against the song a little more each pass.
+ElementNav::Result ElementNav::refit()
+{
+    ISongEngine* se = songEngine();
+    if (!asked_) {
+        bool apart = false, other = false, kept = false;
+        {
+            std::lock_guard<std::recursive_mutex> l(se->songMutex());
+            AudioSong& song = se->song();
+            other = song.name != ref_;
+            apart = !other && std::fabs(effectiveBpm(song) - songBpm_) > kTempoEpsilon;
+            if (apart) kept = keepRecordingsToTempo(song);
+        }
+        if (other) return fail(kOtherSong);
+        if (!apart) return toSounds();
+        if (kept) se->commit();
+        if (!se->requestTempo(songBpm_)) return refused("the tempo cannot be set now");
+        asked_ = true;
+        return {};
+    }
+    switch (se->editState()) {
+        case SongOpState::Busy:  return {};
+        case SongOpState::Ready: return toSounds();
+        default:                 return fail("the element's tempo could not be put back");
+    }
+}
+
+ElementNav::Result ElementNav::toSounds()
+{
+    phase_ = Phase::Sounds;
+    refusals_ = 0;
+    return {};
+}
+
+/// The level's kit and instrument are loaded before anything of it is
+/// rendered: SongSounds brings them in from a timer after the song opens, and
+/// a freeze made before would play the sounds of the level opened before it,
+/// stamped as this one's.
+ElementNav::Result ElementNav::sounds()
+{
+    const SongSounds* ss = getPlatformServices().songSounds;
+    if (ss && !ss->settled()) {
+        if (++refusals_ < kSoundsPolls) return {};
+        return fail("the element's kit or instrument did not load");
+    }
     phase_ = Phase::Freezing;
     freezeTrack_ = 0;
     asked_ = false;
@@ -403,6 +490,7 @@ ElementNav::Result ElementNav::freezing()
 {
     ISongEngine* se = songEngine();
     if (!asked_) {
+        if (!onLevel(ref_)) return fail(kOtherSong);
         freezeTrack_ = nextToFreeze();
         if (freezeTrack_ >= AudioSong::kTracks) {
             phase_ = Phase::Stretching;
@@ -430,6 +518,7 @@ ElementNav::Result ElementNav::baking()
 {
     ISongEngine* se = songEngine();
     if (!asked_) {
+        if (!onLevel(ref_)) return fail(kOtherSong);
         if (!se->requestBakeElement()) return refused("the song is busy: the element cannot be baked now");
         asked_ = true;
         return {};
@@ -442,6 +531,8 @@ ElementNav::Result ElementNav::baking()
             return fail(report.empty() ? "the element could not be baked" : report.front());
         }
     }
+    /* A song opened while the bake was queued is what it mixed. */
+    if (!onLevel(ref_)) return fail(kOtherSong);
     const ElementBake bake = se->bakeResult();
     bakeFile_ = bake.file;
     bakeFrames_ = bake.frames;
@@ -476,6 +567,7 @@ ElementNav::Result ElementNav::linked()
     ISongEngine* se = songEngine();
     {
         std::lock_guard<std::recursive_mutex> l(se->songMutex());
+        if (se->song().name != path_[path_.size() - 2].open) return fail(kOtherSong);
         for (SongTrack& t : se->song().tracks) {
             for (SongClip& c : t.clips) {
                 if (c.element != ref_) continue;
@@ -488,11 +580,7 @@ ElementNav::Result ElementNav::linked()
     path_.pop_back();
     if (depth() > targetDepth_) {
         ref_ = path_.back().open;
-        phase_ = Phase::Freezing;
-        freezeTrack_ = 0;
-        asked_ = false;
-        refusals_ = 0;
-        return {};
+        return toLeaving();
     }
     return finish();
 }

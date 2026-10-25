@@ -2943,3 +2943,63 @@ TEST_CASE("song engine: a save due during playback does not keep the worker from
     r.engine->stop();
     REQUIRE(waitFor([&] { return !r.engine->playing(); }));
 }
+
+TEST_CASE("song engine: the elements' list waits for the stop while the song streams", "[song][element]") {
+    Rig r;
+    REQUIRE(r.open("Demo"));
+    placeClip(r, "c.wav", 1000, 0, 0, 4);
+    r.engine->commit();
+    writeElement(r, kElementRef, "Intro", {}, 4);
+    REQUIRE(r.engine->play(0));
+    REQUIRE(waitFor([&] { return r.engine->playing(); }));
+    const uint32_t gen = r.engine->listGeneration();
+    REQUIRE(r.engine->requestElements());
+    std::this_thread::sleep_for(std::chrono::milliseconds(300));
+    /* Every element's song.json read under playback takes the worker off the
+     * ring for longer than it lasts. */
+    CHECK(r.engine->listGeneration() == gen);
+    CHECK(r.engine->elements().empty());
+    const int before = r.platform.waits;
+    std::this_thread::sleep_for(std::chrono::milliseconds(200));
+    CHECK(r.platform.waits - before >= 10);                  // it waits between fills, not spinning on the list
+    r.engine->stop();
+    REQUIRE(waitFor([&] { return r.engine->listGeneration() != gen; }));
+    CHECK_FALSE(r.engine->playing());
+    REQUIRE(r.engine->elements().size() == 1);
+    CHECK(r.engine->elements()[0].title == "Intro");
+}
+
+TEST_CASE("song engine: an element pass shorter than any bake plays nothing", "[song][element]") {
+    Rig r;
+    REQUIRE(r.open("Demo"));
+    const std::string bake = "B0000000000000001.wav";
+    fs::create_directories(fs::path(r.platform.root) / AudioSong::bakeDir());
+    writeClip((fs::path(r.platform.root) / AudioSong::bakeDir() / bake).string(), kRate, 16000);
+    placeElementClip(r, bake, 0, 0, 4);
+    {
+        std::lock_guard<std::recursive_mutex> l(r.engine->songMutex());
+        r.engine->song().tracks[0].clips[0].frames = 1;     // a song.json cut short: a pass a frame
+    }
+    r.engine->commit();
+    CHECK(segmentsOf(*r.engine, 0) == 0);
+    {
+        /* Half a bar: a bake made before the song slowed down still goes round. */
+        std::lock_guard<std::recursive_mutex> l(r.engine->songMutex());
+        r.engine->song().tracks[0].clips[0].frames = kRate;
+    }
+    r.engine->commit();
+    CHECK(segmentsOf(*r.engine, 0) == 8);
+}
+
+TEST_CASE("song engine: a bake found in the cache does not show the last one's progress", "[song][element]") {
+    Rig r;
+    REQUIRE(r.open("Song 1"));
+    twoTracks(r);
+    REQUIRE(bakeAndWait(r));
+    REQUIRE(r.engine->editState() == SongOpState::Ready);
+    REQUIRE(r.engine->editProgress() == 100);
+    REQUIRE(r.engine->requestBakeElement());
+    CHECK(r.engine->editProgress() == 0);
+    REQUIRE(waitFor([&] { return r.engine->editState() != SongOpState::Busy; }, 10000));
+    CHECK(r.engine->bakeResult().cached);
+}
