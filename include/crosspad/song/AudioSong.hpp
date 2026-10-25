@@ -235,6 +235,11 @@ public:
     std::string name;
     /// An element's display name; empty on a song, which is named by its folder.
     std::string title;
+    /// An element's own latest bake, a file of <songsRoot>/.bake/: the cache
+    /// never evicts it, so the element opened again plays at once. Set where
+    /// the bake becomes known; empty on a song and on an element not baked yet.
+    /// Not part of the content hash.
+    std::string newestBake;
     float       bpm  = 0.0f;      ///< 0 until the first clip sets it
     uint8_t     beatsPerBar = kDefaultBeatsPerBar;
     bool        loop = true;

@@ -20,8 +20,20 @@
 // every occurrence of the element silent -- over one pass of it, mixed from the
 // card (ContextMix) and played under the element (requestContext()).
 // The state is SongEngine::Impl (SongEngineImpl.hpp); the worker loop is in SongEngine.cpp.
+//
+// The cache these bakes and stems live in is bounded (doEvict()): after the
+// first pass and after every bake it is brought under min(kBakeCapBytes,
+// kBakeCapShare percent of the card's free room), the least recently used file
+// first. A file's last use is a counter in .bake/usage.json, bumped by the relink
+// pass and by the context stem. Never removed: a file the open song's tree plays
+// (every element block's file, the stem in use), any element's newest bake
+// (AudioSong::newestBake, kept with the element) -- an evicted bake is just
+// baked again -- and a .part a mix is writing. The parts an earlier run left
+// are removed by the first pass.
 
 #include "SongEngineImpl.hpp"
+
+#include <ArduinoJson.h>
 
 namespace crosspad {
 
@@ -310,6 +322,7 @@ void SongEngine::Impl::doRelink() {
     /* Busy from the request to the last link: a request made meanwhile is one more pass. */
     relinking_.store(true);
     relinkReq_.store(false);
+    if (!partsSwept_) evictPending_ = true;   // the first pass of this boot
     AudioSong copy;
     {
         std::lock_guard<std::recursive_mutex> l(songMutex_);
@@ -352,8 +365,12 @@ void SongEngine::Impl::doRelink() {
         s.frames = e.frames;
         s.exists = e.exists;
         s.why = e.why;
-        if (e.exists) links[ref] = {e.file, e.frames};
-        else if (e.bakeable) { s.baking = true; bakeQueue_.push_back(ref); }
+        if (e.exists) {
+            links[ref] = {e.file, e.frames};
+            pace();
+            if (gaveWay_) return relinkGaveWay();
+            noteNewestBake(ref, e.file);
+        } else if (e.bakeable) { s.baking = true; bakeQueue_.push_back(ref); }
         if (e.exists || e.bakeable) {
             for (const SongTrack& tr : copy.tracks)
                 for (const SongClip& c : tr.clips)
@@ -369,6 +386,7 @@ void SongEngine::Impl::doRelink() {
     }
     for (const auto& kv : seen)
         if (kv.second.exists) onCard.insert(kv.second.file);
+    for (const std::string& f : onCard) bumpUse(f);
     {
         std::lock_guard<std::mutex> l(elementMutex_);
         elementSeen_ = std::move(seen);
@@ -377,6 +395,8 @@ void SongEngine::Impl::doRelink() {
     linkBlocks(bakeSong_, links);
     bakeQueued_.store((uint32_t)bakeQueue_.size());
     noteChanged(changed);
+    pace();
+    if (!gaveWay_) saveUsage();
     relinking_.store(false);
 }
 
@@ -452,6 +472,8 @@ void SongEngine::Impl::bakeMade(const std::string& ref, const ResolvedElement& e
     now.exists = true;
     bakesMade_[ref] = now;
     bakeQueue_.erase(std::remove(bakeQueue_.begin(), bakeQueue_.end(), ref), bakeQueue_.end());
+    noteNewestBake(ref, now.file);
+    bumpUse(now.file);
     if (!bakeOther_) {
         std::lock_guard<std::mutex> l(elementMutex_);
         const auto it = elementSeen_.find(ref);
@@ -670,6 +692,7 @@ void SongEngine::Impl::endMix(BakeRun run) {
             case BakeRun::Done:
                 logf(false, "baked %s into %s from the card", j.ref.c_str(), file.c_str());
                 bakeMade(j.ref, j.bake);
+                evictPending_ = true;
                 break;
             case BakeRun::GaveWay:
                 break;
@@ -683,6 +706,8 @@ void SongEngine::Impl::endMix(BakeRun run) {
     switch (run) {
         case BakeRun::Done:
             logf(false, "context of %s baked into %s", j.focus.c_str(), file.c_str());
+            bumpUse(file);
+            evictPending_ = true;
             contextDone(j.gen, j.path, j.at, j.frames, j.bpm, j.state, j.why);
             break;
         case BakeRun::GaveWay: {
@@ -857,6 +882,7 @@ void SongEngine::Impl::doContext() {
     const bool found = pacedIsFile(path, 1);
     if (gaveWay_) return again();
     if (found) {
+        bumpUse(file);
         contextDone(gen, path, req.focusFrame, frames, bpm, done, mix.why());
         return;
     }
@@ -931,7 +957,199 @@ void SongEngine::Impl::backgroundStep(bool streaming) {
     else if (!streaming && peaksPending() && p.storageReady()) doPeaks();
     else if (!streaming && stretchPending() && p.storageReady()) doStretch();
     else if (diskBakePending()) doDiskBake();
+    else if (evictPending_ && p.storageReady()) doEvict();
     else if (!streaming && idlePending()) idleStep();
+}
+
+namespace {
+
+/// @p name is a bake or a stem of the cache.
+bool is_cached_wav(const std::string& name) {
+    static const char kExt[] = ".wav";
+    constexpr size_t kExtLen = sizeof kExt - 1;
+    return name.size() > kExtLen && name.compare(name.size() - kExtLen, kExtLen, kExt) == 0;
+}
+
+bool is_part(const std::string& name) {
+    const std::string suffix = kPartSuffix;
+    return name.size() > suffix.size() && name.compare(name.size() - suffix.size(), suffix.size(), suffix) == 0;
+}
+
+std::string file_of(const std::string& path) { return path.substr(path.find_last_of('/') + 1); }
+
+} // namespace
+
+void SongEngine::Impl::loadUsage() {
+    if (usageLoaded_) return;
+    usageLoaded_ = true;
+    usage_.clear();
+    usageClock_ = 0;
+    const std::string path = bakePath(kUsageFile);
+    std::string text;
+    if (!cardHashReader().read(path, text)) return;
+    JsonDocument doc;
+    /* A file that does not parse, or is not an object, is rebuilt from what is used. */
+    if (deserializeJson(doc, text) || !doc.is<JsonObject>()) return;
+    for (JsonPair kv : doc.as<JsonObject>()) {
+        const uint64_t at = kv.value() | (uint64_t)0;
+        usage_[kv.key().c_str()] = at;
+        usageClock_ = std::max(usageClock_, at);
+    }
+}
+
+void SongEngine::Impl::bumpUse(const std::string& file) {
+    loadUsage();
+    usage_[file] = ++usageClock_;
+    usageDirty_ = true;
+}
+
+void SongEngine::Impl::saveUsage() {
+    if (!usageDirty_) return;
+    JsonDocument doc;
+    JsonObject o = doc.to<JsonObject>();
+    for (const auto& kv : usage_) o[kv.first] = kv.second;
+    std::string text;
+    serializeJson(doc, text);
+    const std::string path = bakePath(kUsageFile), part = path + kPartSuffix;
+    FILE* f = std::fopen(part.c_str(), "wb");
+    if (!f) return;
+    const bool wrote = std::fwrite(text.data(), 1, text.size(), f) == text.size();
+    const bool closed = std::fclose(f) == 0;
+    std::remove(path.c_str());   // FATFS renames over nothing
+    if (wrote && closed && fsx::rename(part, path)) usageDirty_ = false;
+    else std::remove(part.c_str());
+}
+
+void SongEngine::Impl::noteNewestBake(const std::string& ref, const std::string& file) {
+    AudioSong el;
+    if (el.load(std::string(p.songsRoot()) + "/" + ref) != SongLoad::Loaded || el.newestBake == file) return;
+    el.newestBake = file;
+    if (!el.save()) logf(true, "%s: its newest bake could not be recorded", ref.c_str());
+}
+
+void SongEngine::Impl::ownBake(const std::string& file) {
+    {
+        std::lock_guard<std::recursive_mutex> l(songMutex_);
+        if (opened_ && !song_.title.empty() && song_.newestBake != file) {
+            song_.newestBake = file;
+            saveAtUs_.store(p.nowUs() + (int64_t)kSaveDelayMs * 1000);
+            saveReq_.store(true);
+        }
+    }
+    bumpUse(file);
+    evictPending_ = true;
+}
+
+bool SongEngine::Impl::protectedBakes(std::set<std::string>& keep) {
+    const std::string root = p.songsRoot();
+    std::set<std::string> seen;
+    std::vector<std::string> todo;
+    auto tree = [&](const AudioSong& s) {
+        for (const SongTrack& tr : s.tracks) {
+            for (const SongClip& c : tr.clips) {
+                if (!c.isElement()) continue;
+                if (!c.file.empty()) keep.insert(c.file);
+                if (seen.insert(c.element).second) todo.push_back(c.element);
+            }
+        }
+    };
+    {
+        std::lock_guard<std::recursive_mutex> l(songMutex_);
+        if (opened_) tree(song_);
+        if (!ctxPath_.empty()) keep.insert(file_of(ctxPath_));
+    }
+    /* The open song's tree: what its blocks play, and each element's newest bake. */
+    while (!todo.empty()) {
+        const std::string ref = todo.back();
+        todo.pop_back();
+        pace();
+        if (gaveWay_) return false;
+        AudioSong el;
+        if (el.load(root + "/" + ref) != SongLoad::Loaded) continue;
+        tree(el);
+        if (!el.newestBake.empty()) keep.insert(el.newestBake);
+    }
+    /* Every other element of the library. */
+    std::vector<std::string> library;
+    pace();
+    if (gaveWay_) return false;
+    fsx::listDir(root + "/" + AudioSong::elementsDir(), [&](const std::string& name, bool isDir) {
+        if (isDir) library.push_back(std::string(AudioSong::elementsDir()) + "/" + name);
+    });
+    for (const std::string& ref : library) {
+        if (seen.count(ref)) continue;
+        pace();
+        if (gaveWay_) return false;
+        AudioSong el;
+        if (el.load(root + "/" + ref) == SongLoad::Loaded && !el.newestBake.empty()) keep.insert(el.newestBake);
+    }
+    return true;
+}
+
+void SongEngine::Impl::doEvict() {
+    evictPending_ = false;
+    gaveWay_ = false;
+    auto again = [this] { evictPending_ = true; };
+    const std::string dir = std::string(p.songsRoot()) + "/" + AudioSong::bakeDir();
+    struct Cached { std::string file; uint64_t bytes; int64_t modified; };
+    std::vector<Cached> cached;
+    std::vector<std::string> parts;
+    std::vector<std::string> names;
+    pace();
+    if (gaveWay_) return again();
+    fsx::listDir(dir, [&](const std::string& name, bool isDir) {
+        if (!isDir) names.push_back(name);
+    });
+    /* No mix is under way when a pass runs, so a part found now is one an
+     * earlier run left; the first pass of a boot takes them off. */
+    uint64_t total = 0;
+    for (const std::string& name : names) {
+        pace();
+        if (gaveWay_) return again();
+        if (is_part(name)) {
+            if (!partsSwept_) fsx::fs().remove((dir + "/" + name).c_str());
+            continue;
+        }
+        uint64_t bytes = 0;
+        int64_t modified = 0;
+        if (!is_cached_wav(name) || !fsx::fileInfo(dir + "/" + name, bytes, modified)) continue;
+        cached.push_back({name, bytes, modified});
+        total += bytes;
+    }
+    partsSwept_ = true;
+
+    const uint64_t room = p.freeStorageBytes();
+    const uint64_t cap = room == UINT64_MAX ? kBakeCapBytes : std::min<uint64_t>(kBakeCapBytes, room / 100 * kBakeCapShare);
+    if (total > cap) {
+        std::set<std::string> keep;
+        if (!protectedBakes(keep)) return again();   // not knowing what plays, nothing is removed
+        loadUsage();
+        std::stable_sort(cached.begin(), cached.end(), [&](const Cached& a, const Cached& b) {
+            const uint64_t ua = usage_.count(a.file) ? usage_[a.file] : 0, ub = usage_.count(b.file) ? usage_[b.file] : 0;
+            return ua != ub ? ua < ub : a.modified < b.modified;
+        });
+        for (const Cached& c : cached) {
+            if (total <= cap) break;
+            if (keep.count(c.file)) continue;
+            pace();
+            if (gaveWay_) return again();
+            if (!fsx::fs().remove((dir + "/" + c.file).c_str())) continue;
+            logf(false, "bake cache: %s removed (%u kB over the cap)", c.file.c_str(), (unsigned)((total - cap) / 1024));
+            total -= c.bytes;
+            usage_.erase(c.file);
+            usageDirty_ = true;
+        }
+    }
+    /* What is no longer on the card is no longer counted. */
+    loadUsage();
+    std::set<std::string> there;
+    for (const Cached& c : cached) there.insert(c.file);
+    for (auto it = usage_.begin(); it != usage_.end();) {
+        if (there.count(it->first)) { ++it; continue; }
+        it = usage_.erase(it);
+        usageDirty_ = true;
+    }
+    saveUsage();
 }
 
 void SongEngine::Impl::idleBaking(bool allowed) {

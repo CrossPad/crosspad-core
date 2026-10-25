@@ -224,6 +224,7 @@ SongLoad AudioSong::load(const std::string& projectDir)
     length = doc["length"] | 0u;
     syncSeq = doc["sync"] | false;
     title = doc["title"] | "";
+    newestBake = doc["newest_bake"] | "";
     kit = doc["kit"] | "";
     instrument = doc["instrument"] | "";
     loopStart = doc["loop_start"] | 0u;
@@ -395,6 +396,7 @@ bool AudioSong::save() const
     doc["length"] = length;
     doc["sync"] = syncSeq;
     if (!title.empty()) doc["title"] = title;
+    if (!title.empty() && !newestBake.empty()) doc["newest_bake"] = newestBake;
     if (!kit.empty()) doc["kit"] = kit;
     if (!instrument.empty()) doc["instrument"] = instrument;
     doc["loop_start"] = loopStart;

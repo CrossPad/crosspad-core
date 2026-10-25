@@ -94,6 +94,10 @@ constexpr const char* kPeaksDir      = ".peaks";
 constexpr const char* kFreezeDir     = ".freeze";
 /// How far a bake's mix has come when its last chunk is written (the rest is the rename).
 constexpr uint8_t  kBakeMixedPercent = 99;
+/// The cache's last-use counters, beside the bakes (bump_use()).
+constexpr const char* kUsageFile     = "usage.json";
+/// What a bake is written as before its rename; one left by an earlier run is cut short.
+constexpr const char* kPartSuffix    = ".part";
 
 /// A name that stays one folder under the songs root.
 inline bool valid_name(const std::string& n)
@@ -648,6 +652,23 @@ private:
     /// given that bake, and written back when one changed.
     void linkOnCard(const std::string& dir, const std::map<std::string, std::pair<std::string, uint32_t>>& links);
     void dropBakeQueue();
+    // ── The bake cache's size (SongEngineDiskBake.cpp) ─────────────────────
+    /// Worker: the cache inside its cap -- see the file comment. A pass that gives
+    /// way is asked for again; one that could not tell what the open song plays
+    /// removes nothing.
+    void doEvict();
+    /// What the open song's tree plays, every element's newest bake, and the
+    /// stem in use: the files no pass may remove. False when the work gave way
+    /// before it knew them all.
+    bool protectedBakes(std::set<std::string>& keep);
+    /// @p file just used: the newest in the last-use counters. Written by saveUsage().
+    void bumpUse(const std::string& file);
+    void loadUsage();
+    void saveUsage();
+    /// @p ref's own song.json names @p file as its newest bake.
+    void noteNewestBake(const std::string& ref, const std::string& file);
+    /// The open song, an element, has made @p file from itself.
+    void ownBake(const std::string& file);
     // ── Background work and playback (SongEngineDiskBake.cpp) ─────────────
     bool streamingNow() const { return job_.load() == Job::Play && play_.load() != Play::Idle; }
     /// Worker, between two card accesses of background work: while the song
@@ -894,6 +915,12 @@ private:
     std::atomic<uint32_t> bakeQueued_{0};
     std::atomic<uint8_t>  bakeProgress_{0};
     bool        bakeOther_ = false;   ///< the queue is another song's (idle baking), not the open one's
+    /// The bake cache (worker only): a pass is due, the first has swept the parts an
+    /// earlier run left, and the counters of last use (file -> counter, the
+    /// largest the last one handed out).
+    bool        evictPending_ = false, partsSwept_ = false, usageLoaded_ = false, usageDirty_ = false;
+    std::map<std::string, uint64_t> usage_;
+    uint64_t    usageClock_ = 0;
     /// The mix under way, and the sum of its span (worker only, held while a
     /// mix is).
     std::unique_ptr<MixJob> mix_;

@@ -29,4 +29,10 @@ struct SongEngineSizes {
     uint32_t chunkFrames = 1024;
 };
 
+/// The bake cache (<songsRoot>/.bake/) holds at most this many bytes of bakes
+/// and context stems, and at most kBakeCapShare percent of what is free on the
+/// card, whichever is less.
+constexpr uint64_t kBakeCapBytes = uint64_t(1) << 30;
+constexpr uint32_t kBakeCapShare = 10;
+
 } // namespace crosspad

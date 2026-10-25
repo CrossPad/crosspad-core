@@ -29,7 +29,9 @@ fs::path bakeDir(Rig& r) { return fs::path(r.platform.root) / AudioSong::bakeDir
 std::set<std::string> bakes(Rig& r) {
     std::set<std::string> out;
     std::error_code ec;
-    for (const auto& e : fs::directory_iterator(bakeDir(r), ec)) out.insert(e.path().filename().string());
+    for (const auto& e : fs::directory_iterator(bakeDir(r), ec)) {
+        if (e.path().filename() != "usage.json") out.insert(e.path().filename().string());   // the cache's own book
+    }
     return out;
 }
 
@@ -671,4 +673,110 @@ TEST_CASE("disk bake: the save a link asks for does not start the next bake over
     CHECK(r.engine->elementClipState(1, 0) == ElementClipState::Fresh);
     bakeIs(r, block(r, 1).file, 2 * kBar, 5000);
     CHECK(card.countedOpens == 1);                           // mixed once, not begun again
+}
+
+namespace {
+
+/// A bake file the cache holds, a bar long (352800 bytes), and its name.
+std::string putBake(Rig& r, int n) {
+    char name[32];
+    std::snprintf(name, sizeof name, "B%016X.wav", n);   // as element_bake_file() names one
+    const std::string file = name;
+    fs::create_directories(bakeDir(r));
+    writeClip((bakeDir(r) / file).string(), kBar, 500);
+    return file;
+}
+
+/// The card's room such that the cache may hold @p bytes (the share it is
+/// given, kBakeCapShare, of what is free).
+uint64_t roomFor(uint64_t bytes) { return bytes * 100 / kBakeCapShare; }
+
+/// An element of the library whose own latest bake is @p file.
+void writeElementWithBake(Rig& r, const std::string& ref, const std::string& file) {
+    AudioSong s = audioElement(r, ref, {8000}, 2);
+    s.title = "Kept";
+    s.newestBake = file;
+    REQUIRE(s.save());
+}
+
+} // namespace
+
+TEST_CASE("bake cache: over its size the least recently used bakes go first", "[song][element][diskbake][bakecache]") {
+    Rig r;
+    const std::string a = putBake(r, 1), b = putBake(r, 2), c = putBake(r, 3);
+    {
+        std::ofstream u(bakeDir(r) / "usage.json");
+        u << "{\"" << a << "\":1,\"" << b << "\":2,\"" << c << "\":3}";
+    }
+    writeAudioElement(r, kChild, 8000, 2);
+    writeSongWith(r, "Parent", kChild, 2, "");
+    /* The new bake is two bars, 705600 bytes; with the three of 352800 that is 1.76 MB. */
+    r.platform.cardFree = roomFor(1500000);
+    REQUIRE(r.open("Parent"));
+    REQUIRE(idle(r));
+    const std::string baked = block(r).file;
+    REQUIRE_FALSE(baked.empty());
+    REQUIRE(waitFor([&] { return bakes(r).count(a) == 0; }, kBakeWaitMs));
+    CHECK(bakes(r).count(b) == 1);
+    CHECK(bakes(r).count(c) == 1);
+    CHECK(bakes(r).count(baked) == 1);
+}
+
+TEST_CASE("bake cache: a bake the open song plays stays, whatever the cap", "[song][element][diskbake][bakecache]") {
+    Rig r;
+    writeOldBake(r);
+    const std::string spare = putBake(r, 2);
+    {
+        AudioSong s = audioElement(r, kChild, {8000}, 2);
+        REQUIRE(s.addSeqTrack(1, SeqSource::Kit, 0));
+        SeqNote n;
+        n.pad = 1;
+        n.vel = 100;
+        s.putSeqTake(1, 0, makeSeqPattern(1, {n}), s.samplesPerBar(kRate));
+        REQUIRE(s.save());   // not frozen: its block keeps the old bake
+    }
+    writeSongWith(r, "Parent", kChild, 2, kOldBake);
+    r.platform.cardFree = roomFor(1);
+    REQUIRE(r.open("Parent"));
+    REQUIRE(waitFor([&] { return bakes(r).count(spare) == 0; }, kBakeWaitMs));
+    REQUIRE(idle(r));
+    CHECK(bakes(r).count(kOldBake) == 1);
+    CHECK(block(r).file == kOldBake);
+}
+
+TEST_CASE("bake cache: an element's newest bake stays, wherever it is used", "[song][element][diskbake][bakecache]") {
+    Rig r;
+    const std::string kept = putBake(r, 1), spare = putBake(r, 2);
+    writeElementWithBake(r, kGrandchild, kept);
+    writeAudioElement(r, kChild, 8000, 2);
+    writeSongWith(r, "Parent", kChild, 2, "");
+    r.platform.cardFree = roomFor(1);
+    REQUIRE(r.open("Parent"));
+    REQUIRE(waitFor([&] { return bakes(r).count(spare) == 0; }, kBakeWaitMs));
+    REQUIRE(idle(r));
+    CHECK(bakes(r).count(kept) == 1);
+}
+
+TEST_CASE("bake cache: a part file left by an earlier run is removed, the usage file survives garbage",
+          "[song][element][diskbake][bakecache]") {
+    Rig r;
+    const std::string spare = putBake(r, 1);
+    const std::string cut = putBake(r, 2);
+    const fs::path stale = bakeDir(r) / (cut + ".part");
+    fs::rename(bakeDir(r) / cut, stale);
+    {
+        std::ofstream u(bakeDir(r) / "usage.json");
+        u << "{ not json";
+    }
+    writeAudioElement(r, kChild, 8000, 2);
+    writeSongWith(r, "Parent", kChild, 2, "");
+    REQUIRE(r.open("Parent"));
+    REQUIRE(idle(r));
+    REQUIRE(waitFor([&] { return !fs::exists(stale); }, kBakeWaitMs));
+    CHECK(bakes(r).count(spare) == 1);   // under the cap: nothing else goes
+    /* The usage file is whole again and names what the pass used. */
+    REQUIRE(waitFor([&] {
+        const std::string text = slurp(bakeDir(r) / "usage.json");
+        return text.find(block(r).file) != std::string::npos;
+    }, kBakeWaitMs));
 }

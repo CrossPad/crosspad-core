@@ -61,6 +61,8 @@ struct FakePlatform final : ISongEnginePlatform {
     std::condition_variable cv;
     bool woken = false;
     std::atomic<bool> storage{true};
+    /// What freeStorageBytes() says: the card's room, UINT64_MAX when unknown.
+    std::atomic<uint64_t> cardFree{UINT64_MAX};
     std::atomic<int> storageAsked{0};
     /// How often the worker went to wait for a wake-up.
     std::atomic<int> waits{0};
@@ -102,6 +104,7 @@ struct FakePlatform final : ISongEnginePlatform {
     void* allocScratch(size_t b) override { return std::malloc(b); }
     size_t freeMemoryBytes() override { return size_t(1) << 30; }
     bool storageReady() override { ++storageAsked; return storage.load(); }
+    uint64_t freeStorageBytes() override { return cardFree.load(); }
     std::atomic<bool> holdIo{false};
     void yieldIo() override {
         while (holdIo.load()) std::this_thread::sleep_for(std::chrono::milliseconds(1));

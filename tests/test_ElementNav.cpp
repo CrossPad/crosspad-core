@@ -102,8 +102,9 @@ void onlyCardBake(Rig& r, int track) {
     const SongClip c = clipOf(r, track);
     CHECK(r.engine->elementClipState((uint8_t)track, 0) == ElementClipState::Fresh);
     std::vector<std::string> bakes;
-    for (const auto& e : fs::directory_iterator(fs::path(r.platform.root) / AudioSong::bakeDir()))
-        bakes.push_back(e.path().filename().string());
+    for (const auto& e : fs::directory_iterator(fs::path(r.platform.root) / AudioSong::bakeDir())) {
+        if (e.path().filename() != "usage.json") bakes.push_back(e.path().filename().string());   // the cache's own book
+    }
     CHECK(bakes == std::vector<std::string>{c.file});
 }
 
@@ -253,7 +254,7 @@ TEST_CASE("element nav: a leave with only its audio changed is back in the paren
     REQUIRE(waitFor([&] { return r.engine->elementClipState(1, 0) == ElementClipState::Baking; }, 10000));
     for (const auto& e : fs::directory_iterator(fs::path(r.platform.root) / AudioSong::bakeDir())) {
         const std::string f = e.path().filename().string();
-        CHECK((f == was.file || f.find(".part") != std::string::npos));
+        CHECK((f == was.file || f == "usage.json" || f.find(".part") != std::string::npos));
     }
 
     gate.release();
@@ -303,8 +304,7 @@ TEST_CASE("element nav: a block laid and entered at once, while the background b
     /* B's bake and A's: the same two whoever made them. */
     size_t bakes = 0;
     for (const auto& e : fs::directory_iterator(fs::path(r.platform.root) / AudioSong::bakeDir())) {
-        (void)e;
-        ++bakes;
+        if (e.path().filename() != "usage.json") ++bakes;
     }
     CHECK(bakes == 2);
 }

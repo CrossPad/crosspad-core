@@ -295,6 +295,7 @@ SongOpState SongEngine::Impl::doBakeElement() {
         if (found.open(path) && found.frames) {
             result.frames = found.frames;
             result.cached = true;
+            ownBake(result.file);
             std::lock_guard<std::mutex> l(reportMutex_);
             bake_ = result;
             return SongOpState::Ready;
@@ -347,6 +348,7 @@ SongOpState SongEngine::Impl::doBakeElement() {
     editProgress_.store(100);
     result.frames = total;
     logf(false, "baked %u bars into %s", (unsigned)bars, result.file.c_str());
+    ownBake(result.file);
     std::lock_guard<std::mutex> l(reportMutex_);
     bake_ = result;
     return SongOpState::Ready;
