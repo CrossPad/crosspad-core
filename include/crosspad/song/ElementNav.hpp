@@ -86,8 +86,9 @@ public:
     /// touched -- else the lowest free one --, then entered and left, which
     /// bakes it and links the block. Refused ("needs an audio or free track")
     /// when there is neither. The song is not touched until the element is
-    /// made; one that fails leaves it as it was.
-    bool makeFromRegion(uint32_t fromBar, uint32_t toBar);
+    /// made; one that fails leaves it as it was. The element is called
+    /// @p title (empty: it stays unnamed) and keeps the region's length.
+    bool makeFromRegion(uint32_t fromBar, uint32_t toBar, const std::string& title = {});
     /// The project @p songName copied into the library as a new element
     /// (ISongEngine::requestElementFromSong) and laid as insertExisting() lays
     /// one. The copy is the element: a song renamed or edited later changes

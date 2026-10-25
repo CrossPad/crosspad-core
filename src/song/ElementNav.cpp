@@ -303,7 +303,7 @@ bool ElementNav::placeExisting(int track, uint32_t bar, const std::string& ref)
     return startEnter(ref, track, bar, Job::Insert);
 }
 
-bool ElementNav::makeFromRegion(uint32_t fromBar, uint32_t toBar)
+bool ElementNav::makeFromRegion(uint32_t fromBar, uint32_t toBar, const std::string& title)
 {
     if (busy()) return refuse("busy");
     ISongEngine* se = engine();
@@ -318,6 +318,7 @@ bool ElementNav::makeFromRegion(uint32_t fromBar, uint32_t toBar)
     if (!se->requestElementFromRegion(fromBar, toBar)) return refuse("the element cannot be made now");
     bar_ = fromBar;
     regionBars_ = toBar - fromBar;
+    newTitle_ = title;
     startMaking(Job::Make);
     return true;
 }
@@ -428,7 +429,6 @@ ElementNav::Result ElementNav::laidFromRegion()
     }
     se->commit();
     leaveAfterEnter_ = true;
-    newTitle_.clear();
     targetDepth_ = depth();
     return startEnter(ref_, track_, bar_, Job::Make) ? Result{} : failMade(error_);
 }
@@ -572,7 +572,8 @@ ElementNav::Result ElementNav::entered()
             std::lock_guard<std::recursive_mutex> l(se->songMutex());
             AudioSong& song = se->song();
             song.title = newTitle_;
-            song.length = kNewElementBars;
+            /* An element made from a region has its length already. */
+            if (job_ != Job::Make) song.length = kNewElementBars;
         }
         se->commit();
         path_.back().title = newTitle_;

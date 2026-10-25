@@ -751,7 +751,7 @@ TEST_CASE("element nav: a region becomes an element, one block in its place, bak
     Services svc(r.engine.get(), nullptr);
     NavGuard guard;
     regionDemo(r);
-    REQUIRE(elementNav().makeFromRegion(1, 3));
+    REQUIRE(elementNav().makeFromRegion(1, 3, "PART ONE"));
     CHECK(elementNav().busy());
     const auto res = runRendering(r);
     INFO("error: " << res.error);
@@ -786,6 +786,8 @@ TEST_CASE("element nav: a region becomes an element, one block in its place, bak
     for (size_t i : {size_t(0), pcm.size() / 2, pcm.size() - 2}) CHECK(std::abs(pcm[i] - 8192) <= 1);   // the audio the region held
     AudioSong e;
     REQUIRE(e.load(r.platform.root + "/" + ref) == SongLoad::Loaded);
+    CHECK(e.title == "PART ONE");
+    CHECK(e.length == 2);                    // the region's bars, not a new element's
     REQUIRE(e.tracks[1].clips.size() == 1);
     REQUIRE(e.tracks[1].clips[0].notes);
     CHECK(e.tracks[1].clips[0].notes->notes.size() == 1);
