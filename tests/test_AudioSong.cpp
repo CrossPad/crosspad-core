@@ -13,9 +13,10 @@ namespace fs = std::filesystem;
 namespace {
 std::string freshProject(const char* name)
 {
-    fs::remove_all(name);
-    fs::create_directories(std::string(name) + "/" + AudioSong::clipsDir());
-    return name;
+    const std::string dir = (fs::temp_directory_path() / "cp_core_tests" / name).string();
+    fs::remove_all(dir);
+    fs::create_directories(dir + "/" + AudioSong::clipsDir());
+    return dir;
 }
 std::string songFile(const std::string& dir) { return dir + "/" + AudioSong::fileName(); }
 } // namespace
