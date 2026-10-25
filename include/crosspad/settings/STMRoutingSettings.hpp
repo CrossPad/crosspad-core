@@ -83,6 +83,24 @@ public:
         return b;
     }
 
+    /** The two bytes packByte1() / packByte2() make, back into the bools. */
+    void unpack(uint8_t b1, uint8_t b2) {
+        Midi2MidiThru        = b1 & BIT_MIDI2MIDI_THRU;
+        Midi2USB             = b1 & BIT_MIDI2USB;
+        Midi2ESP             = b1 & BIT_MIDI2ESP;
+        USB2Midi             = b1 & BIT_USB2MIDI;
+        USB2USBThru          = b1 & BIT_USB2USB_THRU;
+        USB2ESP              = b1 & BIT_USB2ESP;
+        ESP2Midi             = b1 & BIT_ESP2MIDI;
+        ESP2USB              = b2 & BIT_ESP2USB;
+        ESP2ESPThru          = b2 & BIT_ESP2ESP_THRU;
+        RoutingMatrixEnabled = b2 & BIT_ENABLED;
+        ConfigButtonsAsMidi  = b2 & BIT_BUTTONS_AS_MIDI;
+        Buttons2Midi         = b2 & BIT_BUTTONS2MIDI;
+        Buttons2USB          = b2 & BIT_BUTTONS2USB;
+        Buttons2ESP          = b2 & BIT_BUTTONS2ESP;
+    }
+
     void toJson(JsonObject& json) const {
         json["Midi2MidiThru"] = Midi2MidiThru;
         json["Midi2USB"] = Midi2USB;
