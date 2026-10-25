@@ -4,6 +4,7 @@
 #include "crosspad/instrument/IInstrumentHost.hpp"
 #include "crosspad/instrument/InstrumentPlayState.hpp"
 #include "crosspad/kit/IKitManager.hpp"
+#include "crosspad/kit/KitSaved.hpp"
 #include "crosspad/platform/PlatformServices.hpp"
 #include "crosspad/sampler/ISecondKit.hpp"
 #include "crosspad/song/ISongEngine.hpp"
@@ -94,9 +95,43 @@ void SongSounds::keepSecondKit()
     }
 }
 
+/// A kit saved under its own name sounds other than the path in the freeze's
+/// key says: the freeze of every seq track that plays it (its own kit, or the
+/// song's for the pads' track) is of the old sound, as a Pitch track's is of
+/// an instrument edited in place (keepInstrument()).
+void SongSounds::freezesHearKitSaves()
+{
+    ISongEngine* se = songs();
+    if (!se || se->openState() != SongOpState::Ready) return;
+    bool changed = false;
+    {
+        std::lock_guard<std::recursive_mutex> l(se->songMutex());
+        AudioSong& song = se->song();
+        for (auto& t : song.tracks) {
+            if (t.kind != TrackKind::Seq || t.source == SeqSource::Pitch) continue;
+            const std::string& kit = t.kit.empty() ? song.kit : t.kit;
+            if (kit.empty()) continue;
+            const uint32_t now = kit_saved_generation(kit);
+            const auto heard = savesHeard_.emplace(kit, now).first;
+            if (heard->second == now) continue;
+            t.freezeKey = 0;
+            ++t.freezeSalt;
+            changed = true;
+        }
+        /* After the tracks: one kit may be played by several. */
+        for (auto& t : song.tracks) {
+            if (t.kind != TrackKind::Seq || t.source == SeqSource::Pitch) continue;
+            const std::string& kit = t.kit.empty() ? song.kit : t.kit;
+            if (!kit.empty()) savesHeard_[kit] = kit_saved_generation(kit);
+        }
+    }
+    if (changed) se->commit();
+}
+
 void SongSounds::step()
 {
     keepSecondKit();
+    freezesHearKitSaves();
     if (!pending_.load(std::memory_order_acquire)) {
         /* A kit given to the song since it settled -- a kit track's kit set in
          * Arrange -- is brought in as an opening song's is, from the next step. */

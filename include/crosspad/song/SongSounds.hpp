@@ -7,6 +7,7 @@
 #include <cstdint>
 #include <functional>
 #include <string>
+#include <unordered_map>
 
 namespace crosspad {
 
@@ -75,7 +76,8 @@ public:
     void songOpened();
 
     /// UI thread: one step towards the open song's sounds; nothing once there
-    /// but the second kit asked for again, which costs nothing while it holds
+    /// but a kit saved under its own name making the freezes of the tracks
+    /// that play it stale (kit_saved_notify()), the second kit asked for again, which costs nothing while it holds
     /// it, and a look at whether the song was given another kit since.
     void step();
 
@@ -115,6 +117,7 @@ private:
     bool foregroundIs(const char* a, const char* b = nullptr);
     void unloadKit();
     void keepSecondKit();
+    void freezesHearKitSaves();
 
     ISongSoundsHost& host_;
     /// A song opened and the board is not at it yet.
@@ -125,6 +128,9 @@ private:
     /// The song's kit as a step last read it: one that differs has been
     /// given to the song since. UI thread.
     std::string lastKit_;
+    /// How many saves of each kit.json a step has heard of (kit_saved_generation()):
+    /// a kit not in here yet is taken as it is. UI thread.
+    std::unordered_map<std::string, uint32_t> savesHeard_;
     /// A second kit that would not load, said once. UI thread.
     std::string secondKitSaid_;
 };

@@ -2,6 +2,7 @@
 #include <crosspad/kit/PortableKitLoader.hpp>
 #include <new>
 #include <crosspad/kit/KitPathUtils.hpp>
+#include <crosspad/kit/KitSaved.hpp>
 #include <crosspad/platform/IFileSystem.hpp>
 #include "KitJsonParser.hpp"
 #include "../util/JsonStdio.hpp"
@@ -424,6 +425,7 @@ bool PortableKitLoader::writeKitJson(const std::string& path,
         return false;
     }
     std::remove(bak.c_str());
+    kit_saved_notify(toLogicalPath(path));
     return true;
 }
 

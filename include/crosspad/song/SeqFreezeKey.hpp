@@ -34,7 +34,8 @@ void seq_freeze_range(const AudioSong& song, int track, const SceneLookup& scene
 
 /// What a freeze of seq track @p track at @p sampleRate is made of: its bars,
 /// its blocks and their notes (the scene's, for a block without), what it
-/// plays through and the tempo. Never 0, but when it needs a scene @p scenes
+/// plays through (and SongTrack::freezeSalt, once a sound changed under its
+/// name) and the tempo. Never 0, but when it needs a scene @p scenes
 /// cannot give: then 0, which no freeze is stamped with.
 uint32_t seq_freeze_key(const AudioSong& song, int track, uint32_t sampleRate, const SceneLookup& scenes);
 
