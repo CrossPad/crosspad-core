@@ -373,6 +373,15 @@ bool is_element_ref(const std::string& ref)
     return true;
 }
 
+bool AudioSong::inElementLibrary() const
+{
+    const size_t last = dir.find_last_of('/');
+    if (last == std::string::npos || last == 0) return false;
+    const size_t parent = dir.find_last_of('/', last - 1);
+    const std::string library = dir.substr(parent == std::string::npos ? 0 : parent + 1, last - (parent == std::string::npos ? 0 : parent + 1));
+    return library == elementsDir() && is_element_ref(library + dir.substr(last));
+}
+
 bool AudioSong::save() const
 {
     bool notes = false;
@@ -396,7 +405,7 @@ bool AudioSong::save() const
     doc["length"] = length;
     doc["sync"] = syncSeq;
     if (!title.empty()) doc["title"] = title;
-    if (!title.empty() && !newestBake.empty()) doc["newest_bake"] = newestBake;
+    if (inElementLibrary() && !newestBake.empty()) doc["newest_bake"] = newestBake;
     if (!kit.empty()) doc["kit"] = kit;
     if (!instrument.empty()) doc["instrument"] = instrument;
     doc["loop_start"] = loopStart;

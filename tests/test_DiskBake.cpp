@@ -903,3 +903,51 @@ TEST_CASE("bake cache: the bake a nested child is played at the open song's temp
     CHECK(left.count(slow) == 1);
     CHECK(left.size() == 2);
 }
+
+TEST_CASE("bake cache: an untitled element keeps its newest bake; a song never writes one", "[song][element][diskbake][bakecache]") {
+    Rig r;
+    const std::string kept = putBake(r, 1), spare = putBake(r, 2);
+    {
+        AudioSong s = audioElement(r, kGrandchild, {8000}, 2);
+        REQUIRE(s.title.empty());
+        s.newestBake = kept;
+        REQUIRE(s.save());
+        AudioSong back;
+        REQUIRE(back.load(s.dir) == SongLoad::Loaded);
+        CHECK(back.newestBake == kept);
+    }
+    {
+        AudioSong song;
+        song.dir = r.platform.root + "/Plain";
+        fs::create_directories(song.dir);
+        song.newestBake = kept;
+        REQUIRE(song.save());
+        AudioSong back;
+        REQUIRE(back.load(song.dir) == SongLoad::Loaded);
+        CHECK(back.newestBake.empty());
+    }
+    writeAudioElement(r, kChild, 8000, 2);
+    writeSongWith(r, "Parent", kChild, 2, "");
+    r.platform.cardFree = roomFor(1);
+    REQUIRE(r.open("Parent"));
+    REQUIRE(waitFor([&] { return bakes(r).count(spare) == 0; }, kBakeWaitMs));
+    REQUIRE(idle(r));
+    CHECK(bakes(r).count(kept) == 1);
+}
+
+TEST_CASE("bake cache: a library element that cannot be read stops the pass", "[song][element][diskbake][bakecache]") {
+    Rig r;
+    const std::string spare = putBake(r, 2);
+    writeAudioElement(r, kGrandchild, 5000, 2);
+    {
+        std::ofstream broken(fs::path(r.platform.root) / kGrandchild / AudioSong::fileName());
+        broken << "{ cut off";
+    }
+    writeAudioElement(r, kChild, 8000, 2);
+    writeSongWith(r, "Parent", kChild, 2, "");
+    r.platform.cardFree = roomFor(1);
+    REQUIRE(r.open("Parent"));
+    REQUIRE(idle(r));
+    std::this_thread::sleep_for(std::chrono::milliseconds(500));
+    CHECK(bakes(r).count(spare) == 1);
+}

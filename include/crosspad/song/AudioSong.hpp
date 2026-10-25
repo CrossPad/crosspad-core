@@ -240,6 +240,8 @@ public:
     /// the bake becomes known; empty on a song and on an element not baked yet.
     /// Not part of the content hash.
     std::string newestBake;
+    /// The folder is an element of the library (<songsRoot>/.elements/E%08X), titled or not.
+    bool inElementLibrary() const;
     float       bpm  = 0.0f;      ///< 0 until the first clip sets it
     uint8_t     beatsPerBar = kDefaultBeatsPerBar;
     bool        loop = true;

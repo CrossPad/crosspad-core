@@ -1030,7 +1030,7 @@ void SongEngine::Impl::noteNewestBake(const std::string& ref, const std::string&
 void SongEngine::Impl::ownBake(const std::string& file) {
     {
         std::lock_guard<std::recursive_mutex> l(songMutex_);
-        if (opened_ && !song_.title.empty() && song_.newestBake != file) {
+        if (opened_ && song_.inElementLibrary() && song_.newestBake != file) {
             song_.newestBake = file;
             saveAtUs_.store(p.nowUs() + (int64_t)kSaveDelayMs * 1000);
             saveReq_.store(true);
