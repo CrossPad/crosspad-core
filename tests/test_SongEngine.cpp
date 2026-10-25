@@ -1466,6 +1466,29 @@ TEST_CASE("song engine: a track that played its scene keeps it around a take", "
     CHECK(cs[2].notes == cs[0].notes);
 }
 
+TEST_CASE("song engine: a song opened lets the last one's notes go", "[song][seq]") {
+    /* An element entered and left is a song opened each way, its notes read
+     * anew: what the engine kept of the one before is never asked for again,
+     * and must not keep it alive. */
+    Rig r;
+    REQUIRE(r.open("Demo"));
+    std::weak_ptr<const SeqPattern> was;
+    {
+        std::lock_guard<std::recursive_mutex> l(r.engine->songMutex());
+        auto& s = r.engine->song();
+        s.bpm = 120.0f;
+        REQUIRE(s.addSeqTrack(0, SeqSource::Kit, 1));
+        SeqNote n;
+        n.tick = 0; n.pad = 2; n.vel = 100;
+        const SeqPatternPtr notes = makeSeqPattern(1, {n});
+        was = notes;
+        REQUIRE(s.putSeqTake(0, 0, notes, s.samplesPerBar(kRate)) == 0);
+    }
+    r.engine->commit();                                    // laid on the sequencer: its notes as samples
+    REQUIRE(r.open("Other"));
+    CHECK(was.expired());
+}
+
 // ── the seq view of a block ────────────────────────────────────────────────
 
 TEST_CASE("song engine: the seq view edits one block, and its copy keeps its notes", "[song][seqedit]") {

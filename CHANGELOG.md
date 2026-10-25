@@ -102,6 +102,13 @@ described here, with the rest.
 - `contextState()` is Incomplete, with `contextWhy()` naming the tempo, while
   the song plays at another tempo than its stem was made at.
 
+### Fixed
+
+- A song opened lets go of the last one's seq notes: the engine's cache of
+  notes as samples kept the patterns of every song opened (each element enter
+  and leave is one) until 32 had piled up, about 18 small blocks of internal
+  RAM a song_elements run on the board.
+
 ## 2.24.0 — 2026-10-25
 
 TRS MIDI OUT on the STM (STM 1.14, register map 0x0012).

@@ -246,6 +246,14 @@ SongOpState SongEngine::Impl::doOpen(const std::string& name, bool remember) {
         stretchSkip_.clear();
     }
     {
+        /* The last song's notes are never asked for again: a song read anew
+         * holds patterns of its own, the same song reopened too. Kept, they
+         * would outlive it -- a few small blocks of internal RAM for every song
+         * an element's enter or leave opens. */
+        std::lock_guard<std::mutex> l(noteCacheMutex_);
+        noteCache_.clear();
+    }
+    {
         std::lock_guard<std::recursive_mutex> l(songMutex_);
         /* An element open until now was left to come here: its blocks are baked first. */
         leftRef_ = opened_ && is_element_ref(song_.name) && song_.name != name ? song_.name : std::string();
