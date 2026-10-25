@@ -18,6 +18,7 @@ TRS MIDI OUT on the STM (STM 1.14, register map 0x0012).
 - Loop-test hooks: `REG_CTL_MIDI_TX_SKEW`, `REG_CTL_MIDI_FLIP_SEG` /
   `_FLIP_B3..B0` with `MIDI_SEG_*`, `REG_CMD_MIDI_STATS_RESET` and the
   per-segment counters at `REG_DEBUG_MIDI`.
+- `STMRoutingSettings::unpack()`: the two routing bytes back into the bools.
 
 ## 2.23.0 — 2026-10-25
 
