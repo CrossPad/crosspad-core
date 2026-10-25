@@ -395,8 +395,6 @@ void SongEngine::Impl::doRelink() {
     linkBlocks(bakeSong_, links);
     bakeQueued_.store((uint32_t)bakeQueue_.size());
     noteChanged(changed);
-    pace();
-    if (!gaveWay_) saveUsage();
     relinking_.store(false);
 }
 
@@ -938,7 +936,8 @@ bool SongEngine::Impl::pacedIsFile(const std::string& path, uint64_t atLeast) {
 bool SongEngine::Impl::backgroundPending() {
     return mix_ || contextPending() || (relinkReq_.load() && p.storageReady()) ||
            (peaksPending() && p.storageReady()) || (stretchPending() && p.storageReady()) ||
-           diskBakePending() || idlePending();
+           diskBakePending() || idlePending() || (evictPending_ && p.storageReady()) ||
+           (usageDirty_ && !streamingNow() && p.storageReady());
 }
 
 void SongEngine::Impl::backgroundStep(bool streaming) {
@@ -958,6 +957,7 @@ void SongEngine::Impl::backgroundStep(bool streaming) {
     else if (!streaming && stretchPending() && p.storageReady()) doStretch();
     else if (diskBakePending()) doDiskBake();
     else if (evictPending_ && p.storageReady()) doEvict();
+    else if (!streaming && usageDirty_ && p.storageReady()) saveUsage();   // counters bumped by relinks, once the song stops
     else if (!streaming && idlePending()) idleStep();
 }
 
@@ -1065,7 +1065,9 @@ bool SongEngine::Impl::protectedBakes(std::set<std::string>& keep) {
         pace();
         if (gaveWay_) return false;
         AudioSong el;
-        if (el.load(root + "/" + ref) != SongLoad::Loaded) continue;
+        const SongLoad got = el.load(root + "/" + ref);
+        if (got == SongLoad::Unreadable) return false;   // mid-save, perhaps: what it plays is not known
+        if (got != SongLoad::Loaded) continue;
         tree(el);
         if (!el.newestBake.empty()) keep.insert(el.newestBake);
     }
@@ -1081,7 +1083,9 @@ bool SongEngine::Impl::protectedBakes(std::set<std::string>& keep) {
         pace();
         if (gaveWay_) return false;
         AudioSong el;
-        if (el.load(root + "/" + ref) == SongLoad::Loaded && !el.newestBake.empty()) keep.insert(el.newestBake);
+        const SongLoad got = el.load(root + "/" + ref);
+        if (got == SongLoad::Unreadable) return false;   // its newest bake is not known: nothing is removed
+        if (got == SongLoad::Loaded && !el.newestBake.empty()) keep.insert(el.newestBake);
     }
     return true;
 }
@@ -1122,7 +1126,13 @@ void SongEngine::Impl::doEvict() {
     const uint64_t cap = room == UINT64_MAX ? kBakeCapBytes : std::min<uint64_t>(kBakeCapBytes, room / 100 * kBakeCapShare);
     if (total > cap) {
         std::set<std::string> keep;
-        if (!protectedBakes(keep)) return again();   // not knowing what plays, nothing is removed
+        if (!protectedBakes(keep)) {
+            /* Not knowing what plays, nothing is removed. A pass that gave way is
+             * made again; an unreadable element waits for the next bake. */
+            if (gaveWay_) again();
+            else logf(true, "bake cache: an element could not be read, nothing removed");
+            return;
+        }
         loadUsage();
         std::stable_sort(cached.begin(), cached.end(), [&](const Cached& a, const Cached& b) {
             const uint64_t ua = usage_.count(a.file) ? usage_[a.file] : 0, ub = usage_.count(b.file) ? usage_[b.file] : 0;
@@ -1149,7 +1159,7 @@ void SongEngine::Impl::doEvict() {
         it = usage_.erase(it);
         usageDirty_ = true;
     }
-    saveUsage();
+    if (!streamingNow()) saveUsage();
 }
 
 void SongEngine::Impl::idleBaking(bool allowed) {

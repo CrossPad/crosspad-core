@@ -780,3 +780,126 @@ TEST_CASE("bake cache: a part file left by an earlier run is removed, the usage 
         return text.find(block(r).file) != std::string::npos;
     }, kBakeWaitMs));
 }
+
+namespace {
+
+const char* const kMid = ".elements/E00000003";
+
+/// The song @p name at @p bpm with one block of @p ref on track 0, no bake yet.
+void writeSongAt(Rig& r, const std::string& name, const std::string& ref, float bpm) {
+    AudioSong s;
+    s.dir = r.platform.root + "/" + name;
+    fs::create_directories(fs::path(s.dir) / AudioSong::clipsDir());
+    s.bpm = bpm;
+    s.tracks[0].inUse = true;
+    SongClip c;
+    c.element = ref;
+    c.bars = 2;
+    s.addClip(0, c);
+    REQUIRE(s.save());
+}
+
+} // namespace
+
+TEST_CASE("bake cache: an element that cannot be read in the open tree stops the pass", "[song][element][diskbake][bakecache]") {
+    Rig r;
+    writeOldBake(r);
+    const std::string spare = putBake(r, 2);
+    writeAudioElement(r, kChild, 8000, 2);
+    {
+        std::ofstream broken(fs::path(r.platform.root) / kChild / AudioSong::fileName());
+        broken << "{ cut off";
+    }
+    writeSongWith(r, "Parent", kChild, 2, kOldBake);
+    r.platform.cardFree = roomFor(1);
+    REQUIRE(r.open("Parent"));
+    REQUIRE(idle(r));
+    std::this_thread::sleep_for(std::chrono::milliseconds(500));
+    /* What the element plays is not known: nothing is taken off the card. */
+    CHECK(bakes(r).count(spare) == 1);
+    CHECK(bakes(r).count(kOldBake) == 1);
+}
+
+TEST_CASE("bake cache: relink passes while the song plays do not write the usage file", "[song][element][diskbake][bakecache]") {
+    Rig r;
+    writeAudioElement(r, kChild, 8000, 2);
+    writeSongWith(r, "Parent", kChild, 2, "");
+    REQUIRE(r.open("Parent"));
+    REQUIRE(idle(r));
+    const std::string baked = block(r).file;
+    const fs::path usage = bakeDir(r) / "usage.json";
+    REQUIRE(waitFor([&] { return slurp(usage).find(baked) != std::string::npos; }, kBakeWaitMs));
+    const std::string before = slurp(usage);
+    const auto written = fs::last_write_time(usage);
+
+    std::vector<float> out(kBlock * 2), bus(kBlock * 2, 0.0f);
+    REQUIRE(r.engine->play(0));
+    REQUIRE(waitFor([&] {
+        r.block(out, bus);
+        return r.engine->framesPlayed() > 0;
+    }));
+    constexpr int kLaid = 3;
+    for (int i = 0; i < kLaid; ++i) {
+        {
+            std::lock_guard<std::recursive_mutex> l(r.engine->songMutex());
+            SongClip c;
+            c.element = kChild;
+            c.bar = (uint16_t)(4 + 2 * i);
+            c.bars = 2;
+            r.engine->song().addClip(0, c);
+        }
+        r.engine->commit();
+        /* Each laid block is linked by a pass of its own, under the song. */
+        REQUIRE(waitFor([&] {
+            r.block(out, bus);
+            return block(r, 0, 1 + i).file == baked;
+        }, kBakeWaitMs));
+        CHECK(slurp(usage) == before);
+        CHECK(fs::last_write_time(usage) == written);
+    }
+    r.engine->stop();
+    REQUIRE(waitFor([&] { return !r.engine->playing(); }));
+    /* The counters those passes bumped are written once it stops. */
+    CHECK(waitFor([&] { return slurp(usage) != before; }, kBakeWaitMs));
+}
+
+TEST_CASE("bake cache: the bake a nested child is played at the open song's tempo stays", "[song][element][diskbake][bakecache]") {
+    Rig r;
+    writeAudioElement(r, kChild, 8000, 2);
+    writeSongAt(r, "Fast", kChild, 120.0f);
+    writeSongAt(r, "Slow", kMid, 100.0f);
+
+    REQUIRE(r.open("Fast"));
+    REQUIRE(idle(r));
+    const std::string fast = block(r).file;
+    REQUIRE_FALSE(fast.empty());
+
+    /* Entered at the slower tempo, the child and the element holding it are
+     * fitted to it: baked there, and the child's bake at 120 is its older one. */
+    {
+        AudioSong child = audioElement(r, kChild, {8000}, 2, 100.0f);
+        child.title = "Child";   // an element is titled; only one keeps its newest bake
+        REQUIRE(child.save());
+    }
+    {
+        AudioSong mid = audioElement(r, kMid, {}, 2, 100.0f);
+        mid.title = "Mid";
+        mid.tracks[0].inUse = true;
+        SongClip c;
+        c.element = kChild;
+        c.bars = 2;
+        mid.addClip(0, c);
+        REQUIRE(mid.save());
+    }
+
+    r.platform.cardFree = roomFor(1);   // nothing the open song does not play may stay
+    REQUIRE(r.open("Slow"));
+    REQUIRE(idle(r));
+    const std::string slow = block(r).file;
+    REQUIRE_FALSE(slow.empty());
+    REQUIRE(waitFor([&] { return bakes(r).count(fast) == 0; }, kBakeWaitMs));
+    /* The block's bake, and the child's at this tempo that it was mixed from. */
+    const auto left = bakes(r);
+    CHECK(left.count(slow) == 1);
+    CHECK(left.size() == 2);
+}
