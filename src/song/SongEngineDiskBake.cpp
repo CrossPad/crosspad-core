@@ -394,7 +394,7 @@ void SongEngine::Impl::doRelink() {
         elementSeen_ = std::move(seen);
         bakesOnCard_ = std::move(onCard);
     }
-    linkBlocks(bakeSong_, links);
+    linkBlocks(bakeSong_, links, bakeBpm_);
     bakeQueued_.store((uint32_t)bakeQueue_.size());
     noteChanged(changed);
     relinking_.store(false);
@@ -407,10 +407,10 @@ void SongEngine::Impl::relinkGaveWay() {
 }
 
 void SongEngine::Impl::linkBlocks(const std::string& dir,
-                                  const std::map<std::string, std::pair<std::string, uint32_t>>& links) {
+                                  const std::map<std::string, std::pair<std::string, uint32_t>>& links, float bpm) {
     if (links.empty()) return;
     if (bakeOther_) {
-        linkOnCard(dir, links);
+        linkOnCard(dir, links, bpm);
         return;
     }
     std::lock_guard<std::recursive_mutex> l(songMutex_);
@@ -428,11 +428,11 @@ void SongEngine::Impl::linkBlocks(const std::string& dir,
     for (SongTrack& tr : song_.tracks) {
         for (SongClip& c : tr.clips) {
             const auto it = c.isElement() ? links.find(c.element) : links.end();
-            if (it == links.end() || (c.file == it->second.first && c.frames == it->second.second && c.bakeBpm == bakeBpm_))
+            if (it == links.end() || (c.file == it->second.first && c.frames == it->second.second && c.bakeBpm == bpm))
                 continue;
             c.file = it->second.first;
             c.frames = it->second.second;
-            c.bakeBpm = bakeBpm_;
+            c.bakeBpm = bpm;
             changed = true;
         }
     }
@@ -446,18 +446,18 @@ void SongEngine::Impl::linkBlocks(const std::string& dir,
 }
 
 void SongEngine::Impl::linkOnCard(const std::string& dir,
-                                  const std::map<std::string, std::pair<std::string, uint32_t>>& links) {
+                                  const std::map<std::string, std::pair<std::string, uint32_t>>& links, float bpm) {
     AudioSong s;
     if (links.empty() || s.load(dir) != SongLoad::Loaded) return;
     bool changed = false;
     for (SongTrack& tr : s.tracks) {
         for (SongClip& c : tr.clips) {
             const auto it = c.isElement() ? links.find(c.element) : links.end();
-            if (it == links.end() || (c.file == it->second.first && c.frames == it->second.second && c.bakeBpm == bakeBpm_))
+            if (it == links.end() || (c.file == it->second.first && c.frames == it->second.second && c.bakeBpm == bpm))
                 continue;
             c.file = it->second.first;
             c.frames = it->second.second;
-            c.bakeBpm = bakeBpm_;
+            c.bakeBpm = bpm;
             changed = true;
         }
     }
@@ -487,7 +487,7 @@ void SongEngine::Impl::bakeMade(const std::string& ref, const ResolvedElement& e
         }
         bakesOnCard_.insert(now.file);
     }
-    linkBlocks(bakeSong_, {{ref, {now.file, now.frames}}});
+    linkBlocks(bakeSong_, {{ref, {now.file, now.frames}}}, bakeBpm_);
     if (!bakeOther_) bakeQueued_.store((uint32_t)bakeQueue_.size());   // through once its blocks are linked
 }
 
@@ -1271,7 +1271,7 @@ bool SongEngine::Impl::relinkOther(const std::string& name) {
         if (e.exists) links[ref] = {e.file, e.frames};
         else if (e.bakeable) queue.push_back(ref);
     }
-    linkOnCard(s.dir, links);
+    linkOnCard(s.dir, links, bpm);
     if (queue.empty()) return true;
     dropBakeQueue();
     resolver_ = std::move(resolver);

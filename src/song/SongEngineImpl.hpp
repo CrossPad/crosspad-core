@@ -709,12 +709,15 @@ private:
     void bakeMade(const std::string& ref, const ResolvedElement& e);
     void bakeFailed(const std::string& ref, const std::string& why);
     /// Blocks of each element in @p links, in the song @p dir the queue is
-    /// for, take that bake and pass length: in the open song committed and
-    /// saved, but no undo step; in another song on the card (linkOnCard()).
-    void linkBlocks(const std::string& dir, const std::map<std::string, std::pair<std::string, uint32_t>>& links);
+    /// for, take that bake, pass length and @p bpm, the tempo the bakes were
+    /// resolved at (SongClip::bakeBpm): in the open song committed and saved,
+    /// but no undo step; in another song on the card (linkOnCard()).
+    void linkBlocks(const std::string& dir, const std::map<std::string, std::pair<std::string, uint32_t>>& links,
+                    float bpm);
     /// The song.json in @p dir read, its blocks of each element in @p links
-    /// given that bake, and written back when one changed.
-    void linkOnCard(const std::string& dir, const std::map<std::string, std::pair<std::string, uint32_t>>& links);
+    /// given that bake and @p bpm, and written back when one changed.
+    void linkOnCard(const std::string& dir, const std::map<std::string, std::pair<std::string, uint32_t>>& links,
+                    float bpm);
     void dropBakeQueue();
     // ── The bake cache's size (SongEngineDiskBake.cpp) ─────────────────────
     /// Worker: the cache inside its cap -- see the file comment. A pass that gives

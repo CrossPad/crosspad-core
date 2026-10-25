@@ -23,6 +23,7 @@ constexpr int16_t kToneLevel = 16000;
 constexpr int kWaitMs = 10000;
 const char* const kE = ".elements/E00000001";
 const char* const kF = ".elements/E00000002";
+const char* const kG = ".elements/E00000003";
 const std::string kBake = "B0000000000000001.wav";
 
 /// Varispeed is linear interpolation: what a pass sounds at, within this.
@@ -373,4 +374,69 @@ TEST_CASE("varispeed: entered, a stale block's passes are the focus's, and the s
     const double got = toneHz(left, 0, left.size());
     INFO("stem " << got << " Hz");
     CHECK(std::fabs(got - want) <= want * kPitchTolerance);
+}
+
+namespace {
+
+/// The song @p name on the card at @p bpm: a 2-bar block of each of @p refs, a
+/// track each, all holding @p bake made at 120 (made before bakes kept their tempo).
+void writeSongOf(Rig& r, const std::string& name, float bpm, const std::vector<std::string>& refs, const std::string& bake) {
+    AudioSong s;
+    s.dir = r.platform.root + "/" + name;
+    fs::create_directories(fs::path(s.dir) / AudioSong::clipsDir());
+    s.bpm = bpm;
+    for (size_t t = 0; t < refs.size(); ++t) {
+        SongClip c;
+        c.element = refs[t];
+        c.file = bake;
+        c.bars = 2;
+        c.frames = 2 * kBakeBar;
+        s.tracks[t].inUse = true;
+        s.addClip((int)t, c);
+    }
+    REQUIRE(s.save());
+}
+
+/// Block 0 of track 0 of the song @p name as the card has it.
+bool cardBlock(Rig& r, const std::string& name, SongClip& out) {
+    AudioSong s;
+    if (s.load(r.platform.root + "/" + name) != SongLoad::Loaded || s.tracks[0].clips.empty()) return false;
+    out = s.tracks[0].clips[0];
+    return true;
+}
+
+} // namespace
+
+TEST_CASE("varispeed: another song relinked while the player is away takes its own tempo, not the open song's",
+          "[song][element][varispeed][diskbake]") {
+    Rig r;
+    const std::string old = "B00000000000000AA.wav";
+    fs::create_directories(bakeDir(r));
+    writeClip((bakeDir(r) / old).string(), 2 * kBakeBar, 1000);
+    /* E bakes at 100 only, F at 90 only, G at 120 only: each is a recording at its tempo. */
+    writeAudioElement(r, kE, kSongBpm, 2, 8000);
+    writeAudioElement(r, kF, 90.0f, 2, 6000);
+    writeAudioElement(r, kG, kBakeBpm, 2, 4000);
+    writeSongOf(r, "A", kSongBpm, {kE, kG}, old);
+    writeSongOf(r, "B", 90.0f, {kF, kG}, old);
+    writeSongOf(r, "Parent", kBakeBpm, {kG}, old);
+    /* A and B opened once each: E's bake at 100 and F's at 90 are on the card. */
+    REQUIRE(r.open("A"));
+    REQUIRE(idle(r));
+    REQUIRE(r.open("B"));
+    REQUIRE(idle(r));
+    /* Parent open at 120 (B saved as it closes): G changed there, so A and B --
+     * put back on the old bakes -- are relinked idle, E and F to the bakes
+     * already made, with nothing to bake. */
+    REQUIRE(r.open("Parent"));
+    REQUIRE(idle(r));
+    writeSongOf(r, "A", kSongBpm, {kE, kG}, old);
+    writeSongOf(r, "B", 90.0f, {kF, kG}, old);
+    r.engine->idleBaking(true);
+    SongClip a, b;
+    REQUIRE(waitFor([&] {
+        return cardBlock(r, "A", a) && a.file != old && cardBlock(r, "B", b) && b.file != old;
+    }, kWaitMs));
+    CHECK(a.bakeBpm == kSongBpm);
+    CHECK(b.bakeBpm == 90.0f);
 }
