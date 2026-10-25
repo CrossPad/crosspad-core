@@ -2039,3 +2039,42 @@ TEST_CASE("SamplerEngine::streamLead: what the streamer is ahead of the voice, f
     rig.engine.serviceIo();
     CHECK(rig.engine.streamLead() >= fed - 4 * 64);
 }
+
+TEST_CASE("SamplerEngine meters each pad without changing a bit of the output", "[samplerengine][meters]") {
+    auto render = [](bool metering, std::vector<float>& all, float peaks[2]) {
+        Rig rig;
+        rig.build();
+        rig.src.add("kick.wav", 3000, 1);
+        rig.src.add("snare.wav", 3000, 2);
+        rig.assign(0, "kick.wav", 1024);
+        rig.assign(5, "snare.wav", 1024);
+        rig.kit.pad[5].gain = 0.5f;
+        rig.publish();
+        rig.engine.padMeters().setEnabled(metering);
+        rig.engine.noteOn(0, 127);
+        rig.engine.noteOn(5, 90);
+        std::vector<float> out(64 * 2);
+        for (int b = 0; b < 8; ++b) {
+            std::fill(out.begin(), out.end(), 0.0f);
+            rig.engine.mix(out.data(), 64);
+            all.insert(all.end(), out.begin(), out.end());
+            rig.engine.serviceIo();
+        }
+        peaks[0] = rig.engine.padMeters().take(0);
+        peaks[1] = rig.engine.padMeters().take(5);
+        REQUIRE(rig.engine.padMeters().take(3) == 0.0f);   // a pad nobody played
+    };
+    std::vector<float> plain, metered;
+    float off[2] = {}, on[2] = {};
+    render(false, plain, off);
+    render(true, metered, on);
+
+    REQUIRE(plain == metered);                 // bit for bit
+    REQUIRE(off[0] == 0.0f);                   // nothing measured while off
+    REQUIRE(on[0] > 0.0f);
+    REQUIRE(on[1] > 0.0f);
+    REQUIRE(on[1] < on[0]);                    // the quieter pad reads quieter
+    float peak = 0.0f;
+    for (float s : metered) peak = std::max(peak, std::fabs(s));
+    REQUIRE(on[0] <= peak);
+}

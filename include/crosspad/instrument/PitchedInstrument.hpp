@@ -28,6 +28,7 @@
 #include "crosspad/dsp/AudioKernels.hpp"
 #include "crosspad/instrument/SampleBank.hpp"
 #include "crosspad/kit/KitInfo.hpp"
+#include "crosspad/pad/PadMeters.hpp"
 
 #include <atomic>
 #include <cstdint>
@@ -88,6 +89,8 @@ public:
     /// Applies @p p, its maxVoices clamped to kMaxSounding and to voiceCap().
     void setParams(const InstrumentParams& p);
     void setPadMix(uint8_t pad, int volume, int pan);
+    /// Each pad's peak as this engine renders it, while enabled (Pad Mixer).
+    PadMeters& padMeters() { return meters_; }
 
     /**
      * @brief The platform's ceiling on maxVoices: what one render pass has
@@ -258,6 +261,7 @@ private:
         float gainL = 0.0f;
         float gainR = 0.0f;
         uint8_t note = 0;
+        uint8_t pad = 0xFF;        ///< the pad that played it; 0xFF none (a MIDI note)
         /// Publication flag: everything above is valid once this reads true.
         std::atomic<bool> active{false};
         bool releasing = false;
@@ -321,6 +325,7 @@ private:
     uint32_t maxFrames_ = 0;
     std::vector<float> scratch_;   ///< per-voice mono render
     std::vector<float> monoSum_;   ///< block sum of every voice, for the tap
+    PadMeters meters_;
     ScopeTap scopeTap_;
 };
 

@@ -64,6 +64,7 @@
  */
 
 #include "crosspad/audio/IAudioNode.hpp"
+#include "crosspad/pad/PadMeters.hpp"
 #include "crosspad/sampler/BlockPool.hpp"
 #include "crosspad/sampler/SampleCursor.hpp"
 #include "crosspad/sampler/SampleStore.hpp"
@@ -72,6 +73,7 @@
 
 #include <atomic>
 #include <cstdint>
+#include <vector>
 
 namespace crosspad {
 
@@ -308,6 +310,8 @@ public:
     void setPadMix(uint8_t pad, int volume, int pan);
     /// The same, already in the engine's own units: linear gain and -1..+1.
     void setPadMixGains(uint8_t pad, float gain, float balance);
+    /// Each pad's peak as this engine renders it, while enabled (Pad Mixer).
+    PadMeters& padMeters() { return meters_; }
 
     // ── Notes, from the event thread ──────────────────────────────────────
     /*
@@ -710,6 +714,11 @@ private:
     Params params_;
     uint32_t sampleRate_ = 44100;
     bool     lastSilent_ = true;   ///< render thread: mix() rendered no voice
+    PadMeters meters_;
+    /* A metered voice renders here, is measured and then summed into the
+     * bus: the same sums as straight into it, since each voice adds to a
+     * frame once and 0 + x is x. Sized in onPrepare(). */
+    std::vector<float> meterScratch_;
 
     /* What renderVoice() derives from params_ and sampleRate_, worked out
      * when either changes instead of for every voice of every block: three

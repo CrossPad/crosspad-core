@@ -6,6 +6,20 @@ carries the same number) and consumers gate on it with
 `crosspad/RequireVersion.hpp`. This file starts at 1.45.0; earlier releases
 are described in their `chore: X.Y.Z` commits.
 
+## 2.22.0 — 2026-10-25
+
+### Added
+
+- Pad meters: `PadMeters` (`crosspad/pad/PadMeters.hpp`), each pad's peak
+  as an engine renders it -- linear, after the pad's volume and pan, before
+  the mixer's channel. `SamplerEngine::padMeters()` and
+  `PitchedInstrument::padMeters()` measure only while enabled: the native
+  engine then renders each voice into a scratch block and sums it into the
+  bus from there (the same sums, so the output does not change by a bit),
+  the pitched one reads the mono render it already makes. `IPadMix` gains
+  `setMetering()` and `takePeaks()`, with defaults that report no meters,
+  so an existing implementation builds unchanged. What the Pad Mixer shows.
+
 ## 2.21.0 — 2026-10-24
 
 ### Added
