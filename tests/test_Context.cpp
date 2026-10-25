@@ -135,6 +135,23 @@ bool hears(Rig& r, float level) {
 
 int16_t q(float level) { return (int16_t)(level * 32768.0f); }
 
+SongClip clipOf(Rig& r, int track) {
+    std::lock_guard<std::recursive_mutex> l(r.engine->songMutex());
+    return r.engine->song().tracks[track].clips.at(0);
+}
+
+/// The stem made since @p before, once the engine has one again in @p state.
+std::string newStem(Rig& r, const std::set<std::string>& before, ContextState state) {
+    std::string made;
+    waitFor([&] {
+        if (r.engine->contextState() != state) return false;
+        for (const auto& f : stems(r))
+            if (!before.count(f)) made = f;
+        return !made.empty();
+    }, kWaitMs);
+    return made;
+}
+
 } // namespace
 
 TEST_CASE("context: the song around the element plays under it, and SOLO leaves it out", "[song][element][context]") {
@@ -307,4 +324,112 @@ TEST_CASE("context: an element not heard in the pass above has no pass and no co
     CHECK(elementNav().path()[3].chosen == 0);
     CHECK(r.engine->contextState() == ContextState::None);
     CHECK_FALSE(r.engine->contextWhy().empty());
+}
+
+TEST_CASE("context: a stem made without an element's bake is made again once the bake is there", "[song][element][context]") {
+    Rig r;
+    Services svc(r.engine.get(), nullptr);
+    NavGuard guard;
+    writeElement(r, kE, 4, q(0.5f));
+    writeElement(r, kF, 4, q(0.0625f));
+    writeElement(r, kG, 4, q(0.125f));
+    openDemo(r, {{"bed.wav", 0, 8, q(0.25f)}}, {{1, kE, 4, 4}, {2, kF, 4, 4}, {3, kG, 4, 4}});
+    const std::string fBake = clipOf(r, 2).file, gBake = clipOf(r, 3).file;
+    REQUIRE_FALSE(fBake.empty());
+    REQUIRE_FALSE(gBake.empty());
+    enter(1, 4);
+    REQUIRE(contextIs(r, ContextState::Ready));
+    auto before = stems(r);
+    REQUIRE(before.size() == 1);
+    stemIs(r, *before.begin(), 4 * kBar, q(0.4375f));
+
+    /* Both bakes leave the card: the stem is made without them. */
+    const fs::path kept = r.dir / "kept.wav";
+    fs::copy_file(bakeDir(r) / fBake, kept);
+    fs::remove(bakeDir(r) / fBake);
+    fs::remove(bakeDir(r) / gBake);
+    REQUIRE(elementNav().chooseOccurrence(0));
+    std::string without = newStem(r, before, ContextState::Incomplete);
+    REQUIRE_FALSE(without.empty());
+    stemIs(r, without, 4 * kBar, q(0.25f));
+
+    /* F's comes back: the stem without it is not taken from the cache. */
+    before = stems(r);
+    fs::copy_file(kept, bakeDir(r) / fBake);
+    REQUIRE(elementNav().chooseOccurrence(0));
+    const std::string withF = newStem(r, before, ContextState::Incomplete);
+    REQUIRE_FALSE(withF.empty());
+    stemIs(r, withF, 4 * kBar, q(0.3125f));
+    CHECK(r.engine->contextWhy().find(kG) != std::string::npos);
+}
+
+TEST_CASE("context: an element whose bake is not made yet plays its older one in the stem", "[song][element][context]") {
+    Rig r;
+    Services svc(r.engine.get(), nullptr);
+    NavGuard guard;
+    writeElement(r, kE, 4, q(0.5f));
+    writeElement(r, kF, 4, q(0.0625f));
+    openDemo(r, {{"bed.wav", 0, 8, q(0.25f)}}, {{1, kE, 4, 4}, {2, kF, 4, 4}});
+    enter(1, 4);
+    REQUIRE(contextIs(r, ContextState::Ready));
+    const auto before = stems(r);
+
+    /* F changes on the card; nothing bakes it while the song above is not open. */
+    const std::string clip = r.platform.root + "/" + kF + "/" + AudioSong::clipsDir() + "/own.wav";
+    writeClip(clip, 4 * kBar, q(0.125f));
+    fs::last_write_time(clip, fs::last_write_time(clip) + std::chrono::seconds(10));
+    REQUIRE(elementNav().chooseOccurrence(0));
+    const std::string stale = newStem(r, before, ContextState::Incomplete);
+    REQUIRE_FALSE(stale.empty());
+    stemIs(r, stale, 4 * kBar, q(0.3125f));                 // F's older bake, not silence
+    CHECK(r.engine->contextWhy().find("older bake") != std::string::npos);
+}
+
+TEST_CASE("context: an element that grows is heard around again over its new length", "[song][element][context][nav]") {
+    Rig r;
+    Services svc(r.engine.get(), nullptr);
+    NavGuard guard;
+    writeElement(r, kE, 4, q(0.5f));
+    openDemo(r, {{"bed.wav", 0, 12, q(0.25f)}}, {{1, kE, 4, 4}});
+    enter(1, 4);
+    REQUIRE(contextIs(r, ContextState::Ready));
+    const auto before = stems(r);
+    REQUIRE(before.size() == 1);
+    stemIs(r, *before.begin(), 4 * kBar, q(0.25f));
+
+    {
+        std::lock_guard<std::recursive_mutex> l(r.engine->songMutex());
+        r.engine->song().length = 6;
+    }
+    r.engine->commit();
+    std::string longer;
+    REQUIRE(waitFor([&] {
+        elementNav().poll();
+        if (r.engine->contextState() != ContextState::Ready) return false;
+        for (const auto& f : stems(r))
+            if (!before.count(f)) longer = f;
+        return !longer.empty();
+    }, kWaitMs));
+    stemIs(r, longer, 6 * kBar, q(0.25f));
+}
+
+TEST_CASE("context: a tempo turned inside the element says the song around it is not heard, until it is put back", "[song][element][context]") {
+    Rig r;
+    Services svc(r.engine.get(), nullptr);
+    NavGuard guard;
+    writeElement(r, kE, 4, q(0.5f));
+    openDemo(r, {{"bed.wav", 0, 8, q(0.25f)}}, {{1, kE, 4, 4}});
+    enter(1, 4);
+    REQUIRE(contextIs(r, ContextState::Ready));
+    auto tempo = [&](float bpm) {
+        REQUIRE(r.engine->requestTempo(bpm));
+        REQUIRE(waitFor([&] { return r.engine->editState() != SongOpState::Busy; }));
+        REQUIRE(r.engine->editState() == SongOpState::Ready);
+    };
+    tempo(100.0f);
+    CHECK(contextIs(r, ContextState::Incomplete));
+    CHECK(r.engine->contextWhy().find("BPM") != std::string::npos);
+    tempo(120.0f);
+    CHECK(contextIs(r, ContextState::Ready));
+    CHECK(r.engine->contextWhy().empty());
 }

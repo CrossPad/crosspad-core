@@ -11,7 +11,9 @@
 #include "crosspad/sequencer/MetronomeNode.hpp"
 #include "crosspad/sequencer/PatternSequencer.hpp"
 #include "crosspad/platform/PlatformServices.hpp"
+#include "crosspad/kit/KitSaved.hpp"
 #include "crosspad/sampletools/ISampleTools.hpp"
+#include "crosspad/song/SongSounds.hpp"
 #include "crosspad/song/ArrangeAudioTake.hpp"
 #include "crosspad/song/SongEngine.hpp"
 #include "crosspad/transport/SongTransport.hpp"
@@ -1462,6 +1464,29 @@ TEST_CASE("song engine: a track that played its scene keeps it around a take", "
     CHECK(cs[1].notes->notes[0].pad == 2);
     CHECK(cs[2].bar == 2);
     CHECK(cs[2].notes == cs[0].notes);
+}
+
+TEST_CASE("song engine: a song opened lets the last one's notes go", "[song][seq]") {
+    /* An element entered and left is a song opened each way, its notes read
+     * anew: what the engine kept of the one before is never asked for again,
+     * and must not keep it alive. */
+    Rig r;
+    REQUIRE(r.open("Demo"));
+    std::weak_ptr<const SeqPattern> was;
+    {
+        std::lock_guard<std::recursive_mutex> l(r.engine->songMutex());
+        auto& s = r.engine->song();
+        s.bpm = 120.0f;
+        REQUIRE(s.addSeqTrack(0, SeqSource::Kit, 1));
+        SeqNote n;
+        n.tick = 0; n.pad = 2; n.vel = 100;
+        const SeqPatternPtr notes = makeSeqPattern(1, {n});
+        was = notes;
+        REQUIRE(s.putSeqTake(0, 0, notes, s.samplesPerBar(kRate)) == 0);
+    }
+    r.engine->commit();                                    // laid on the sequencer: its notes as samples
+    REQUIRE(r.open("Other"));
+    CHECK(was.expired());
 }
 
 // ── the seq view of a block ────────────────────────────────────────────────
@@ -3271,4 +3296,81 @@ TEST_CASE("song engine: an element discarded leaves the card as it was, the open
     CHECK(r.engine->editState() == SongOpState::Ready);
     CHECK_FALSE(fs::exists(fs::path(r.platform.root) / ref));
     CHECK(fs::exists(fs::path(r.platform.root) / "Demo"));
+}
+
+namespace {
+
+/// SongSounds' platform side where nothing loads: only its step is asked for.
+struct IdleSoundsHost final : ISongSoundsHost {
+    std::string cardRoot() override { return {}; }
+    bool kitsSettled() override { return true; }
+    void loadKit(int) override {}
+    void unloadKit() override {}
+    bool instrumentOwnsEngine() override { return false; }
+    const char* foregroundApp() override { return nullptr; }
+    void warn(const char*) override {}
+    void log(bool, const char*) override {}
+};
+
+/// The platform's song engine for one test, as SongSounds finds it.
+struct SongEngineScope {
+    ISongEngine* was;
+    explicit SongEngineScope(ISongEngine* se) : was(getPlatformServices().songEngine) { getPlatformServices().songEngine = se; }
+    ~SongEngineScope() { getPlatformServices().songEngine = was; }
+};
+
+} // namespace
+
+TEST_CASE("song engine: a kit saved under its own name makes the freeze that plays it stale", "[song][freeze][kit]") {
+    constexpr const char* kPlayed = "/crosspad/kits/FreezeKitA/kit.json";
+    constexpr const char* kOther = "/crosspad/kits/FreezeKitB/kit.json";
+    Rig r;
+    REQUIRE(r.open("Demo"));
+    {
+        std::lock_guard<std::recursive_mutex> l(r.engine->songMutex());
+        auto& s = r.engine->song();
+        s.bpm = 120.0f;
+        s.length = 16;
+        s.kit = kPlayed;
+        REQUIRE(s.addSeqTrack(0, SeqSource::Kit, 0));
+        SeqNote n;
+        n.pad = 1; n.vel = 100;
+        s.putSeqTake(0, 5, makeSeqPattern(1, {n}), s.samplesPerBar(kRate));
+        s.armed = -1;
+    }
+    r.engine->commit();
+    std::vector<float> out(kBlock * 2), bus(kBlock * 2, 0.25f);
+    REQUIRE(r.engine->freezeTrack(0));
+    for (int i = 0; i < 4000 && r.engine->bounceStatus().state == BounceState::Running; ++i) {
+        r.block(out, bus);
+        std::this_thread::sleep_for(std::chrono::milliseconds(4));
+    }
+    REQUIRE(r.engine->bounceStatus().state == BounceState::Done);
+    REQUIRE(r.engine->freezeState(0) == FreezeState::Frozen);
+
+    SongEngineScope scope(r.engine.get());
+    IdleSoundsHost host;
+    SongSounds sounds(host);
+    sounds.step();   // what it has seen of the kits so far
+
+    SECTION("another kit saved: still frozen") {
+        kit_saved_notify(kOther);
+        sounds.step();
+        CHECK(r.engine->freezeState(0) == FreezeState::Frozen);
+    }
+    SECTION("saved right after the song opened, before any look at the kit: heard") {
+        SongSounds opened(host);
+        opened.songOpened();
+        opened.step();
+        kit_saved_notify(kPlayed);
+        opened.step();
+        CHECK(r.engine->freezeState(0) == FreezeState::Stale);
+    }
+    SECTION("the kit it plays saved: stale, and rendered again on request") {
+        kit_saved_notify(kPlayed);
+        sounds.step();
+        CHECK(r.engine->freezeState(0) == FreezeState::Stale);
+        sounds.step();   // one save is heard once
+        CHECK(r.engine->freezeState(0) == FreezeState::Stale);
+    }
 }

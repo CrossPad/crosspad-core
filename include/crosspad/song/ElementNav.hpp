@@ -1,7 +1,10 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
 
+#include "crosspad/song/ElementCopyPlan.hpp"
+
 #include <cstdint>
+#include <map>
 #include <string>
 #include <vector>
 
@@ -30,14 +33,31 @@ namespace crosspad {
 /// become time-stretched, so a recording follows the song. Leaving stops,
 /// puts the element back at the song's tempo when it was turned inside it,
 /// waits for its kit and instrument to be loaded (PlatformServices::songSounds),
-/// freezes every seq track that is not frozen, waits for the fitted copies of
-/// stretched tracks, bakes the element (ISongEngine::requestBakeElement) and
-/// opens the parent, where every block of the element takes the bake's file
-/// and length. A bake that fails, or anything else, stops the job where it
-/// is: a leave that failed leaves the engine on the element and path() as it
-/// was. Another song opened behind its back stops it too, before it freezes,
-/// bakes or links anything in that song; idle, the breadcrumb starts over at
-/// the song the engine has open.
+/// and then waits no longer than it must: an element whose heard seq tracks
+/// all play their freezes of their own notes and whose recordings are all
+/// fitted opens the parent at once, its blocks playing the old bake until the
+/// engine has baked it from the card -- in the background, the song playing or
+/// not -- and relinked them. Any other freezes every seq track that is not
+/// frozen, waits for the fitted copies of stretched tracks, bakes the element
+/// (ISongEngine::requestBakeElement) and opens the parent, where every block
+/// of the element takes the bake's file and length. A bake that fails, or
+/// anything else, stops the job where it is: a leave that failed leaves the
+/// engine on the element and path() as it was. Another song opened behind its
+/// back stops it too, before it freezes, bakes or links anything in that song;
+/// idle, the breadcrumb starts over at the song the engine has open.
+///
+/// An element edited inside and played by anything besides the level above is
+/// a question as it is left (asking()): Replace keeps the edit where it is, for
+/// everyone (the other songs bake it again as they open, or while the player
+/// is away: ISongEngine::idleBaking()); Copy makes it a new element only this
+/// song plays, and puts the original back from its snapshot
+/// (ISongEngine::requestSnapshot()). A copy goes up the open path -- every
+/// element above it on the path that something else plays is copied too, as
+/// it is left, without asking -- and, once the song is reached again, to every
+/// other place in the song that plays one of the elements copied: an element
+/// heard only in this song is re-pointed where it is, one played elsewhere is
+/// copied the same way. A snapshot found on entering is an edit a power cut
+/// ended (draftWaiting()): kept or undone before the element can be left.
 class ElementNav {
 public:
     /// A block of the level above, as the mini-map draws it.
@@ -76,14 +96,41 @@ public:
         /// chosen, as that one plays it.
         std::vector<Occurrence> occurrences;
         size_t      chosen = 0;   ///< the pass PLAY goes round: the one under the bar entered, to begin with
+        /// element_edit_hash() of the element once it was entered and fitted to
+        /// the song's tempo (what the player has edited of it, not what the
+        /// enter and the leave derive); 0 on the song and on an element laid
+        /// and baked at once.
+        uint64_t    hashAtEntry = 0;
+        /// This level owns the element's snapshot (ISongEngine::requestSnapshot()):
+        /// this enter took it -- none was pending -- or an unfinished edit found
+        /// there was kept. A leave takes it off again unless it copies the element,
+        /// which puts it back over the original.
+        bool        snapshotTaken = false;
+        /// A snapshot was there before this enter: an edit that never finished,
+        /// to be kept or undone (resolveDraft()) before the level can be left.
+        bool        draft = false;
+        /// An element below was copied for the song and this one, played elsewhere
+        /// too, holds it: it is copied as it is left, with no question.
+        bool        copyOnLeave = false;
     };
     enum class Job : uint8_t { None, Enter, Leave, Insert, Make };
+    /// The answers to the question a leave asks (choose()).
+    enum class Choice : uint8_t { None, Copy, Replace };
+    /// "REFREN is used in 3 other places": what asking() asks about.
+    struct Question {
+        std::string title;                ///< the element's; empty while it is not named
+        size_t      uses = 0;             ///< songs and elements that play it, besides the level above
+        /// The titles a Copy gives the copies it makes: the element's first, then
+        /// every element above it or elsewhere in the song copied with it.
+        std::vector<std::string> copies;
+    };
     /// What poll() has to say about a job that has just ended.
     struct Result {
         bool        done = false;   ///< a job ended since the last poll
         bool        ok = false;
         Job         job = Job::None;
         std::string error;          ///< why it did not, when it did not
+        bool        calledOff = false;   ///< not a failure: choose(Choice::None) called the leave off
     };
 
     /// [0] is the song, open = its project name; each level after it an element
@@ -96,8 +143,10 @@ public:
     uint8_t progress() const;
     /// What the job is doing: "stopping", "opening", "fitting" (back to the
     /// song's tempo), "loading" (the kit and instrument), "freezing",
-    /// "baking", "linking", "copying" (an element being made); empty while
-    /// none runs.
+    /// "baking", "linking", "copying" (an element being made, or copied for
+    /// the song), "keeping" (an element as it is, before an enter opens it,
+    /// and what was edited of it, as a leave begins), "asking" (asking()),
+    /// "restoring" (an unfinished edit undone); empty while none runs.
     const char* stage() const;
 
     /// The pass of the focus PLAY goes round: occurrences[@p index] of the
@@ -138,8 +187,38 @@ public:
     /// nothing in it, and the reference stays an id.
     bool insertSong(int track, uint32_t bar, const std::string& songName);
 
+    /// The element the last leave left was edited inside: its edit hash
+    /// (element_edit_hash()) when the leave began is not the one it had once
+    /// entered (hashAtEntry). Fitting it to the song's tempo and freezing it
+    /// again change neither.
+    /// A leave through several levels says it of the last level left. False
+    /// before any leave. An element left unchanged has its snapshot taken off
+    /// again, unless an earlier enter's was already pending; one left changed
+    /// keeps it, for the question that follows (Copy restores from it).
+    bool changed() const { return changed_; }
+    /// The ref of the element the last leave left.
+    const std::string& left() const { return left_; }
+
+    /// A leave waits for choose(): the element it leaves was edited, and the
+    /// last reading of who uses it (ISongEngine::usesOf()) names a song or an
+    /// element besides the level above.
+    bool asking() const;
+    const Question& question() const { return question_; }
+    /// The answer to asking(). Choice::None calls the leave off: the user stays
+    /// in the element and nothing changes. False when nothing is asked.
+    bool choose(Choice c);
+    /// The element just entered had a snapshot already: an edit of it that
+    /// never finished. Until resolveDraft() it cannot be left.
+    bool draftWaiting() const;
+    /// @p keepEdit: the edit stays, and the element leaves as one edited since
+    /// it was entered. Else the element goes back to its snapshot: up to the
+    /// level above (nothing baked, nothing linked), the snapshot put back, and
+    /// entered again -- a job, as enter(). False with no unfinished edit here.
+    bool resolveDraft(bool keepEdit);
+
     /// Walks the job one step; Arrange's timer calls it every ~50 ms. Cheap
-    /// while none runs.
+    /// while none runs: then it only asks for the song around the element
+    /// again when the element's length has changed.
     Result poll();
     /// Another song was opened (from the list): the breadcrumb starts over.
     /// One opened anywhere else is noticed by path() on its own.
@@ -151,7 +230,9 @@ public:
 
 private:
     enum class Phase : uint8_t {
-        Idle, Making, Listing, Stopping, Opening, Retempo, Refit, Sounds, Freezing, Stretching, Baking, Reopening
+        Idle, Making, Listing, Stopping, Snapshotting, Keying, LeaveScenes, LeaveKeying, Using, Asking, Dropping,
+        Opening, Retempo, Refit, Sounds, Freezing, Stretching, Baking, Reopening, Copying, RewriteUses, Rewriting,
+        DraftUp, DraftRestore
     };
 
     /// The engine the job runs on, or null with lastError() set.
@@ -182,11 +263,53 @@ private:
     /// another edit), then gives the job up.
     Result refused(const std::string& why);
     Result stopped();
+    /// The element is kept as it is on the card, and its key noted, before it opens.
+    Result snapshotting();
+    Result toSnapshot();
+    /// The element's edit hash is taken once it is entered and fitted, and again
+    /// as a leave begins: the two say whether it was edited.
+    Result keying();
+    Result leaveKeying();
+    /// A snapshot this enter took, and an element left unedited: taken off the card.
+    Result dropping();
+    /// The element linked: its snapshot dealt with, the level popped.
+    Result afterLink();
+    /// Asks for the edit hash and waits for it, bounded; true with @p out set
+    /// when it is there, else a Result that is not done is in @p wait or the job failed.
+    bool hashed(ISongEngine& se, uint64_t& out, Result& wait);
     Result opened();
     Result retempo();
     Result entered();
-    /// The level being left is on its way up: its tempo first.
+    /// The level being left is on its way up: what was edited of it first.
     Result toLeaving();
+    /// Its scenes on the card before they are hashed.
+    Result leaveScenes();
+    /// Who else plays the element left edited: none, and it stays as it is;
+    /// any, and the leave asks.
+    Result usesRead();
+    /// The answer, once choose() gives one.
+    Result answered();
+    Result toRefit();
+    /// The element left, with the level above open: copied and put back.
+    Result copying();
+    /// fail() once the level above is open: the level is gone from the path,
+    /// and the edit stays in the element, with its snapshot, as one unfinished.
+    Result failCopy(const std::string& why);
+    /// Back at the song with elements copied: the rest of it plays them too.
+    Result rewriteUses();
+    Result rewriting();
+    /// The song's own blocks of every element copied re-pointed, the job done.
+    Result rewritten();
+    /// resolveDraft()'s undo: up to the level above, the snapshot back.
+    Result draftUp();
+    Result draftRestore();
+    /// Titles in the library and on the path, for a copy's title.
+    std::vector<std::string> takenTitles(ISongEngine& se) const;
+    /// @p ref's title, from the path or the library.
+    std::string titleOf(ISongEngine& se, const std::string& ref) const;
+    /// Waits out a long edit on the card (a copy): bounded by polls with no
+    /// progress. True when it has ended, with @p state how.
+    bool editEnded(ISongEngine& se, SongOpState& state);
     Result refit();
     Result toSounds();
     Result sounds();
@@ -200,10 +323,18 @@ private:
     Result openChild();
     /// Seq tracks of the open song a bake would find not frozen, from @c track_ on.
     int nextToFreeze();
+    /// The leave can open the level above at once: nothing was frozen for it,
+    /// nothing waits to be fitted, and the card tells all that the engine
+    /// does -- every heard seq track plays notes of its own (not a scene), and
+    /// every stretched recording's length is in the song.
+    bool bakeableFromCard();
     /// The song around the level being edited asked of the engine: its chosen
     /// pass, one pass of the focus long; none at the song, and an element heard
     /// nowhere asks with no frames (the engine says why).
     void askContext();
+    /// askContext() again when the open element is no longer as long as the
+    /// stem asked for: one that grew would play past its end.
+    void followFocusLength();
 
     mutable std::vector<Level> path_;
     Job         job_ = Job::None;
@@ -220,10 +351,31 @@ private:
     uint32_t    bar_ = 0;
     uint32_t    regionBars_ = 0;
     int         freezeTrack_ = 0;
+    bool        froze_ = false;          ///< the leave froze a track: it bakes as it goes
+    bool        refroze_ = false;        ///< the bake found a freeze stale and the leave froze again
     bool        parentFreeze_ = false;   ///< Freezing is the parent's, before the element opens
     uint32_t    lastWaiting_ = 0;     ///< stretched blocks still unfitted at the last poll
+    bool        wasPending_ = false;  ///< a snapshot of ref_ was on the card before this enter asked for one
+    uint64_t    leaveHash_ = 0;       ///< the edit hash as the level being left began its leave
+    bool        dropDone_ = false;    ///< the snapshot of the level being left was asked off the card
+    bool        changed_ = false;     ///< changed(), of the last level left
+    std::string left_;
+    bool        usesAsked_ = false;   ///< the library and its uses were read at the first poll since the breadcrumb began
+    bool        edited_ = false;      ///< the level being left was edited since it was entered
+    bool        scenesUnsaved_ = false;   ///< its scene edits never reached the card: an edit all the same
+    bool        copying_ = false;     ///< the level being left is copied on its way up
+    std::string copyTitle_;           ///< and the copy's title
+    Question    question_;
+    ElementCopyPlan plan_;            ///< what the question's Copy makes
+    bool        chosen_ = false;      ///< choose() answered the question
+    Choice      answer_ = Choice::None;
+    uint8_t     lastProgress_ = 0;    ///< editProgress() at the last poll of a long edit
+    /// Every element copied for the song since the breadcrumb began, and its
+    /// copy: the rest of the song is re-pointed once it is reached again.
+    mutable std::map<std::string, std::string> copies_;
     std::string bakeFile_;
     uint32_t    bakeFrames_ = 0;
+    uint32_t    contextBars_ = 0;     ///< the element's length (playEndBars()) when its stem was asked for
     std::string error_;
 };
 

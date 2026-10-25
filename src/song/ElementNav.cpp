@@ -25,13 +25,19 @@ constexpr float kTempoEpsilon = 0.01f;
 /// The tempo a song plays at: a song never given one stores 0 and plays at the
 /// grid's default, which is what an element is fitted to and requestTempo can set.
 float effectiveBpm(const AudioSong& s) { return s.bpm > 0.0f ? s.bpm : AudioSong::kDefaultBpm; }
+/// Polls a job on the card (a snapshot, an edit hash, a drop) may take.
+constexpr uint32_t kCardPolls = 1200;
 /// Polls the fitting of stretched blocks may go without one more done before
 /// the leave is given up: the card is gone, or the worker is.
 constexpr uint32_t kStretchStallPolls = 2400;
 /// Polls a level's kit and instrument may take to load before the leave is
 /// given up: a kit read from the card, an instrument built from its samples.
 constexpr uint32_t kSoundsPolls = 1200;
+/// Polls the scenes edited inside an element may take to reach the card: the
+/// platform's store writes them every half second or so (SongScenes::sweep()).
+constexpr uint32_t kScenesPolls = 60;
 constexpr char kOtherSong[] = "another song was opened meanwhile";
+constexpr char kCalledOff[] = "the leave was called off: nothing changed";
 
 ISongEngine* songEngine() { return getPlatformServices().songEngine; }
 
@@ -107,6 +113,7 @@ void ElementNav::syncRoot() const
      * ASONG OPEN, another app while Arrange was closed: a leave from the
      * element it last knew would bake that song into the element's blocks. */
     path_.assign(1, Level{open, {}, -1, 0});
+    copies_.clear();
 }
 
 bool ElementNav::onLevel(const std::string& open)
@@ -135,7 +142,9 @@ uint8_t ElementNav::progress() const
         }
         case Phase::Stretching: return se->stretchProgress();
         case Phase::Baking:
-        case Phase::Making:     return se->editProgress();
+        case Phase::Making:
+        case Phase::Copying:
+        case Phase::Rewriting:  return se->editProgress();
         default:                return 0;
     }
 }
@@ -146,6 +155,18 @@ const char* ElementNav::stage() const
         case Phase::Making:
         case Phase::Listing:    return "copying";
         case Phase::Stopping:   return "stopping";
+        case Phase::Snapshotting:
+        case Phase::Keying:
+        case Phase::LeaveScenes:
+        case Phase::LeaveKeying:
+        case Phase::Using:      return "keeping";
+        case Phase::Asking:     return "asking";
+        case Phase::Dropping:   return "linking";
+        case Phase::Copying:
+        case Phase::RewriteUses:
+        case Phase::Rewriting:  return "copying";
+        case Phase::DraftUp:    return "opening";
+        case Phase::DraftRestore: return "restoring";
         case Phase::Opening:
         case Phase::Retempo:    return "opening";
         case Phase::Refit:      return "fitting";
@@ -233,12 +254,13 @@ void ElementNav::askContext()
     ContextRequest r;
     if (path_.size() > 1) {
         for (const Level& lv : path_) r.chain.push_back(lv.open);
+        contextBars_ = se->playEndBars();
         const Level& focus = path_.back();
         if (!focus.occurrences.empty()) {
             /* One pass of the focus, from its frame 0 -- or from the song's
              * first frame, when the pass begins before the song does. */
             const Occurrence& o = focus.occurrences[focus.chosen];
-            const int64_t length = bars_to_frames(se->playEndBars(), se->framesPerBar());
+            const int64_t length = bars_to_frames(contextBars_, se->framesPerBar());
             const int64_t lead = o.songFrame < 0 ? -o.songFrame : 0;
             const int64_t at = o.songFrame + lead;
             if (lead < length && at < (int64_t)UINT32_MAX) {
@@ -249,6 +271,15 @@ void ElementNav::askContext()
         }
     }
     se->requestContext(r);
+}
+
+void ElementNav::followFocusLength()
+{
+    ISongEngine* se = songEngine();
+    if (!se) return;
+    syncRoot();
+    if (path_.size() < 2 || !onLevel(path_.back().open)) return;
+    if (se->playEndBars() != contextBars_) askContext();
 }
 
 bool ElementNav::enter(int track, uint32_t bar)
@@ -282,6 +313,8 @@ bool ElementNav::leaveTo(int level)
     if (busy()) return refuse("busy");
     if (!engine()) return false;
     if (level < 0 || level >= depth()) return refuse("there is no level above");
+    for (size_t i = (size_t)level + 1; i < path_.size(); ++i)
+        if (path_[i].draft) return refuse("keep or undo the unfinished edit of this element first");
     targetDepth_ = level;
     startLeave(Job::Leave);
     return true;
@@ -510,12 +543,29 @@ ElementNav::Result ElementNav::refused(const std::string& why)
 ElementNav::Result ElementNav::poll()
 {
     ISongEngine* se = songEngine();
-    if (job_ == Job::None) return {};
+    if (job_ == Job::None) {
+        /* The first tick: what the library says of itself, for the uses and the
+         * snapshots left by an edit a power cut ended. */
+        if (se && !usesAsked_) {
+            usesAsked_ = true;
+            se->requestElements();
+            se->requestUses();
+        }
+        followFocusLength();
+        return {};
+    }
     if (!se) return fail("no song engine in this firmware");
     switch (phase_) {
         case Phase::Making:     return making();
         case Phase::Listing:    return listing();
         case Phase::Stopping:   return stopped();
+        case Phase::Snapshotting: return snapshotting();
+        case Phase::Keying:     return keying();
+        case Phase::LeaveScenes: return leaveScenes();
+        case Phase::LeaveKeying: return leaveKeying();
+        case Phase::Using:      return usesRead();
+        case Phase::Asking:     return answered();
+        case Phase::Dropping:   return dropping();
         case Phase::Opening:    return opened();
         case Phase::Retempo:    return retempo();
         case Phase::Refit:      return refit();
@@ -536,6 +586,11 @@ ElementNav::Result ElementNav::poll()
         }
         case Phase::Baking:     return baking();
         case Phase::Reopening:  return reopening();
+        case Phase::Copying:    return copying();
+        case Phase::RewriteUses: return rewriteUses();
+        case Phase::Rewriting:  return rewriting();
+        case Phase::DraftUp:    return draftUp();
+        case Phase::DraftRestore: return draftRestore();
         default:                return {};
     }
 }
@@ -556,6 +611,40 @@ ElementNav::Result ElementNav::stopped()
         refusals_ = 0;
         return {};
     }
+    return openChild();
+}
+
+/// The element is kept as it is on the card before it opens, the first time
+/// only (the request keeps one already there), so that Copy has the original
+/// to go back to.
+ElementNav::Result ElementNav::toSnapshot()
+{
+    phase_ = Phase::Snapshotting;
+    asked_ = false;
+    refusals_ = 0;
+    return {};
+}
+
+ElementNav::Result ElementNav::snapshotting()
+{
+    ISongEngine* se = songEngine();
+    if (!asked_) {
+        if (!onLevel(path_.back().open)) return fail(kOtherSong);
+        wasPending_ = se->snapshotPending(ref_);
+        if (!se->requestSnapshot(ref_)) return refused("the element cannot be kept as it is now");
+        asked_ = true;
+        refusals_ = 0;
+        return {};
+    }
+    switch (se->editState()) {
+        case SongOpState::Busy:
+            if (++refusals_ < kCardPolls) return {};
+            return fail("the card is not keeping the element as it is");
+        case SongOpState::Ready: break;
+        default:                 return fail("the element could not be kept as it is before its edit");
+    }
+    level_.snapshotTaken = !wasPending_ && se->snapshotPending(ref_);
+    level_.draft = wasPending_ && se->snapshotPending(ref_);
     return openChild();
 }
 
@@ -593,8 +682,10 @@ void ElementNav::snapshotParent(ISongEngine& se)
             if (!focus || !spb || unheard) continue;
             const uint32_t start = bars_to_frames(c.bar, spb);
             const uint32_t end = clip_block_end(tr.clips, i, spb, cut);
-            /* A block never baked plays once, over its own length. */
-            const uint32_t frames = c.frames ? c.frames : end - start;
+            /* A block never baked plays once, over its own length; one baked at
+             * another tempo goes round as flatten() lays it, varispeed. */
+            const uint32_t beat = song.beatsPerBar ? spb / song.beatsPerBar : 0;
+            const uint32_t frames = c.frames ? varispeed_frames(c.frames, c.bakeBpm, effectiveBpm(song), beat) : end - start;
             std::vector<Pass>& into = (t == level_.track && c.bar <= level_.bar && level_.bar < c.bar + c.bars)
                 ? entered : others;
             element_passes(c.from, frames, spb, start, end, [&](uint32_t at, uint32_t to, uint32_t offset) {
@@ -693,17 +784,189 @@ ElementNav::Result ElementNav::entered()
         path_.back().title = newTitle_;
     }
     if (!leaveAfterEnter_) {
-        askContext();
-        return finish();
+        phase_ = Phase::Keying;
+        asked_ = false;
+        refusals_ = 0;
+        return {};
     }
     return toLeaving();
 }
 
+bool ElementNav::hashed(ISongEngine& se, uint64_t& out, Result& wait)
+{
+    wait = {};
+    if (!asked_) {
+        if (!se.requestEditHash()) {
+            wait = refused("the element cannot be looked at now");
+            return false;
+        }
+        asked_ = true;
+        refusals_ = 0;
+        return false;
+    }
+    switch (se.editState()) {
+        case SongOpState::Busy:
+            if (++refusals_ >= kCardPolls) wait = fail("the card is not answering");
+            return false;
+        case SongOpState::Ready: break;
+        default:
+            wait = fail("the element could not be looked at");
+            return false;
+    }
+    out = se.editHash();
+    return true;
+}
+
+ElementNav::Result ElementNav::keying()
+{
+    ISongEngine* se = songEngine();
+    if (!onLevel(ref_)) return fail(kOtherSong);
+    uint64_t hash = 0;
+    Result wait;
+    if (!hashed(*se, hash, wait)) return wait;
+    path_.back().hashAtEntry = hash;
+    askContext();
+    return finish();
+}
+
+/// What the level was edited to, once its scenes are on the card. A leave
+/// that only lays and bakes an element (insertExisting(), makeFromRegion())
+/// edits nothing in it.
+ElementNav::Result ElementNav::leaveKeying()
+{
+    ISongEngine* se = songEngine();
+    if (!onLevel(ref_)) return fail(kOtherSong);
+    Result wait;
+    if (!hashed(*se, leaveHash_, wait)) return wait;
+    const Level& lv = path_.back();
+    edited_ = job_ == Job::Leave && (scenesUnsaved_ || !lv.hashAtEntry || leaveHash_ != lv.hashAtEntry);
+    if (lv.copyOnLeave) {
+        copying_ = true;
+        copyTitle_ = element_copy_title(lv.title, takenTitles(*se));
+        return toRefit();
+    }
+    if (!edited_) return toRefit();
+    phase_ = Phase::Using;
+    asked_ = false;
+    refusals_ = 0;
+    return {};
+}
+
 ElementNav::Result ElementNav::toLeaving()
+{
+    phase_ = Phase::LeaveScenes;
+    asked_ = false;
+    refusals_ = 0;
+    edited_ = false;
+    scenesUnsaved_ = false;
+    copying_ = false;
+    plan_ = {};
+    return {};
+}
+
+/// The scenes edited inside reach the card before the edit hash reads them:
+/// the store writes them on its next sweep, and opening the level above would
+/// otherwise write them into the element after its question was decided. A
+/// sequencer that still holds edits after kScenesPolls is an edit the hash
+/// cannot see: the level is taken as edited, so a shared element is asked
+/// about rather than handed the edit whenever the store does write it.
+ElementNav::Result ElementNav::leaveScenes()
+{
+    ISongEngine* se = songEngine();
+    if (!onLevel(ref_)) return fail(kOtherSong);
+    if (!se->scenesSaved() && ++refusals_ < kScenesPolls) return {};
+    scenesUnsaved_ = !se->scenesSaved();
+    phase_ = Phase::LeaveKeying;
+    asked_ = false;
+    refusals_ = 0;
+    return {};
+}
+
+/// The uses are read again for the question, after the stop -- a scan asked
+/// for while the song streamed waits for it -- and the level above is not one
+/// of the others: it is where the edit was heard. The library is read first,
+/// for the copies' titles: a scan answered has the list asked before it done.
+ElementNav::Result ElementNav::usesRead()
+{
+    ISongEngine* se = songEngine();
+    if (!onLevel(ref_)) return fail(kOtherSong);
+    if (!asked_) {
+        if (!se->requestElements() || !se->requestUses()) return refused("who else uses the element cannot be read now");
+        asked_ = true;
+        refusals_ = 0;
+        return {};
+    }
+    if (se->usesPending()) {
+        if (++refusals_ < kCardPolls) return {};
+        return fail("the card is not saying who else uses the element");
+    }
+    const std::string& parent = path_[path_.size() - 2].open;
+    size_t others = 0;
+    for (const ElementUse& u : se->usesOf(ref_)) others += u.user != parent;
+    if (!others) return toRefit();
+    std::vector<std::string> copied;
+    for (const auto& kv : copies_) copied.push_back(kv.first);
+    plan_ = plan_element_copies(path_.front().open, se->usesIndex(), {ref_}, copied);
+    question_ = Question{path_.back().title, others, {}};
+    std::vector<std::string> taken = takenTitles(*se);
+    for (const std::string& ref : plan_.forks) {
+        question_.copies.push_back(element_copy_title(titleOf(*se, ref), taken));
+        taken.push_back(question_.copies.back());
+    }
+    chosen_ = false;
+    phase_ = Phase::Asking;
+    return {};
+}
+
+bool ElementNav::asking() const { return job_ != Job::None && phase_ == Phase::Asking && !chosen_; }
+
+bool ElementNav::choose(Choice c)
+{
+    if (!asking()) return refuse("nothing is asked");
+    answer_ = c;
+    chosen_ = true;
+    return true;
+}
+
+ElementNav::Result ElementNav::answered()
+{
+    if (!chosen_) return {};
+    switch (answer_) {
+        case Choice::None: {
+            Result r = fail(kCalledOff);
+            r.calledOff = true;
+            return r;
+        }
+        case Choice::Replace: return toRefit();
+        case Choice::Copy:    break;
+    }
+    copying_ = true;
+    copyTitle_ = question_.copies.front();
+    return toRefit();
+}
+
+ElementNav::Result ElementNav::toRefit()
 {
     phase_ = Phase::Refit;
     asked_ = false;
     refusals_ = 0;
+    return {};
+}
+
+std::vector<std::string> ElementNav::takenTitles(ISongEngine& se) const
+{
+    std::vector<std::string> taken;
+    for (const ElementInfo& e : se.elements()) taken.push_back(e.title);
+    for (const Level& lv : path_) taken.push_back(lv.title);
+    return taken;
+}
+
+std::string ElementNav::titleOf(ISongEngine& se, const std::string& ref) const
+{
+    for (const Level& lv : path_)
+        if (lv.open == ref) return lv.title;
+    for (const ElementInfo& e : se.elements())
+        if (e.ref == ref) return e.title;
     return {};
 }
 
@@ -756,6 +1019,8 @@ ElementNav::Result ElementNav::sounds()
     }
     phase_ = Phase::Freezing;
     freezeTrack_ = 0;
+    froze_ = false;
+    refroze_ = false;
     asked_ = false;
     refusals_ = 0;
     return {};
@@ -775,6 +1040,31 @@ int ElementNav::nextToFreeze()
     return AudioSong::kTracks;
 }
 
+bool ElementNav::bakeableFromCard()
+{
+    ISongEngine* se = songEngine();
+    if (job_ != Job::Leave || froze_ || se->stretchWaiting()) return false;
+    std::lock_guard<std::recursive_mutex> l(se->songMutex());
+    const AudioSong& song = se->song();
+    for (int t = 0; t < AudioSong::kTracks; ++t) {
+        const SongTrack& tr = song.tracks[t];
+        if (song.silenced(t)) continue;
+        if (tr.kind == TrackKind::Audio) {
+            /* A stretched recording whose length the song does not hold: only
+             * the engine, reading the file, knows it needs no fitted copy. */
+            if (tr.stretch == StretchMode::Off) continue;
+            for (const SongClip& c : tr.clips)
+                if (!c.isElement() && !c.file.empty() && !c.frames) return false;
+            continue;
+        }
+        if (!tr.inUse) continue;
+        if (!tr.seqBlocks) return false;
+        for (const SongClip& c : tr.clips)
+            if (!c.notes) return false;
+    }
+    return true;
+}
+
 /// A bake mixes a seq track from its freeze: each one not frozen is, in turn.
 ElementNav::Result ElementNav::freezing()
 {
@@ -782,7 +1072,21 @@ ElementNav::Result ElementNav::freezing()
     if (!asked_) {
         if (!onLevel(parentFreeze_ ? path_.back().open : ref_)) return fail(kOtherSong);
         freezeTrack_ = nextToFreeze();
-        if (freezeTrack_ >= AudioSong::kTracks && parentFreeze_) return openChild();
+        if (freezeTrack_ >= AudioSong::kTracks && parentFreeze_) return toSnapshot();
+        if (freezeTrack_ >= AudioSong::kTracks && bakeableFromCard()) {
+            /* Nothing of it needs the engine: the level above opens at once,
+             * its blocks keep the old bake, and the relink pass that open asks
+             * for bakes the element from the card in the background and links
+             * it -- with the song playing or not. */
+            changed_ = edited_;
+            left_ = ref_;
+            bakeFile_.clear();
+            bakeFrames_ = 0;
+            phase_ = Phase::Reopening;
+            asked_ = false;
+            refusals_ = 0;
+            return {};
+        }
         if (freezeTrack_ >= AudioSong::kTracks) {
             phase_ = Phase::Stretching;
             lastWaiting_ = 0;
@@ -791,6 +1095,7 @@ ElementNav::Result ElementNav::freezing()
         }
         if (!se->freezeTrack((uint8_t)freezeTrack_))
             return refused("track " + std::to_string(freezeTrack_ + 1) + " cannot be frozen now");
+        froze_ = true;
         asked_ = true;
         refusals_ = 0;
         return {};
@@ -818,6 +1123,16 @@ ElementNav::Result ElementNav::baking()
         case SongOpState::Busy: return {};
         case SongOpState::Ready: break;
         default: {
+            /* A freeze the bake found stale -- its kit saved since, unheard --
+             * is no longer frozen: frozen again, once. */
+            freezeTrack_ = 0;
+            if (!refroze_ && onLevel(ref_) && nextToFreeze() < AudioSong::kTracks) {
+                refroze_ = true;
+                phase_ = Phase::Freezing;
+                asked_ = false;
+                refusals_ = 0;
+                return {};
+            }
             const auto report = se->editReport();
             return fail(report.empty() ? "the element could not be baked" : report.front());
         }
@@ -825,12 +1140,34 @@ ElementNav::Result ElementNav::baking()
     /* A song opened while the bake was queued is what it mixed. */
     if (!onLevel(ref_)) return fail(kOtherSong);
     const ElementBake bake = se->bakeResult();
+    changed_ = edited_;
+    left_ = ref_;
     bakeFile_ = bake.file;
     bakeFrames_ = bake.frames;
     phase_ = Phase::Reopening;
     asked_ = false;
     refusals_ = 0;
     return {};
+}
+
+/// The drop is tried for as long as a refused request is, and then left: the
+/// element and its snapshot are the same, and the next list takes it off.
+ElementNav::Result ElementNav::dropping()
+{
+    ISongEngine* se = songEngine();
+    if (!asked_) {
+        if (!se->requestDropSnapshot(ref_)) {
+            if (++refusals_ < kRefusalPolls) return {};
+            dropDone_ = true;
+            return afterLink();
+        }
+        asked_ = true;
+        refusals_ = 0;
+        return {};
+    }
+    if (se->editState() == SongOpState::Busy && ++refusals_ < kCardPolls) return {};
+    dropDone_ = true;
+    return afterLink();
 }
 
 ElementNav::Result ElementNav::reopening()
@@ -849,7 +1186,70 @@ ElementNav::Result ElementNav::reopening()
         case SongOpState::Ready: break;
         default:                 return fail("the song above could not be opened");
     }
+    if (!copying_) return linked();
+    phase_ = Phase::Copying;
+    asked_ = false;
+    refusals_ = 0;
+    return {};
+}
+
+bool ElementNav::editEnded(ISongEngine& se, SongOpState& state)
+{
+    state = se.editState();
+    if (state != SongOpState::Busy) return true;
+    const uint8_t now = se.editProgress();
+    if (now != lastProgress_) {
+        lastProgress_ = now;
+        refusals_ = 0;
+    }
+    return ++refusals_ >= kCardPolls;
+}
+
+/// The element as it was edited becomes a new one, and the original goes back
+/// to its snapshot, once the level above is open -- its last save has the edit
+/// in it -- and the scenes edited are on the card: a save of them after the
+/// snapshot went back would write the edit over the original again.
+ElementNav::Result ElementNav::copying()
+{
+    ISongEngine* se = songEngine();
+    if (!onLevel(path_[path_.size() - 2].open)) return fail(kOtherSong);
+    if (!asked_) {
+        if (!se->scenesSaved()) {
+            if (++refusals_ < kScenesPolls) return {};
+            return failCopy("its scenes are not on the card");
+        }
+        if (!se->requestCopyElements({{ref_, copyTitle_, true}}, {}, copies_)) {
+            if (++refusals_ < kRefusalPolls) return {};
+            return failCopy("the song is busy");
+        }
+        asked_ = true;
+        refusals_ = 0;
+        lastProgress_ = 0;
+        return {};
+    }
+    SongOpState state;
+    if (!editEnded(*se, state)) return {};
+    if (state == SongOpState::Busy) return failCopy("the card is not making progress");
+    if (state != SongOpState::Ready) {
+        const auto report = se->editReport();
+        return failCopy(report.empty() ? "the card would not take it" : report.front());
+    }
+    const auto made = se->elementsCopied();
+    if (!made.count(ref_)) return failCopy("the card would not take it");
+    for (const auto& kv : made) copies_[kv.first] = kv.second;
+    /* Every element above on the path that something else plays holds the
+     * copy now, and is copied in turn as it is left. */
+    for (size_t i = 1; i + 1 < path_.size(); ++i)
+        if (std::find(plan_.forks.begin(), plan_.forks.end(), path_[i].open) != plan_.forks.end())
+            path_[i].copyOnLeave = true;
     return linked();
+}
+
+ElementNav::Result ElementNav::failCopy(const std::string& why)
+{
+    const std::string title = path_.back().title.empty() ? "the element" : path_.back().title;
+    path_.pop_back();
+    return fail("the copy was not made (" + why + "): the edit stays in " + title + ", unfinished");
 }
 
 /// In the parent every block of the element plays the bake just made.
@@ -859,24 +1259,50 @@ ElementNav::Result ElementNav::linked()
     {
         std::lock_guard<std::recursive_mutex> l(se->songMutex());
         if (se->song().name != path_[path_.size() - 2].open) return fail(kOtherSong);
+        const std::string to = copying_ ? copies_[ref_] : ref_;
         for (SongTrack& t : se->song().tracks) {
             for (SongClip& c : t.clips) {
                 if (c.element != ref_) continue;
+                c.element = to;
+                if (bakeFile_.empty()) continue;   // a leave that did not wait: the old bake plays until relinked
                 c.file = bakeFile_;
                 c.frames = bakeFrames_;
+                c.bakeBpm = songBpm_;   // the tempo refit() put back before the bake
             }
         }
     }
     se->commit();
+    dropDone_ = false;
+    return afterLink();
+}
+
+/// The snapshot the level owns is taken off: the element is as it was, or keeps
+/// its edit for everyone. A copy put it back over the original already.
+ElementNav::Result ElementNav::afterLink()
+{
+    ISongEngine* se = songEngine();
+    if (!copying_ && path_.back().snapshotTaken && !dropDone_) {
+        phase_ = Phase::Dropping;
+        asked_ = false;
+        refusals_ = 0;
+        return {};
+    }
     path_.pop_back();
     if (depth() > targetDepth_) {
         ref_ = path_.back().open;
         return toLeaving();
     }
+    if (depth() == 0 && !copies_.empty()) {
+        phase_ = Phase::RewriteUses;
+        asked_ = false;
+        refusals_ = 0;
+        return {};
+    }
     /* Opening the level dropped the stem of the one left; an element is
      * heard around again (its stem unchanged by what was edited inside it,
      * so found in the cache). */
     askContext();
+    se->requestUses();
     return finish();
 }
 
@@ -888,7 +1314,168 @@ void ElementNav::reset()
     asked_ = false;
     parentFreeze_ = false;
     refusals_ = 0;
+    contextBars_ = 0;
+    usesAsked_ = false;
+    copies_.clear();
     error_.clear();
+}
+
+/// Read afresh at the song: the copies made on the way up are on the card, and
+/// the elements of the song that still play an original are found from them.
+ElementNav::Result ElementNav::rewriteUses()
+{
+    ISongEngine* se = songEngine();
+    if (!onLevel(path_.front().open)) return fail(kOtherSong);
+    if (!asked_) {
+        if (!se->requestElements() || !se->requestUses())
+            return refused("who uses the elements copied cannot be read now");
+        asked_ = true;
+        refusals_ = 0;
+        return {};
+    }
+    if (se->usesPending()) {
+        if (++refusals_ < kCardPolls) return {};
+        return fail("the card is not saying who uses the elements copied");
+    }
+    std::vector<std::string> copied;
+    for (const auto& kv : copies_) copied.push_back(kv.first);
+    const ElementCopyPlan plan = plan_element_copies(path_.front().open, se->usesIndex(), {}, copied);
+    if (plan.forks.empty() && plan.rewrites.empty()) return rewritten();
+    std::vector<ElementFork> forks;
+    std::vector<std::string> taken = takenTitles(*se);
+    for (const std::string& ref : plan.forks) {
+        forks.push_back({ref, element_copy_title(titleOf(*se, ref), taken), false});
+        taken.push_back(forks.back().title);
+    }
+    if (!se->requestCopyElements(forks, plan.rewrites, copies_)) return refused("the song is busy: its other elements cannot be copied now");
+    phase_ = Phase::Rewriting;
+    refusals_ = 0;
+    lastProgress_ = 0;
+    return {};
+}
+
+ElementNav::Result ElementNav::rewriting()
+{
+    ISongEngine* se = songEngine();
+    SongOpState state;
+    if (!editEnded(*se, state)) return {};
+    if (state != SongOpState::Ready) {
+        const auto report = se->editReport();
+        const std::string why = state == SongOpState::Busy ? "the card is not making progress"
+                              : report.empty() ? "the card would not take them" : report.front();
+        return fail("the rest of the song still plays the originals (" + why + ")");
+    }
+    for (const auto& kv : se->elementsCopied()) copies_[kv.first] = kv.second;
+    return rewritten();
+}
+
+ElementNav::Result ElementNav::rewritten()
+{
+    ISongEngine* se = songEngine();
+    bool moved = false;
+    {
+        std::lock_guard<std::recursive_mutex> l(se->songMutex());
+        if (se->song().name != path_.front().open) return fail(kOtherSong);
+        for (SongTrack& t : se->song().tracks) {
+            for (SongClip& c : t.clips) {
+                const auto to = c.isElement() ? copies_.find(c.element) : copies_.end();
+                if (to == copies_.end()) continue;
+                c.element = to->second;
+                moved = true;
+            }
+        }
+    }
+    if (moved) se->commit();
+    copies_.clear();
+    askContext();
+    se->requestElements();
+    se->requestUses();
+    return finish();
+}
+
+bool ElementNav::draftWaiting() const
+{
+    syncRoot();
+    return job_ == Job::None && path_.size() > 1 && path_.back().draft;
+}
+
+bool ElementNav::resolveDraft(bool keepEdit)
+{
+    if (busy()) return refuse("busy");
+    if (!draftWaiting()) return refuse("there is no unfinished edit here");
+    ISongEngine* se = engine();
+    if (!se) return false;
+    Level& lv = path_.back();
+    if (keepEdit) {
+        /* Edited since it was entered, whatever the hash said then. */
+        lv.draft = false;
+        lv.snapshotTaken = true;
+        lv.hashAtEntry = 0;
+        return true;
+    }
+    ref_ = lv.open;
+    level_ = Level{lv.open, {}, lv.track, lv.bar};
+    job_ = Job::Enter;
+    leaveAfterEnter_ = false;
+    newTitle_.clear();
+    targetDepth_ = 0;
+    phase_ = Phase::DraftUp;
+    asked_ = false;
+    refusals_ = 0;
+    error_.clear();
+    se->stop();
+    return true;
+}
+
+/// The level above opened as it is: nothing of the element is baked or linked.
+ElementNav::Result ElementNav::draftUp()
+{
+    ISongEngine* se = songEngine();
+    if (se->playing()) return {};
+    const size_t parent = path_.size() - 2;
+    if (!asked_) {
+        if (!onLevel(ref_)) return fail(kOtherSong);
+        const bool taken = parent == 0 ? se->requestOpen(path_[parent].open) : se->requestOpenElement(path_[parent].open);
+        if (!taken) return refused("the song above cannot be opened now");
+        asked_ = true;
+        return {};
+    }
+    switch (se->openState()) {
+        case SongOpState::Busy:  return {};
+        case SongOpState::Ready: break;
+        default:                 return fail("the song above could not be opened");
+    }
+    if (!onLevel(path_[parent].open)) return fail(kOtherSong);
+    path_.pop_back();
+    phase_ = Phase::DraftRestore;
+    asked_ = false;
+    refusals_ = 0;
+    return {};
+}
+
+/// The snapshot goes back once the edit's scenes are on the card (a save of
+/// them after it would undo it), then the element is entered again.
+ElementNav::Result ElementNav::draftRestore()
+{
+    ISongEngine* se = songEngine();
+    if (!asked_) {
+        if (!se->scenesSaved()) {
+            if (++refusals_ < kScenesPolls) return {};
+            return fail("the element's scenes are not on the card: its edit stays");
+        }
+        if (!se->requestRestore(ref_)) return refused("the element cannot be put back now: its edit stays");
+        asked_ = true;
+        refusals_ = 0;
+        return {};
+    }
+    switch (se->editState()) {
+        case SongOpState::Busy:
+            if (++refusals_ < kCardPolls) return {};
+            return fail("the card is not putting the element back: its edit stays");
+        case SongOpState::Ready: break;
+        default:                 return fail("the element could not be put back: its edit stays");
+    }
+    return startEnter(ref_, level_.track, level_.bar, Job::Enter) ? Result{} : fail(error_);
 }
 
 ElementNav& elementNav()

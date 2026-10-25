@@ -20,20 +20,32 @@ struct ResolvedElement {
     uint64_t    key = 0;
     std::string file;            ///< the bake's name in the cache (element_bake_file(key))
     uint32_t    frames = 0;      ///< one pass of it at the resolver's tempo and rate
+    float       bpm = 0.0f;      ///< the tempo @c frames and the bake are at (the resolver's); 0: the song's it plays in
     bool        exists = false;  ///< its bake is on the card
     bool        bakeable = false; ///< every heard seq track is frozen to files that are there and every child exists or is bakeable
+    bool        kept = false;    ///< resolved from its snapshot: an edit of it is not decided yet, and this is it as it was
     std::string why;             ///< the first thing that makes it not bakeable; empty when it is
 };
 
 /// Worker only: it reads song.json files and asks the card about every file a
 /// key is made of. Each element is resolved once, children first; a nest that
 /// leads back to itself is reported, not followed.
+///
+/// An element being edited holds a snapshot (AudioSong::snapshotFileName())
+/// until copy or replace is decided, and its song.json is the edit: every
+/// song but the one the edit is made for hears it as it was, from the snapshot.
 class ElementResolver {
 public:
     /// Elements are baked at @p bpm and @p sampleRate, whatever tempo their own
     /// song.json holds (the bake key says the same). @p rd is how the hash and the
     /// existence checks look at the card; its childKey is the resolver's own.
-    ElementResolver(std::string songsRoot, uint32_t sampleRate, float bpm, ElementHashReader rd);
+    /// @p heardDraft is the element whose edit the song resolved for hears
+    /// (the one just left to come back to it): resolved from its song.json even
+    /// with a snapshot beside it. @p editing is the element open in the engine,
+    /// edited as this runs: never baked or linked from its song.json, only
+    /// from its snapshot when it has one.
+    ElementResolver(std::string songsRoot, uint32_t sampleRate, float bpm, ElementHashReader rd,
+                    std::string heardDraft = {}, std::string editing = {});
 
     /// @p ref's element: <songsRoot>/<ref> is its project folder. The answer
     /// stays valid as long as the resolver.
@@ -42,6 +54,10 @@ public:
 
     const ResolvedElement& resolve(const std::string& ref);
 
+    /// @p ref's song as this resolver hears it, into @p song: its snapshot
+    /// while it holds one (@p kept set), else its song.json.
+    SongLoad load(AudioSong& song, const std::string& ref, bool* kept = nullptr) const;
+
 private:
     ResolvedElement make(const std::string& ref);
 
@@ -49,6 +65,8 @@ private:
     uint32_t          rate_;
     float             bpm_;
     ElementHashReader rd_;
+    std::string       heardDraft_;
+    std::string       editing_;
     std::map<std::string, ResolvedElement> done_;
     std::set<std::string> open_;   ///< being resolved: meeting one again is a cycle
     ResolvedElement cycle_;        ///< the answer for the last element met again

@@ -44,6 +44,9 @@ public:
 
     /// The storage the projects are on can be opened right now.
     virtual bool storageReady() = 0;
+    /// Bytes free on the storage the projects are on; UINT64_MAX when the
+    /// platform cannot tell, and the bake cache then keeps to its own cap alone.
+    virtual uint64_t freeStorageBytes() { return UINT64_MAX; }
     /// A bulk read or write gives way to whatever else must read the storage
     /// in time (the board's sample streamer).
     virtual void yieldIo() = 0;

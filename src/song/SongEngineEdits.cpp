@@ -195,7 +195,7 @@ SongOpState SongEngine::Impl::doMerge(uint8_t mask, uint32_t fromBar, uint32_t t
                 if (sg.start >= f + n) break;
                 const uint32_t x = std::max(sg.start, f), y = std::min(sg.end, f + n);
                 if (rd[t].path != sg.path && !(p.storageReady() && rd[t].open(sg.path))) continue;
-                rd[t].read(x - sg.start + sg.offset, io_, y - x);
+                readAt(rd[t], x - sg.start + sg.offset, sg.step, io_, y - x);
                 int32_t* d = acc_ + (x - f) * 2;
                 for (uint32_t k = 0; k < (y - x) * 2; ++k) d[k] += (int32_t)((float)io_[k] * gs[k & 1]);
             }

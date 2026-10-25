@@ -184,7 +184,7 @@ void AudioSong::removeClipSet(int index)
     else if (currentSet >= sets.size()) currentSet = (uint8_t)(sets.size() - 1);
 }
 
-SongLoad AudioSong::load(const std::string& projectDir)
+SongLoad AudioSong::load(const std::string& projectDir, const char* file)
 {
     dir = projectDir;
     const size_t slash = projectDir.find_last_of('/');
@@ -204,7 +204,7 @@ SongLoad AudioSong::load(const std::string& projectDir)
 
     /* song.json, else what save() leaves when it is cut short: the new file
      * complete beside it (.tmp), or only the old one moved aside (.bak). */
-    const std::string path = dir + "/" + fileName();
+    const std::string path = dir + "/" + file;
     JsonDocument doc;
     bool any = false;
     bool found = false;
@@ -224,6 +224,7 @@ SongLoad AudioSong::load(const std::string& projectDir)
     length = doc["length"] | 0u;
     syncSeq = doc["sync"] | false;
     title = doc["title"] | "";
+    newestBake = doc["newest_bake"] | "";
     kit = doc["kit"] | "";
     instrument = doc["instrument"] | "";
     loopStart = doc["loop_start"] | 0u;
@@ -245,6 +246,7 @@ SongLoad AudioSong::load(const std::string& projectDir)
         JsonObjectConst fz = tr["freeze"];
         if (tracks[t].kind == TrackKind::Seq && !fz.isNull()) {
             tracks[t].freezeKey = fz["key"] | 0u;
+            tracks[t].freezeKit = fz["kit"] | 0u;
             auto one = [&](JsonObjectConst c) {
                 SongClip clip;
                 clip.file   = c["file"] | "";
@@ -288,6 +290,9 @@ SongLoad AudioSong::load(const std::string& projectDir)
             clip.frames = c["frames"] | 0u;
             clip.from = c["from"] | 0u;
             clip.element = c["element"] | "";
+            /* Nothing usable -- absent, as before bakes kept their tempo -- is the song's own. */
+            const float bakeBpm = c["bakeBpm"] | 0.0f;
+            if (clip.isElement() && bakeBpm > 0.0f) clip.bakeBpm = bakeBpm;
             /* A seq track's blocks have no file: they are notes, their own
              * or the track's scene. */
             const bool seq = tracks[t].kind == TrackKind::Seq;
@@ -372,6 +377,15 @@ bool is_element_ref(const std::string& ref)
     return true;
 }
 
+bool AudioSong::inElementLibrary() const
+{
+    const size_t last = dir.find_last_of('/');
+    if (last == std::string::npos || last == 0) return false;
+    const size_t parent = dir.find_last_of('/', last - 1);
+    const std::string library = dir.substr(parent == std::string::npos ? 0 : parent + 1, last - (parent == std::string::npos ? 0 : parent + 1));
+    return library == elementsDir() && is_element_ref(library + dir.substr(last));
+}
+
 bool AudioSong::save() const
 {
     bool notes = false;
@@ -395,6 +409,7 @@ bool AudioSong::save() const
     doc["length"] = length;
     doc["sync"] = syncSeq;
     if (!title.empty()) doc["title"] = title;
+    if (inElementLibrary() && !newestBake.empty()) doc["newest_bake"] = newestBake;
     if (!kit.empty()) doc["kit"] = kit;
     if (!instrument.empty()) doc["instrument"] = instrument;
     doc["loop_start"] = loopStart;
@@ -419,6 +434,7 @@ bool AudioSong::save() const
             if (!t.freeze.empty()) {
                 JsonObject fz = o["freeze"].to<JsonObject>();
                 fz["key"] = t.freezeKey;
+                if (t.freezeKit) fz["kit"] = t.freezeKit;
                 JsonArray fc = fz["clips"].to<JsonArray>();
                 for (const auto& c : t.freeze) {
                     JsonObject co = fc.add<JsonObject>();
@@ -444,6 +460,7 @@ bool AudioSong::save() const
             if (c.frames) co["frames"] = c.frames;
             if (c.from) co["from"] = c.from;
             if (c.isElement()) co["element"] = c.element;
+            if (c.isElement() && c.bakeBpm > 0.0f) co["bakeBpm"] = c.bakeBpm;
             if (t.kind == TrackKind::Seq && c.notes) {
                 JsonObject no = co["notes"].to<JsonObject>();
                 no["bars"] = c.notes->bars;

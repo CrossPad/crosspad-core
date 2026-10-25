@@ -76,11 +76,27 @@ public:
     bool requestElementFromRegion(uint32_t fromBar, uint32_t toBar) override;
     bool requestElementFromSong(const std::string& name, const std::vector<std::string>& openElements = {}) override;
     bool requestElementDiscard(const std::string& ref) override;
+    bool requestUses() override;
+    std::vector<ElementUse> usesOf(const std::string& ref) override;
+    bool requestSnapshot(const std::string& ref) override;
+    bool requestEditHash() override;
+    uint64_t editHash() override;
+    bool requestRestore(const std::string& ref) override;
+    bool requestDropSnapshot(const std::string& ref) override;
+    bool snapshotPending(const std::string& ref) override;
+    bool usesPending() const override;
+    ElementUses usesIndex() override;
+    bool scenesSaved() const override;
+    bool requestCopyElements(const std::vector<ElementFork>& forks, const std::vector<std::string>& rewrites,
+                             const std::map<std::string, std::string>& copied) override;
+    std::map<std::string, std::string> elementsCopied() override;
+    bool requestDeleteElement(const std::string& ref) override;
     std::string elementMade() override;
     ElementClipState elementClipState(uint8_t track, size_t clip) override;
     std::string elementClipWhy(uint8_t track, size_t clip) override;
     uint8_t backgroundProgress() const override;
     bool backgroundBusy() const override;
+    void idleBaking(bool allowed) override;
     bool requestContext(const ContextRequest& r) override;
     void contextSolo(bool on) override;
     ContextState contextState() const override;

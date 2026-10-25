@@ -4,6 +4,7 @@
 #include "crosspad/instrument/IInstrumentHost.hpp"
 #include "crosspad/instrument/InstrumentPlayState.hpp"
 #include "crosspad/kit/IKitManager.hpp"
+#include "crosspad/kit/KitSaved.hpp"
 #include "crosspad/platform/PlatformServices.hpp"
 #include "crosspad/sampler/ISecondKit.hpp"
 #include "crosspad/song/ISongEngine.hpp"
@@ -11,6 +12,7 @@
 #include <cstdio>
 #include <cstring>
 #include <mutex>
+#include <set>
 
 namespace crosspad {
 
@@ -94,9 +96,63 @@ void SongSounds::keepSecondKit()
     }
 }
 
+/// The saves as of now are the ones the open song's freezes were made after:
+/// a song just opened takes its baseline here, not at the first look at a kit,
+/// so a save between the two is heard.
+void SongSounds::seedSavesHeard()
+{
+    savesHeard_.clear();
+    ISongEngine* se = songs();
+    if (!se || se->openState() != SongOpState::Ready) return;
+    std::lock_guard<std::recursive_mutex> l(se->songMutex());
+    const AudioSong& song = se->song();
+    for (const auto& t : song.tracks) {
+        if (t.kind != TrackKind::Seq || t.source == SeqSource::Pitch) continue;
+        const std::string& kit = t.kit.empty() ? song.kit : t.kit;
+        if (!kit.empty()) savesHeard_[kit] = kit_saved_generation(kit);
+    }
+}
+
+/// A kit saved under its own name sounds other than the path in the freeze's
+/// key says: the freeze of every seq track that plays it (its own kit, or the
+/// song's for the pads' track) is of the old sound, as a Pitch track's is of
+/// an instrument edited in place (keepInstrument()).
+void SongSounds::freezesHearKitSaves()
+{
+    ISongEngine* se = songs();
+    if (!se || se->openState() != SongOpState::Ready) return;
+    if (seededGen_ != openGen_.load()) {
+        seededGen_ = openGen_.load();
+        seedSavesHeard();
+    }
+    bool changed = false;
+    std::set<std::string> saved;   // the kits this pass found saved: each of their tracks goes stale
+    {
+        std::lock_guard<std::recursive_mutex> l(se->songMutex());
+        AudioSong& song = se->song();
+        for (auto& t : song.tracks) {
+            if (t.kind != TrackKind::Seq || t.source == SeqSource::Pitch) continue;
+            const std::string& kit = t.kit.empty() ? song.kit : t.kit;
+            if (kit.empty()) continue;
+            const uint32_t now = kit_saved_generation(kit);
+            const auto heard = savesHeard_.emplace(kit, now).first;
+            if (heard->second != now) {
+                heard->second = now;
+                saved.insert(kit);
+            }
+            if (!saved.count(kit)) continue;
+            t.freezeKey = 0;
+            ++t.freezeSalt;
+            changed = true;
+        }
+    }
+    if (changed) se->commit();
+}
+
 void SongSounds::step()
 {
     keepSecondKit();
+    freezesHearKitSaves();
     if (!pending_.load(std::memory_order_acquire)) {
         /* A kit given to the song since it settled -- a kit track's kit set in
          * Arrange -- is brought in as an opening song's is, from the next step. */

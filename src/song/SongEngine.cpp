@@ -62,6 +62,7 @@ void SongEngine::Impl::shutdown() {
     quit_.store(true);
     p.wake();
     p.joinWorker();
+    if (mix_) endMix(BakeRun::GaveWay);   // its .part and its span's sum given back
 }
 
 // ── IAudioNode (render) ───────────────────────────────────────────────
@@ -82,7 +83,9 @@ bool SongEngine::Impl::ensureWorker() {
      * and the sum the tracks are mixed into. */
     if (!io_) io_ = static_cast<int16_t*>(p.allocScratch(sz.chunkFrames * 4));
     if (!acc_) acc_ = static_cast<int32_t*>(p.allocScratch(sz.chunkFrames * 8));
-    if (!io_ || !acc_) return false;
+    /* And a chunk of a file read at another speed, before it is interpolated into io_. */
+    if (!vsrc_) vsrc_ = static_cast<int16_t*>(p.allocScratch((sz.chunkFrames + kVarispeedGuard) * 4));
+    if (!io_ || !acc_ || !vsrc_) return false;
     workerStarted_.store(p.startWorker(worker_entry, this));
     return workerStarted_.load();
 }
@@ -123,16 +126,13 @@ void SongEngine::Impl::waitRtOut() {
 
 void SongEngine::Impl::worker() {
     while (!quit_.load()) {
-        const bool streaming = job_.load() == Job::Play && play_.load() != Play::Idle;
-        /* Waveforms are worked out only while nothing plays, one after
-         * another without waiting. */
-        const bool peaking = !streaming && peaksPending() && p.storageReady();
-        /* Stretched copies likewise, after the waveforms. */
-        const bool stretching = !streaming && !peaking && stretchPending() && p.storageReady();
-        /* Element bakes from the card after them, also only while nothing
-         * plays: one waiting while the song streams is no reason to skip the
+        const bool streaming = streamingNow();
+        /* While nothing plays, the background's work -- waveforms, stretched
+         * copies, context stems, relink passes, element bakes -- runs one
+         * piece after another without waiting. While the song streams it
+         * gets a piece a top-up, and work waiting is no reason to skip the
          * wait. */
-        const bool baking = !streaming && !peaking && !stretching && diskBakePending();
+        const bool background = !streaming && backgroundPending();
         /* Until a project is open, look for the card once a second; with a
          * save waiting, back in time to make it. */
         /* A request made while the last one was handled has had its wake-up
@@ -141,9 +141,10 @@ void SongEngine::Impl::worker() {
          * loop leaves them until the stop. */
         if (!requestWaiting(streaming))
             p.waitWake(streaming ? kStreamPollMs
-                                 : peaking || stretching || baking ? 0
+                                 : background ? 0
                                  : saveReq_.load() ? kSaveDelayMs : (lastTried_ ? UINT32_MAX : kCardPollMs));
         if (quit_.load()) break;
+        if (mix_ && mixMustEnd()) endMix(BakeRun::GaveWay);
 
         if (releaseReq_.load()) {
             /* A bounce still queued would allocate into the arena being
@@ -203,14 +204,26 @@ void SongEngine::Impl::worker() {
                            : edit == kEditElementRegion ? doElementFromRegion()
                            : edit == kEditElementSong   ? doElementFromSong()
                            : edit == kEditElementDiscard ? doElementDiscard()
+                           : edit == kEditSnapshot       ? doSnapshot()
+                           : edit == kEditRestore        ? doRestore()
+                           : edit == kEditDropSnapshot   ? doDropSnapshot()
+                           : edit == kEditEditHash       ? doEditHash()
+                           : edit == kEditCopyElements   ? doCopyElements()
+                           : edit == kEditDeleteElement  ? doDeleteElement()
                            : doMerge(editMask_.load(), editFrom_.load(), editTo_.load()));
             continue;
         }
         const uint8_t held = streaming ? kListsAfterStop : 0;
         if (const uint8_t lists = listReq_.fetch_and(held) & (uint8_t)~held) {
+            /* Every requestUses() counted by now was made before this scan reads the card. */
+            const uint32_t asked = usesAsked_.load();
             if (lists & kListProjects) doListProjects();
             if (lists & kListClips)    doListClips();
             if (lists & kListElements) doListElements();
+            if (lists & kListUses) {
+                doListUses();
+                usesAnswered_.store(asked);
+            }
             listGen_.fetch_add(1);
             continue;
         }
@@ -219,38 +232,33 @@ void SongEngine::Impl::worker() {
          * worker off the ring for longer than the ring lasts. The save
          * waits for the stop, which is never far off on a loop. */
         if (!streaming && saveReq_.load() && p.nowUs() >= saveAtUs_.load() && saveReq_.exchange(false)) doSave();
-        /* The relink pass reads every element's song.json: like the elements'
-         * list, it waits for the stop. */
-        if (!streaming && relinkReq_.load() && p.storageReady()) {
-            doRelink();
-            continue;
-        }
         if (bounceReq_.exchange(false)) {
             if (bFreeze_) runFreeze();
             else runBounce();
             busy_.store(false);
             continue;
         }
-        if (job_.load() == Job::Play && play_.load() != Play::Idle) {
+        if (streamingNow()) {
             serviceTake();
             fillRings();
+            /* The background reads only with half a ring in hand, as the
+             * streamer does: below that the song is about to run dry. */
+            if (ring_.used() >= ring_.cap / 2 && play_.load() != Play::Ended) backgroundStep(true);
+        } else {
+            backgroundStep(false);
         }
-        /* The song around the element being edited first: it is what the
-         * player hears next. */
-        else if (contextPending()) doContext();
-        else if (peaksPending() && p.storageReady()) doPeaks();
-        else if (stretchPending() && p.storageReady()) doStretch();
-        else if (diskBakePending()) doDiskBake();
     }
 }
 
-/// Worker: anything asked for that goes before a waveform -- while the song
-/// @p streaming, not what waits for the stop.
-bool SongEngine::Impl::requestWaiting(bool streaming) const {
+bool SongEngine::Impl::requestTaken(bool streaming) const {
     const uint8_t held = streaming ? kListsAfterStop : 0;
     return quit_.load() || releaseReq_.load() || stopReq_.load() || playReq_.load() || openReq_.load() ||
            editReq_.load() != 0 || (listReq_.load() & (uint8_t)~held) != 0 || bounceReq_.load() ||
-           (!streaming && saveReq_.load() && p.nowUs() >= saveAtUs_.load()) ||
+           (!streaming && saveReq_.load() && p.nowUs() >= saveAtUs_.load());
+}
+
+bool SongEngine::Impl::requestWaiting(bool streaming) const {
+    return requestTaken(streaming) ||
            (!streaming && relinkReq_.load() && p.storageReady()) ||
            (!streaming && ctxPending_.load() && p.storageReady());
 }
@@ -319,11 +327,30 @@ ElementBake SongEngine::bakeResult() { return impl_->bakeResult(); }
 bool SongEngine::requestElementFromRegion(uint32_t fromBar, uint32_t toBar) { return impl_->requestElementFromRegion(fromBar, toBar); }
 bool SongEngine::requestElementFromSong(const std::string& name, const std::vector<std::string>& openElements) { return impl_->requestElementFromSong(name, openElements); }
 bool SongEngine::requestElementDiscard(const std::string& ref) { return impl_->requestElementDiscard(ref); }
+bool SongEngine::requestUses() { return impl_->requestUses(); }
+std::vector<ElementUse> SongEngine::usesOf(const std::string& ref) { return impl_->usesOf(ref); }
+bool SongEngine::requestSnapshot(const std::string& ref) { return impl_->requestSnapshot(ref); }
+bool SongEngine::requestEditHash() { return impl_->requestEditHash(); }
+uint64_t SongEngine::editHash() { return impl_->editHash(); }
+bool SongEngine::requestRestore(const std::string& ref) { return impl_->requestRestore(ref); }
+bool SongEngine::requestDropSnapshot(const std::string& ref) { return impl_->requestDropSnapshot(ref); }
+bool SongEngine::snapshotPending(const std::string& ref) { return impl_->snapshotPending(ref); }
+bool SongEngine::usesPending() const { return impl_->usesPending(); }
+ElementUses SongEngine::usesIndex() { return impl_->usesIndex(); }
+bool SongEngine::scenesSaved() const { return impl_->scenesSaved(); }
+bool SongEngine::requestCopyElements(const std::vector<ElementFork>& forks, const std::vector<std::string>& rewrites,
+                                     const std::map<std::string, std::string>& copied)
+{
+    return impl_->requestCopyElements(forks, rewrites, copied);
+}
+std::map<std::string, std::string> SongEngine::elementsCopied() { return impl_->elementsCopied(); }
+bool SongEngine::requestDeleteElement(const std::string& ref) { return impl_->requestDeleteElement(ref); }
 std::string SongEngine::elementMade() { return impl_->elementMade(); }
 ElementClipState SongEngine::elementClipState(uint8_t track, size_t clip) { return impl_->elementClipState(track, clip); }
 std::string SongEngine::elementClipWhy(uint8_t track, size_t clip) { return impl_->elementClipWhy(track, clip); }
 uint8_t SongEngine::backgroundProgress() const { return impl_->backgroundProgress(); }
 bool SongEngine::backgroundBusy() const { return impl_->backgroundBusy(); }
+void SongEngine::idleBaking(bool allowed) { impl_->idleBaking(allowed); }
 bool SongEngine::requestContext(const ContextRequest& r) { return impl_->requestContext(r); }
 void SongEngine::contextSolo(bool on) { impl_->contextSolo(on); }
 ContextState SongEngine::contextState() const { return impl_->contextState(); }

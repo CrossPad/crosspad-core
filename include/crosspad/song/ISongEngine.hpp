@@ -4,12 +4,17 @@
 #include "crosspad/song/AudioSong.hpp"
 
 #include <cstdint>
+#include <map>
 #include <memory>
 #include <mutex>
 #include <string>
 #include <vector>
 
 namespace crosspad {
+
+/// How long the song is stopped with no pad played before Arrange calls
+/// ISongEngine::idleBaking(true).
+inline constexpr uint32_t kIdleBakeMs = 5000;
 
 /// Where a bounce is.
 enum class BounceState : uint8_t {
@@ -46,6 +51,24 @@ struct ElementInfo {
     std::vector<std::string> uses;   ///< the elements its own blocks play, each once
 };
 
+/// One user of an element (ISongEngine::usesOf()).
+struct ElementUse {
+    std::string user;                ///< a project's name, or the ref of an element whose own blocks play it
+    bool song = false;               ///< @c user is a project, not an element
+};
+
+/// Who plays each element, by ref (ISongEngine::usesIndex()).
+using ElementUses = std::map<std::string, std::vector<ElementUse>>;
+
+/// An element to copy (ISongEngine::requestCopyElements()).
+struct ElementFork {
+    std::string ref;                 ///< the element copied
+    std::string title;               ///< the copy's
+    /// Once copied, the element goes back to its snapshot: the edit made in it
+    /// is the copy's, and every other user keeps what it had.
+    bool restore = false;
+};
+
 /// A bake of the open song (ISongEngine::requestBakeElement()).
 struct ElementBake {
     std::string file;                ///< name inside the songs root's .bake/
@@ -77,7 +100,8 @@ enum class ElementClipState : uint8_t { Fresh, Stale, Baking, Missing };
 /// The song around the element being edited (ISongEngine::requestContext()):
 /// none asked for (or nothing of the element is heard in the song), being
 /// baked, playing, or playing what could be baked -- or nothing, when the bake
-/// failed -- with contextWhy() saying what is missing.
+/// failed or the song plays at another tempo than the stem was made at (a
+/// tempo turned inside the element) -- with contextWhy() saying what is missing.
 enum class ContextState : uint8_t { None, Baking, Ready, Incomplete };
 
 /// One pass of the open element in the song (ISongEngine::requestContext()).
@@ -196,13 +220,75 @@ public:
     /// The ref (".elements/E%08X") the last requestElementFrom...() made;
     /// empty after one that failed.
     virtual std::string elementMade() { return {}; }
+    /// Read every project's song.json and every element's, on the worker (a
+    /// yield per file), for usesOf(); listGeneration() moves when done. The
+    /// open song or element is counted as it is in memory. A card with no
+    /// other copy of the library is all there is to count: the counts are this
+    /// card's.
+    virtual bool requestUses() { return false; }
+    /// Who plays the element @p ref in their own blocks, as of the last
+    /// requestUses(): projects first, each by name, then elements by ref.
+    virtual std::vector<ElementUse> usesOf(const std::string& ref) { (void)ref; return {}; }
+    /// Keep the element @p ref's song.json and sequences.json as they are on
+    /// the card, as song.orig.json and sequences.orig.json in its folder --
+    /// the element before an edit that others share. None is overwritten: one
+    /// already there is the original, and stays. An element with no song.json
+    /// yet has nothing to keep. An edit.
+    virtual bool requestSnapshot(const std::string& ref) { (void)ref; return false; }
+    /// Work out element_edit_hash() of the open song or element, with its
+    /// project's sequences.json as the card holds it. An edit; editHash() has
+    /// it when editState() is Ready.
+    virtual bool requestEditHash() { return false; }
+    virtual uint64_t editHash() { return 0; }
+    /// The snapshot back over the element's song.json and sequences.json, then
+    /// removed. Refused while a song plays (the card is the streamer's) and, by
+    /// failing, for the element that is open or one with no snapshot. An edit.
+    virtual bool requestRestore(const std::string& ref) { (void)ref; return false; }
+    /// The snapshot of @p ref taken off the card; none is no failure. An edit.
+    virtual bool requestDropSnapshot(const std::string& ref) { (void)ref; return false; }
+    /// A snapshot of @p ref is on the card, as of the last requestElements()
+    /// and the last snapshot, restore or drop that finished -- not read now. A
+    /// list takes off a snapshot that is byte for byte the element it was
+    /// kept of (an edit undone, a drop that never ran) and does not report it.
+    virtual bool snapshotPending(const std::string& ref) { (void)ref; return false; }
+    /// A requestUses() is not answered yet: the last scan began before it was
+    /// made, so usesOf() may miss what the card held when it was asked.
+    virtual bool usesPending() const { return false; }
+    /// usesOf() for every element the last requestUses() found played.
+    virtual ElementUses usesIndex() { return {}; }
+    /// The sequencer holds no scene edit its store has not written yet: the open
+    /// song's sequences.json is what its scenes are.
+    virtual bool scenesSaved() const { return true; }
+    /// Copy each of @p forks to a new element of the library, under its title:
+    /// its folder less its snapshot and what is made again from it as it is
+    /// used (fitted copies, waveforms); its freezes go with it, as valid in the
+    /// copy as in the element (their keys name what is played). Then re-point every
+    /// element block of each copy and of each of @p rewrites (elements heard
+    /// only in the song the copies are for) whose element is in @p copied (an
+    /// element and the copy already made of it) or among @p forks, to the copy;
+    /// then put each fork marked to restore back to its snapshot. An edit, Failed
+    /// with editReport() saying why and nothing changed: copies made are taken
+    /// off the card, elements re-pointed are written back. elementsCopied()
+    /// names the copies when it is Ready. Refused with more than one fork
+    /// marked to restore: a second failing after the first could not be undone.
+    virtual bool requestCopyElements(const std::vector<ElementFork>& forks, const std::vector<std::string>& rewrites,
+                                     const std::map<std::string, std::string>& copied)
+    { (void)forks; (void)rewrites; (void)copied; return false; }
+    /// Each element the last requestCopyElements() copied, with its copy's ref.
+    virtual std::map<std::string, std::string> elementsCopied() { return {}; }
+    /// Take the element @p ref off the card, its folder and all. An edit, with a
+    /// fresh reading of who uses it: Failed while anything does, editReport()
+    /// saying how many and naming them (a project by its name, an element by its
+    /// title), and for the element that is open. Refused while a song plays.
+    virtual bool requestDeleteElement(const std::string& ref) { (void)ref; return false; }
     /// What element block @p clip of @p track plays now against its element's
     /// current version at the song's tempo, as of the last relink pass -- the
     /// pass runs after every open and every commit that moves an element block
     /// (or the tempo): a block whose element's bake is on the card is linked to
     /// it, one that can be mixed from files on the card is baked in the
-    /// background while the song is stopped, and one that cannot keeps playing
-    /// the bake it has. Fresh for anything else, and before any pass.
+    /// background -- the song playing or not, playback's reads first -- and one
+    /// that cannot keeps playing the bake it has. Fresh for anything else, and
+    /// before any pass.
     virtual ElementClipState elementClipState(uint8_t track, size_t clip) { (void)track; (void)clip; return ElementClipState::Fresh; }
     /// Why that block is Stale or Missing: the first thing its element lacks
     /// to be baked from the card (a seq track not frozen, ...); empty otherwise.
@@ -211,6 +297,14 @@ public:
     virtual uint8_t backgroundProgress() const { return 0; }
     /// A relink pass or a background bake is waiting or running.
     virtual bool backgroundBusy() const { return false; }
+    /// The player is away -- the song stopped and no pad played for
+    /// kIdleBakeMs -- as Arrange says. While it is, and the open song's own
+    /// bakes are through, the background goes on to the other songs that play
+    /// an element changed since: each one's blocks of it relinked in its
+    /// song.json on the card, a bake mixed from the card first where one is
+    /// missing. No song is opened for it and no kit loaded; false, or a play,
+    /// stops it where it is, to go on the next time.
+    virtual void idleBaking(bool allowed) { (void)allowed; }
     /// The song with every occurrence of the open element left silent, over
     /// one pass of it (@p r), baked into one stem and played under the element
     /// at unity -- no meter, no fader --, going round with it. The bake is

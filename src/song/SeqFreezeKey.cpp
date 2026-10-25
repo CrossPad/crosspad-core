@@ -50,6 +50,11 @@ void seq_freeze_range(const AudioSong& song, int track, const SceneLookup& scene
     if (to <= from) { from = 0; to = song_end_bars(song, scenes, unknown); }
 }
 
+const std::string& seq_track_sound(const AudioSong& song, int track) {
+    const SongTrack& t = song.tracks[track];
+    return t.source == SeqSource::Pitch ? song.instrument : t.kit.empty() ? song.kit : t.kit;
+}
+
 uint32_t seq_freeze_key(const AudioSong& song, int track, uint32_t sampleRate, const SceneLookup& scenes) {
     bool unknown = false;
     uint32_t h = 2166136261u;
@@ -80,6 +85,8 @@ uint32_t seq_freeze_key(const AudioSong& song, int track, uint32_t sampleRate, c
     const uint8_t head[3] = {(uint8_t)t.source, t.scene, (uint8_t)(t.seqBlocks ? 1 : 0)};
     mix(head, sizeof head);
     text(t.source == SeqSource::Pitch ? song.instrument : t.kit.empty() ? song.kit : t.kit);
+    /* Left out at 0, so a freeze stamped before the salt moved still reads as it was. */
+    if (t.freezeSalt) mix(&t.freezeSalt, sizeof t.freezeSalt);
     SeqPatternPtr scene;
     if (!t.seqBlocks) scene = scenePattern(t.scene);
     for (const auto& c : t.clips) {

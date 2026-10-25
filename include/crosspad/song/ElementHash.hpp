@@ -49,6 +49,24 @@ struct ElementHashReader {
 /// many songs still shares its bakes, a copy of it bakes its own once.
 uint64_t element_content_hash(const AudioSong& song, const std::string& identity, const ElementHashReader& rd);
 
+/// What the player has edited of @p song, and nothing the engine derives:
+/// each track's kind, source, scene, levels, pan, mute, solo, input, stretch
+/// mode and kit; each block's file (an element block by its ref), place, cut
+/// and notes; the length, the metre, the kit's and the instrument's names; and
+/// @p scenes, the project's sequences.json less the tempo it was last saved at
+/// and the scene left selected (the store rewrites both when the clock moves or
+/// a scene is looked at). Not the tempo, the freezes or the copies stretched to
+/// a tempo, which ElementNav's enter and leave rewrite on an element nobody
+/// touched. The stretch modes the enter's fit sets (ElementNav) are set before
+/// the hash it is compared with is taken, so only the player's own count.
+/// Memory and @p scenes only: it reads no file, so it is the same for the same
+/// edits however the card is.
+uint64_t element_edit_hash(const AudioSong& song, const std::string& scenes);
+
+/// What a kit or an instrument @p ref of @p song sounds as, as element_content_hash()
+/// hears it: the file whole and every file beside it, by size and time. Never 0.
+uint32_t sound_identity(const AudioSong& song, const std::string& ref, const ElementHashReader& rd);
+
 /// The bake's key: @p content at @p bpm and @p sampleRate under kRenderVersion.
 uint64_t element_bake_key(uint64_t content, float bpm, uint32_t sampleRate);
 
@@ -57,11 +75,12 @@ std::string element_bake_file(uint64_t key);
 
 /// A context stem's key: @p content, the song's content hash with the open
 /// element silent wherever it plays, over [@p from, @p from + @p frames) of
-/// the song, @p whole when nothing it should hold was missing (a stem made
-/// short of something is never taken for the whole one), at @p bpm and
-/// @p sampleRate under kRenderVersion.
-uint64_t context_bake_key(uint64_t content, uint32_t from, uint32_t frames, bool whole, float bpm,
-                          uint32_t sampleRate);
+/// the song, with @p lacking -- every thing it should hold and was made
+/// without, or played from an older bake; empty when whole -- at @p bpm and
+/// @p sampleRate under kRenderVersion. A stem made short of something is
+/// another stem from the one made when that thing is there.
+uint64_t context_bake_key(uint64_t content, uint32_t from, uint32_t frames, const std::string& lacking,
+                          float bpm, uint32_t sampleRate);
 
 /// "C%016llX.wav", a context stem's name in the cache.
 std::string context_bake_file(uint64_t key);

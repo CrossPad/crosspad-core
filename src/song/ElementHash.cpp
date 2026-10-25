@@ -3,6 +3,8 @@
 
 #include "crosspad/kit/KitPathUtils.hpp"
 
+#include <ArduinoJson.h>
+
 #include <cinttypes>
 #include <cmath>
 #include <cstdio>
@@ -23,6 +25,10 @@ constexpr float    kBpmScale  = 100.0f;
 constexpr float    kVolumeHashSteps = 10000.0f;
 /// A pan is hashed in steps of this, for the same reason as a fader.
 constexpr float    kPanHashSteps = 10000.0f;
+/// What sequences.json keeps beside the scenes that no edit of them is: the
+/// tempo they were last saved at (the store writes it again whenever the clock
+/// moves) and the scene left selected.
+constexpr const char* kScenesNotEdits[] = {"bpm", "active"};
 
 struct Fnv {
     uint64_t h = kFnvOffset;
@@ -74,6 +80,17 @@ void soundOf(Fnv& f, const ElementHashReader& rd, const AudioSong& song, const s
     });
 }
 
+/// @p scenes, sequences.json's bytes, less what kScenesNotEdits names; a file
+/// that is no JSON object as it is.
+std::string scenesEdited(const std::string& scenes) {
+    JsonDocument doc;
+    if (deserializeJson(doc, scenes) != DeserializationError::Ok || !doc.is<JsonObject>()) return scenes;
+    for (const char* key : kScenesNotEdits) doc.remove(key);
+    std::string out;
+    serializeJson(doc, out);
+    return out;
+}
+
 } // namespace
 
 uint64_t element_content_hash(const AudioSong& song, const std::string& identity, const ElementHashReader& rd) {
@@ -95,8 +112,14 @@ uint64_t element_content_hash(const AudioSong& song, const std::string& identity
             if (!c.isElement() && tr.kind == TrackKind::Audio) fileStamp(f, rd, song.clipPath(c.file));
             /* A resolved element's stored length is the bake's, which its key already says. */
             f.value(c.bar); f.value(c.bars); f.value(c.offset); f.value(resolved ? 0u : c.frames); f.value(c.from);
+            /* A bake held, not resolved, plays varispeed by the tempo it was made at.
+             * Left out at 0, so no key of a block linked before bakes kept it changes. */
+            if (!resolved && c.bakeBpm > 0.0f) f.value((int64_t)std::lround(c.bakeBpm * kBpmScale));
             notesOf(f, c.notes);
         }
+        /* A freeze's sound moved under its name (a kit saved): the bake is of the old one.
+         * Left out at 0, so no key of an element that never saw it changes. */
+        if (tr.freezeSalt) f.value(tr.freezeSalt);
         for (const SongClip& z : tr.freeze) {
             f.text(z.file);
             uint64_t bytes = 0;
@@ -111,6 +134,45 @@ uint64_t element_content_hash(const AudioSong& song, const std::string& identity
     soundOf(f, rd, song, song.kit);
     soundOf(f, rd, song, song.instrument);
     return f.h;
+}
+
+uint64_t element_edit_hash(const AudioSong& song, const std::string& scenes) {
+    Fnv f;
+    for (int t = 0; t < AudioSong::kTracks; ++t) {
+        const SongTrack& tr = song.tracks[t];
+        f.value(t);
+        f.value((uint8_t)tr.kind);
+        f.value((uint8_t)tr.source);
+        f.value(tr.scene);
+        f.value(tr.seqBlocks);
+        f.value((int32_t)std::lround(tr.volume * kVolumeHashSteps));
+        f.value((int32_t)std::lround(tr.pan * kPanHashSteps));
+        f.value(tr.muted);
+        f.value(tr.solo);
+        f.value((uint8_t)tr.input);
+        f.value((uint8_t)tr.stretch);
+        f.text(tr.kit);
+        for (const SongClip& c : tr.clips) {
+            f.text(c.isElement() ? c.element : c.file);
+            f.value(c.bar); f.value(c.bars); f.value(c.offset);
+            f.value(c.isElement() ? 0u : c.frames);
+            f.value(c.from);
+            notesOf(f, c.notes);
+        }
+    }
+    f.value(song.length);
+    f.value(song.beatsPerBar);
+    f.text(song.kit);
+    f.text(song.instrument);
+    f.text(scenesEdited(scenes));
+    return f.h;
+}
+
+uint32_t sound_identity(const AudioSong& song, const std::string& ref, const ElementHashReader& rd) {
+    Fnv f;
+    soundOf(f, rd, song, ref);
+    const uint32_t folded = (uint32_t)(f.h ^ (f.h >> 32));
+    return folded ? folded : 1;
 }
 
 uint64_t element_bake_key(uint64_t content, float bpm, uint32_t sampleRate) {
@@ -128,13 +190,13 @@ std::string element_bake_file(uint64_t key) {
     return buf;
 }
 
-uint64_t context_bake_key(uint64_t content, uint32_t from, uint32_t frames, bool whole, float bpm,
-                          uint32_t sampleRate) {
+uint64_t context_bake_key(uint64_t content, uint32_t from, uint32_t frames, const std::string& lacking,
+                          float bpm, uint32_t sampleRate) {
     Fnv f;
     f.value(content);
     f.value(from);
     f.value(frames);
-    f.value<uint8_t>(whole ? 1 : 0);
+    f.text(lacking);
     return element_bake_key(f.h, bpm, sampleRate);
 }
 

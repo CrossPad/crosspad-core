@@ -1,12 +1,15 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include <catch2/catch_test_macros.hpp>
 
+#include "fake_file_system.hpp"
 #include "song_fakes.hpp"
 
 #include "crosspad/instrument/InstrumentPlayState.hpp"
+#include "crosspad/kit/KitSaved.hpp"
 #include "crosspad/sampler/ISecondKit.hpp"
 #include "crosspad/song/SongSounds.hpp"
 
+#include <filesystem>
 #include <string>
 #include <vector>
 
@@ -406,4 +409,24 @@ TEST_CASE("song sounds: a second kit that would not load is said once", "[song][
     r.sounds.step();
     r.sounds.step();
     REQUIRE(r.host.warnings == std::vector<std::string>{std::string("The second kit would not load: ") + kKitB});
+}
+
+TEST_CASE("kit saved: a kit written by the loader is announced under its logical path", "[kit][sounds]") {
+    namespace fs = std::filesystem;
+    const fs::path root = fs::temp_directory_path() / "crosspad_kit_saved_test";
+    fs::remove_all(root);
+    fs::create_directories(root / "crosspad/kits/Saved");
+    test::FakeFileSystem files;
+    test::UseFileSystem scope(files);
+    PortableKitLoader kits(root.string());
+    KitInfo kit;
+    kit.path = "/crosspad/kits/Saved/kit.json";
+    kit.name = "Saved";
+
+    const uint32_t before = kit_saved_generation(kit.path);
+    REQUIRE(kits.saveKit(kit));
+    CHECK(kit_saved_generation(kit.path) == before + 1);
+    CHECK(kit_saved_generation(root.string() + kit.path) == 0);   // never under the file system's
+
+    fs::remove_all(root);
 }

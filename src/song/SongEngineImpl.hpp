@@ -49,6 +49,9 @@ constexpr int      kTracks           = AudioSong::kTracks;
 constexpr uint32_t kBounceMinFrames  = 8192;   // 32 kB (~170 ms), the least a bounce starts with
 static_assert(WavWriter::kHeaderBytes % 4 == 0, "the WAV header is whole frames");
 constexpr uint32_t kPrimeFrames      = 4096;
+/// A varispeed read's source frames beyond a chunk: the second frame each
+/// interpolation takes, and the frame the next chunk goes on from.
+constexpr uint32_t kVarispeedGuard   = 2;
 /// The tracks' meters: the loudest frame of each track in every hop of the
 /// ring, kept for long enough that what RT is playing is still there.
 constexpr uint32_t kMeterHop         = 1024;   // ~23 ms
@@ -94,6 +97,10 @@ constexpr const char* kPeaksDir      = ".peaks";
 constexpr const char* kFreezeDir     = ".freeze";
 /// How far a bake's mix has come when its last chunk is written (the rest is the rename).
 constexpr uint8_t  kBakeMixedPercent = 99;
+/// The cache's last-use counters, beside the bakes (bump_use()).
+constexpr const char* kUsageFile     = "usage.json";
+/// What a bake is written as before its rename; one left by an earlier run is cut short.
+constexpr const char* kPartSuffix    = ".part";
 
 /// A name that stays one folder under the songs root.
 inline bool valid_name(const std::string& n)
@@ -236,8 +243,20 @@ struct ClipReader {
     uint32_t    frames = 0;
     uint16_t    channels = 2;
     uint32_t    cursor = UINT32_MAX;   // frame the file position is at
+    /* readVarispeed(): the last two frames of the file it read, by where they
+     * are in it. A pass reads its next chunk on from them instead of seeking
+     * back for the frame two chunks' interpolations share; a jump or another
+     * pass is somewhere else in the file, and reads afresh. */
+    uint32_t    heldAt = UINT32_MAX;
+    int16_t     held[2 * kVarispeedGuard] = {};
 
-    void close() { if (fd >= 0) fsx::close(fd); fd = -1; path.clear(); cursor = UINT32_MAX; }
+    void close() {
+        if (fd >= 0) fsx::close(fd);
+        fd = -1;
+        path.clear();
+        cursor = UINT32_MAX;
+        heldAt = UINT32_MAX;
+    }
 
     bool readAll(void* dst, size_t n) { return fsx::readSome(fd, dst, n) == (long)n; }
 
@@ -309,12 +328,61 @@ struct ClipReader {
         if (got < n) std::memset(dst + got * 2, 0, (n - got) * 4);
         return got == want;
     }
+
+    /// readWhole() of a file played at another speed: @p n stereo frames from
+    /// @p pos on, @p step apart -- positions in the file with kVarispeedFracBits
+    /// fraction bits (varispeed_step()) -- each the two frames around it
+    /// interpolated in a straight line: a stop-gap until a bake at the song's
+    /// tempo replaces it, so plain and cheap. Read @p scratchFrames frames
+    /// (at least kVarispeedGuard) at a time through @p scratch; past the
+    /// file's end is silence.
+    bool readVarispeed(uint64_t pos, uint64_t step, int16_t* dst, uint32_t n, int16_t* scratch, uint32_t scratchFrames) {
+        constexpr int kFracBits = 15;   // of the weight: (difference x weight) stays inside 32 bits
+        bool whole = true;
+        for (uint32_t k = 0; k < n;) {
+            const uint64_t x = pos + (uint64_t)k * step;
+            const uint32_t first = (uint32_t)(x >> kVarispeedFracBits);
+            /* As many frames played as have both their file frames in scratch. */
+            const uint64_t limit = ((uint64_t)first + scratchFrames - 1) << kVarispeedFracBits;
+            const uint32_t m = (uint32_t)std::max<uint64_t>(1, std::min<uint64_t>(n - k, (limit - x + step - 1) / step));
+            const uint32_t last = (uint32_t)((x + (uint64_t)(m - 1) * step) >> kVarispeedFracBits) + 1;
+            whole = source(first, last - first + 1, scratch) && whole;
+            for (uint32_t j = 0; j < m; ++j) {
+                const uint64_t xj = x + (uint64_t)j * step;
+                const int16_t* a = scratch + ((uint32_t)(xj >> kVarispeedFracBits) - first) * 2;
+                const int32_t w = (int32_t)((xj & ((1ull << kVarispeedFracBits) - 1)) >> (kVarispeedFracBits - kFracBits));
+                int16_t* d = dst + (size_t)(k + j) * 2;
+                d[0] = (int16_t)(a[0] + (((a[2] - a[0]) * w) >> kFracBits));
+                d[1] = (int16_t)(a[1] + (((a[3] - a[1]) * w) >> kFracBits));
+            }
+            k += m;
+        }
+        return whole;
+    }
+
+private:
+    /// Frames [@p first, @p first + @p count) of the file into @p s, the two held
+    /// ones taken where they fall in it; at least kVarispeedGuard of them,
+    /// whose last two are held after.
+    bool source(uint32_t first, uint32_t count, int16_t* s) {
+        uint32_t have = 0;
+        if (heldAt != UINT32_MAX && first >= heldAt && first < heldAt + kVarispeedGuard) {
+            have = std::min(heldAt + kVarispeedGuard - first, count);
+            std::memcpy(s, held + (first - heldAt) * 2, have * 4);
+        }
+        const bool whole = have == count || readWhole(first + have, s + have * 2, count - have);
+        heldAt = first + count - kVarispeedGuard;
+        std::memcpy(held, s + (count - kVarispeedGuard) * 2, sizeof held);
+        return whole;
+    }
 };
 
 /// What playback plays: the song flattened to sample ranges, rebuilt on
 /// every commit. The worker reads it under snapMutex_; RT never does.
 /// A block as samples of the song, and where in its file it starts.
-struct Segment { std::string path; uint32_t start = 0, end = 0, offset = 0; };
+/// @c step: an element's bake made at another tempo, read varispeed
+/// (varispeed_step(); @c offset is then in frames of the song); 0 reads it as it is.
+struct Segment { std::string path; uint32_t start = 0, end = 0, offset = 0; uint64_t step = 0; };
 struct Arrangement {
     std::vector<Segment> tracks[kTracks];
     /// The context stem under an element being edited: one segment, played at
@@ -353,6 +421,69 @@ struct RtSection {
  * playing its own count-in before it starts (a song that is not in sync). */
 enum class Play : uint8_t { Idle, Priming, Armed, Counting, Running, Ended };
 
+/// Readers a disk bake holds at once, beside its writer: the card's descriptors
+/// are shared with playback and the kit's samples, and a bake keeps to three.
+constexpr int kBakeReaders = 2;
+/// A disk bake sums this many chunks of its sources, one source at a time,
+/// before it writes them: four tracks heard at once then open two files a
+/// span, where a chunk at a time opened two a chunk.
+constexpr uint32_t kMixSpanChunks = 4;
+
+/// The files a disk bake reads, in kBakeReaders descriptors: one asked for that
+/// none holds is opened in place of the one read longest ago.
+struct BakeReaders {
+    ClipReader slot[kBakeReaders];
+    uint32_t   used[kBakeReaders] = {};
+    uint32_t   tick = 0;
+
+    bool holds(const std::string& path) const {
+        for (const ClipReader& r : slot)
+            if (r.fd >= 0 && r.path == path) return true;
+        return false;
+    }
+    ClipReader* get(const std::string& path) {
+        int pick = 0;
+        for (int i = 0; i < kBakeReaders; ++i) {
+            if (slot[i].fd >= 0 && slot[i].path == path) { pick = i; break; }
+            if (used[i] < used[pick]) pick = i;
+        }
+        used[pick] = ++tick;
+        if (slot[pick].fd >= 0 && slot[pick].path == path) return &slot[pick];
+        return slot[pick].open(path) ? &slot[pick] : nullptr;
+    }
+};
+
+/// A disk bake under way (worker only): an element's bake or a context stem,
+/// mixed a piece at a time so the song can stream between pieces -- a read of
+/// one source over at most a chunk, or one chunk written. Its writer and its
+/// readers stay open between pieces: three descriptors.
+struct MixJob {
+    enum class For : uint8_t { Element, Context };
+    For what = For::Element;
+    /* An element's: which, and its bake as the queue names it. */
+    std::string ref;
+    ResolvedElement bake;
+    /* A stem's: the request it is for and what contextDone() is told. */
+    uint32_t gen = 0, at = 0, frames = 0;
+    float bpm = 0.0f;
+    ContextState state = ContextState::None;
+    std::string why, focus;
+    /* The mix: its pieces by start, the frames it writes, where to, and the
+     * source that could not be read whole, when one could not. */
+    std::vector<BakedPiece> pieces;
+    uint32_t total = 0;
+    std::string path, lost;
+    bool noMemory = false;          ///< no room for the span's sum: it never began
+    WavWriter w;
+    BakeReaders readers;
+    size_t first = 0;               ///< pieces before it end before the span
+    uint32_t spanAt = 0, spanLen = 0;   ///< the span being summed; 0 long: none yet
+    std::vector<size_t> live;       ///< the pieces under it, in the order they are read
+    size_t next = 0;                ///< the one being read; live.size(): the span is being written
+    uint32_t readAt = 0;            ///< the next frame of it to read
+    uint32_t written = 0;           ///< frames of the span written
+};
+
 } // namespace songdetail
 
 using namespace songdetail;
@@ -390,14 +521,34 @@ struct SongEngine::Impl {
     bool requestElementFromRegion(uint32_t fromBar, uint32_t toBar);
     bool requestElementFromSong(const std::string& name, const std::vector<std::string>& openElements);
     bool requestElementDiscard(const std::string& ref);
+    bool requestUses();
+    std::vector<ElementUse> usesOf(const std::string& ref);
+    bool requestSnapshot(const std::string& ref) { return requestSnapshotEdit(ref, kEditSnapshot); }
+    bool requestEditHash();
+    uint64_t editHash() { return editHash_.load(); }
+    bool requestRestore(const std::string& ref) { return play_.load() == Play::Idle && requestSnapshotEdit(ref, kEditRestore); }
+    bool requestDropSnapshot(const std::string& ref) { return requestSnapshotEdit(ref, kEditDropSnapshot); }
+    bool snapshotPending(const std::string& ref);
+    bool usesPending() const { return (int32_t)(usesAsked_.load() - usesAnswered_.load()) > 0; }
+    ElementUses usesIndex();
+    bool scenesSaved() const { return !seq_.dirty(); }
+    bool requestCopyElements(const std::vector<ElementFork>& forks, const std::vector<std::string>& rewrites,
+                             const std::map<std::string, std::string>& copied);
+    std::map<std::string, std::string> elementsCopied();
+    bool requestDeleteElement(const std::string& ref);
     std::string elementMade();
     ElementClipState elementClipState(uint8_t track, size_t clip);
     std::string elementClipWhy(uint8_t track, size_t clip);
     uint8_t backgroundProgress() const { return bakeProgress_.load(); }
     bool backgroundBusy() const { return relinkReq_.load() || relinking_.load() || bakeQueued_.load() != 0; }
+    void idleBaking(bool allowed);
     bool requestContext(const ContextRequest& r);
     void contextSolo(bool on) { ctxSolo_.store(on); }
-    ContextState contextState() const { return ctxState_.load(); }
+    /// A stem made at another tempo than the song plays now is not heard: Incomplete, until the tempo is back.
+    ContextState contextState() const {
+        const ContextState s = ctxState_.load();
+        return ctxApart_.load() && s == ContextState::Ready ? ContextState::Incomplete : s;
+    }
     std::string contextWhy();
     SongOpState openState() const { return openState_.load(); }
     bool requestRename(const std::string& name);
@@ -480,9 +631,10 @@ private:
     static constexpr uint8_t kListProjects = 1;
     static constexpr uint8_t kListClips    = 2;
     static constexpr uint8_t kListElements = 4;
+    static constexpr uint8_t kListUses     = 8;
     /// Lists that wait for the stop while the song streams: the elements'
-    /// reads every element's song.json, longer than the ring lasts.
-    static constexpr uint8_t kListsAfterStop = kListElements;
+    /// and the uses' read every song.json, longer than the ring lasts.
+    static constexpr uint8_t kListsAfterStop = kListElements | kListUses;
     static void worker_entry(void* arg) { static_cast<Impl*>(arg)->worker(); }
     bool request(uint8_t list);
     bool claimEdit();
@@ -491,6 +643,7 @@ private:
     void doListProjects();
     void doListClips();
     void doListElements();
+    void doListUses();
     /// @p remember: @p name is the project to open at the next boot (an
     /// element is not).
     SongOpState doOpen(const std::string& name, bool remember = true);
@@ -499,6 +652,21 @@ private:
     SongOpState doElementFromRegion();
     SongOpState doElementFromSong();
     SongOpState doElementDiscard();
+    SongOpState doSnapshot();
+    SongOpState doRestore();
+    SongOpState doDropSnapshot();
+    SongOpState doEditHash();
+    SongOpState doCopyElements();
+    SongOpState doDeleteElement();
+    /// The snapshot of the element at @p dir back over its files, then taken
+    /// off -- see ISongEngine::requestRestore. False with it still there to
+    /// restore from again.
+    bool restoreSnapshot(const std::string& dir);
+    /// The snapshot files in the element folder @p dir taken off; none is no failure.
+    bool dropSnapshotFiles(const std::string& dir);
+    /// @p dir's snapshot is there and is byte for byte the files it was kept of.
+    bool snapshotUnchanged(const std::string& dir);
+    bool requestSnapshotEdit(const std::string& ref, uint8_t edit);
     /// A ref no element on the card has, with its folder made under the
     /// library (its clips/ too when @p withClips). Empty when the card would
     /// not; @p dir is then whatever was made, to be removed.
@@ -516,22 +684,101 @@ private:
     /// The open song's element blocks linked to their elements' bakes as they
     /// are now; the ones that can be mixed from the card queued.
     void doRelink();
-    /// The queue's first bake, made or given up -- or left where it is when a
-    /// request comes first.
+    /// A pass that gave way: nothing it found is kept, and it runs again.
+    void relinkGaveWay();
+    /// The queue's first bake started, made or given up -- or left where it is
+    /// when a request comes first.
     void doDiskBake();
-    bool diskBakePending() { return !bakeQueue_.empty() && p.storageReady(); }
-    /// A disk bake's mix: Done, given way to a request (tried again after
-    /// it), or Failed with no file left behind.
+    /// Another song's bakes wait for the player to be away.
+    bool diskBakePending() { return !bakeQueue_.empty() && p.storageReady() && (!bakeOther_ || idleNow()); }
+    /// How a disk bake's mix ended: Done, given way to a request (made again
+    /// after it), or Failed with no file left behind.
     enum class BakeRun : uint8_t { Done, GaveWay, Failed };
-    BakeRun mixDown(std::vector<BakedPiece> pieces, uint32_t total, const std::string& path, std::string& lost);
+    /// A mix of @p pieces into @p total frames at @p path, for what @p job
+    /// says, begun: the next pieces are stepMix()'s. One that cannot start
+    /// has ended Failed.
+    void startMix(std::unique_ptr<MixJob> job, std::vector<BakedPiece> pieces, uint32_t total, const std::string& path);
+    /// One piece of the mix under way.
+    void stepMix();
+    /// The mix under way ended @p run: on Done its file in place, else its
+    /// .part removed; then what it was for told.
+    void endMix(BakeRun run);
+    bool mixing(MixJob::For what) const { return mix_ && mix_->what == what; }
+    /// A request the loop takes next would change what the mix reads or
+    /// writes, or another song's bake may not go on: it ends first (and is
+    /// made again later). A stop, a play, a save or a list only pause it.
+    bool mixMustEnd();
     /// The resolver's answer for @p ref, or the bake this queue has made of it since.
     const ResolvedElement& bakeView(const std::string& ref);
     void bakeMade(const std::string& ref, const ResolvedElement& e);
     void bakeFailed(const std::string& ref, const std::string& why);
-    /// Blocks of each element in @p links, in the open song @p dir, take that
-    /// bake and pass length -- committed and saved, but no undo step.
-    void linkBlocks(const std::string& dir, const std::map<std::string, std::pair<std::string, uint32_t>>& links);
+    /// Blocks of each element in @p links, in the song @p dir the queue is
+    /// for, take that bake, pass length and @p bpm, the tempo the bakes were
+    /// resolved at (SongClip::bakeBpm): in the open song committed and saved,
+    /// but no undo step; in another song on the card (linkOnCard()).
+    void linkBlocks(const std::string& dir, const std::map<std::string, std::pair<std::string, uint32_t>>& links,
+                    float bpm);
+    /// The song.json in @p dir read, its blocks of each element in @p links
+    /// given that bake and @p bpm, and written back when one changed.
+    void linkOnCard(const std::string& dir, const std::map<std::string, std::pair<std::string, uint32_t>>& links,
+                    float bpm);
     void dropBakeQueue();
+    // ── The bake cache's size (SongEngineDiskBake.cpp) ─────────────────────
+    /// Worker: the cache inside its cap -- see the file comment. A pass that gives
+    /// way is asked for again; one that could not tell what the open song plays
+    /// removes nothing.
+    void doEvict();
+    /// What the open song's tree plays, every element's newest bake, and the
+    /// stem in use: the files no pass may remove. False when the work gave way
+    /// before it knew them all.
+    bool protectedBakes(std::set<std::string>& keep);
+    /// @p file just used: the newest in the last-use counters. Written by saveUsage().
+    void bumpUse(const std::string& file);
+    void loadUsage();
+    void saveUsage();
+    /// @p ref's own song.json names @p file as its newest bake -- once the song
+    /// stops, when it streams (newestDue_).
+    void noteNewestBake(const std::string& ref, const std::string& file);
+    /// The same now: on the card, or in memory when @p ref is the song open.
+    void writeNewestBake(const std::string& ref, const std::string& file);
+    /// One newest bake noted while the song streamed, written.
+    void writeNewestDue();
+    /// The open song, an element, has made @p file from itself.
+    void ownBake(const std::string& file);
+    // ── Background work and playback (SongEngineDiskBake.cpp) ─────────────
+    bool streamingNow() const { return job_.load() == Job::Play && play_.load() != Play::Idle; }
+    /// Worker, between two card accesses of background work: while the song
+    /// streams, its ring is topped up whenever it is below half, so the work
+    /// reads only with half a ring in hand; then the streamer's turn. Sets
+    /// gaveWay_ when a request the loop takes is waiting, the song came to
+    /// its end, or idle work is no longer allowed: the work stops, and what
+    /// it found is not used.
+    void pace();
+    /// cardHashReader() with pace() before every access; once gaveWay_ is set
+    /// each access fails, so a resolve under way ends at once.
+    ElementHashReader pacedHashReader();
+    /// fsx::isFile() the same way.
+    bool pacedIsFile(const std::string& path, uint64_t atLeast = 0);
+    /// Anything for backgroundStep() while nothing plays.
+    bool backgroundPending();
+    /// One piece of the background's work, in the queue's order: the context
+    /// stem, the relink pass, a mix under way, (stopped) waveforms and
+    /// stretched copies, the open song's element bakes, (idle) other songs'.
+    void backgroundStep(bool streaming);
+    // ── Idle baking (SongEngineDiskBake.cpp) ──────────────────────────────
+    bool idleNow() const { return idleAllowed_.load() && !streamingNow(); }
+    bool idlePending() { return idleNow() && !changed_.empty() && p.storageReady(); }
+    /// Elements whose other songs may play an older bake now.
+    void noteChanged(const std::set<std::string>& refs);
+    /// The next step of idle baking: the uses read, the songs that play a
+    /// changed element found, each relinked in turn.
+    void idleStep();
+    /// The songs (not the open one) that play an element in @p refs, through
+    /// the elements that hold it, as the last uses scan has them.
+    std::vector<std::string> songsPlaying(const std::set<std::string>& refs);
+    /// The song @p name relinked on the card, as a pass relinks the open one.
+    /// False when it gave way, to be done again.
+    bool relinkOther(const std::string& name);
     /// A song opened: nothing the last one's pass found holds.
     void forgetElements();
     // ── The context stem (SongEngineDiskBake.cpp) ─────────────────────────
@@ -551,6 +798,9 @@ private:
     /// in another song, or with the song at another tempo than the stem was
     /// mixed at. Caller holds songMutex_.
     std::vector<Segment> contextSegments() const;
+    /// The open song plays at another tempo than its stem was mixed at (a tempo
+    /// turned inside the element), so the stem is not heard. Caller holds songMutex_.
+    bool contextApart() const;
     /// The stem handed to playback now. Caller holds songMutex_.
     void publishContext();
     void openLast();
@@ -583,6 +833,14 @@ private:
                       const std::vector<PatternSequencer::SongSpan>& spans) const;
     void runFreeze();
     bool frozenPlays(const AudioSong& song, int track) const;
+    /// Worker: the seq tracks of @p s frozen through a kit or an instrument the
+    /// card holds otherwise now (SongTrack::freezeKit) -- saved under its name
+    /// since, maybe in another boot, where no save was heard.
+    static std::vector<int> kitChangedFreezes(const AudioSong& s);
+    /// Each of @p tracks of @p s plays its freeze no longer, and its next one
+    /// renders anew rather than finding the old renders by their names (as
+    /// SongSounds leaves a track whose kit it hears saved).
+    static void unfreeze(AudioSong& s, const std::vector<int>& tracks);
     Arrangement flatten(const AudioSong& song) const;
     std::vector<PatternSequencer::SongSpan> seqSpansOf(const SongTrack& tr, uint32_t spb, uint32_t tpb,
                                                        uint32_t cut, uint8_t route = 0) const;
@@ -624,11 +882,20 @@ private:
     void worker();
     /// Where the bake named @p file lives: one cache for every song, under the songs root.
     std::string bakePath(const std::string& file) const;
+    /// @p n frames of @p r from @p clipFrame of a segment or piece read at
+    /// @p step (Segment::step): readWhole() at 0, else varispeed through vsrc_.
+    /// Worker only.
+    bool readAt(ClipReader& r, uint32_t clipFrame, uint64_t step, int16_t* dst, uint32_t n);
     bool stretchReady(const std::string& path) const;
     struct StretchJob { std::string src, dst; uint32_t offset = 0, frames = 0, outFrames = 0; bool repitch = false; };
     uint32_t nextStretch(StretchJob* job);
     bool stretchPending() { return nextStretch(nullptr) != 0; }
     void doStretch();
+    /// A request the loop takes before any background work -- while the song
+    /// @p streaming, not what waits for the stop.
+    bool requestTaken(bool streaming) const;
+    /// requestTaken(), and while nothing plays a relink pass or a context stem
+    /// asked for: what a waveform or a stretched copy gives way to.
     bool requestWaiting(bool streaming = false) const;
     bool peaksPending();
     void doPeaks();
@@ -692,7 +959,8 @@ private:
     mutable std::mutex noteCacheMutex_;
     static constexpr uint8_t kEditRename = 1, kEditTempo = 2, kEditMerge = 3, kEditImport = 4,
                              kEditDelete = 5, kEditExport = 6, kEditBake = 7, kEditElementRegion = 8, kEditElementSong = 9,
-                             kEditElementDiscard = 10;
+                             kEditElementDiscard = 10, kEditSnapshot = 11, kEditRestore = 12, kEditDropSnapshot = 13,
+                             kEditEditHash = 14, kEditCopyElements = 15, kEditDeleteElement = 16;
     uint32_t    importA_ = 0, importB_ = 0, importBar_ = 0, importLead_ = 0;   // owned by claimEdit()'s caller until editReq_
     uint8_t     importTrack_ = 0;
     std::atomic<uint8_t>  editMask_{0}, editProgress_{0};
@@ -702,10 +970,14 @@ private:
     std::atomic<float>    editBpm_{120.0f};
     std::string editName_;                        // under songMutex_
     std::vector<std::string> editRefs_;           // the breadcrumb an element from a song is checked against, under songMutex_
+    std::vector<ElementFork> copyForks_;          // requestCopyElements()'s, under songMutex_
+    std::vector<std::string> copyRewrites_;
+    std::map<std::string, std::string> copyRefs_;
     std::vector<std::string> report_;             // the last export's, under reportMutex_
     std::mutex  reportMutex_;
     ElementBake bake_;                            // the last bake's, under reportMutex_
     std::string elementMade_;                     // the last element made's ref, under reportMutex_
+    std::map<std::string, std::string> copiesMade_;   // the last requestCopyElements()'s, under reportMutex_
     /* The relink pass: asked for by an open and by a rebuild whose element
      * blocks or tempo moved (elementSig_, under songMutex_). What it found of
      * each element the open song's blocks use, and which of those blocks' bakes
@@ -733,6 +1005,32 @@ private:
     std::map<std::string, std::string> bakesFailed_;
     std::atomic<uint32_t> bakeQueued_{0};
     std::atomic<uint8_t>  bakeProgress_{0};
+    bool        bakeOther_ = false;   ///< the queue is another song's (idle baking), not the open one's
+    /// The bake cache (worker only): a pass is due, the first has swept the parts an
+    /// earlier run left, and the counters of last use (file -> counter, the
+    /// largest the last one handed out).
+    bool        evictPending_ = false, partsSwept_ = false, usageLoaded_ = false, usageDirty_ = false;
+    std::map<std::string, uint64_t> usage_;
+    uint64_t    usageClock_ = 0;
+    /// Newest bakes noted while the song streamed, by element ref (worker only).
+    std::map<std::string, std::string> newestDue_;
+    /// The mix under way, and the sum of its span (worker only, held while a
+    /// mix is).
+    std::unique_ptr<MixJob> mix_;
+    int32_t*    mixAcc_ = nullptr;
+    bool        gaveWay_ = false;     ///< pace() met a request (worker only)
+    bool        idleWork_ = false;    ///< what pace() paces is idle work
+    /// The element that was open before the song open now: what was left to
+    /// come here, the first of the open song's blocks to be baked.
+    std::string leftRef_;
+    /* Idle baking (worker only but idleAllowed_): elements changed since the
+     * songs playing them were relinked; the songs left to relink for those in
+     * idleServing_, found from a uses scan asked for (idleScanAsked_). */
+    std::atomic<bool> idleAllowed_{false};
+    std::set<std::string> changed_, idleServing_;
+    std::vector<std::string> idleSongs_;
+    bool        idleListed_ = false;
+    bool        idleScanAsked_ = false;
     /* The context stem, under songMutex_: the request and its generation (a
      * newer request or a drop moves it, and a bake for an older one is not
      * played), the song it was asked in, and what plays -- the stem's path,
@@ -748,6 +1046,7 @@ private:
     std::atomic<bool> ctxPending_{false};
     std::atomic<bool> ctxSolo_{false};            ///< SOLO: the stem is neither read nor heard
     std::atomic<ContextState> ctxState_{ContextState::None};
+    std::atomic<bool> ctxApart_{false};           ///< contextApart() as the last rebuild or publish found it
     /* Waveforms of the project in peaksDir_, by clip name, and the ones asked
      * for and not had yet, oldest first; under peaksMutex_. */
     std::map<std::string, std::shared_ptr<const std::vector<uint8_t>>> peaks_;
@@ -763,6 +1062,12 @@ private:
     std::vector<std::string> projects_;
     std::vector<ClipInfo>    clips_;
     std::vector<ElementInfo> elements_;
+    std::map<std::string, std::vector<ElementUse>> uses_;   ///< by element ref; under listMutex_
+    std::set<std::string> snapshots_;                       ///< refs with a snapshot on the card; under listMutex_
+    std::atomic<uint64_t> editHash_{0};
+    /* requestUses() calls made, and how many of them the last finished scan
+     * answers: the ones counted before it began reading the card. */
+    std::atomic<uint32_t> usesAsked_{0}, usesAnswered_{0};
     std::mutex  listMutex_;
     Arrangement snap_;
     std::mutex  snapMutex_;
@@ -817,6 +1122,7 @@ private:
     std::atomic<bool>     stopReq_{false};
     std::vector<int16_t>  scratch_;
     int16_t*              io_ = nullptr;           // worker's card buffer, PSRAM
+    int16_t*              vsrc_ = nullptr;         // worker's varispeed source frames (readAt()), PSRAM
     int32_t*              acc_ = nullptr;          // worker's mix-down sum, PSRAM
     uint32_t              sampleRate_ = 44100;
     // Bounce.
