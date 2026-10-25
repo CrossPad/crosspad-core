@@ -90,7 +90,7 @@ struct BakedViewEnv {
     float       bpm = 0;                     ///< the song's (effective) tempo
     std::function<bool(const std::string& path)> exists;
     std::function<const ResolvedElement*(const std::string& ref)> child;   ///< the resolver's answer for an element block
-    std::string silentRef;                   ///< blocks of this element contribute nothing (context)
+    std::vector<std::string> silentRefs;     ///< blocks of these elements contribute nothing (context)
 };
 
 /// @p song in [a, b) frames of its own time, from files alone: recordings (their

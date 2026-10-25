@@ -317,6 +317,9 @@ struct ClipReader {
 struct Segment { std::string path; uint32_t start = 0, end = 0, offset = 0; };
 struct Arrangement {
     std::vector<Segment> tracks[kTracks];
+    /// The context stem under an element being edited: one segment, played at
+    /// unity -- no fader, no meter (requestContext()).
+    std::vector<Segment> context;
     /// The seq track's blocks, for the sequencer to play under (empty with
     /// seqMapped false: a seq track with no blocks loops over everything).
     std::vector<PatternSequencer::SongSpan> seqSpans;
@@ -392,6 +395,10 @@ struct SongEngine::Impl {
     std::string elementClipWhy(uint8_t track, size_t clip);
     uint8_t backgroundProgress() const { return bakeProgress_.load(); }
     bool backgroundBusy() const { return relinkReq_.load() || relinking_.load() || bakeQueued_.load() != 0; }
+    bool requestContext(const ContextRequest& r);
+    void contextSolo(bool on) { ctxSolo_.store(on); }
+    ContextState contextState() const { return ctxState_.load(); }
+    std::string contextWhy();
     SongOpState openState() const { return openState_.load(); }
     bool requestRename(const std::string& name);
     bool requestDelete();
@@ -527,6 +534,25 @@ private:
     void dropBakeQueue();
     /// A song opened: nothing the last one's pass found holds.
     void forgetElements();
+    // ── The context stem (SongEngineDiskBake.cpp) ─────────────────────────
+    bool contextPending() { return ctxPending_.load() && p.storageReady(); }
+    /// The stem asked for last, found in the cache or mixed from the card --
+    /// or left where it is when a request comes first.
+    void doContext();
+    /// What a stem bake for request @p gen came to: @p path (empty: nothing
+    /// to play) over [@p at, @p at + @p frames) of the open song, mixed at
+    /// @p bpm. Dropped when another request or a drop came since.
+    void contextDone(uint32_t gen, const std::string& path, uint32_t at, uint32_t frames, float bpm,
+                     ContextState state, const std::string& why);
+    /// No stem to play: @p state and @p why published, a bake under way for
+    /// an older request left to be dropped. Caller holds songMutex_.
+    void dropContext(ContextState state, const std::string& why);
+    /// The stem's segment as playback lays it: none while there is no stem,
+    /// in another song, or with the song at another tempo than the stem was
+    /// mixed at. Caller holds songMutex_.
+    std::vector<Segment> contextSegments() const;
+    /// The stem handed to playback now. Caller holds songMutex_.
+    void publishContext();
     void openLast();
     SongOpState doRename();
     SongOpState doDelete();
@@ -707,6 +733,21 @@ private:
     std::map<std::string, std::string> bakesFailed_;
     std::atomic<uint32_t> bakeQueued_{0};
     std::atomic<uint8_t>  bakeProgress_{0};
+    /* The context stem, under songMutex_: the request and its generation (a
+     * newer request or a drop moves it, and a bake for an older one is not
+     * played), the song it was asked in, and what plays -- the stem's path,
+     * where it starts in the open song, its length and the tempo it was mixed
+     * at -- with the state's why. ctxPending_: a bake for it is still to run. */
+    ContextRequest ctxReq_;
+    uint32_t    ctxGen_ = 0;
+    std::string ctxSong_;
+    std::string ctxPath_;
+    uint32_t    ctxAt_ = 0, ctxFrames_ = 0;
+    float       ctxBpm_ = 0.0f;
+    std::string ctxWhy_;
+    std::atomic<bool> ctxPending_{false};
+    std::atomic<bool> ctxSolo_{false};            ///< SOLO: the stem is neither read nor heard
+    std::atomic<ContextState> ctxState_{ContextState::None};
     /* Waveforms of the project in peaksDir_, by clip name, and the ones asked
      * for and not had yet, oldest first; under peaksMutex_. */
     std::map<std::string, std::shared_ptr<const std::vector<uint8_t>>> peaks_;
@@ -743,6 +784,7 @@ private:
     // Playback.
     FrameRing   ring_;
     ClipReader  readers_[kTracks];
+    ClipReader  ctxReader_;                       // the context stem's: one descriptor beside the tracks'
     uint32_t    writePos_ = 0;
     std::atomic<uint32_t> debt_{0};
     std::atomic<float>    gain_[kTracks] = {};

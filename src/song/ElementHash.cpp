@@ -128,4 +128,20 @@ std::string element_bake_file(uint64_t key) {
     return buf;
 }
 
+uint64_t context_bake_key(uint64_t content, uint32_t from, uint32_t frames, bool whole, float bpm,
+                          uint32_t sampleRate) {
+    Fnv f;
+    f.value(content);
+    f.value(from);
+    f.value(frames);
+    f.value<uint8_t>(whole ? 1 : 0);
+    return element_bake_key(f.h, bpm, sampleRate);
+}
+
+std::string context_bake_file(uint64_t key) {
+    char buf[24];
+    std::snprintf(buf, sizeof buf, "C%016" PRIX64 ".wav", key);
+    return buf;
+}
+
 } // namespace crosspad

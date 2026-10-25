@@ -8,6 +8,10 @@
 // for each element that can be mixed from files already rendered (baked_view,
 // BakedView.hpp), and leaves the rest playing the bake they have. The queue runs
 // on the worker while the song is stopped and gives way to anything asked of it.
+//
+// The context stem is a disk bake too: inside an element, the song around it --
+// every occurrence of the element silent -- over one pass of it, mixed from the
+// card (ContextMix) and played under the element (requestContext()).
 // The state is SongEngine::Impl (SongEngineImpl.hpp); the worker loop is in SongEngine.cpp.
 
 #include "SongEngineImpl.hpp"
@@ -47,6 +51,179 @@ std::string lacking(const BakedReport& r) {
     if (!r.missingFiles.empty()) return r.missingFiles.front() + " is not on the card.";
     return "Element " + r.unresolved.front() + " has no bake.";
 }
+
+/// What a context stem's key names the open element's blocks by, wherever they
+/// are: they are silent in it, whatever the element holds.
+constexpr uint64_t kSilentFocusKey = 0;
+
+/// @p pc heard through a track at @p outer (left, right): the side gains
+/// multiplied, given back as a gain and a balance (pan_side_gains()).
+void throughTrack(BakedPiece& pc, const float outer[2]) {
+    float in[2];
+    pan_side_gains(pc.gain, pc.pan, in);
+    const float l = in[0] * outer[0], r = in[1] * outer[1];
+    const float g = std::max(l, r);
+    pc.gain = g;
+    pc.pan = g <= 0.0f ? 0.0f : r >= l ? 1.0f - l / g : r / g - 1.0f;
+}
+
+/// The song around one element -- the focus -- from the card, worker only:
+/// every element whose tree plays the focus is read and mixed from its own
+/// sources in place of its bake, the focus's blocks are silent wherever they
+/// are, and everything else plays from files already rendered (baked_view).
+/// So every occurrence of the focus is left out, not only those on the way
+/// down to it.
+class ContextMix {
+public:
+    ContextMix(std::string songsRoot, uint32_t sampleRate, float bpm, std::string focus, const ElementHashReader& rd)
+        : root_(std::move(songsRoot)), rate_(sampleRate), bpm_(bpm), focus_(std::move(focus)), rd_(rd),
+          resolver_(root_, rate_, bpm_, rd) {
+        rd_.childKey = [this](const std::string& ref, uint64_t& key) {
+            key = childKey(ref);
+            return true;
+        };
+    }
+    ContextMix(const ContextMix&) = delete;              // rd_.childKey points back at it
+    ContextMix& operator=(const ContextMix&) = delete;
+
+    /// @p song's content hash with the focus silent wherever it plays: an
+    /// element that holds it by its own such hash, any other by its bake's key.
+    uint64_t hash(const AudioSong& song, const std::string& identity) {
+        return element_content_hash(song, identity, rd_);
+    }
+
+    /// @p song's pieces in [@p a, @p b) of its own time, placed in the stem by
+    /// @p shift and heard through @p outer side gains, into @p out. @p label
+    /// names the song in what it lacks.
+    void pieces(const AudioSong& song, const std::string& label, int64_t shift, uint32_t a, uint32_t b,
+                const float outer[2], std::vector<BakedPiece>& out) {
+        if (b <= a) return;
+        BakedViewEnv env;
+        env.songsRoot = root_;
+        env.sampleRate = rate_;
+        env.bpm = bpm_;
+        env.exists = [](const std::string& path) { return fsx::isFile(path); };
+        env.child = [this](const std::string& ref) { return &resolver_.resolve(ref); };
+        env.silentRefs.push_back(focus_);
+        for (int t = 0; t < AudioSong::kTracks; ++t)
+            for (const SongClip& c : song.tracks[t].clips)
+                if (c.isElement() && holds(c.element)) env.silentRefs.push_back(c.element);
+        BakedReport report;
+        for (BakedPiece& pc : baked_view(song, env, a, b, report)) {
+            pc.start = (uint32_t)((int64_t)pc.start + shift);
+            pc.end = (uint32_t)((int64_t)pc.end + shift);
+            throughTrack(pc, outer);
+            out.push_back(std::move(pc));
+        }
+        if (!report.complete()) note(label + ": " + lacking(report));
+
+        const uint32_t spb = AudioSong::samplesPerBar(rate_, bpm_, song.beatsPerBar);
+        uint32_t cut = bars_to_frames(song.playEnd(), spb);
+        if (song.hasRegion()) cut = std::max(cut, bars_to_frames(song.loopEnd, spb));
+        for (int t = 0; t < AudioSong::kTracks; ++t) {
+            const SongTrack& tr = song.tracks[t];
+            if (song.silenced(t) || tr.kind != TrackKind::Audio) continue;
+            float track[2];
+            pan_side_gains(tr.volume, tr.pan, track);
+            const float through[2] = {track[0] * outer[0], track[1] * outer[1]};
+            for (size_t i = 0; i < tr.clips.size(); ++i) {
+                const SongClip& c = tr.clips[i];
+                if (!c.isElement() || c.element == focus_ || !holds(c.element)) continue;
+                if (std::find(walk_.begin(), walk_.end(), c.element) != walk_.end()) {
+                    note("Element " + c.element + " is in a cycle: it contains itself.");
+                    continue;
+                }
+                const AudioSong* el = load(c.element);
+                if (!el) {
+                    note("Element " + c.element + " cannot be read.");
+                    continue;
+                }
+                /* Laid as baked_view lays a bake: a pass the element's length at
+                 * this tempo, the first from the bar the block starts on. */
+                const uint32_t frames = bars_to_frames(el->playEnd(), AudioSong::samplesPerBar(rate_, bpm_, el->beatsPerBar));
+                if (frames < min_bake_frames(rate_)) continue;
+                const std::string inner = el->title.empty() ? "An element" : el->title;
+                element_passes(c.from, frames, spb, bars_to_frames(c.bar, spb), clip_block_end(tr.clips, i, spb, cut),
+                               [&](uint32_t at, uint32_t to, uint32_t offset) {
+                    const uint32_t x = std::max(at, a), y = std::min(to, b);
+                    if (y <= x) return;
+                    walk_.push_back(c.element);
+                    pieces(*el, inner, shift + at - offset, x - at + offset, y - at + offset, through, out);
+                    walk_.pop_back();
+                });
+            }
+        }
+    }
+
+    /// Nothing the stem should hold was missing.
+    bool whole() const { return why_.empty(); }
+    /// The first thing it lacked.
+    const std::string& why() const { return why_; }
+
+private:
+    void note(const std::string& why) {
+        if (why_.empty()) why_ = why;
+    }
+
+    /// @p ref's song as the card has it; null when it cannot be read.
+    const AudioSong* load(const std::string& ref) {
+        auto it = songs_.find(ref);
+        if (it == songs_.end()) {
+            auto song = std::make_unique<AudioSong>();
+            if (song->load(root_ + "/" + ref) != SongLoad::Loaded) song.reset();
+            it = songs_.emplace(ref, std::move(song)).first;
+        }
+        return it->second.get();
+    }
+
+    /// @p ref is the focus or plays it somewhere in its tree, on a track that
+    /// is heard. A nest that goes round is not followed.
+    bool holds(const std::string& ref) {
+        if (ref == focus_) return true;
+        const auto known = holds_.find(ref);
+        if (known != holds_.end()) return known->second;
+        if (!walking_.insert(ref).second) return false;
+        bool found = false;
+        if (const AudioSong* s = load(ref)) {
+            for (int t = 0; t < AudioSong::kTracks && !found; ++t) {
+                if (s->silenced(t)) continue;
+                for (const SongClip& c : s->tracks[t].clips)
+                    if (c.isElement() && holds(c.element)) { found = true; break; }
+            }
+        }
+        walking_.erase(ref);
+        holds_[ref] = found;
+        return found;
+    }
+
+    uint64_t childKey(const std::string& ref) {
+        if (ref == focus_) return kSilentFocusKey;
+        if (!holds(ref)) return resolver_.resolve(ref).key;
+        const auto known = keys_.find(ref);
+        if (known != keys_.end()) return known->second;
+        /* One met again on its own way down is silent, as pieces() leaves it. */
+        const AudioSong* s = load(ref);
+        if (!s || !hashing_.insert(ref).second) return kSilentFocusKey;
+        const uint64_t key = element_bake_key(element_content_hash(*s, ref, rd_), bpm_, rate_);
+        hashing_.erase(ref);
+        keys_[ref] = key;
+        return key;
+    }
+
+    std::string       root_;
+    uint32_t          rate_;
+    float             bpm_;
+    std::string       focus_;
+    ElementHashReader rd_;
+    ElementResolver   resolver_;
+    std::map<std::string, std::unique_ptr<AudioSong>> songs_;   ///< null: not readable
+    std::map<std::string, bool> holds_;
+    std::set<std::string> walking_;     ///< holds() under way: met again, a nest that goes round
+    std::map<std::string, uint64_t> keys_;
+    std::set<std::string> hashing_;     ///< childKey() under way, likewise
+    std::vector<std::string> walk_;     ///< the elements pieces() is inside
+    std::string       why_;
+};
 
 } // namespace
 
@@ -383,6 +560,128 @@ std::string SongEngine::Impl::elementClipWhy(uint8_t track, size_t clip) {
     const auto it = elementSeen_.find(ref);
     if (it == elementSeen_.end() || (it->second.exists && file == it->second.file)) return {};
     return it->second.why;
+}
+
+bool SongEngine::Impl::requestContext(const ContextRequest& r) {
+    if (!ensureWorker()) return false;
+    std::lock_guard<std::recursive_mutex> l(songMutex_);
+    if (r.chain.empty()) {
+        dropContext(ContextState::None, {});
+        return true;
+    }
+    if (!opened_ || r.chain.back() != song_.name || !valid_name(r.chain.front())) return false;
+    for (size_t i = 1; i < r.chain.size(); ++i)
+        if (!is_element_ref(r.chain[i])) return false;
+    if (!r.frames) {
+        dropContext(ContextState::None, "The element is not heard in the song: nothing plays around it.");
+        return true;
+    }
+    dropContext(ContextState::Baking, {});
+    ctxReq_ = r;
+    ctxSong_ = song_.dir;
+    ctxPending_.store(true);
+    p.wake();
+    return true;
+}
+
+std::string SongEngine::Impl::contextWhy() {
+    std::lock_guard<std::recursive_mutex> l(songMutex_);
+    return ctxWhy_;
+}
+
+void SongEngine::Impl::dropContext(ContextState state, const std::string& why) {
+    ++ctxGen_;
+    ctxPending_.store(false);
+    ctxPath_.clear();
+    ctxWhy_ = why;
+    ctxState_.store(state);
+    publishContext();
+}
+
+std::vector<Segment> SongEngine::Impl::contextSegments() const {
+    if (ctxPath_.empty() || ctxSong_ != song_.dir || std::fabs(effectiveBpm(song_) - ctxBpm_) > kSameTempoBpm) return {};
+    Segment s;
+    s.path = ctxPath_;
+    s.start = ctxAt_;
+    s.end = (uint32_t)std::min<uint64_t>((uint64_t)ctxAt_ + ctxFrames_, UINT32_MAX);
+    return {s};
+}
+
+void SongEngine::Impl::publishContext() {
+    std::lock_guard<std::mutex> l(snapMutex_);
+    snap_.context = contextSegments();
+}
+
+void SongEngine::Impl::contextDone(uint32_t gen, const std::string& path, uint32_t at, uint32_t frames, float bpm,
+                                   ContextState state, const std::string& why) {
+    std::lock_guard<std::recursive_mutex> l(songMutex_);
+    if (gen != ctxGen_) return;
+    ctxPath_ = path;
+    ctxAt_ = at;
+    ctxFrames_ = frames;
+    ctxBpm_ = bpm;
+    ctxWhy_ = why;
+    ctxState_.store(state);
+    publishContext();
+}
+
+/// Worker: the stem over the request's pass, clamped to the song's end, at the
+/// song's tempo -- found in .bake/ by its key, or mixed there as .part and
+/// renamed. A song with nothing around the element gets no file. One the card
+/// would not take leaves nothing to play, with the why; one that gave way to a
+/// request is asked for again.
+void SongEngine::Impl::doContext() {
+    ContextRequest req;
+    uint32_t gen = 0;
+    {
+        std::lock_guard<std::recursive_mutex> l(songMutex_);
+        if (!ctxPending_.exchange(false)) return;
+        req = ctxReq_;
+        gen = ctxGen_;
+    }
+    const std::string& name = req.chain.front();
+    AudioSong song;
+    if (song.load(std::string(p.songsRoot()) + "/" + name) != SongLoad::Loaded) {
+        contextDone(gen, {}, 0, 0, 0.0f, ContextState::Incomplete, name + " cannot be read.");
+        return;
+    }
+    const float bpm = effectiveBpm(song);
+    const uint32_t spb = AudioSong::samplesPerBar(sampleRate_, bpm, song.beatsPerBar);
+    uint32_t cut = bars_to_frames(song.playEnd(), spb);
+    if (song.hasRegion()) cut = std::max(cut, bars_to_frames(song.loopEnd, spb));
+    const uint32_t from = req.songFrame;
+    const uint32_t frames = from < cut ? std::min(req.frames, cut - from) : 0;
+
+    ContextMix mix(p.songsRoot(), sampleRate_, bpm, req.chain.back(), cardHashReader());
+    std::vector<BakedPiece> pieces;
+    const float unity[2] = {1.0f, 1.0f};
+    mix.pieces(song, name, -(int64_t)from, from, from + frames, unity, pieces);
+    const ContextState done = mix.whole() ? ContextState::Ready : ContextState::Incomplete;
+    if (pieces.empty()) {
+        contextDone(gen, {}, req.focusFrame, frames, bpm, done, mix.why());
+        return;
+    }
+    const std::string file = context_bake_file(context_bake_key(mix.hash(song, name), from, frames, mix.whole(), bpm, sampleRate_));
+    const std::string path = bakePath(file);
+    if (!fsx::isFile(path, 1)) {
+        std::string lost;
+        switch (mixDown(std::move(pieces), frames, path, lost)) {
+            case BakeRun::Done:
+                logf(false, "context of %s baked into %s", req.chain.back().c_str(), file.c_str());
+                break;
+            case BakeRun::GaveWay: {
+                std::lock_guard<std::recursive_mutex> l(songMutex_);
+                if (gen == ctxGen_) ctxPending_.store(true);
+                return;
+            }
+            case BakeRun::Failed:
+                contextDone(gen, {}, req.focusFrame, frames, bpm, ContextState::Incomplete,
+                            lost.empty() ? "The song around the element was not written: the card is full or would not take it."
+                                         : lost + " could not be read from the card whole.");
+                return;
+        }
+    }
+    contextDone(gen, path, req.focusFrame, frames, bpm, done, mix.why());
 }
 
 } // namespace crosspad

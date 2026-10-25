@@ -13,6 +13,9 @@ namespace crosspad {
 /// An element entered to stay in (not one laid and baked at once) leaves the
 /// song above frozen: its heard seq tracks are frozen before the element opens,
 /// and the level keeps the song's blocks and every pass of the element in it.
+/// The engine plays the song around the element under it, over the chosen pass
+/// (ISongEngine::requestContext()): asked for on entering, on choosing another
+/// pass and on coming back up to an element; opening another level drops it.
 ///
 /// Every move is a job of phases that poll() walks, requests to the song
 /// engine and reads of its state only, so Arrange's LVGL timer can drive it:
@@ -98,8 +101,9 @@ public:
     const char* stage() const;
 
     /// The pass of the focus PLAY goes round: occurrences[@p index] of the
-    /// level being edited. False, with lastError() saying why, at the song, with
-    /// a job running or for an index there is no pass at.
+    /// level being edited, with the song around it (ISongEngine::requestContext()).
+    /// False, with lastError() saying why, at the song, with a job running or
+    /// for an index there is no pass at.
     bool chooseOccurrence(size_t index);
 
     /// Open the element block sounding on @p bar of @p track of the open song.
@@ -196,6 +200,10 @@ private:
     Result openChild();
     /// Seq tracks of the open song a bake would find not frozen, from @c track_ on.
     int nextToFreeze();
+    /// The song around the level being edited asked of the engine: its chosen
+    /// pass, one pass of the focus long; none at the song, and an element heard
+    /// nowhere asks with no frames (the engine says why).
+    void askContext();
 
     mutable std::vector<Level> path_;
     Job         job_ = Job::None;

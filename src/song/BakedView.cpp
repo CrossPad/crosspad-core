@@ -109,7 +109,7 @@ std::vector<BakedPiece> baked_view(const AudioSong& song, const BakedViewEnv& en
             s.gain = tr.volume;
             s.pan = tr.pan;
             if (c.isElement()) {
-                if (c.element == env.silentRef) continue;
+                if (std::find(env.silentRefs.begin(), env.silentRefs.end(), c.element) != env.silentRefs.end()) continue;
                 const ResolvedElement* e = env.child ? env.child(c.element) : nullptr;
                 if (!e || !e->exists || e->frames < minFrames) { noteOnce(report.unresolved, c.element); continue; }
                 s.path = bakes + e->file;

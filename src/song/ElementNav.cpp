@@ -222,7 +222,33 @@ bool ElementNav::chooseOccurrence(size_t index)
     if (depth() == 0) return refuse("there is no element to choose a pass of");
     if (index >= path_.back().occurrences.size()) return refuse("no such pass");
     path_.back().chosen = index;
+    askContext();
     return true;
+}
+
+void ElementNav::askContext()
+{
+    ISongEngine* se = songEngine();
+    if (!se) return;
+    ContextRequest r;
+    if (path_.size() > 1) {
+        for (const Level& lv : path_) r.chain.push_back(lv.open);
+        const Level& focus = path_.back();
+        if (!focus.occurrences.empty()) {
+            /* One pass of the focus, from its frame 0 -- or from the song's
+             * first frame, when the pass begins before the song does. */
+            const Occurrence& o = focus.occurrences[focus.chosen];
+            const int64_t length = bars_to_frames(se->playEndBars(), se->framesPerBar());
+            const int64_t lead = o.songFrame < 0 ? -o.songFrame : 0;
+            const int64_t at = o.songFrame + lead;
+            if (lead < length && at < (int64_t)UINT32_MAX) {
+                r.songFrame = (uint32_t)at;
+                r.frames = (uint32_t)std::min<int64_t>(length - lead, UINT32_MAX - at);
+                r.focusFrame = (uint32_t)lead;
+            }
+        }
+    }
+    se->requestContext(r);
 }
 
 bool ElementNav::enter(int track, uint32_t bar)
@@ -544,10 +570,12 @@ void ElementNav::snapshotParent(ISongEngine& se)
     const uint32_t spb = se.framesPerBar();
     const uint32_t cut = bars_to_frames(song.playEnd(), spb);
     /* What the level above plays of itself: a chosen pass of it, in its own
-     * time -- the song above that is all of it. */
+     * time -- the song above that is all of it. An element above that is
+     * heard nowhere has no pass, and nothing of it sounds. */
     const Level& above = path_.back();
-    const bool bounded = !above.occurrences.empty();
-    const Occurrence heard = bounded ? above.occurrences[above.chosen] : Occurrence{};
+    const bool bounded = path_.size() > 1;
+    const bool unheard = bounded && above.occurrences.empty();
+    const Occurrence heard = bounded && !unheard ? above.occurrences[above.chosen] : Occurrence{};
     const int64_t base = bounded ? heard.songFrame : 0;
     const int64_t heardFrom = heard.offset, heardTo = (int64_t)heard.offset + heard.frames;
     /* A pass with the frames it sounds on in this level's time. */
@@ -562,7 +590,7 @@ void ElementNav::snapshotParent(ISongEngine& se)
             const bool ready = seq ? se.freezeState((uint8_t)t) == FreezeState::Frozen
                                    : !c.isElement() || !c.file.empty();
             level_.parentBlocks.push_back({(uint8_t)t, c.bar, c.bars, c.isElement(), seq, focus, ready});
-            if (!focus || !spb) continue;
+            if (!focus || !spb || unheard) continue;
             const uint32_t start = bars_to_frames(c.bar, spb);
             const uint32_t end = clip_block_end(tr.clips, i, spb, cut);
             /* A block never baked plays once, over its own length. */
@@ -664,7 +692,10 @@ ElementNav::Result ElementNav::entered()
         se->commit();
         path_.back().title = newTitle_;
     }
-    if (!leaveAfterEnter_) return finish();
+    if (!leaveAfterEnter_) {
+        askContext();
+        return finish();
+    }
     return toLeaving();
 }
 
@@ -842,6 +873,10 @@ ElementNav::Result ElementNav::linked()
         ref_ = path_.back().open;
         return toLeaving();
     }
+    /* Opening the level dropped the stem of the one left; an element is
+     * heard around again (its stem unchanged by what was edited inside it,
+     * so found in the cache). */
+    askContext();
     return finish();
 }
 

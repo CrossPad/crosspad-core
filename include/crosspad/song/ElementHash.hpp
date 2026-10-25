@@ -55,4 +55,15 @@ uint64_t element_bake_key(uint64_t content, float bpm, uint32_t sampleRate);
 /// "B%016llX.wav", the bake's name in the cache.
 std::string element_bake_file(uint64_t key);
 
+/// A context stem's key: @p content, the song's content hash with the open
+/// element silent wherever it plays, over [@p from, @p from + @p frames) of
+/// the song, @p whole when nothing it should hold was missing (a stem made
+/// short of something is never taken for the whole one), at @p bpm and
+/// @p sampleRate under kRenderVersion.
+uint64_t context_bake_key(uint64_t content, uint32_t from, uint32_t frames, bool whole, float bpm,
+                          uint32_t sampleRate);
+
+/// "C%016llX.wav", a context stem's name in the cache.
+std::string context_bake_file(uint64_t key);
+
 } // namespace crosspad

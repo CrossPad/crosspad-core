@@ -86,14 +86,17 @@ bool SongEngine::Impl::clipPeaks(const std::string& file, ClipPeaks& out) {
 
 /// Why a playing song can be silent: the published gains the worker
 /// gates on, how many segments flatten() gave each track, where the
-/// write head is against the end, and what the ring holds.
+/// write head is against the end, and what the ring holds; the context
+/// stem's segments, whether its file is open and whether SOLO is on.
 const char* SongEngine::Impl::debugLine() {
     uint32_t end = 0, la = 0, lb = 0;
     int seg[kTracks] = {};
+    int ctxSeg = 0;
     {
         std::lock_guard<std::mutex> l(snapMutex_);
         end = snap_.end; la = snap_.loopA; lb = snap_.loopB;
         for (int t = 0; t < kTracks; ++t) seg[t] = (int)snap_.tracks[t].size();
+        ctxSeg = (int)snap_.context.size();
     }
     /* The stream's margins since the last read, read and cleared: the
      * longest the worker was off the ring, its longest card access and
@@ -102,7 +105,7 @@ const char* SongEngine::Impl::debugLine() {
     std::snprintf(dbg_, sizeof(dbg_),
                   "g=%.2f/%.2f/%.2f/%.2f seg=%d/%d/%d/%d end=%u loop=%u-%u "
                   "wp=%u ringfill=%u ringcap=%u ringmin=%u gap_max_us=%u read_max_us=%u "
-                  "save_max_us=%u play=%d job=%d live=%d",
+                  "save_max_us=%u play=%d job=%d live=%d ctx=%d/%d/%d",
                   (double)gain_[0].load(), (double)gain_[1].load(),
                   (double)gain_[2].load(), (double)gain_[3].load(),
                   seg[0], seg[1], seg[2], seg[3],
@@ -111,7 +114,8 @@ const char* SongEngine::Impl::debugLine() {
                   ringMin == UINT32_MAX ? 0u : (unsigned)ringMin,
                   (unsigned)dbgGapMaxUs_.exchange(0), (unsigned)dbgReadMaxUs_.exchange(0),
                   (unsigned)dbgSaveMaxUs_.exchange(0),
-                  (int)play_.load(), (int)job_.load(), (int)liveOn_.load());
+                  (int)play_.load(), (int)job_.load(), (int)liveOn_.load(),
+                  ctxSeg, (int)(ctxReader_.fd >= 0), (int)ctxSolo_.load());
     return dbg_;
 }
 
@@ -244,6 +248,8 @@ SongOpState SongEngine::Impl::doOpen(const std::string& name, bool remember) {
         redoCount_.store(0);
         pack(song_, last_);
         lastChangeUs_ = 0;
+        /* The stem was the song around the element open until now. */
+        dropContext(ContextState::None, {});
         rebuild();
     }
     /* Its element blocks are looked at again, whatever the last song's pass found:

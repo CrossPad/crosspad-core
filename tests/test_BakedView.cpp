@@ -162,7 +162,7 @@ TEST_CASE("baked view: a silenced track and the silent element give nothing", "[
     v.files = {"/songs/s/clips/a.wav"};
     BakedReport r;
     CHECK(v.view(0, 2 * kBar, r).size() == 1);   // only the element's pass
-    v.env.silentRef = kElem;
+    v.env.silentRefs = {kElem};
     CHECK(v.view(0, 2 * kBar, r).empty());
     CHECK(r.complete());
 }

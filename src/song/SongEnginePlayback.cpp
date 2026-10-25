@@ -520,6 +520,7 @@ void SongEngine::Impl::rebuild() {
         relinkReq_.store(true);
     }
     Arrangement a = flatten(song_);
+    a.context = contextSegments();
     for (int t = 0; t < kTracks; ++t) {
         const auto& tr = song_.tracks[t];
         gain_[t].store(song_.silenced(t) ? 0.0f : tr.volume);
@@ -888,13 +889,15 @@ void SongEngine::Impl::endPlayback() {
         for (int t = 0; t < kTracks; ++t) { liveCur_[t] = LiveSlot{}; liveReq_[t] = LiveReq{}; }
     }
     for (auto& r : readers_) r.close();
+    ctxReader_.close();
     ring_.release();
     job_.store(Job::None);
 }
 
 /// Keep the song ring full: each chunk of song time is every unmuted
-/// track's blocks read from the card and summed at its gain. What is not
-/// under a block is silence and costs no read.
+/// track's blocks read from the card and summed at its gain, and the context
+/// stem under them at unity unless SOLO is on. What is not under a block is
+/// silence and costs no read.
 void SongEngine::Impl::fillRings() {
     int16_t* chunk = io_;
     int32_t* acc = acc_;
@@ -918,6 +921,8 @@ void SongEngine::Impl::fillRings() {
         struct Piece { char path[160]; uint32_t at, len, clipFrame; };
         Piece pieces[kTracks][3];
         int pieceCount[kTracks] = {};
+        Piece ctxPieces[3];
+        int ctxCount = 0;
         if (liveOn_.load()) {
             /* The launcher: the grid runs on by itself and every track
              * reads its clip at the phase the position puts it at. A
@@ -969,20 +974,24 @@ void SongEngine::Impl::fillRings() {
                 wp = wrap_position(wp, end, snap_.loopA, snap_.loopB);
             }
             n = std::min(n, lim - wp);
-            for (int t = 0; t < kTracks; ++t) {
-                if (gain_[t].load(std::memory_order_relaxed) <= 0.0f) continue;
-                for (const auto& sg : snap_.tracks[t]) {
+            auto gather = [&](const std::vector<Segment>& segs, Piece* into, int& count) {
+                for (const auto& sg : segs) {
                     if (sg.end <= wp) continue;
-                    if (sg.start >= wp + n || pieceCount[t] == 3) break;
+                    if (sg.start >= wp + n || count == 3) break;
                     const uint32_t a = std::max(sg.start, wp);
                     const uint32_t b = std::min(sg.end, wp + n);
-                    Piece& pc = pieces[t][pieceCount[t]++];
+                    Piece& pc = into[count++];
                     std::snprintf(pc.path, sizeof(pc.path), "%s", sg.path.c_str());
                     pc.at = a - wp;
                     pc.len = b - a;
                     pc.clipFrame = a - sg.start + sg.offset;
                 }
+            };
+            for (int t = 0; t < kTracks; ++t) {
+                if (gain_[t].load(std::memory_order_relaxed) <= 0.0f) continue;
+                gather(snap_.tracks[t], pieces[t], pieceCount[t]);
             }
+            if (!ctxSolo_.load(std::memory_order_relaxed)) gather(snap_.context, ctxPieces, ctxCount);
         }
         std::memset(acc, 0, n * 8);
         /* Where this chunk's first frame lands in the ring, which is how
@@ -1031,6 +1040,22 @@ void SongEngine::Impl::fillRings() {
                  * 09.10.2026). */
                 if (ring_.used() >= ring_.cap / 2) p.yieldIo();
             }
+        }
+        /* The context stem, as a track at unity with no meter: its descriptor
+         * given back as soon as nothing of it is under the chunk, or SOLO is on. */
+        if (!ctxCount && ctxReader_.fd >= 0) ctxReader_.close();
+        for (int i = 0; i < ctxCount; ++i) {
+            const Piece& pc = ctxPieces[i];
+            const int64_t r0 = p.nowUs();
+            if (ctxReader_.path != pc.path && !(p.storageReady() && ctxReader_.open(std::string(pc.path)))) {
+                openFailures_.fetch_add(1, std::memory_order_relaxed);
+                continue;
+            }
+            ctxReader_.read(pc.clipFrame, chunk, pc.len);
+            dbgMax(dbgReadMaxUs_, p.nowUs() - r0);
+            int32_t* d = acc + pc.at * 2;
+            for (uint32_t k = 0; k < pc.len * 2; ++k) d[k] += chunk[k];
+            if (ring_.used() >= ring_.cap / 2) p.yieldIo();
         }
         for (uint32_t k = 0; k < n * 2; ++k) {
             const int32_t v = acc[k];

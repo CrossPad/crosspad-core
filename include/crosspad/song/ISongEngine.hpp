@@ -74,6 +74,24 @@ struct ClipPeaks {
 /// new one is being made, or nothing -- its bake is not on the card.
 enum class ElementClipState : uint8_t { Fresh, Stale, Baking, Missing };
 
+/// The song around the element being edited (ISongEngine::requestContext()):
+/// none asked for (or nothing of the element is heard in the song), being
+/// baked, playing, or playing what could be baked -- or nothing, when the bake
+/// failed -- with contextWhy() saying what is missing.
+enum class ContextState : uint8_t { None, Baking, Ready, Incomplete };
+
+/// One pass of the open element in the song (ISongEngine::requestContext()).
+struct ContextRequest {
+    /// The song's project name, then each element ref down to the open one.
+    std::vector<std::string> chain;
+    /// The pass in frames of the song: where it starts and how long it is,
+    /// both within the song.
+    uint32_t songFrame = 0, frames = 0;
+    /// The element's frame songFrame sounds on: more than 0 when the pass
+    /// begins before the song does.
+    uint32_t focusFrame = 0;
+};
+
 /// A seq track's freeze (ISongEngine::freezeTrack()): none made, one that
 /// plays in its place, one its notes, sound or tempo have moved past (the
 /// track plays live until it is frozen again), or one being made now. An
@@ -193,6 +211,21 @@ public:
     virtual uint8_t backgroundProgress() const { return 0; }
     /// A relink pass or a background bake is waiting or running.
     virtual bool backgroundBusy() const { return false; }
+    /// The song with every occurrence of the open element left silent, over
+    /// one pass of it (@p r), baked into one stem and played under the element
+    /// at unity -- no meter, no fader --, going round with it. The bake is
+    /// mixed from files on the card (each level's recordings, seq freezes and
+    /// other elements' bakes) and keyed by what they are with the element
+    /// silent, the pass and the tempo, so editing the element never changes it
+    /// and one asked for again is found in the cache. An empty chain drops it;
+    /// a chain with no frames is an element not heard in the song (None, and
+    /// contextWhy() says so). False when @p r's last level is not the open song.
+    virtual bool requestContext(const ContextRequest& r) { (void)r; return false; }
+    /// On: the stem is not heard, nor read from the card (Arrange's SOLO).
+    virtual void contextSolo(bool on) { (void)on; }
+    virtual ContextState contextState() const { return ContextState::None; }
+    /// What the stem lacks (Incomplete) or why there is none (None); empty otherwise.
+    virtual std::string contextWhy() { return {}; }
     /// The open project. Read or edit it holding songMutex().
     virtual AudioSong& song() = 0;
     virtual std::recursive_mutex& songMutex() = 0;

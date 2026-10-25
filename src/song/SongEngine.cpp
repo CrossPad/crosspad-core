@@ -235,6 +235,9 @@ void SongEngine::Impl::worker() {
             serviceTake();
             fillRings();
         }
+        /* The song around the element being edited first: it is what the
+         * player hears next. */
+        else if (contextPending()) doContext();
         else if (peaksPending() && p.storageReady()) doPeaks();
         else if (stretchPending() && p.storageReady()) doStretch();
         else if (diskBakePending()) doDiskBake();
@@ -248,7 +251,8 @@ bool SongEngine::Impl::requestWaiting(bool streaming) const {
     return quit_.load() || releaseReq_.load() || stopReq_.load() || playReq_.load() || openReq_.load() ||
            editReq_.load() != 0 || (listReq_.load() & (uint8_t)~held) != 0 || bounceReq_.load() ||
            (!streaming && saveReq_.load() && p.nowUs() >= saveAtUs_.load()) ||
-           (!streaming && relinkReq_.load() && p.storageReady());
+           (!streaming && relinkReq_.load() && p.storageReady()) ||
+           (!streaming && ctxPending_.load() && p.storageReady());
 }
 
 SongEngine::SongEngine(ISongEnginePlatform& platform, MetronomeNode& clock, PatternSequencer& seq)
@@ -320,6 +324,10 @@ ElementClipState SongEngine::elementClipState(uint8_t track, size_t clip) { retu
 std::string SongEngine::elementClipWhy(uint8_t track, size_t clip) { return impl_->elementClipWhy(track, clip); }
 uint8_t SongEngine::backgroundProgress() const { return impl_->backgroundProgress(); }
 bool SongEngine::backgroundBusy() const { return impl_->backgroundBusy(); }
+bool SongEngine::requestContext(const ContextRequest& r) { return impl_->requestContext(r); }
+void SongEngine::contextSolo(bool on) { impl_->contextSolo(on); }
+ContextState SongEngine::contextState() const { return impl_->contextState(); }
+std::string SongEngine::contextWhy() { return impl_->contextWhy(); }
 bool SongEngine::clipPeaks(const std::string& file, ClipPeaks& out) { return impl_->clipPeaks(file, out); }
 uint32_t SongEngine::peaksGeneration() const { return impl_->peaksGeneration(); }
 uint32_t SongEngine::framesPerBar() { return impl_->framesPerBar(); }
