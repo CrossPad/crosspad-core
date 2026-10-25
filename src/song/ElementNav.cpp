@@ -65,9 +65,9 @@ std::string freshElementRef(ISongEngine& se)
 
 /// Where an element made of [@p from, @p to) goes: the lowest audio track the
 /// region touches that holds nothing outside it (its settings are then the
-/// region's own, and its volume, pan and mute are set neutral: the element's bake
-/// carries every source track's; its solo stays, or the tracks it silenced would sound), else the lowest track nobody has
-/// made. -1 when there is neither.
+/// region's own, and its volume, pan and mute are set neutral: the element's
+/// bake carries every source track's; its solo stays, or the tracks it silenced
+/// would sound), else the lowest track nobody has made. -1 when there is neither.
 int regionHost(const AudioSong& song, uint32_t from, uint32_t to, uint32_t spBar)
 {
     AudioSong cleared = song;
@@ -543,32 +543,51 @@ void ElementNav::snapshotParent(ISongEngine& se)
     const AudioSong& song = se.song();
     const uint32_t spb = se.framesPerBar();
     const uint32_t cut = bars_to_frames(song.playEnd(), spb);
-    /* The passes of the level above start where its own chosen pass does. */
+    /* What the level above plays of itself: a chosen pass of it, in its own
+     * time -- the song above that is all of it. */
     const Level& above = path_.back();
-    const uint32_t base = above.occurrences.empty() ? 0 : above.occurrences[above.chosen].songFrame;
-    std::vector<Occurrence> entered, others;
+    const bool bounded = !above.occurrences.empty();
+    const Occurrence heard = bounded ? above.occurrences[above.chosen] : Occurrence{};
+    const int64_t base = bounded ? heard.songFrame : 0;
+    const int64_t heardFrom = heard.offset, heardTo = (int64_t)heard.offset + heard.frames;
+    /* A pass with the frames it sounds on in this level's time. */
+    struct Pass { Occurrence at; uint32_t from, to; };
+    std::vector<Pass> entered, others;
     for (int t = 0; t < AudioSong::kTracks; ++t) {
         const SongTrack& tr = song.tracks[t];
         for (size_t i = 0; i < tr.clips.size(); ++i) {
             const SongClip& c = tr.clips[i];
             const bool focus = c.element == ref_;
-            level_.parentBlocks.push_back({(uint8_t)t, c.bar, c.bars, c.isElement(), tr.kind == TrackKind::Seq, focus});
+            const bool seq = tr.kind == TrackKind::Seq;
+            const bool ready = seq ? se.freezeState((uint8_t)t) == FreezeState::Frozen
+                                   : !c.isElement() || !c.file.empty();
+            level_.parentBlocks.push_back({(uint8_t)t, c.bar, c.bars, c.isElement(), seq, focus, ready});
             if (!focus || !spb) continue;
             const uint32_t start = bars_to_frames(c.bar, spb);
             const uint32_t end = clip_block_end(tr.clips, i, spb, cut);
             /* A block never baked plays once, over its own length. */
             const uint32_t frames = c.frames ? c.frames : end - start;
-            std::vector<Occurrence>& into = (t == level_.track && c.bar <= level_.bar && level_.bar < c.bar + c.bars)
+            std::vector<Pass>& into = (t == level_.track && c.bar <= level_.bar && level_.bar < c.bar + c.bars)
                 ? entered : others;
-            element_passes(c.from, frames, spb, start, end, [&](uint32_t at, uint32_t, uint32_t) {
-                into.push_back({(uint32_t)((uint64_t)at / spb), base + at});
+            element_passes(c.from, frames, spb, start, end, [&](uint32_t at, uint32_t to, uint32_t offset) {
+                /* Clipped to what the level above sounds in this pass of itself. */
+                const int64_t from = bounded ? std::max<int64_t>(at, heardFrom) : at;
+                const int64_t until = bounded ? std::min<int64_t>(to, heardTo) : to;
+                if (from >= until) return;
+                const uint32_t cutIn = (uint32_t)(from - at);
+                into.push_back({{(uint32_t)((uint64_t)from / spb), base + (int64_t)at - (int64_t)offset,
+                                 offset + cutIn, (uint32_t)(until - from)},
+                                (uint32_t)from, (uint32_t)until});
             });
         }
     }
     std::sort(others.begin(), others.end(),
-              [](const Occurrence& a, const Occurrence& b) { return a.songFrame < b.songFrame; });
-    level_.occurrences = std::move(entered);
-    level_.occurrences.insert(level_.occurrences.end(), others.begin(), others.end());
+              [](const Pass& a, const Pass& b) { return a.at.songFrame + a.at.offset < b.at.songFrame + b.at.offset; });
+    const uint32_t enteredAt = bars_to_frames(level_.bar, spb);
+    for (size_t i = 0; i < entered.size(); ++i)
+        if (entered[i].from <= enteredAt && enteredAt < entered[i].to) level_.chosen = i;
+    for (const Pass& p : entered) level_.occurrences.push_back(p.at);
+    for (const Pass& p : others) level_.occurrences.push_back(p.at);
 }
 
 ElementNav::Result ElementNav::openChild()

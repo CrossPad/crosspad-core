@@ -45,11 +45,20 @@ public:
         bool     element = false;   ///< an element block
         bool     seq = false;       ///< a block of a seq track
         bool     focus = false;     ///< a block of the element the level is
+        /// Baked or live, for the mini-map's colours: an element with a bake, a seq
+        /// track that is frozen; always true of an audio block.
+        bool     ready = false;
     };
-    /// One pass of the focus: where it starts in the level above and in the song.
+    /// One pass of the focus, as the level above plays it. Only part of it
+    /// may sound -- the first pass of a block cut inside the element starts
+    /// part way in, the last is cut at the block's end or at the span the
+    /// level above's own chosen pass plays -- so the pass is the audible part
+    /// and the element's frame 0, which may lie before it or before the song.
     struct Occurrence {
-        uint32_t parentBar = 0;     ///< the bar of the level above it starts on
-        uint32_t songFrame = 0;     ///< its start in the song, through every level above
+        uint32_t parentBar = 0;     ///< the bar of the level above the audible part starts on
+        int64_t  songFrame = 0;     ///< where the focus's frame 0 sounds in the song, through every level above
+        uint32_t offset = 0;        ///< the focus's frame the audible part starts at
+        uint32_t frames = 0;        ///< how long it sounds, from songFrame + offset
     };
     /// One step of the breadcrumb.
     struct Level {
@@ -59,10 +68,11 @@ public:
         uint32_t    bar = 0;
         /// The level above as it was when this one was entered (empty on the song).
         std::vector<MiniBlock>  parentBlocks;
-        /// Every pass of this element in the level above, the one entered
-        /// through first; a pass the same pass of a level above, start to start.
+        /// Every pass of this element in the level above, the entered block's
+        /// first; only what sounds within the pass of the level above that is
+        /// chosen, as that one plays it.
         std::vector<Occurrence> occurrences;
-        size_t      chosen = 0;   ///< the pass PLAY goes round
+        size_t      chosen = 0;   ///< the pass PLAY goes round: the one under the bar entered, to begin with
     };
     enum class Job : uint8_t { None, Enter, Leave, Insert, Make };
     /// What poll() has to say about a job that has just ended.

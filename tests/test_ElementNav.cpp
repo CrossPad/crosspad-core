@@ -1127,3 +1127,108 @@ TEST_CASE("element nav: no pass is chosen at the song", "[element][nav]") {
     REQUIRE(r.open("Demo"));
     CHECK_FALSE(elementNav().chooseOccurrence(0));
 }
+
+namespace {
+
+/// The block on track 1 of "Demo" starts @p from bars into its element.
+void startBlockAt(Rig& r, uint16_t from) {
+    {
+        std::lock_guard<std::recursive_mutex> l(r.engine->songMutex());
+        r.engine->song().tracks[1].clips[0].from = from;
+    }
+    r.engine->commit();
+    REQUIRE(waitFor([&] { return !r.engine->backgroundBusy(); }, 10000));
+}
+
+} // namespace
+
+TEST_CASE("element nav: a pass of a block cut inside its element is placed by the element's frame 0", "[element][nav]") {
+    Rig r;
+    Services svc(r.engine.get(), nullptr);
+    NavGuard guard;
+    writeAudioElement(r, kB, "Hat", 2, 120.0f);
+    writeAudioElement(r, kA, "Groove", 0, 120.0f, {kB});
+    {
+        AudioSong a;
+        REQUIRE(a.load(r.platform.root + "/" + kA) == SongLoad::Loaded);
+        a.length = 2;
+        REQUIRE(a.save());
+    }
+    openDemo(r, kA);
+    startBlockAt(r, 1);                                  // 4 bars of a 2-bar element, from its bar 1
+    REQUIRE(elementNav().enter(1, 0));
+    REQUIRE(runNav().ok);
+    const auto& inA = elementNav().path()[1];
+    REQUIRE(inA.occurrences.size() == 3);                // bar 1..2, bars 0..2, bar 0..1
+    const int64_t bar = kBarFrames;
+    CHECK(inA.occurrences[0].songFrame == -bar);
+    CHECK(inA.occurrences[0].offset == kBarFrames);
+    CHECK(inA.occurrences[0].frames == kBarFrames);
+    CHECK(inA.occurrences[0].parentBar == 0);
+    CHECK(inA.occurrences[1].songFrame == bar);
+    CHECK(inA.occurrences[1].offset == 0);
+    CHECK(inA.occurrences[1].frames == 2 * kBarFrames);
+    CHECK(inA.occurrences[2].songFrame == 3 * bar);
+    CHECK(inA.occurrences[2].frames == kBarFrames);
+
+    SECTION("the level below counts from the first pass's frame 0 and sounds only what it plays") {
+        REQUIRE(elementNav().enter(1, 0));               // B, 2 bars from A's bar 0; A's pass plays only A's bar 1
+        REQUIRE(runNav().ok);
+        const auto& inB = elementNav().path()[2];
+        REQUIRE(inB.occurrences.size() == 1);
+        CHECK(inB.occurrences[0].songFrame == -bar);
+        CHECK(inB.occurrences[0].offset == kBarFrames);
+        CHECK(inB.occurrences[0].frames == kBarFrames);
+        CHECK(inB.occurrences[0].parentBar == 1);
+    }
+    SECTION("a whole pass of the level above leaves the level below whole") {
+        REQUIRE(elementNav().chooseOccurrence(1));
+        REQUIRE(elementNav().enter(1, 0));
+        REQUIRE(runNav().ok);
+        const auto& inB = elementNav().path()[2];
+        REQUIRE(inB.occurrences.size() == 1);
+        CHECK(inB.occurrences[0].songFrame == bar);
+        CHECK(inB.occurrences[0].offset == 0);
+        CHECK(inB.occurrences[0].frames == 2 * kBarFrames);
+    }
+}
+
+TEST_CASE("element nav: the pass under the bar entered is the one chosen", "[element][nav]") {
+    Rig r;
+    Services svc(r.engine.get(), nullptr);
+    NavGuard guard;
+    writeAudioElement(r, kA, "Intro", 2, 120.0f);
+    openDemo(r, kA);
+    REQUIRE(elementNav().enter(1, 3));                   // the second pass of the 4-bar block
+    REQUIRE(runNav().ok);
+    const auto& inA = elementNav().path()[1];
+    REQUIRE(inA.occurrences.size() == 2);
+    CHECK(inA.chosen == 1);
+    CHECK(inA.occurrences[inA.chosen].parentBar == 2);
+}
+
+TEST_CASE("element nav: a parent block says whether it is baked or frozen", "[element][nav]") {
+    Rig r;
+    Services svc(r.engine.get(), nullptr);
+    NavGuard guard;
+    writeAudioElement(r, kA, "Intro", 2, 120.0f);
+    openDemo(r, kA);
+    {
+        std::lock_guard<std::recursive_mutex> l(r.engine->songMutex());
+        AudioSong& s = r.engine->song();
+        SongClip c;
+        c.element = kA;
+        c.bar = 8;
+        s.addClip(0, c);                                 // laid, never baked
+        s.tracks[0].inUse = true;
+    }
+    REQUIRE(elementNav().enter(1, 0));
+    REQUIRE(runNav().ok);
+    bool baked = false, unbaked = false;
+    for (const auto& b : elementNav().path()[1].parentBlocks) {
+        if (b.track == 1) baked = b.ready;
+        if (b.track == 0) unbaked = !b.ready;
+    }
+    CHECK(baked);
+    CHECK(unbaked);
+}
