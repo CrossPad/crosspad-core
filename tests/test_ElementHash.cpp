@@ -12,6 +12,9 @@ using namespace crosspad;
 
 namespace {
 
+/// Whose song it is, the same in every hash here.
+const std::string kIdentity = ".elements/E00000001";
+
 /// A card in memory: file name -> contents, with a size and a time each.
 struct FakeCard {
     std::map<std::string, std::string> files;
@@ -60,7 +63,7 @@ FakeCard baseCard() {
     return card;
 }
 
-uint64_t hashOf(const AudioSong& s, FakeCard& card) { return element_content_hash(s, card.reader()); }
+uint64_t hashOf(const AudioSong& s, FakeCard& card) { return element_content_hash(s, kIdentity, card.reader()); }
 
 } // namespace
 
@@ -177,12 +180,12 @@ TEST_CASE("element hash: the same after song.json is saved and read back", "[ele
         s.tracks[t].volume = t == 0 ? 0.05f : t == 1 ? 1.0f / 3.0f : 0.123456789f;
     }
     FakeCard card;
-    const uint64_t before = element_content_hash(s, card.reader());
+    const uint64_t before = element_content_hash(s, kIdentity, card.reader());
     REQUIRE(s.save());
     AudioSong back;
     REQUIRE(back.load(dir) == SongLoad::Loaded);
     back.dir = dir;
-    CHECK(element_content_hash(back, card.reader()) == before);
+    CHECK(element_content_hash(back, kIdentity, card.reader()) == before);
     std::filesystem::remove_all(dir);
 }
 

@@ -92,7 +92,7 @@ ResolvedElement ElementResolver::make(const std::string& ref) {
         }
     }
     r.bakeable = r.why.empty();
-    r.key = element_bake_key(element_content_hash(song, rd_), bpm_, rate_);
+    r.key = element_bake_key(element_content_hash(song, ref, rd_), bpm_, rate_);
     r.file = element_bake_file(r.key);
     uint64_t bytes = 0;
     int64_t modified = 0;

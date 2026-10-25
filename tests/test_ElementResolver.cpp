@@ -207,6 +207,15 @@ TEST_CASE("resolver: a freeze older than its notes, or with no stamp, is not bak
     CHECK(rs.resolve(kC).why.find("older than its notes") != std::string::npos);
 }
 
+TEST_CASE("resolver: two elements with takes alike in name, size and time have two keys", "[song][resolver]") {
+    Card card("cp_resolver_identity");
+    card.write(kA, 100);
+    card.write(kB, 100);
+    std::ofstream(card.root + "/" + kB + "/" + AudioSong::clipsDir() + "/r.wav", std::ios::binary) << std::string(100, 'y');
+    ElementResolver rs(card.root, kRate, 120.0f, card.reader());   // the reader gives every file one time
+    CHECK(rs.resolve(kA).key != rs.resolve(kB).key);
+}
+
 TEST_CASE("resolver: a cycle is reported, not followed", "[song][resolver]") {
     Card card("cp_resolver_cycle");
     card.write(kA, 10, {kB});
@@ -228,14 +237,14 @@ TEST_CASE("element hash: with a childKey an element block is hashed by it, witho
     e.bars = 1;
     s.addClip(0, e);
     ElementHashReader rd;
-    const uint64_t stage1 = element_content_hash(s, rd);
+    const uint64_t stage1 = element_content_hash(s, kB, rd);
     uint64_t key = 1;
     rd.childKey = [&](const std::string&, uint64_t& k) { k = key; return true; };
-    const uint64_t one = element_content_hash(s, rd);
+    const uint64_t one = element_content_hash(s, kB, rd);
     CHECK(one != stage1);
     key = 2;
-    CHECK(element_content_hash(s, rd) != one);
+    CHECK(element_content_hash(s, kB, rd) != one);
     s.tracks[0].clips[0].file = "Bother.wav";
     key = 1;
-    CHECK(element_content_hash(s, rd) == one);
+    CHECK(element_content_hash(s, kB, rd) == one);
 }

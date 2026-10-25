@@ -163,7 +163,7 @@ SongOpState SongEngine::Impl::doBakeElement() {
         key = e.key;
         return e.exists;
     };
-    const uint64_t key = element_bake_key(element_content_hash(copy, rd), bpm, sampleRate_);
+    const uint64_t key = element_bake_key(element_content_hash(copy, copy.name, rd), bpm, sampleRate_);
     ElementBake result;
     result.file = element_bake_file(key);
     result.bars = (uint16_t)std::min<uint32_t>(bars, UINT16_MAX);

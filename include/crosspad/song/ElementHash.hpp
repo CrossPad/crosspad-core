@@ -33,16 +33,21 @@ struct ElementHashReader {
     std::function<bool(const std::string& ref, uint64_t& key)> childKey;
 };
 
-/// FNV-1a 64 over what @p song plays, each track that is heard in order: its
+/// FNV-1a 64 over whose it is -- @p identity: the element's ref
+/// (.elements/E%08X), a song's project name -- and what @p song plays, each
+/// track that is heard in order: its
 /// kind, volume and stretch; each block's file (an audio block's with its
 /// size and time on the card, an element's by the key of the bake it plays,
 /// or with no childKey the one it stores), place, cut
 /// and notes; a seq track's freeze (files and sizes). Then the length and
 /// metre, and the kit and the instrument with every file in their folders.
-/// A silenced track gives its index and a marker. Not the tempo, the names,
+/// A silenced track gives its index and a marker. Not the tempo, the title,
 /// the armed track or the launcher's sets: those are no part of the sound
-/// (the tempo is in element_bake_key()).
-uint64_t element_content_hash(const AudioSong& song, const ElementHashReader& rd);
+/// (the tempo is in element_bake_key()). The identity keeps a key to one
+/// folder: a recording is told apart by its name, size and time, and two
+/// folders can hold different takes alike in all three -- the same element in
+/// many songs still shares its bakes, a copy of it bakes its own once.
+uint64_t element_content_hash(const AudioSong& song, const std::string& identity, const ElementHashReader& rd);
 
 /// The bake's key: @p content at @p bpm and @p sampleRate under kRenderVersion.
 uint64_t element_bake_key(uint64_t content, float bpm, uint32_t sampleRate);

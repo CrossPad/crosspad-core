@@ -74,8 +74,9 @@ void soundOf(Fnv& f, const ElementHashReader& rd, const AudioSong& song, const s
 
 } // namespace
 
-uint64_t element_content_hash(const AudioSong& song, const ElementHashReader& rd) {
+uint64_t element_content_hash(const AudioSong& song, const std::string& identity, const ElementHashReader& rd) {
     Fnv f;
+    f.text(identity);
     for (int t = 0; t < AudioSong::kTracks; ++t) {
         const SongTrack& tr = song.tracks[t];
         f.value(t);

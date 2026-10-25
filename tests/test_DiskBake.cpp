@@ -434,11 +434,6 @@ TEST_CASE("disk bake: an element block laid while a pass links is resolved by a 
     Rig r;
     writeAudioElement(r, kChild, 8000, 2);
     writeAudioElement(r, kGrandchild, 5000, 2);
-    {
-        /* A recording is told apart by its name, size and time: another second. */
-        const std::string clip = r.platform.root + "/" + kGrandchild + "/" + AudioSong::clipsDir() + "/t0.wav";
-        fs::last_write_time(clip, fs::last_write_time(clip) + std::chrono::seconds(10));
-    }
     card.target = (bakeDir(r) / kOldBake).string();
     card.fire = [&r] {
         /* The pass has resolved, and links next: an edit made under the lock and
@@ -490,4 +485,29 @@ TEST_CASE("disk bake: a recording that cannot be opened fails the bake and names
     REQUIRE(r.open("Parent"));
     REQUIRE(idle(r));
     keptOld(r, "t0.wav");
+}
+
+TEST_CASE("disk bake: two elements whose takes match in name, size and time get a bake each", "[song][element][diskbake]") {
+    Rig r;
+    writeAudioElement(r, kChild, 8000, 2);
+    writeAudioElement(r, kGrandchild, 5000, 2);
+    const std::string other = r.platform.root + "/" + kGrandchild + "/" + AudioSong::clipsDir() + "/t0.wav";
+    fs::last_write_time(other, fs::last_write_time(childClip(r)));
+    writeSongWith(r, "Parent", kChild, 2, "");
+    {
+        AudioSong s;
+        REQUIRE(s.load(r.platform.root + "/Parent") == SongLoad::Loaded);
+        s.tracks[1].inUse = true;
+        SongClip c;
+        c.element = kGrandchild;
+        c.bars = 2;
+        s.addClip(1, c);
+        REQUIRE(s.save());
+    }
+    REQUIRE(r.open("Parent"));
+    REQUIRE(idle(r));
+    const SongClip a = block(r, 0), b = block(r, 1);
+    CHECK(a.file != b.file);
+    bakeIs(r, a.file, 2 * kBar, 8000);
+    bakeIs(r, b.file, 2 * kBar, 5000);
 }
