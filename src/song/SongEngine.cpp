@@ -1557,6 +1557,10 @@ private:
             for (int t = 0; t < kTracks; ++t) {
                 if (!(mask & (1u << t))) continue;
                 const float g = copy.tracks[t].volume / refVolume;
+                /* Each track's pan goes into the clip, but the target's own
+                 * while it keeps blocks: that one plays on at the track. */
+                const float pan = t == target && targetKeepsBlocks ? 0.0f : copy.tracks[t].pan;
+                const float gs[2] = {g * (pan > 0.0f ? 1.0f - pan : 1.0f), g * (pan < 0.0f ? 1.0f + pan : 1.0f)};
                 for (const auto& sg : arr.tracks[t]) {
                     if (sg.end <= f) continue;
                     if (sg.start >= f + n) break;
@@ -1564,7 +1568,7 @@ private:
                     if (rd[t].path != sg.path && !(p.storageReady() && rd[t].open(sg.path))) continue;
                     rd[t].read(x - sg.start + sg.offset, io_, y - x);
                     int32_t* d = acc_ + (x - f) * 2;
-                    for (uint32_t k = 0; k < (y - x) * 2; ++k) d[k] += (int32_t)((float)io_[k] * g);
+                    for (uint32_t k = 0; k < (y - x) * 2; ++k) d[k] += (int32_t)((float)io_[k] * gs[k & 1]);
                 }
             }
             for (uint32_t k = 0; k < n * 2; ++k) {
@@ -1601,7 +1605,10 @@ private:
             c.bar = fromBar;
             c.bars = (uint16_t)std::max<uint32_t>(1, toBar - fromBar);
             song_.addClip(target, c);
-            if (!targetKeepsBlocks) song_.tracks[target].volume = 1.0f;
+            if (!targetKeepsBlocks) {
+                song_.tracks[target].volume = 1.0f;
+                song_.tracks[target].pan = 0.0f;
+            }
             rebuild();
         }
         doSave();
@@ -2375,6 +2382,7 @@ private:
                 (uint8_t)t.kind, (uint8_t)t.source, (uint8_t)t.stretch, t.scene};
             put(head, sizeof head);
             put(&t.volume, sizeof t.volume);
+            put(&t.pan, sizeof t.pan);
             str(t.name);
             str(t.kit);
             const uint16_t n = (uint16_t)t.clips.size();
@@ -2428,6 +2436,7 @@ private:
             t.stretch = (StretchMode)head[3];
             t.scene = head[4];
             get(&t.volume, sizeof t.volume);
+            get(&t.pan, sizeof t.pan);
             str(t.name);
             str(t.kit);
             uint16_t n = 0;
@@ -2536,6 +2545,7 @@ private:
         for (int t = 0; t < kTracks; ++t) {
             const auto& tr = song_.tracks[t];
             gain_[t].store(song_.silenced(t) ? 0.0f : tr.volume);
+            pan_[t].store(tr.pan);
         }
         for (int t = 0; t < kTracks; ++t) seqRoute_[t].store((int8_t)song_.seqRoute(t), std::memory_order_relaxed);
         /* Counted here too, not only by song_io: it asks only while
@@ -2563,8 +2573,8 @@ private:
     }
 
     /// The seq tracks as the arrangement has them while the song plays:
-    /// each one's fader on the engine its notes play through (setSeqGain,
-    /// setKitGain), and its notes silent while it is muted or another track
+    /// each one's fader and pan on the engine its notes play through
+    /// (setSeqGain / setKitGain, setSeqPan / setKitPan), and its notes silent while it is muted or another track
     /// is soloed -- the pads a player hits stay theirs -- or under a REC,
     /// which replaces them. A route at a time: the other kit track plays on.
     /// Stopped, the engines as the Mixer has them. Caller holds songMutex_.
@@ -2572,19 +2582,30 @@ private:
         const bool on = playing();
         uint8_t muted = 0;
         float gain[3] = {1.0f, 1.0f, 1.0f};   // the pads' kit, the instrument, the second kit
+        float pan[3] = {0.0f, 0.0f, 0.0f};
         for (int t = 0; t < kTracks; ++t) {
             const int route = song_.seqRoute(t);
             if (route < 0) continue;
             const SongTrack& tr = song_.tracks[t];
             if ((takeRecMute_ && t == takeTrack_) || (on && song_.silenced(t))) muted |= (uint8_t)(1u << route);
-            if (on) gain[tr.source == SeqSource::Pitch ? 1 : route ? 2 : 0] = tr.volume;
+            if (on) {
+                const int e = tr.source == SeqSource::Pitch ? 1 : route ? 2 : 0;
+                gain[e] = tr.volume;
+                pan[e] = tr.pan;
+            }
         }
         seq_.setSongRoutesMuted(muted);
         for (int i = 0; i < 3; ++i) {
-            if (gain[i] == seqGain_[i]) continue;
-            seqGain_[i] = gain[i];
-            if (i == 1) p.setSeqGain(SeqSource::Pitch, gain[i]);
-            else        p.setKitGain(i == 2 ? 1 : 0, gain[i]);
+            if (gain[i] != seqGain_[i]) {
+                seqGain_[i] = gain[i];
+                if (i == 1) p.setSeqGain(SeqSource::Pitch, gain[i]);
+                else        p.setKitGain(i == 2 ? 1 : 0, gain[i]);
+            }
+            if (pan[i] != seqPan_[i]) {
+                seqPan_[i] = pan[i];
+                if (i == 1) p.setSeqPan(SeqSource::Pitch, pan[i]);
+                else        p.setKitPan(i == 2 ? 1 : 0, pan[i]);
+            }
         }
     }
 
@@ -3209,6 +3230,7 @@ private:
             for (int t = 0; t < kTracks; ++t) {
                 const auto& tr = song_.tracks[t];
                 gain_[t].store(song_.silenced(t) ? 0.0f : tr.volume);
+                pan_[t].store(tr.pan);
             }
         }
         if (!spb) return;
@@ -3293,6 +3315,7 @@ private:
             for (int t = 0; t < kTracks; ++t) {
                 const auto& tr = song_.tracks[t];
                 gain_[t].store(song_.silenced(t) ? 0.0f : tr.volume);
+                pan_[t].store(tr.pan);
             }
         }
         {
@@ -3475,6 +3498,10 @@ private:
                  * and a pad that cannot open its sample goes silent. */
                 if (!pieceCount[t] && readers_[t].fd >= 0) readers_[t].close();
                 const float g = gain_[t].load(std::memory_order_relaxed);
+                /* The track's pan as the Mixer's: a balance, the side it
+                 * moves away from turned down; the meter reads it after. */
+                const float pan = pan_[t].load(std::memory_order_relaxed);
+                const float gs[2] = {g * (pan > 0.0f ? 1.0f - pan : 1.0f), g * (pan < 0.0f ? 1.0f + pan : 1.0f)};
                 for (int i = 0; i < pieceCount[t]; ++i) {
                     const Piece& pc = pieces[t][i];
                     const int64_t r0 = p.nowUs();
@@ -3493,7 +3520,7 @@ private:
                         const uint32_t run = std::min(pc.len - k, kMeterHop - f % kMeterHop);
                         int32_t m[2] = {0, 0};
                         for (uint32_t j = k * 2; j < (k + run) * 2; ++j) {
-                            const int32_t v = (int32_t)((float)chunk[j] * g);
+                            const int32_t v = (int32_t)((float)chunk[j] * gs[j & 1]);
                             d[j] += v;
                             m[j & 1] = std::max(m[j & 1], v < 0 ? -v : v);
                         }
@@ -3879,6 +3906,7 @@ private:
     /* What applySeqSound() last gave setSeqGain(), kit and pitch; under
      * songMutex_. */
     float       seqGain_[3] = {1.0f, 1.0f, 1.0f};
+    float       seqPan_[3] = {0.0f, 0.0f, 0.0f};
     /* The seq view's block (openSeqEdit), under songMutex_: its track (-1
      * none), the bar it starts on, the scene it is edited in, whether it is
      * on the track yet, and the sequencer's edit count last handed over. */
@@ -3943,6 +3971,7 @@ private:
     uint32_t    writePos_ = 0;
     std::atomic<uint32_t> debt_{0};
     std::atomic<float>    gain_[kTracks] = {};
+    std::atomic<float>    pan_[kTracks] = {};     // -1..+1, with gain_: an audio track's balance
     /// One hop of the ring's meters: which hop it holds, and each track's peak.
     struct Meter {
         std::atomic<uint32_t> hop{UINT32_MAX};

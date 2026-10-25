@@ -100,6 +100,15 @@ public:
     {
         if (route == 0) setSeqGain(SeqSource::Kit, gain);
     }
+    /// The seq track's pan (-1..+1, SongTrack::pan) on that engine, as
+    /// setSeqGain() is its fader: on top of the Mixer's pan while the song
+    /// plays, 0 when it stops. Called only when it changes.
+    virtual void setSeqPan(SeqSource source, float pan) { (void)source; (void)pan; }
+    /// The same for a kit track, by its route, as setKitGain().
+    virtual void setKitPan(uint8_t route, float pan)
+    {
+        if (route == 0) setSeqPan(SeqSource::Kit, pan);
+    }
     /// Seq route @p route's loudest sample since the last ask, 0..1 a side,
     /// from the engine it plays through alone. False where the platform
     /// cannot tell: route 0's meter then reads the pads bus.

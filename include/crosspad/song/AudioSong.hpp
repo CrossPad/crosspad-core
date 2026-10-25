@@ -139,6 +139,9 @@ struct SongTrack {
     std::vector<SongClip> clips;   ///< kept sorted by bar
     std::string name;              ///< the player's; empty until one is given
     float volume = 1.0f;
+    /// -1 left .. +1 right, a balance as the Mixer's pan: the side it moves
+    /// away from is turned down. 0 = centre.
+    float pan    = 0.0f;
     bool  muted  = false;
     /// Soloed: while any track is, only the soloed ones sound (silenced()).
     bool  solo   = false;

@@ -301,6 +301,7 @@ void PitchedInstrument::noteOn(uint8_t midiNote, uint8_t velocity, uint8_t pad) 
     if (v.inc == 0) v.inc = 1;
     v.order = nextOrder_++;
     v.note = midiNote;
+    v.pad = (pad < kPads) ? pad : 0xFF;
     v.releasing = false;
     v.fading = false;
 
@@ -500,6 +501,7 @@ void PitchedInstrument::renderBlock(float* out, uint32_t frames) {
     const bool captureScope = scopeTap_.enabled();
     float* mono = captureScope ? monoSum_.data() : nullptr;
     if (captureScope) std::fill(mono, mono + frames, 0.0f);
+    const bool metering = meters_.enabled();
 
     if (bank_.load(std::memory_order_acquire)) {
         for (uint8_t i = 0; i < kMaxVoices; ++i) {
@@ -512,6 +514,11 @@ void PitchedInstrument::renderBlock(float* out, uint32_t frames) {
             lastSilent_ = false;
             if (captureScope) {
                 for (uint32_t n = 0; n < frames; ++n) mono[n] += scratch_[n];
+            }
+            if (metering) {
+                float peak = 0.0f;
+                for (uint32_t n = 0; n < frames; ++n) peak = dsp::maxOf(peak, std::fabs(scratch_[n]));
+                meters_.note(v.pad, peak * dsp::maxOf(v.gainL, v.gainR));
             }
             dsp::macPanned(out, scratch_.data(), frames, v.gainL, v.gainR);
         }

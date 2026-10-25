@@ -933,3 +933,26 @@ TEST_CASE("PitchedInstrument: says when a block added nothing", "[instrument][en
     for (float v : out) REQUIRE(v == 0.0f);
     delete bank;
 }
+
+TEST_CASE("PitchedInstrument: meters the pad that played, as it was heard", "[instrument][engine][meters]") {
+    SampleBank* bank = makeBank(10000, 57.0f, 0, 0, constFill);
+    PitchedInstrument inst;
+    inst.onPrepare(kFrames, kSr);
+    inst.setParams(params(24));
+    inst.setBank(bank);
+    std::vector<float> out(kFrames * 2, 0.0f);
+
+    inst.noteOn(57, 127, 3);
+    inst.mix(out.data(), kFrames);
+    REQUIRE(inst.padMeters().take(3) == 0.0f);   // off: nothing measured
+
+    inst.padMeters().setEnabled(true);
+    std::fill(out.begin(), out.end(), 0.0f);
+    inst.mix(out.data(), kFrames);
+    const float peak = inst.padMeters().take(3);
+    REQUIRE(peak == Catch::Approx(1000.0f / 32768.0f * kCenterGain).margin(1e-6));
+    REQUIRE(peak == Catch::Approx(std::fabs(out[0])).margin(1e-6));
+    REQUIRE(inst.padMeters().take(3) == 0.0f);   // a take starts the next peak
+    REQUIRE(inst.padMeters().take(4) == 0.0f);
+    delete bank;
+}

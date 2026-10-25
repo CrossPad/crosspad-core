@@ -417,6 +417,22 @@ TEST_CASE("AudioSong: a track's name and solo survive a save", "[song][tracks]")
     fs::remove_all(d);
 }
 
+TEST_CASE("AudioSong: a track's pan survives a save, centre left out", "[song][tracks]") {
+    const auto d = freshProject("cp_song_pan");
+    AudioSong a;
+    a.dir = d;
+    REQUIRE(a.addAudioTrack(0));
+    REQUIRE(a.addAudioTrack(1));
+    a.tracks[0].pan = -0.4f;
+    REQUIRE(a.save());
+
+    AudioSong b;
+    REQUIRE(b.load(d) == SongLoad::Loaded);
+    CHECK(b.tracks[0].pan == -0.4f);
+    CHECK(b.tracks[1].pan == 0.0f);
+    fs::remove_all(d);
+}
+
 TEST_CASE("AudioSong: a song written before tracks had kinds counts its clips", "[song][tracks]") {
     const auto d = freshProject("cp_song_legacy");
     {

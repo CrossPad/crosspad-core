@@ -2,6 +2,7 @@
 #include "crosspad/sampler/SamplerEngine.hpp"
 #include "crosspad/dsp/AudioKernels.hpp"
 
+#include <algorithm>
 #include <cmath>
 #include <cstddef>
 #include <cstdio>
@@ -66,12 +67,15 @@ CROSSPAD_COLD void SamplerEngine::setNoteCallbacks(NoteCb on, NoteCb off, void* 
     cbCtx_ = ctx;
 }
 
-CROSSPAD_COLD void SamplerEngine::onPrepare(uint32_t /*maxFrames*/, uint32_t sampleRate)
+CROSSPAD_COLD void SamplerEngine::onPrepare(uint32_t maxFrames, uint32_t sampleRate)
 {
     /* Called again whenever a channel is added or the engine is set up anew,
-     * so it may not assume it is the first time. Nothing here is sized by the
-     * block length: voices render straight into the caller's buffer. */
+     * so it may not assume it is the first time. Voices render straight into
+     * the caller's buffer; only the meters' scratch is sized by the block. */
     if (sampleRate) sampleRate_ = sampleRate;
+    if (meterScratch_.size() < static_cast<size_t>(maxFrames) * 2) {
+        meterScratch_.assign(static_cast<size_t>(maxFrames) * 2, 0.0f);
+    }
     refreshSteps();
 }
 
@@ -1131,6 +1135,8 @@ void SamplerEngine::mix(float* out, uint32_t frames)
     }
     barWasRunning_ = clockRunning;
 
+    float* scratch = meters_.enabled() && meterScratch_.size() >= static_cast<size_t>(frames) * 2
+                         ? meterScratch_.data() : nullptr;
     bool silent = true;
     for (auto& v : voices_) {
         if (v.state.load(std::memory_order_acquire) != static_cast<uint8_t>(VoiceState::Playing)) continue;
@@ -1153,7 +1159,21 @@ void SamplerEngine::mix(float* out, uint32_t frames)
             if (onNote_) onNote_(v.pad, v.layer, cbCtx_);
         }
         silent = false;
-        if (!renderVoice(v, out + static_cast<size_t>(at) * 2, frames - at)) endVoice(v);
+        float* dst = out + static_cast<size_t>(at) * 2;
+        const size_t n = static_cast<size_t>(frames - at) * 2;
+        if (!scratch) {
+            if (!renderVoice(v, dst, frames - at)) endVoice(v);
+            continue;
+        }
+        std::fill(scratch, scratch + n, 0.0f);
+        const bool on = renderVoice(v, scratch, frames - at);
+        float peak = 0.0f;
+        for (size_t k = 0; k < n; ++k) {
+            peak = dsp::maxOf(peak, std::fabs(scratch[k]));
+            dst[k] += scratch[k];
+        }
+        meters_.note(v.pad, peak);
+        if (!on) endVoice(v);
     }
     lastSilent_ = silent;
 }
