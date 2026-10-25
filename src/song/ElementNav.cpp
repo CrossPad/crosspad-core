@@ -25,8 +25,8 @@ constexpr float kTempoEpsilon = 0.01f;
 /// The tempo a song plays at: a song never given one stores 0 and plays at the
 /// grid's default, which is what an element is fitted to and requestTempo can set.
 float effectiveBpm(const AudioSong& s) { return s.bpm > 0.0f ? s.bpm : AudioSong::kDefaultBpm; }
-/// Polls the card may take to keep an element as it is before it opens.
-constexpr uint32_t kSnapshotPolls = 1200;
+/// Polls a job on the card (a snapshot, an edit hash, a drop) may take.
+constexpr uint32_t kCardPolls = 1200;
 /// Polls the fitting of stretched blocks may go without one more done before
 /// the leave is given up: the card is gone, or the worker is.
 constexpr uint32_t kStretchStallPolls = 2400;
@@ -148,7 +148,10 @@ const char* ElementNav::stage() const
         case Phase::Making:
         case Phase::Listing:    return "copying";
         case Phase::Stopping:   return "stopping";
-        case Phase::Snapshotting: return "keeping";
+        case Phase::Snapshotting:
+        case Phase::Keying:
+        case Phase::LeaveKeying:  return "keeping";
+        case Phase::Dropping:   return "linking";
         case Phase::Opening:
         case Phase::Retempo:    return "opening";
         case Phase::Refit:      return "fitting";
@@ -540,6 +543,9 @@ ElementNav::Result ElementNav::poll()
         case Phase::Listing:    return listing();
         case Phase::Stopping:   return stopped();
         case Phase::Snapshotting: return snapshotting();
+        case Phase::Keying:     return keying();
+        case Phase::LeaveKeying: return leaveKeying();
+        case Phase::Dropping:   return dropping();
         case Phase::Opening:    return opened();
         case Phase::Retempo:    return retempo();
         case Phase::Refit:      return refit();
@@ -607,12 +613,11 @@ ElementNav::Result ElementNav::snapshotting()
     }
     switch (se->editState()) {
         case SongOpState::Busy:
-            if (++refusals_ < kSnapshotPolls) return {};
+            if (++refusals_ < kCardPolls) return {};
             return fail("the card is not keeping the element as it is");
         case SongOpState::Ready: break;
         default:                 return fail("the element could not be kept as it is before its edit");
     }
-    level_.hashAtEntry = se->snapshotKey();
     level_.snapshotTaken = !wasPending_ && se->snapshotPending(ref_);
     return openChild();
 }
@@ -751,15 +756,66 @@ ElementNav::Result ElementNav::entered()
         path_.back().title = newTitle_;
     }
     if (!leaveAfterEnter_) {
-        askContext();
-        return finish();
+        phase_ = Phase::Keying;
+        asked_ = false;
+        refusals_ = 0;
+        return {};
     }
     return toLeaving();
 }
 
+bool ElementNav::hashed(ISongEngine& se, uint64_t& out, Result& wait)
+{
+    wait = {};
+    if (!asked_) {
+        if (!se.requestEditHash()) {
+            wait = refused("the element cannot be looked at now");
+            return false;
+        }
+        asked_ = true;
+        refusals_ = 0;
+        return false;
+    }
+    switch (se.editState()) {
+        case SongOpState::Busy:
+            if (++refusals_ >= kCardPolls) wait = fail("the card is not answering");
+            return false;
+        case SongOpState::Ready: break;
+        default:
+            wait = fail("the element could not be looked at");
+            return false;
+    }
+    out = se.editHash();
+    return true;
+}
+
+ElementNav::Result ElementNav::keying()
+{
+    ISongEngine* se = songEngine();
+    if (!onLevel(ref_)) return fail(kOtherSong);
+    uint64_t hash = 0;
+    Result wait;
+    if (!hashed(*se, hash, wait)) return wait;
+    path_.back().hashAtEntry = hash;
+    askContext();
+    return finish();
+}
+
+ElementNav::Result ElementNav::leaveKeying()
+{
+    ISongEngine* se = songEngine();
+    if (!onLevel(ref_)) return fail(kOtherSong);
+    Result wait;
+    if (!hashed(*se, leaveHash_, wait)) return wait;
+    phase_ = Phase::Refit;
+    asked_ = false;
+    refusals_ = 0;
+    return {};
+}
+
 ElementNav::Result ElementNav::toLeaving()
 {
-    phase_ = Phase::Refit;
+    phase_ = Phase::LeaveKeying;
     asked_ = false;
     refusals_ = 0;
     return {};
@@ -883,7 +939,7 @@ ElementNav::Result ElementNav::baking()
     /* A song opened while the bake was queued is what it mixed. */
     if (!onLevel(ref_)) return fail(kOtherSong);
     const ElementBake bake = se->bakeResult();
-    changed_ = bake.key != path_.back().hashAtEntry;
+    changed_ = !path_.back().hashAtEntry || leaveHash_ != path_.back().hashAtEntry;
     left_ = ref_;
     bakeFile_ = bake.file;
     bakeFrames_ = bake.frames;
@@ -891,6 +947,26 @@ ElementNav::Result ElementNav::baking()
     asked_ = false;
     refusals_ = 0;
     return {};
+}
+
+/// The drop is tried for as long as a refused request is, and then left: the
+/// element and its snapshot are the same, and the next list takes it off.
+ElementNav::Result ElementNav::dropping()
+{
+    ISongEngine* se = songEngine();
+    if (!asked_) {
+        if (!se->requestDropSnapshot(ref_)) {
+            if (++refusals_ < kRefusalPolls) return {};
+            dropDone_ = true;
+            return afterLink();
+        }
+        asked_ = true;
+        refusals_ = 0;
+        return {};
+    }
+    if (se->editState() == SongOpState::Busy && ++refusals_ < kCardPolls) return {};
+    dropDone_ = true;
+    return afterLink();
 }
 
 ElementNav::Result ElementNav::reopening()
@@ -928,9 +1004,21 @@ ElementNav::Result ElementNav::linked()
         }
     }
     se->commit();
-    /* Edited inside, the element keeps what it was for the question that
-     * follows; left as it was entered, it has nothing to ask. */
-    if (!changed_ && path_.back().snapshotTaken) se->requestDropSnapshot(ref_);
+    dropDone_ = false;
+    return afterLink();
+}
+
+/// Edited inside, the element keeps what it was for the question that
+/// follows; left as it was entered, it has nothing to ask.
+ElementNav::Result ElementNav::afterLink()
+{
+    ISongEngine* se = songEngine();
+    if (!changed_ && path_.back().snapshotTaken && !dropDone_) {
+        phase_ = Phase::Dropping;
+        asked_ = false;
+        refusals_ = 0;
+        return {};
+    }
     path_.pop_back();
     if (depth() > targetDepth_) {
         ref_ = path_.back().open;

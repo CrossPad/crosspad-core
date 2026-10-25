@@ -393,8 +393,9 @@ struct SongEngine::Impl {
     bool requestUses() { return request(kListUses); }
     std::vector<ElementUse> usesOf(const std::string& ref);
     bool requestSnapshot(const std::string& ref) { return requestSnapshotEdit(ref, kEditSnapshot); }
-    uint64_t snapshotKey() { return snapshotKey_.load(); }
-    bool requestRestore(const std::string& ref) { return requestSnapshotEdit(ref, kEditRestore); }
+    bool requestEditHash();
+    uint64_t editHash() { return editHash_.load(); }
+    bool requestRestore(const std::string& ref) { return play_.load() == Play::Idle && requestSnapshotEdit(ref, kEditRestore); }
     bool requestDropSnapshot(const std::string& ref) { return requestSnapshotEdit(ref, kEditDropSnapshot); }
     bool snapshotPending(const std::string& ref);
     std::string elementMade();
@@ -511,6 +512,9 @@ private:
     SongOpState doSnapshot();
     SongOpState doRestore();
     SongOpState doDropSnapshot();
+    SongOpState doEditHash();
+    /// @p dir's snapshot is there and is byte for byte the files it was kept of.
+    bool snapshotUnchanged(const std::string& dir);
     bool requestSnapshotEdit(const std::string& ref, uint8_t edit);
     /// A ref no element on the card has, with its folder made under the
     /// library (its clips/ too when @p withClips). Empty when the card would
@@ -705,7 +709,8 @@ private:
     mutable std::mutex noteCacheMutex_;
     static constexpr uint8_t kEditRename = 1, kEditTempo = 2, kEditMerge = 3, kEditImport = 4,
                              kEditDelete = 5, kEditExport = 6, kEditBake = 7, kEditElementRegion = 8, kEditElementSong = 9,
-                             kEditElementDiscard = 10, kEditSnapshot = 11, kEditRestore = 12, kEditDropSnapshot = 13;
+                             kEditElementDiscard = 10, kEditSnapshot = 11, kEditRestore = 12, kEditDropSnapshot = 13,
+                             kEditEditHash = 14;
     uint32_t    importA_ = 0, importB_ = 0, importBar_ = 0, importLead_ = 0;   // owned by claimEdit()'s caller until editReq_
     uint8_t     importTrack_ = 0;
     std::atomic<uint8_t>  editMask_{0}, editProgress_{0};
@@ -778,7 +783,7 @@ private:
     std::vector<ElementInfo> elements_;
     std::map<std::string, std::vector<ElementUse>> uses_;   ///< by element ref; under listMutex_
     std::set<std::string> snapshots_;                       ///< refs with a snapshot on the card; under listMutex_
-    std::atomic<uint64_t> snapshotKey_{0};
+    std::atomic<uint64_t> editHash_{0};
     std::mutex  listMutex_;
     Arrangement snap_;
     std::mutex  snapMutex_;

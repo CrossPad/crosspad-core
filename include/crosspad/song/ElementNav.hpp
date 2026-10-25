@@ -76,9 +76,10 @@ public:
         /// chosen, as that one plays it.
         std::vector<Occurrence> occurrences;
         size_t      chosen = 0;   ///< the pass PLAY goes round: the one under the bar entered, to begin with
-        /// The element's key (ElementResolver) as the card held it before this
-        /// level was entered; 0 on the song, and on an element that had no
-        /// song.json yet or was laid and baked at once.
+        /// element_edit_hash() of the element once it was entered and fitted to
+        /// the song's tempo (what the player has edited of it, not what the
+        /// enter and the leave derive); 0 on the song and on an element laid
+        /// and baked at once.
         uint64_t    hashAtEntry = 0;
         /// This enter took the snapshot of the element (ISongEngine::requestSnapshot())
         /// -- none was pending -- so a leave that finds it unedited takes it off again.
@@ -146,8 +147,10 @@ public:
     /// nothing in it, and the reference stays an id.
     bool insertSong(int track, uint32_t bar, const std::string& songName);
 
-    /// The element the last leave left was edited inside: the bake it was
-    /// mixed to is not the one the card held when it was entered (hashAtEntry).
+    /// The element the last leave left was edited inside: its edit hash
+    /// (element_edit_hash()) when the leave began is not the one it had once
+    /// entered (hashAtEntry). Fitting it to the song's tempo and freezing it
+    /// again change neither.
     /// A leave through several levels says it of the last level left. False
     /// before any leave. An element left unchanged has its snapshot taken off
     /// again, unless an earlier enter's was already pending; one left changed
@@ -170,7 +173,7 @@ public:
 
 private:
     enum class Phase : uint8_t {
-        Idle, Making, Listing, Stopping, Snapshotting, Opening, Retempo, Refit, Sounds, Freezing, Stretching, Baking, Reopening
+        Idle, Making, Listing, Stopping, Snapshotting, Keying, LeaveKeying, Dropping, Opening, Retempo, Refit, Sounds, Freezing, Stretching, Baking, Reopening
     };
 
     /// The engine the job runs on, or null with lastError() set.
@@ -204,6 +207,17 @@ private:
     /// The element is kept as it is on the card, and its key noted, before it opens.
     Result snapshotting();
     Result toSnapshot();
+    /// The element's edit hash is taken once it is entered and fitted, and again
+    /// as a leave begins: the two say whether it was edited.
+    Result keying();
+    Result leaveKeying();
+    /// A snapshot this enter took, and an element left unedited: taken off the card.
+    Result dropping();
+    /// The element linked: its snapshot dealt with, the level popped.
+    Result afterLink();
+    /// Asks for the edit hash and waits for it, bounded; true with @p out set
+    /// when it is there, else a Result that is not done is in @p wait or the job failed.
+    bool hashed(ISongEngine& se, uint64_t& out, Result& wait);
     Result opened();
     Result retempo();
     Result entered();
@@ -248,6 +262,8 @@ private:
     bool        parentFreeze_ = false;   ///< Freezing is the parent's, before the element opens
     uint32_t    lastWaiting_ = 0;     ///< stretched blocks still unfitted at the last poll
     bool        wasPending_ = false;  ///< a snapshot of ref_ was on the card before this enter asked for one
+    uint64_t    leaveHash_ = 0;       ///< the edit hash as the level being left began its leave
+    bool        dropDone_ = false;    ///< the snapshot of the level being left was asked off the card
     bool        changed_ = false;     ///< changed(), of the last level left
     std::string left_;
     bool        usesAsked_ = false;   ///< the library and its uses were read at the first poll since the breadcrumb began

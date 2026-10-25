@@ -79,7 +79,8 @@ public:
     bool requestUses() override;
     std::vector<ElementUse> usesOf(const std::string& ref) override;
     bool requestSnapshot(const std::string& ref) override;
-    uint64_t snapshotKey() override;
+    bool requestEditHash() override;
+    uint64_t editHash() override;
     bool requestRestore(const std::string& ref) override;
     bool requestDropSnapshot(const std::string& ref) override;
     bool snapshotPending(const std::string& ref) override;

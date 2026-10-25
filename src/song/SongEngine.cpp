@@ -206,6 +206,7 @@ void SongEngine::Impl::worker() {
                            : edit == kEditSnapshot       ? doSnapshot()
                            : edit == kEditRestore        ? doRestore()
                            : edit == kEditDropSnapshot   ? doDropSnapshot()
+                           : edit == kEditEditHash       ? doEditHash()
                            : doMerge(editMask_.load(), editFrom_.load(), editTo_.load()));
             continue;
         }
@@ -326,7 +327,8 @@ bool SongEngine::requestElementDiscard(const std::string& ref) { return impl_->r
 bool SongEngine::requestUses() { return impl_->requestUses(); }
 std::vector<ElementUse> SongEngine::usesOf(const std::string& ref) { return impl_->usesOf(ref); }
 bool SongEngine::requestSnapshot(const std::string& ref) { return impl_->requestSnapshot(ref); }
-uint64_t SongEngine::snapshotKey() { return impl_->snapshotKey(); }
+bool SongEngine::requestEditHash() { return impl_->requestEditHash(); }
+uint64_t SongEngine::editHash() { return impl_->editHash(); }
 bool SongEngine::requestRestore(const std::string& ref) { return impl_->requestRestore(ref); }
 bool SongEngine::requestDropSnapshot(const std::string& ref) { return impl_->requestDropSnapshot(ref); }
 bool SongEngine::snapshotPending(const std::string& ref) { return impl_->snapshotPending(ref); }

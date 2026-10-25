@@ -58,7 +58,6 @@ struct ElementBake {
     uint32_t    frames = 0;          ///< one pass, at the song's tempo
     uint16_t    bars = 0;
     bool        cached = false;      ///< found on the card, not written by this request
-    uint64_t    key = 0;             ///< what the bake is named by (element_bake_key()); the resolver's key of the element
 };
 
 /// A clip's waveform, for drawing it: the loudest sample of each run of
@@ -216,20 +215,23 @@ public:
     /// the card, as song.orig.json and sequences.orig.json in its folder --
     /// the element before an edit that others share. None is overwritten: one
     /// already there is the original, and stays. An element with no song.json
-    /// yet has nothing to keep. Either way snapshotKey() is the element's key
-    /// as the card holds it. An edit.
+    /// yet has nothing to keep. An edit.
     virtual bool requestSnapshot(const std::string& ref) { (void)ref; return false; }
-    /// The key (ElementResolver) the element of the last requestSnapshot() had
-    /// on the card, at the open song's tempo; 0 when it could not be read.
-    virtual uint64_t snapshotKey() { return 0; }
+    /// Work out element_edit_hash() of the open song or element, with its
+    /// project's sequences.json as the card holds it. An edit; editHash() has
+    /// it when editState() is Ready.
+    virtual bool requestEditHash() { return false; }
+    virtual uint64_t editHash() { return 0; }
     /// The snapshot back over the element's song.json and sequences.json, then
-    /// removed. Refused for the element that is open; fails when there is no
-    /// snapshot. An edit.
+    /// removed. Refused while a song plays (the card is the streamer's) and, by
+    /// failing, for the element that is open or one with no snapshot. An edit.
     virtual bool requestRestore(const std::string& ref) { (void)ref; return false; }
     /// The snapshot of @p ref taken off the card; none is no failure. An edit.
     virtual bool requestDropSnapshot(const std::string& ref) { (void)ref; return false; }
     /// A snapshot of @p ref is on the card, as of the last requestElements()
-    /// and the last snapshot, restore or drop that finished -- not read now.
+    /// and the last snapshot, restore or drop that finished -- not read now. A
+    /// list takes off a snapshot that is byte for byte the element it was
+    /// kept of (an edit undone, a drop that never ran) and does not report it.
     virtual bool snapshotPending(const std::string& ref) { (void)ref; return false; }
     /// What element block @p clip of @p track plays now against its element's
     /// current version at the song's tempo, as of the last relink pass -- the

@@ -113,6 +113,37 @@ uint64_t element_content_hash(const AudioSong& song, const std::string& identity
     return f.h;
 }
 
+uint64_t element_edit_hash(const AudioSong& song, const std::string& scenes) {
+    Fnv f;
+    for (int t = 0; t < AudioSong::kTracks; ++t) {
+        const SongTrack& tr = song.tracks[t];
+        f.value(t);
+        f.value((uint8_t)tr.kind);
+        f.value((uint8_t)tr.source);
+        f.value(tr.scene);
+        f.value(tr.seqBlocks);
+        f.value((int32_t)std::lround(tr.volume * kVolumeHashSteps));
+        f.value((int32_t)std::lround(tr.pan * kPanHashSteps));
+        f.value(tr.muted);
+        f.value(tr.solo);
+        f.value((uint8_t)tr.input);
+        f.text(tr.kit);
+        for (const SongClip& c : tr.clips) {
+            f.text(c.isElement() ? c.element : c.file);
+            f.value(c.bar); f.value(c.bars); f.value(c.offset);
+            f.value(c.isElement() ? 0u : c.frames);
+            f.value(c.from);
+            notesOf(f, c.notes);
+        }
+    }
+    f.value(song.length);
+    f.value(song.beatsPerBar);
+    f.text(song.kit);
+    f.text(song.instrument);
+    f.text(scenes);
+    return f.h;
+}
+
 uint64_t element_bake_key(uint64_t content, float bpm, uint32_t sampleRate) {
     Fnv f;
     f.value(content);

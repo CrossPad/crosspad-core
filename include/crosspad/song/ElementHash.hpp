@@ -49,6 +49,16 @@ struct ElementHashReader {
 /// many songs still shares its bakes, a copy of it bakes its own once.
 uint64_t element_content_hash(const AudioSong& song, const std::string& identity, const ElementHashReader& rd);
 
+/// What the player has edited of @p song, and nothing the engine derives:
+/// each track's kind, source, scene, levels, pan, mute, solo, input and kit;
+/// each block's file (an element block by its ref), place, cut and notes; the
+/// length, the metre, the kit's and the instrument's names; and @p scenes, the
+/// bytes of the project's sequences.json. Not the tempo, the stretch modes, the
+/// freezes or the copies stretched to a tempo, which ElementNav's enter and
+/// leave rewrite on an element nobody touched. Memory and @p scenes only: it
+/// reads no file, so it is the same for the same edits however the card is.
+uint64_t element_edit_hash(const AudioSong& song, const std::string& scenes);
+
 /// The bake's key: @p content at @p bpm and @p sampleRate under kRenderVersion.
 uint64_t element_bake_key(uint64_t content, float bpm, uint32_t sampleRate);
 

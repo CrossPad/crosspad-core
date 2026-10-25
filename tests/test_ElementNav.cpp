@@ -1332,7 +1332,6 @@ TEST_CASE("element snapshot: song.json and sequences.json are kept beside the el
     CHECK(slurp(dir / "song.orig.json") == song);
     CHECK(slurp(dir / "sequences.orig.json") == scenes);
     CHECK(r.engine->snapshotPending(kA));
-    CHECK(r.engine->snapshotKey() != 0);
 
     spit(dir / "song.json", "changed");
     REQUIRE(r.engine->requestSnapshot(kA));
@@ -1526,4 +1525,130 @@ TEST_CASE("element nav: the uses are read after a leave and at the first poll", 
     elementNav().poll();                                   // Arrange's first tick
     REQUIRE(waitFor([&] { return !r.engine->usesOf(kA).empty(); }, 5000));
     CHECK(r.engine->usesOf(kA).front().user == "Demo");
+}
+
+TEST_CASE("element nav: an element nobody touched is not changed by the fit to the song's tempo", "[element][nav][snapshot]") {
+    Rig r;
+    Services svc(r.engine.get(), nullptr);
+    NavGuard guard;
+    writeElementWithScenes(r, kA);
+    {
+        AudioSong s;
+        REQUIRE(s.load(r.platform.root + "/" + kA) == SongLoad::Loaded);
+        s.bpm = 90.0f;                                    // made at another tempo than "Demo"
+        REQUIRE(s.save());
+    }
+    openDemo(r, kA);
+    const fs::path dir = elementDir(r, kA);
+
+    REQUIRE(elementNav().enter(1, 0));
+    REQUIRE(runNav().ok);
+    {
+        std::lock_guard<std::recursive_mutex> l(r.engine->songMutex());
+        CHECK(r.engine->song().tracks[0].stretch == StretchMode::KeepPitch);   // the enter's own fit
+    }
+    REQUIRE(elementNav().leave());
+    REQUIRE(runNav().ok);
+    CHECK_FALSE(elementNav().changed());
+    REQUIRE(waitFor([&] { return !r.engine->snapshotPending(kA); }, 5000));
+    CHECK_FALSE(fs::exists(dir / "song.orig.json"));
+}
+
+TEST_CASE("element nav: a tempo fit and an edit together are still an edit", "[element][nav][snapshot]") {
+    Rig r;
+    Services svc(r.engine.get(), nullptr);
+    NavGuard guard;
+    writeAudioElement(r, kA, "Slow", 2, 90.0f);
+    openDemo(r, kA);
+    REQUIRE(elementNav().enter(1, 0));
+    REQUIRE(runNav().ok);
+    editOpenElement(r);
+    REQUIRE(elementNav().leave());
+    REQUIRE(runNav().ok);
+    CHECK(elementNav().changed());
+    CHECK(r.engine->snapshotPending(kA));
+}
+
+TEST_CASE("element nav: a scene edited inside is an edit", "[element][nav][snapshot]") {
+    Rig r;
+    Services svc(r.engine.get(), nullptr);
+    NavGuard guard;
+    writeElementWithScenes(r, kA);
+    openDemo(r, kA);
+    REQUIRE(elementNav().enter(1, 0));
+    REQUIRE(runNav().ok);
+    spit(elementDir(r, kA) / "sequences.json", "{\"scenes\":[9]}");
+    REQUIRE(elementNav().leave());
+    REQUIRE(runNav().ok);
+    CHECK(elementNav().changed());
+}
+
+TEST_CASE("element snapshot: a list takes off a snapshot that is the element byte for byte", "[element][snapshot]") {
+    Rig r;
+    Services svc(r.engine.get(), nullptr);
+    NavGuard guard;
+    writeElementWithScenes(r, kA);
+    writeElementWithScenes(r, kB);
+    REQUIRE(r.open("Demo"));
+    for (const char* ref : {kA, kB}) {
+        const fs::path dir = elementDir(r, ref);
+        spit(dir / "song.orig.json", slurp(dir / "song.json"));
+        spit(dir / "sequences.orig.json", slurp(dir / "sequences.json"));
+    }
+    spit(elementDir(r, kB) / "sequences.json", "scenes made after");
+    REQUIRE(listElements(r));
+    CHECK_FALSE(r.engine->snapshotPending(kA));
+    CHECK_FALSE(fs::exists(elementDir(r, kA) / "song.orig.json"));
+    CHECK_FALSE(fs::exists(elementDir(r, kA) / "sequences.orig.json"));
+    CHECK(r.engine->snapshotPending(kB));                  // an edit to decide on
+    CHECK(fs::exists(elementDir(r, kB) / "song.orig.json"));
+}
+
+TEST_CASE("element snapshot: the element being edited keeps its snapshot through a list", "[element][nav][snapshot]") {
+    Rig r;
+    Services svc(r.engine.get(), nullptr);
+    NavGuard guard;
+    writeAudioElement(r, kA, "Intro", 2, 120.0f);
+    openDemo(r, kA);
+    REQUIRE(elementNav().enter(1, 0));
+    REQUIRE(runNav().ok);
+    REQUIRE(listElements(r));                              // nothing saved yet: the card equals the snapshot
+    CHECK(r.engine->snapshotPending(kA));
+    CHECK(fs::exists(elementDir(r, kA) / "song.orig.json"));
+}
+
+TEST_CASE("element snapshot: scenes left by a power cut are not brought back by a restore", "[element][snapshot]") {
+    Rig r;
+    Services svc(r.engine.get(), nullptr);
+    NavGuard guard;
+    writeAudioElement(r, kA, "Intro", 2, 120.0f);          // no scenes of its own
+    REQUIRE(r.open("Demo"));
+    const fs::path dir = elementDir(r, kA);
+    spit(dir / "sequences.orig.json", "old scenes of a snapshot long gone");
+    REQUIRE(r.engine->requestSnapshot(kA));
+    REQUIRE(editEnd(r) == SongOpState::Ready);
+    CHECK_FALSE(fs::exists(dir / "sequences.orig.json"));
+    spit(dir / "sequences.json", "made since");
+    REQUIRE(r.engine->requestRestore(kA));
+    REQUIRE(editEnd(r) == SongOpState::Ready);
+    CHECK_FALSE(fs::exists(dir / "sequences.json"));
+}
+
+TEST_CASE("element snapshot: a restore is refused while a song plays", "[element][snapshot]") {
+    Rig r;
+    Services svc(r.engine.get(), nullptr);
+    NavGuard guard;
+    writeElementWithScenes(r, kA);
+    openDemo(r, kA);
+    REQUIRE(r.engine->requestSnapshot(kA));
+    REQUIRE(editEnd(r) == SongOpState::Ready);
+    spit(elementDir(r, kA) / "song.json", "edited");
+    REQUIRE(r.engine->play(0));
+    REQUIRE(waitFor([&] { return r.engine->playing(); }));
+    CHECK_FALSE(r.engine->requestRestore(kA));
+    CHECK(slurp(elementDir(r, kA) / "song.json") == "edited");
+    r.engine->stop();
+    REQUIRE(waitFor([&] { return !r.engine->playing(); }));
+    REQUIRE(r.engine->requestRestore(kA));
+    CHECK(editEnd(r) == SongOpState::Ready);
 }
