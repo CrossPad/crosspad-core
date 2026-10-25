@@ -240,6 +240,8 @@ SongOpState SongEngine::Impl::doOpen(const std::string& name, bool remember) {
     }
     {
         std::lock_guard<std::recursive_mutex> l(songMutex_);
+        /* An element open until now was left to come here: its blocks are baked first. */
+        leftRef_ = opened_ && is_element_ref(song_.name) && song_.name != name ? song_.name : std::string();
         song_ = std::move(fresh);
         /* Another song: nothing of the last one's to undo. */
         undo_.clear();

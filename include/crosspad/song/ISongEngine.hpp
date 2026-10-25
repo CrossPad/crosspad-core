@@ -12,6 +12,10 @@
 
 namespace crosspad {
 
+/// How long the song is stopped with no pad played before Arrange calls
+/// ISongEngine::idleBaking(true).
+inline constexpr uint32_t kIdleBakeMs = 5000;
+
 /// Where a bounce is.
 enum class BounceState : uint8_t {
     Idle,       ///< nothing running; the last result stays readable
@@ -281,8 +285,9 @@ public:
     /// pass runs after every open and every commit that moves an element block
     /// (or the tempo): a block whose element's bake is on the card is linked to
     /// it, one that can be mixed from files on the card is baked in the
-    /// background while the song is stopped, and one that cannot keeps playing
-    /// the bake it has. Fresh for anything else, and before any pass.
+    /// background -- the song playing or not, playback's reads first -- and one
+    /// that cannot keeps playing the bake it has. Fresh for anything else, and
+    /// before any pass.
     virtual ElementClipState elementClipState(uint8_t track, size_t clip) { (void)track; (void)clip; return ElementClipState::Fresh; }
     /// Why that block is Stale or Missing: the first thing its element lacks
     /// to be baked from the card (a seq track not frozen, ...); empty otherwise.
@@ -291,6 +296,14 @@ public:
     virtual uint8_t backgroundProgress() const { return 0; }
     /// A relink pass or a background bake is waiting or running.
     virtual bool backgroundBusy() const { return false; }
+    /// The player is away -- the song stopped and no pad played for
+    /// kIdleBakeMs -- as Arrange says. While it is, and the open song's own
+    /// bakes are through, the background goes on to the other songs that play
+    /// an element changed since: each one's blocks of it relinked in its
+    /// song.json on the card, a bake mixed from the card first where one is
+    /// missing. No song is opened for it and no kit loaded; false, or a play,
+    /// stops it where it is, to go on the next time.
+    virtual void idleBaking(bool allowed) { (void)allowed; }
     /// The song with every occurrence of the open element left silent, over
     /// one pass of it (@p r), baked into one stem and played under the element
     /// at unity -- no meter, no fader --, going round with it. The bake is

@@ -9,6 +9,7 @@
 #include "crosspad/song/SeqFreezeKey.hpp"
 
 #include <fstream>
+#include <functional>
 #include <iterator>
 #include <set>
 
@@ -99,16 +100,21 @@ std::string slurp(const fs::path& p) {
 }
 
 /// The real card under the engine, watched: the descriptors it holds open at
-/// once, at most; a file it cannot open (@c unopenable); and @c fire, run once
-/// on the worker the first time it asks about @c target while @c armed. Set
-/// both before the engine's worker starts.
+/// once, at most; a file it cannot open (@c unopenable); a file whose opening
+/// waits while @c holding (@c held, at most kHoldMs); every read taking at
+/// least @c readUs, as a slow card's; how often @c counted is opened; and
+/// @c fire, run once on the worker the
+/// first time it asks about @c target while @c armed. Set the names before the
+/// engine's worker starts; let @c holding go before it is joined.
 struct HookFs final : IFileSystem {
+    static constexpr int kHoldMs = 10000;
     IFileSystem& base;
     IFileSystem* was;
     std::atomic<int> open{0}, most{0};
-    std::string unopenable, target;
+    std::string unopenable, target, held, counted;
     std::function<void()> fire;
-    std::atomic<bool> armed{false};
+    std::atomic<bool> armed{false}, holding{false};
+    std::atomic<int> readUs{0}, countedOpens{0};
     HookFs() : base(getFileSystem()), was(getPlatformServices().fileSystem) {
         getPlatformServices().setFileSystem(this);
     }
@@ -124,6 +130,8 @@ struct HookFs final : IFileSystem {
     bool rename(const char* from, const char* to) override { return base.rename(from, to); }
     int openRead(const char* path) override {
         if (path == unopenable) return -1;
+        if (path == held) waitFor([&] { return !holding; }, kHoldMs);
+        if (path == counted) ++countedOpens;
         const int fd = base.openRead(path);
         if (fd >= 0) {
             const int now = ++open;
@@ -132,7 +140,10 @@ struct HookFs final : IFileSystem {
         }
         return fd;
     }
-    long read(int fd, void* dst, size_t n) override { return base.read(fd, dst, n); }
+    long read(int fd, void* dst, size_t n) override {
+        if (const int us = readUs.load()) std::this_thread::sleep_for(std::chrono::microseconds(us));
+        return base.read(fd, dst, n);
+    }
     bool seek(int fd, uint32_t offset) override { return base.seek(fd, offset); }
     void close(int fd) override { base.close(fd); --open; }
 };
@@ -249,7 +260,10 @@ TEST_CASE("disk bake: an element with a seq track not frozen keeps its old bake,
 }
 
 TEST_CASE("disk bake: a bake gone from the card is missing until it is made again", "[song][element][diskbake]") {
+    HookFs card;
     Rig r;
+    struct LetGo { HookFs& c; ~LetGo() { c.holding = false; } } letGo{card};
+    card.held = childClip(r);
     writeAudioElement(r, kChild, 8000, 2);
     writeSongWith(r, "Parent", kChild, 2, "");
     REQUIRE(r.open("Parent"));
@@ -258,11 +272,11 @@ TEST_CASE("disk bake: a bake gone from the card is missing until it is made agai
     REQUIRE(r.engine->elementClipState(0, 0) == ElementClipState::Fresh);
     REQUIRE(fs::remove(bakeDir(r) / baked));
 
-    r.platform.holdIo = true;                               // the bake waits at its first breath
+    card.holding = true;                                    // the bake waits for its source
     REQUIRE(r.open("Parent"));
     CHECK(waitFor([&] { return r.engine->elementClipState(0, 0) == ElementClipState::Missing; }, kBakeWaitMs));
     CHECK(r.engine->backgroundBusy());
-    r.platform.holdIo = false;
+    card.holding = false;
     REQUIRE(idle(r));
     CHECK(r.engine->elementClipState(0, 0) == ElementClipState::Fresh);
     CHECK(block(r).file == baked);                          // the same element: the same bake
@@ -270,31 +284,92 @@ TEST_CASE("disk bake: a bake gone from the card is missing until it is made agai
     CHECK(r.engine->backgroundProgress() == 100);
 }
 
-TEST_CASE("disk bake: the queue gives way to PLAY and goes on after STOP", "[song][element][diskbake]") {
+TEST_CASE("disk bake: a bake asked for while the song plays is made while it plays, no underrun added", "[song][element][diskbake]") {
+    HookFs card;
     Rig r;
-    writeOldBake(r);
     writeAudioElement(r, kChild, 8000, 2);
-    writeSongWith(r, "Parent", kChild, 2, kOldBake);
-    r.platform.holdIo = true;
+    {
+        /* The child's block, and a recording streamed under it the whole song. */
+        AudioSong s;
+        s.dir = r.platform.root + "/Parent";
+        fs::create_directories(fs::path(s.dir) / AudioSong::clipsDir());
+        s.bpm = 120.0f;
+        writeClip(s.clipPath("bed.wav"), 8 * kBar, 1000);
+        s.tracks[0].inUse = true;
+        SongClip c;
+        c.element = kChild;
+        c.bars = 2;
+        s.addClip(0, c);
+        s.tracks[1].inUse = true;
+        s.addClip(1, {"bed.wav", 0, 8});
+        REQUIRE(s.save());
+    }
     REQUIRE(r.open("Parent"));
-    REQUIRE(waitFor([&] { return r.engine->elementClipState(0, 0) == ElementClipState::Baking; }, kBakeWaitMs));
-    REQUIRE(r.engine->play(0));
-    r.platform.holdIo = false;
-    REQUIRE(waitFor([&] { return r.engine->playing(); }));
-    std::this_thread::sleep_for(std::chrono::milliseconds(300));
-    CHECK(bakes(r) == std::set<std::string>{kOldBake});      // nothing written while it plays
-    CHECK(r.engine->elementClipState(0, 0) == ElementClipState::Baking);
-    CHECK(r.engine->backgroundBusy());
-    CHECK(block(r).file == kOldBake);
-    const int before = r.platform.waits;
-    std::this_thread::sleep_for(std::chrono::milliseconds(200));
-    CHECK(r.platform.waits - before >= 10);                  // a bake waiting is no reason not to wait
-    r.engine->stop();
-    REQUIRE(waitFor([&] { return !r.engine->playing(); }));
     REQUIRE(idle(r));
+    const std::string first = block(r).file;
+    REQUIRE_FALSE(first.empty());
+
+    /* The same play twice, a fixed number of blocks at about the board's pace
+     * (5 ms a block of 5.8), on a card that takes 2.5 ms a read: the ring
+     * holds ~370 ms, so only a worker kept off it that long underruns -- one
+     * mixing the bake's ~170 reads in one go would be -- and the run with the
+     * bake is held to the count of the run without. */
+    constexpr int kPlayBlocks = 900;
+    constexpr int kSlowReadUs = 2500;
+    card.readUs = kSlowReadUs;
+    std::vector<float> out(kBlock * 2), bus(kBlock * 2, 0.0f);
+    auto play = [&](const std::function<void(int)>& each) {
+        REQUIRE(r.engine->play(0));
+        REQUIRE(waitFor([&] {
+            r.block(out, bus);
+            return r.engine->framesPlayed() > 0;
+        }));
+        for (int i = 0; i < kPlayBlocks; ++i) {
+            r.block(out, bus);
+            each(i);
+            std::this_thread::sleep_for(std::chrono::milliseconds(5));
+        }
+        CHECK(r.engine->playing());
+        const uint32_t u = r.engine->underruns();
+        r.engine->stop();
+        REQUIRE(waitFor([&] { return !r.engine->playing(); }));
+        return u;
+    };
+    const uint32_t without = play([](int) {});
+
+    /* The child changed on the card, and a block of it laid while the song
+     * plays: the pass and the bake both run under the song. */
+    writeClip(childClip(r), 2 * kBar, 12000);
+    fs::last_write_time(childClip(r), fs::last_write_time(childClip(r)) + std::chrono::seconds(10));
+    int bakedAt = -1, waitsAtLay = 0, waitsAtBaked = 0;
+    const uint32_t with = play([&](int i) {
+        if (i == 10) {
+            {
+                std::lock_guard<std::recursive_mutex> l(r.engine->songMutex());
+                SongClip c;
+                c.element = kChild;
+                c.bar = 4;
+                c.bars = 2;
+                r.engine->song().addClip(0, c);
+            }
+            r.engine->commit();
+            waitsAtLay = r.platform.waits;
+        }
+        if (i > 10 && bakedAt < 0 && r.engine->elementClipState(0, 1) == ElementClipState::Fresh &&
+            !block(r, 0, 1).file.empty()) {
+            bakedAt = i;
+            waitsAtBaked = r.platform.waits;
+        }
+    });
+    INFO("baked at block " << bakedAt << ", underruns " << with << " against " << without);
+    REQUIRE(bakedAt > 0);                                    // made and linked while it played
+    CHECK(with <= without);
+    CHECK(waitsAtBaked - waitsAtLay >= 10);                  // a bake waiting is no reason not to wait
+    const std::string second = block(r, 0, 1).file;
+    CHECK(second != first);
+    CHECK(block(r, 0, 0).file == second);
     CHECK(r.engine->elementClipState(0, 0) == ElementClipState::Fresh);
-    CHECK(block(r).file != kOldBake);
-    bakeIs(r, block(r).file, 2 * kBar, 8000);
+    bakeIs(r, second, 2 * kBar, 12000);
 }
 
 TEST_CASE("disk bake: a bake made by leaving and one made from the card have one key", "[song][element][diskbake]") {
@@ -530,4 +605,70 @@ TEST_CASE("disk bake: two elements whose takes match in name, size and time get 
     CHECK(a.file != b.file);
     bakeIs(r, a.file, 2 * kBar, 8000);
     bakeIs(r, b.file, 2 * kBar, 5000);
+}
+
+TEST_CASE("disk bake: idle, another song's blocks of a changed element are relinked on the card", "[song][element][diskbake]") {
+    Rig r;
+    writeOldBake(r);
+    writeAudioElement(r, kChild, 8000, 2);
+    writeSongWith(r, "Parent", kChild, 2, kOldBake);
+    writeSongWith(r, "Other", kChild, 2, kOldBake);
+    const fs::path other = fs::path(r.platform.root) / "Other";
+    const std::string before = slurp(other / AudioSong::fileName());
+    REQUIRE(r.open("Parent"));
+    REQUIRE(idle(r));
+    const std::string baked = block(r).file;
+    REQUIRE(baked != kOldBake);
+
+    /* Not while the player may be about to play. */
+    std::this_thread::sleep_for(std::chrono::milliseconds(600));
+    CHECK(slurp(other / AudioSong::fileName()) == before);
+
+    r.engine->idleBaking(true);
+    auto otherPlays = [&](std::string& file, uint32_t& frames) {
+        AudioSong s;
+        if (s.load(other.string()) != SongLoad::Loaded || s.tracks[0].clips.size() != 1) return false;
+        file = s.tracks[0].clips[0].file;
+        frames = s.tracks[0].clips[0].frames;
+        return true;
+    };
+    std::string file;
+    uint32_t frames = 0;
+    CHECK(waitFor([&] { return otherPlays(file, frames) && file == baked; }, kBakeWaitMs));
+    CHECK(frames == 2 * kBar);
+    /* Nothing was opened for it: the pads still play the open song's kit. */
+    {
+        std::lock_guard<std::recursive_mutex> l(r.engine->songMutex());
+        CHECK(r.engine->song().name == "Parent");
+    }
+    std::lock_guard<std::mutex> l(r.platform.openedMutex);
+    for (const std::string& o : r.platform.openedKits) CHECK(o.rfind("Parent:", 0) == 0);
+}
+
+TEST_CASE("disk bake: the save a link asks for does not start the next bake over", "[song][element][diskbake]") {
+    HookFs card;
+    Rig r;
+    card.counted = r.platform.root + "/" + kGrandchild + "/" + AudioSong::clipsDir() + "/t0.wav";
+    writeAudioElement(r, kChild, 8000, 2);
+    writeAudioElement(r, kGrandchild, 5000, 2);
+    writeSongWith(r, "Parent", kChild, 2, "");
+    {
+        AudioSong s;
+        REQUIRE(s.load(r.platform.root + "/Parent") == SongLoad::Loaded);
+        s.tracks[1].inUse = true;
+        SongClip c;
+        c.element = kGrandchild;
+        c.bars = 2;
+        s.addClip(1, c);
+        REQUIRE(s.save());
+    }
+    /* Each bake longer than the save's delay: the child's link asks for a save
+     * that falls due while the next one is being mixed. */
+    card.readUs = 2500;
+    REQUIRE(r.open("Parent"));
+    REQUIRE(idle(r));
+    CHECK(r.engine->elementClipState(0, 0) == ElementClipState::Fresh);
+    CHECK(r.engine->elementClipState(1, 0) == ElementClipState::Fresh);
+    bakeIs(r, block(r, 1).file, 2 * kBar, 5000);
+    CHECK(card.countedOpens == 1);                           // mixed once, not begun again
 }

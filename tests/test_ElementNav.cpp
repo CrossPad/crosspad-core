@@ -6,6 +6,7 @@
 
 #include "song_engine_rig.hpp"
 
+#include "crosspad/platform/IFileSystem.hpp"
 #include "crosspad/sequencer/SequenceStore.hpp"
 #include "crosspad/song/ElementNav.hpp"
 #include "crosspad/song/SongFiles.hpp"
@@ -137,9 +138,55 @@ bool pollTo(Rig& r, const char* stage) {
     }, 10000);
 }
 
+/// The card under the engine with one file held shut: opening @c path waits
+/// while @c held, at most kGateMs, so a bake that reads it waits for the test.
+/// Install before the Rig; release() before the Rig goes (its worker is joined).
+struct GateFs final : IFileSystem {
+    static constexpr int kGateMs = 10000;
+    IFileSystem& base;
+    IFileSystem* was;
+    std::mutex m;
+    std::string path;
+    std::atomic<bool> held{false};
+    GateFs() : base(getFileSystem()), was(getPlatformServices().fileSystem) {
+        getPlatformServices().setFileSystem(this);
+    }
+    ~GateFs() override { getPlatformServices().fileSystem = was; }
+    void hold(const std::string& p) {
+        std::lock_guard<std::mutex> l(m);
+        path = p;
+        held = true;
+    }
+    void release() { held = false; }
+    bool list(const char* dir, EntryFn each, void* ctx) override { return base.list(dir, each, ctx); }
+    FsStat stat(const char* p, FileStat* out) override { return base.stat(p, out); }
+    bool makeDir(const char* p) override { return base.makeDir(p); }
+    bool remove(const char* p) override { return base.remove(p); }
+    bool removeDir(const char* p) override { return base.removeDir(p); }
+    bool rename(const char* from, const char* to) override { return base.rename(from, to); }
+    int openRead(const char* p) override {
+        bool gated;
+        {
+            std::lock_guard<std::mutex> l(m);
+            gated = held && path == p;
+        }
+        if (gated) waitFor([&] { return !held; }, kGateMs);
+        return base.openRead(p);
+    }
+    long read(int fd, void* dst, size_t n) override { return base.read(fd, dst, n); }
+    bool seek(int fd, uint32_t offset) override { return base.seek(fd, offset); }
+    void close(int fd) override { base.close(fd); }
+};
+
+/// Lets the gate go as the case ends, before the Rig joins the worker.
+struct GateRelease {
+    GateFs& gate;
+    ~GateRelease() { gate.release(); }
+};
+
 } // namespace
 
-TEST_CASE("element nav: enter opens the element, leave bakes it and links the parent", "[element][nav]") {
+TEST_CASE("element nav: enter opens the element, leave opens the parent and its block plays the element's bake", "[element][nav]") {
     Rig r;
     Services svc(r.engine.get(), nullptr);
     NavGuard guard;
@@ -166,12 +213,58 @@ TEST_CASE("element nav: enter opens the element, leave bakes it and links the pa
     CHECK_FALSE(elementNav().busy());
     CHECK(elementNav().depth() == 0);
     CHECK(openName(r) == "Demo");
+    onlyCardBake(r, 1);
     const SongClip c = clipOf(r, 1);
     CHECK_FALSE(c.file.empty());
-    CHECK(c.file == r.engine->bakeResult().file);
     CHECK(c.frames == 2 * kBarFrames);
     CHECK(fs::exists(bakeOf(r, c.file)));
     CHECK(segmentsOf(*r.engine, 1) > 0);
+}
+
+TEST_CASE("element nav: a leave with only its audio changed is back in the parent before the bake", "[element][nav]") {
+    GateFs gate;
+    Rig r;
+    GateRelease letGo{gate};
+    Services svc(r.engine.get(), nullptr);
+    NavGuard guard;
+    writeAudioElement(r, kA, "Intro", 2, 120.0f);
+    openDemo(r, kA);
+    const SongClip was = clipOf(r, 1);
+    REQUIRE_FALSE(was.file.empty());
+    REQUIRE(elementNav().enter(1, 0));
+    REQUIRE(runNav().ok);
+    {
+        std::lock_guard<std::recursive_mutex> l(r.engine->songMutex());
+        r.engine->song().tracks[0].volume = 0.5f;
+    }
+    r.engine->commit();
+
+    /* Its recording held shut: no bake of it can be mixed until the test says. */
+    gate.hold(r.platform.root + "/" + kA + "/" + AudioSong::clipsDir() + "/a.wav");
+    REQUIRE(elementNav().leave());
+    const auto out = runNav();
+    INFO("error: " << out.error);
+    REQUIRE(out.ok);
+    CHECK(openName(r) == "Demo");
+    CHECK(elementNav().depth() == 0);
+    CHECK(elementNav().changed());
+    CHECK(clipOf(r, 1).file == was.file);                  // the old bake plays meanwhile
+    CHECK(clipOf(r, 1).frames == was.frames);
+    REQUIRE(waitFor([&] { return r.engine->elementClipState(1, 0) == ElementClipState::Baking; }, 10000));
+    for (const auto& e : fs::directory_iterator(fs::path(r.platform.root) / AudioSong::bakeDir())) {
+        const std::string f = e.path().filename().string();
+        CHECK((f == was.file || f.find(".part") != std::string::npos));
+    }
+
+    gate.release();
+    REQUIRE(waitFor([&] { return !r.engine->backgroundBusy(); }, 10000));
+    const SongClip now = clipOf(r, 1);
+    CHECK(now.file != was.file);
+    CHECK(now.frames == 2 * kBarFrames);
+    CHECK(r.engine->elementClipState(1, 0) == ElementClipState::Fresh);
+    const auto pcm = readWavData(bakeOf(r, now.file).string());
+    REQUIRE(pcm.size() == (size_t)2 * kBarFrames * 2);
+    CHECK(std::abs(pcm[pcm.size() / 2] - 4096) <= 1);
 }
 
 TEST_CASE("element nav: a block laid and entered at once, while the background bakes it", "[element][nav]") {
@@ -203,9 +296,8 @@ TEST_CASE("element nav: a block laid and entered at once, while the background b
         const auto out = runNav();
         INFO("error: " << out.error);
         REQUIRE(out.ok);
-        CHECK(clipOf(r, 1).file == r.engine->bakeResult().file);
         REQUIRE(waitFor([&] { return !r.engine->backgroundBusy(); }, 10000));
-        CHECK(clipOf(r, 1).file == r.engine->bakeResult().file);
+        CHECK_FALSE(clipOf(r, 1).file.empty());
         CHECK(r.engine->elementClipState(1, 0) == ElementClipState::Fresh);
     }
     /* B's bake and A's: the same two whoever made them. */
@@ -223,13 +315,15 @@ TEST_CASE("element nav: leaving unchanged finds the bake in the cache", "[elemen
     NavGuard guard;
     writeAudioElement(r, kA, "Intro", 2, 120.0f);
     openDemo(r, kA);
+    const std::string baked = clipOf(r, 1).file;
     for (int round = 0; round < 2; ++round) {
         REQUIRE(elementNav().enter(1, 0));
         REQUIRE(runNav().ok);
         REQUIRE(elementNav().leave());
         REQUIRE(runNav().ok);
         /* The first time too: the background baked it when the block was laid, by the same key. */
-        CHECK(r.engine->bakeResult().cached);
+        onlyCardBake(r, 1);
+        CHECK(clipOf(r, 1).file == baked);
     }
 }
 
@@ -265,9 +359,11 @@ TEST_CASE("element nav: an edit two levels down reaches the song", "[element][na
         const auto inner = runNav();
         INFO("error: " << inner.error);
         REQUIRE(inner.ok);
+        REQUIRE(waitFor([&] { return !r.engine->backgroundBusy(); }, 10000));
         fileInA = clipOf(r, 1).file;
         REQUIRE(elementNav().leave());
         REQUIRE(runNav().ok);
+        REQUIRE(waitFor([&] { return !r.engine->backgroundBusy(); }, 10000));
         fileInDemo = clipOf(r, 1).file;
     };
     std::string a1, d1, a2, d2;
@@ -279,7 +375,7 @@ TEST_CASE("element nav: an edit two levels down reaches the song", "[element][na
     CHECK(d2 != d1);
 }
 
-TEST_CASE("element nav: leave while playing stops, bakes and opens the parent", "[element][nav]") {
+TEST_CASE("element nav: leave while playing stops and opens the parent", "[element][nav]") {
     Rig r;
     Services svc(r.engine.get(), nullptr);
     NavGuard guard;
@@ -296,10 +392,10 @@ TEST_CASE("element nav: leave while playing stops, bakes and opens the parent", 
     REQUIRE(out.ok);
     CHECK_FALSE(r.engine->playing());
     CHECK(openName(r) == "Demo");
-    CHECK(clipOf(r, 1).file == r.engine->bakeResult().file);
+    onlyCardBake(r, 1);
 }
 
-TEST_CASE("element nav: a bake that fails keeps you in the element", "[element][nav]") {
+TEST_CASE("element nav: a bake the card cannot take after a leave leaves the block as it was", "[element][nav]") {
     Rig r;
     Services svc(r.engine.get(), nullptr);
     NavGuard guard;
@@ -313,15 +409,26 @@ TEST_CASE("element nav: a bake that fails keeps you in the element", "[element][
         REQUIRE(f);
         std::fclose(f);                      // .bake is a file: nothing can be made in it
     }
+    {
+        std::lock_guard<std::recursive_mutex> l(r.engine->songMutex());
+        r.engine->song().tracks[0].volume = 0.5f;        // a bake of its own, which cannot be written
+    }
+    r.engine->commit();
+    const SongClip was = [&] {
+        AudioSong demo;
+        REQUIRE(demo.load(r.platform.root + "/Demo") == SongLoad::Loaded);
+        return demo.tracks[1].clips.at(0);
+    }();
     REQUIRE(elementNav().leave());
     const auto out = runNav();
-    CHECK(out.done);
-    CHECK_FALSE(out.ok);
-    CHECK_FALSE(out.error.empty());
-    CHECK(elementNav().lastError() == out.error);
-    CHECK_FALSE(elementNav().busy());
-    CHECK(elementNav().depth() == 1);
-    CHECK(openName(r) == kA);
+    INFO("error: " << out.error);
+    REQUIRE(out.ok);
+    CHECK(elementNav().depth() == 0);
+    CHECK(openName(r) == "Demo");
+    REQUIRE(waitFor([&] { return !r.engine->backgroundBusy(); }, 10000));
+    CHECK(clipOf(r, 1).file == was.file);
+    CHECK(r.engine->elementClipState(1, 0) == ElementClipState::Missing);
+    CHECK_FALSE(r.engine->elementClipWhy(1, 0).empty());
 }
 
 TEST_CASE("element nav: a deleted bake comes back after enter and leave", "[element][nav]") {
@@ -340,7 +447,7 @@ TEST_CASE("element nav: a deleted bake comes back after enter and leave", "[elem
     REQUIRE(runNav().ok);
     REQUIRE(elementNav().leave());
     REQUIRE(runNav().ok);
-    CHECK_FALSE(r.engine->bakeResult().cached);
+    onlyCardBake(r, 1);
     CHECK(clipOf(r, 1).file == file);
     CHECK(fs::exists(bakeOf(r, file)));
 }
@@ -444,6 +551,7 @@ TEST_CASE("element nav: a new element is entered with its title and the song's t
     }
     REQUIRE(elementNav().leaveTo(0));
     REQUIRE(runNav().ok);
+    REQUIRE(waitFor([&] { return !r.engine->backgroundBusy(); }, 10000));
     std::lock_guard<std::recursive_mutex> l(r.engine->songMutex());
     const SongTrack& t = r.engine->song().tracks[2];
     REQUIRE(t.clips.size() == 1);
@@ -654,8 +762,9 @@ TEST_CASE("element nav: a tempo turned inside the element is put back before the
     INFO("error: " << out.error);
     REQUIRE(out.ok);
     CHECK(openName(r) == "Demo");
-    CHECK(r.engine->bakeResult().frames == 2 * kBarFrames);  // two bars at the song's 120, not at 100
-    CHECK(clipOf(r, 1).frames == 2 * kBarFrames);
+    REQUIRE(waitFor([&] { return !r.engine->backgroundBusy(); }, 10000));
+    CHECK(r.engine->elementClipState(1, 0) == ElementClipState::Fresh);
+    CHECK(clipOf(r, 1).frames == 2 * kBarFrames);            // two bars at the song's 120, not at 100
 }
 
 TEST_CASE("element nav: nothing is frozen before the level's sounds are loaded", "[element][nav]") {

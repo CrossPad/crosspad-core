@@ -96,6 +96,7 @@ public:
     std::string elementClipWhy(uint8_t track, size_t clip) override;
     uint8_t backgroundProgress() const override;
     bool backgroundBusy() const override;
+    void idleBaking(bool allowed) override;
     bool requestContext(const ContextRequest& r) override;
     void contextSolo(bool on) override;
     ContextState contextState() const override;

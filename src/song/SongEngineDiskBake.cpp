@@ -6,8 +6,15 @@
 // another song -- and the resolver (ElementResolver.hpp) names its bake as it is
 // now. A pass links every block whose element's bake is on the card, queues one
 // for each element that can be mixed from files already rendered (baked_view,
-// BakedView.hpp), and leaves the rest playing the bake they have. The queue runs
-// on the worker while the song is stopped and gives way to anything asked of it.
+// BakedView.hpp), and leaves the rest playing the bake they have.
+//
+// All of it is the worker's background work and runs while the song plays too:
+// playback's ring comes first (pace(), and a piece of work only with half a ring
+// in hand), a mix is made a chunk at a time between top-ups, and a request the
+// loop takes comes before it. Its order: the context stem, the relink pass, the
+// open song's bakes -- the element just left first, the path up from an edit --
+// then, while the player is away (idleBaking()), other songs that play an
+// element changed since, relinked in their song.json on the card.
 //
 // The context stem is a disk bake too: inside an element, the song around it --
 // every occurrence of the element silent -- over one pass of it, mixed from the
@@ -20,30 +27,11 @@ namespace crosspad {
 
 namespace {
 
-/// Readers a disk bake holds at once, beside its writer: the card's descriptors
-/// are shared with playback and the kit's samples, and a bake keeps to three.
-constexpr int kBakeReaders = 2;
-
 float effectiveBpm(const AudioSong& s) { return s.bpm > 0.0f ? s.bpm : AudioSong::kDefaultBpm; }
 
-/// The files a disk bake reads, in kBakeReaders descriptors: one asked for that
-/// none holds is opened in place of the one read longest ago.
-struct BakeReaders {
-    ClipReader slot[kBakeReaders];
-    uint32_t   used[kBakeReaders] = {};
-    uint32_t   tick = 0;
-
-    ClipReader* get(const std::string& path) {
-        int pick = 0;
-        for (int i = 0; i < kBakeReaders; ++i) {
-            if (slot[i].fd >= 0 && slot[i].path == path) { pick = i; break; }
-            if (used[i] < used[pick]) pick = i;
-        }
-        used[pick] = ++tick;
-        if (slot[pick].fd >= 0 && slot[pick].path == path) return &slot[pick];
-        return slot[pick].open(path) ? &slot[pick] : nullptr;
-    }
-};
+/// How the context mix asks the card whether a file is there (and holds at
+/// least so many bytes).
+using IsFile = std::function<bool(const std::string& path, uint64_t atLeast)>;
 
 /// What a baked view lacked, in words for the block's why.
 std::string lacking(const BakedReport& r) {
@@ -76,9 +64,10 @@ void throughTrack(BakedPiece& pc, const float outer[2]) {
 /// way down to it.
 class ContextMix {
 public:
-    ContextMix(std::string songsRoot, uint32_t sampleRate, float bpm, std::string focus, const ElementHashReader& rd)
+    ContextMix(std::string songsRoot, uint32_t sampleRate, float bpm, std::string focus, const ElementHashReader& rd,
+               IsFile isFile)
         : root_(std::move(songsRoot)), rate_(sampleRate), bpm_(bpm), focus_(std::move(focus)), rd_(rd),
-          resolver_(root_, rate_, bpm_, rd) {
+          isFile_(std::move(isFile)), resolver_(root_, rate_, bpm_, rd) {
         rd_.childKey = [this](const std::string& ref, uint64_t& key) {
             key = childKey(ref);
             return true;
@@ -103,7 +92,7 @@ public:
         env.songsRoot = root_;
         env.sampleRate = rate_;
         env.bpm = bpm_;
-        env.exists = [](const std::string& path) { return fsx::isFile(path); };
+        env.exists = [this](const std::string& path) { return isFile_(path, 0); };
         env.child = [&](const std::string& ref) { return child(song, identity, label, ref); };
         env.silentRefs.push_back(focus_);
         for (int t = 0; t < AudioSong::kTracks; ++t)
@@ -190,7 +179,7 @@ private:
         for (const SongTrack& tr : song.tracks) {
             for (const SongClip& c : tr.clips) {
                 if (c.element != ref || c.file.empty() || c.frames < min_bake_frames(rate_) ||
-                    !fsx::isFile(root_ + "/" + AudioSong::bakeDir() + "/" + c.file, 1))
+                    !isFile_(root_ + "/" + AudioSong::bakeDir() + "/" + c.file, 1))
                     continue;
                 ResolvedElement& old = older_[at];
                 old = now;
@@ -257,6 +246,7 @@ private:
     float             bpm_;
     std::string       focus_;
     ElementHashReader rd_;
+    IsFile            isFile_;
     ElementResolver   resolver_;
     std::map<std::string, std::unique_ptr<AudioSong>> songs_;   ///< null: not readable
     std::map<std::string, bool> holds_;
@@ -291,11 +281,13 @@ std::string SongEngine::Impl::elementSignature(const AudioSong& s) {
 }
 
 void SongEngine::Impl::dropBakeQueue() {
+    if (mixing(MixJob::For::Element)) endMix(BakeRun::GaveWay);
     resolver_.reset();
     bakeQueue_.clear();
     bakesMade_.clear();
     bakesFailed_.clear();
     bakeQueued_.store(0);
+    bakeOther_ = false;
 }
 
 void SongEngine::Impl::forgetElements() {
@@ -307,8 +299,9 @@ void SongEngine::Impl::forgetElements() {
 
 /// Worker: see the file comment. Each element is resolved once, at the tempo the
 /// song plays it at, children first; the queue it leaves is the open song's
-/// blocks only, in the order they come on the tracks. What the last pass found
-/// stays readable until this one has its own.
+/// blocks only, the element just left first, then the others in the order they
+/// come on the tracks. What the last pass found stays readable until this one
+/// has its own.
 void SongEngine::Impl::doRelink() {
     /* Busy from the request to the last link: a request made meanwhile is one more pass. */
     relinking_.store(true);
@@ -333,14 +326,23 @@ void SongEngine::Impl::doRelink() {
         relinking_.store(false);
         return;
     }
+    const auto left = std::find(refs.begin(), refs.end(), leftRef_);
+    if (left != refs.end()) std::rotate(refs.begin(), left, left + 1);
 
     bakeSong_ = copy.dir;
     bakeBpm_ = effectiveBpm(copy);
-    resolver_ = std::make_unique<ElementResolver>(p.songsRoot(), sampleRate_, bakeBpm_, cardHashReader());
+    gaveWay_ = false;
+    resolver_ = std::make_unique<ElementResolver>(p.songsRoot(), sampleRate_, bakeBpm_, pacedHashReader());
     std::map<std::string, ElementSeen> seen;
     std::map<std::string, std::pair<std::string, uint32_t>> links;
+    /* An element whose blocks here hold another bake than the one it has now
+     * changed since they were linked; so may the one just left, whose blocks
+     * its leave linked already. Other songs playing either are relinked idle. */
+    std::set<std::string> changed;
+    if (left != refs.end()) changed.insert(leftRef_);
     for (const std::string& ref : refs) {
         const ResolvedElement& e = resolver_->resolve(ref);
+        if (gaveWay_) return relinkGaveWay();
         ElementSeen s;
         s.file = e.file;
         s.frames = e.frames;
@@ -348,11 +350,19 @@ void SongEngine::Impl::doRelink() {
         s.why = e.why;
         if (e.exists) links[ref] = {e.file, e.frames};
         else if (e.bakeable) { s.baking = true; bakeQueue_.push_back(ref); }
+        if (e.exists || e.bakeable) {
+            for (const SongTrack& tr : copy.tracks)
+                for (const SongClip& c : tr.clips)
+                    if (c.element == ref && !c.file.empty() && c.file != e.file) changed.insert(ref);
+        }
         seen[ref] = std::move(s);
     }
     std::set<std::string> onCard;
-    for (const std::string& f : files)
-        if (fsx::isFile(bakePath(f), 1)) onCard.insert(f);
+    for (const std::string& f : files) {
+        const bool there = pacedIsFile(bakePath(f), 1);
+        if (gaveWay_) return relinkGaveWay();
+        if (there) onCard.insert(f);
+    }
     for (const auto& kv : seen)
         if (kv.second.exists) onCard.insert(kv.second.file);
     {
@@ -362,12 +372,23 @@ void SongEngine::Impl::doRelink() {
     }
     linkBlocks(bakeSong_, links);
     bakeQueued_.store((uint32_t)bakeQueue_.size());
+    noteChanged(changed);
+    relinking_.store(false);
+}
+
+void SongEngine::Impl::relinkGaveWay() {
+    dropBakeQueue();
+    relinkReq_.store(true);
     relinking_.store(false);
 }
 
 void SongEngine::Impl::linkBlocks(const std::string& dir,
                                   const std::map<std::string, std::pair<std::string, uint32_t>>& links) {
     if (links.empty()) return;
+    if (bakeOther_) {
+        linkOnCard(dir, links);
+        return;
+    }
     std::lock_guard<std::recursive_mutex> l(songMutex_);
     if (!opened_ || song_.dir != dir) return;
     /* An edit made and not committed yet is a step of its own, as its commit
@@ -393,8 +414,28 @@ void SongEngine::Impl::linkBlocks(const std::string& dir,
     pack(song_, last_);
     if (seen) elementSig_ = elementSignature(song_);   // its own link asks for no pass
     rebuild();
+    /* Written once the song stops, when it plays: see the worker loop. */
     saveAtUs_.store(p.nowUs() + (int64_t)kSaveDelayMs * 1000);
     saveReq_.store(true);
+}
+
+void SongEngine::Impl::linkOnCard(const std::string& dir,
+                                  const std::map<std::string, std::pair<std::string, uint32_t>>& links) {
+    AudioSong s;
+    if (links.empty() || s.load(dir) != SongLoad::Loaded) return;
+    bool changed = false;
+    for (SongTrack& tr : s.tracks) {
+        for (SongClip& c : tr.clips) {
+            const auto it = c.isElement() ? links.find(c.element) : links.end();
+            if (it == links.end() || (c.file == it->second.first && c.frames == it->second.second)) continue;
+            c.file = it->second.first;
+            c.frames = it->second.second;
+            changed = true;
+        }
+    }
+    if (!changed) return;
+    if (s.save()) logf(false, "relinked %s on the card", s.name.c_str());
+    else logf(true, "%s: its element blocks could not be relinked on the card", s.name.c_str());
 }
 
 const ResolvedElement& SongEngine::Impl::bakeView(const std::string& ref) {
@@ -407,7 +448,7 @@ void SongEngine::Impl::bakeMade(const std::string& ref, const ResolvedElement& e
     now.exists = true;
     bakesMade_[ref] = now;
     bakeQueue_.erase(std::remove(bakeQueue_.begin(), bakeQueue_.end(), ref), bakeQueue_.end());
-    {
+    if (!bakeOther_) {
         std::lock_guard<std::mutex> l(elementMutex_);
         const auto it = elementSeen_.find(ref);
         if (it != elementSeen_.end()) {
@@ -417,13 +458,14 @@ void SongEngine::Impl::bakeMade(const std::string& ref, const ResolvedElement& e
         bakesOnCard_.insert(now.file);
     }
     linkBlocks(bakeSong_, {{ref, {now.file, now.frames}}});
-    bakeQueued_.store((uint32_t)bakeQueue_.size());   // through once its blocks are linked
+    if (!bakeOther_) bakeQueued_.store((uint32_t)bakeQueue_.size());   // through once its blocks are linked
 }
 
 void SongEngine::Impl::bakeFailed(const std::string& ref, const std::string& why) {
     logf(true, "bake %s: %s", ref.c_str(), why.c_str());
     bakesFailed_[ref] = why;
     bakeQueue_.erase(std::remove(bakeQueue_.begin(), bakeQueue_.end(), ref), bakeQueue_.end());
+    if (bakeOther_) return;
     bakeQueued_.store((uint32_t)bakeQueue_.size());
     std::lock_guard<std::mutex> l(elementMutex_);
     const auto it = elementSeen_.find(ref);
@@ -434,13 +476,27 @@ void SongEngine::Impl::bakeFailed(const std::string& ref, const std::string& why
 }
 
 /// Worker: an element's bake mixed from its baked view at the queue's tempo,
-/// into .bake/ as .part and renamed. Its children's bakes go first: one the
-/// card does not have yet is put at the head of the queue and made before it.
+/// into .bake/ as .part and renamed -- begun here, made by stepMix(). Its
+/// children's bakes go first: one the card does not have yet is put at the
+/// head of the queue and made before it. Anything that gave way is looked at
+/// again: a resolve cut short may have read the card as empty, so the queue's
+/// answers go and the pass that made them runs again.
 void SongEngine::Impl::doDiskBake() {
     const std::string ref = bakeQueue_.front();
-    const ResolvedElement& e = bakeView(ref);
+    gaveWay_ = false;
+    auto resolvedAfresh = [this] {
+        if (!gaveWay_) return false;
+        const bool other = bakeOther_;
+        dropBakeQueue();
+        if (!other) relinkReq_.store(true);   // another song's is relinked again in its turn
+        return true;
+    };
+    const ResolvedElement e = bakeView(ref);
+    if (resolvedAfresh()) return;
     if (e.exists) { bakeMade(ref, e); return; }
     AudioSong el;
+    pace();
+    if (gaveWay_) return;
     if (el.load(std::string(p.songsRoot()) + "/" + ref) != SongLoad::Loaded) {
         bakeFailed(ref, "Element " + ref + " cannot be read.");
         return;
@@ -451,19 +507,22 @@ void SongEngine::Impl::doDiskBake() {
     for (int t = 0; t < kTracks; ++t) {
         if (el.silenced(t)) continue;
         for (const SongClip& c : el.tracks[t].clips) {
-            if (!c.isElement() || bakeView(c.element).exists) continue;
+            if (!c.isElement()) continue;
+            const ResolvedElement child = bakeView(c.element);
+            if (resolvedAfresh()) return;
+            if (child.exists) continue;
             const auto failed = bakesFailed_.find(c.element);
             if (failed != bakesFailed_.end()) {
                 bakeFailed(ref, "Element " + c.element + ": " + failed->second);
                 return;
             }
-            if (!bakeView(c.element).bakeable) {
-                bakeFailed(ref, "Element " + c.element + ": " + bakeView(c.element).why);
+            if (!child.bakeable) {
+                bakeFailed(ref, "Element " + c.element + ": " + child.why);
                 return;
             }
             bakeQueue_.erase(std::remove(bakeQueue_.begin(), bakeQueue_.end(), c.element), bakeQueue_.end());
             bakeQueue_.insert(bakeQueue_.begin(), c.element);
-            bakeQueued_.store((uint32_t)bakeQueue_.size());
+            if (!bakeOther_) bakeQueued_.store((uint32_t)bakeQueue_.size());
             return;
         }
     }
@@ -475,101 +534,161 @@ void SongEngine::Impl::doDiskBake() {
     env.songsRoot = p.songsRoot();
     env.sampleRate = sampleRate_;
     env.bpm = bakeBpm_;
-    env.exists = [](const std::string& path) { return fsx::isFile(path); };
+    env.exists = [this](const std::string& path) { return pacedIsFile(path); };
     env.child = [this](const std::string& child) { return &bakeView(child); };
     BakedReport report;
     std::vector<BakedPiece> pieces = baked_view(el, env, 0, e.frames, report);
+    if (resolvedAfresh()) return;
     if (!report.complete()) {
         bakeFailed(ref, lacking(report));
         return;
     }
-    std::string lost;
-    switch (mixDown(std::move(pieces), e.frames, bakePath(e.file), lost)) {
+    auto job = std::make_unique<MixJob>();
+    job->what = MixJob::For::Element;
+    job->ref = ref;
+    job->bake = e;
+    startMix(std::move(job), std::move(pieces), e.frames, bakePath(e.file));
+}
+
+void SongEngine::Impl::startMix(std::unique_ptr<MixJob> job, std::vector<BakedPiece> pieces, uint32_t total,
+                                const std::string& path) {
+    bakeProgress_.store(0);
+    mix_ = std::move(job);
+    MixJob& j = *mix_;
+    j.total = total;
+    j.path = path;
+    std::stable_sort(pieces.begin(), pieces.end(),
+                     [](const BakedPiece& a, const BakedPiece& b) { return a.start < b.start; });
+    j.pieces = std::move(pieces);
+    if (!mixAcc_) mixAcc_ = static_cast<int32_t*>(p.allocScratch(sz.chunkFrames * kMixSpanChunks * 8));
+    if (!mixAcc_ || !fsx::makeDir(std::string(p.songsRoot()) + "/" + AudioSong::bakeDir()) ||
+        !j.w.open((path + ".part").c_str(), sampleRate_, 2)) {
+        endMix(BakeRun::Failed);
+        return;
+    }
+    /* Room for it found on the card at once, while nothing plays: on a big
+     * card that is a scan of the FAT, longer than the ring lasts. */
+    if (!streamingNow()) j.w.reserve(total);
+}
+
+/// Worker: the streamer first; then a span begun -- its pieces the readers
+/// hold first, so a reader is not opened again for them -- or one source read
+/// over at most a chunk of it and summed at its gains and pans, or once all
+/// are, a chunk of the span written. A source that cannot be opened, or gives
+/// fewer frames than it says it holds (cut short, gone since the view was
+/// made), fails the bake: silence in its place would be named as the element.
+void SongEngine::Impl::stepMix() {
+    MixJob& j = *mix_;
+    if (j.what == MixJob::For::Context) {
+        std::lock_guard<std::recursive_mutex> l(songMutex_);
+        if (j.gen != ctxGen_) {   // asked for again, or dropped, since
+            endMix(BakeRun::GaveWay);
+            return;
+        }
+    }
+    p.yieldIo();
+    const uint32_t span = sz.chunkFrames * kMixSpanChunks;
+    if (j.spanAt >= j.total) {
+        endMix(BakeRun::Done);
+        return;
+    }
+    if (!j.spanLen) {
+        j.spanLen = std::min(span, j.total - j.spanAt);
+        std::memset(mixAcc_, 0, (size_t)j.spanLen * 8);
+        while (j.first < j.pieces.size() && j.pieces[j.first].end <= j.spanAt) ++j.first;
+        j.live.clear();
+        for (size_t i = j.first; i < j.pieces.size() && j.pieces[i].start < j.spanAt + j.spanLen; ++i)
+            if (j.pieces[i].end > j.spanAt) j.live.push_back(i);
+        std::stable_partition(j.live.begin(), j.live.end(),
+                              [&](size_t i) { return j.readers.holds(j.pieces[i].path); });
+        j.next = 0;
+        j.written = 0;
+        if (!j.live.empty()) j.readAt = std::max(j.pieces[j.live[0]].start, j.spanAt);
+    }
+    const uint32_t spanEnd = j.spanAt + j.spanLen;
+    if (j.next < j.live.size()) {
+        const BakedPiece& pc = j.pieces[j.live[j.next]];
+        const uint32_t to = std::min(pc.end, spanEnd);
+        const uint32_t x = j.readAt, y = std::min(to, x + sz.chunkFrames);
+        ClipReader* r = j.readers.get(pc.path);
+        if (!r || !r->readWhole(x - pc.start + pc.offset, io_, y - x)) {
+            j.lost = pc.path;
+            endMix(BakeRun::Failed);
+            return;
+        }
+        float gs[2];
+        pan_side_gains(pc.gain, pc.pan, gs);
+        int32_t* d = mixAcc_ + (size_t)(x - j.spanAt) * 2;
+        for (uint32_t k = 0; k < (y - x) * 2; ++k) d[k] += (int32_t)((float)io_[k] * gs[k & 1]);
+        j.readAt = y;
+        if (y >= to && ++j.next < j.live.size()) j.readAt = std::max(j.pieces[j.live[j.next]].start, j.spanAt);
+        return;
+    }
+    const uint32_t n = std::min(sz.chunkFrames, j.spanLen - j.written);
+    const int32_t* a = mixAcc_ + (size_t)j.written * 2;
+    for (uint32_t k = 0; k < n * 2; ++k) io_[k] = (int16_t)(a[k] > 32767 ? 32767 : (a[k] < -32768 ? -32768 : a[k]));
+    if (!j.w.write(io_, n)) {
+        endMix(BakeRun::Failed);
+        return;
+    }
+    j.written += n;
+    bakeProgress_.store((uint8_t)((uint64_t)(j.spanAt + j.written) * kBakeMixedPercent / j.total));
+    if (j.written < j.spanLen) return;
+    j.spanAt = spanEnd;
+    j.spanLen = 0;
+    if (j.spanAt >= j.total) endMix(BakeRun::Done);
+}
+
+void SongEngine::Impl::endMix(BakeRun run) {
+    std::unique_ptr<MixJob> job = std::move(mix_);
+    MixJob& j = *job;
+    for (ClipReader& r : j.readers.slot) r.close();
+    const std::string part = j.path + ".part";
+    const bool closed = j.w.close();
+    if (run == BakeRun::Done) {
+        std::remove(j.path.c_str());   // an empty one left by a cut: FATFS renames over nothing
+        if (!closed || !fsx::rename(part, j.path)) run = BakeRun::Failed;
+    }
+    if (run != BakeRun::Done) std::remove(part.c_str());
+    else bakeProgress_.store(100);
+    const std::string file = j.path.substr(j.path.find_last_of('/') + 1);
+    if (j.what == MixJob::For::Element) {
+        switch (run) {
+            case BakeRun::Done:
+                logf(false, "baked %s into %s from the card", j.ref.c_str(), file.c_str());
+                bakeMade(j.ref, j.bake);
+                break;
+            case BakeRun::GaveWay:
+                break;
+            case BakeRun::Failed:
+                bakeFailed(j.ref, j.lost.empty() ? "The bake was not written: the card is full or would not take it."
+                                                 : j.lost + " could not be read from the card whole.");
+                break;
+        }
+        return;
+    }
+    switch (run) {
         case BakeRun::Done:
-            logf(false, "baked %s into %s from the card", ref.c_str(), e.file.c_str());
-            bakeMade(ref, e);
+            logf(false, "context of %s baked into %s", j.focus.c_str(), file.c_str());
+            contextDone(j.gen, j.path, j.at, j.frames, j.bpm, j.state, j.why);
             break;
-        case BakeRun::GaveWay:
+        case BakeRun::GaveWay: {
+            std::lock_guard<std::recursive_mutex> l(songMutex_);
+            if (j.gen == ctxGen_) ctxPending_.store(true);
             break;
+        }
         case BakeRun::Failed:
-            bakeFailed(ref, lost.empty() ? "The bake was not written: the card is full or would not take it."
-                                         : lost + " could not be read from the card whole.");
+            contextDone(j.gen, {}, j.at, j.frames, j.bpm, ContextState::Incomplete,
+                        j.lost.empty() ? "The song around the element was not written: the card is full or would not take it."
+                                       : j.lost + " could not be read from the card whole.");
             break;
     }
 }
 
-/// Worker: @p pieces summed at their gains and pans into @p total frames at @p path, a
-/// chunk at a time, through BakeReaders. Out at once when anything else is
-/// asked of the worker -- PLAY among it -- with the .part removed. A source
-/// that cannot be opened, or gives fewer frames than it says it holds (cut
-/// short, gone since the view was made), fails the bake: silence in its place
-/// would be named as the element. @p lost names it.
-SongEngine::Impl::BakeRun SongEngine::Impl::mixDown(std::vector<BakedPiece> pieces, uint32_t total,
-                                                    const std::string& path, std::string& lost) {
-    bakeProgress_.store(0);
-    p.yieldIo();   // the streamer first
-    if (requestWaiting()) return BakeRun::GaveWay;
-    if (!fsx::makeDir(std::string(p.songsRoot()) + "/" + AudioSong::bakeDir())) return BakeRun::Failed;
-    std::stable_sort(pieces.begin(), pieces.end(),
-                     [](const BakedPiece& a, const BakedPiece& b) { return a.start < b.start; });
-    const std::string part = path + ".part";
-    WavWriter w;
-    if (!w.open(part.c_str(), sampleRate_, 2)) return BakeRun::Failed;
-    w.reserve(total);
-    BakeRun run = BakeRun::Done;
-    {
-        BakeReaders readers;
-        std::vector<size_t> live;
-        size_t first = 0;
-        uint32_t chunk = 0;
-        for (uint32_t f = 0; f < total && run == BakeRun::Done; ++chunk) {
-            const uint32_t n = std::min(sz.chunkFrames, total - f);
-            std::memset(acc_, 0, n * 8);
-            while (first < pieces.size() && pieces[first].end <= f) ++first;
-            live.clear();
-            for (size_t i = first; i < pieces.size() && pieces[i].start < f + n; ++i)
-                if (pieces[i].end > f) live.push_back(i);
-            /* Every other chunk the other way round, so the two files read last
-             * are read first again: four tracks at once open two files a chunk,
-             * not four. */
-            if (chunk & 1) std::reverse(live.begin(), live.end());
-            for (const size_t i : live) {
-                const BakedPiece& pc = pieces[i];
-                ClipReader* r = readers.get(pc.path);
-                const uint32_t x = std::max(pc.start, f), y = std::min(pc.end, f + n);
-                if (!r || !r->readWhole(x - pc.start + pc.offset, io_, y - x)) {
-                    lost = pc.path;
-                    run = BakeRun::Failed;
-                    break;
-                }
-                float gs[2];
-                pan_side_gains(pc.gain, pc.pan, gs);
-                int32_t* d = acc_ + (x - f) * 2;
-                for (uint32_t k = 0; k < (y - x) * 2; ++k) d[k] += (int32_t)((float)io_[k] * gs[k & 1]);
-            }
-            if (run != BakeRun::Done) break;
-            for (uint32_t k = 0; k < n * 2; ++k) {
-                const int32_t v = acc_[k];
-                io_[k] = (int16_t)(v > 32767 ? 32767 : (v < -32768 ? -32768 : v));
-            }
-            if (!w.write(io_, n)) { run = BakeRun::Failed; break; }
-            f += n;
-            bakeProgress_.store((uint8_t)((uint64_t)f * kBakeMixedPercent / total));
-            p.yieldIo();
-            if (f < total && requestWaiting()) run = BakeRun::GaveWay;
-        }
-    }
-    const bool closed = w.close();
-    if (run == BakeRun::Done) {
-        std::remove(path.c_str());   // an empty one left by a cut: FATFS renames over nothing
-        if (!closed || !fsx::rename(part, path)) run = BakeRun::Failed;
-    }
-    if (run != BakeRun::Done) {
-        std::remove(part.c_str());
-        return run;
-    }
-    bakeProgress_.store(100);
-    return run;
+bool SongEngine::Impl::mixMustEnd() {
+    if (mix_->what == MixJob::For::Element && bakeOther_ && !idleNow()) return true;
+    return releaseReq_.load() || openReq_.load() || editReq_.load() != 0 || bounceReq_.load() ||
+           (mix_->what == MixJob::For::Element && relinkReq_.load());
 }
 
 ElementClipState SongEngine::Impl::elementClipState(uint8_t track, size_t clip) {
@@ -672,9 +791,9 @@ void SongEngine::Impl::contextDone(uint32_t gen, const std::string& path, uint32
 
 /// Worker: the stem over the request's pass, clamped to the song's end, at the
 /// song's tempo -- found in .bake/ by its key, or mixed there as .part and
-/// renamed. A song with nothing around the element gets no file. One the card
-/// would not take leaves nothing to play, with the why; one that gave way to a
-/// request is asked for again.
+/// renamed (stepMix()). A song with nothing around the element gets no file.
+/// One the card would not take leaves nothing to play, with the why; one that
+/// gave way to a request is asked for again.
 void SongEngine::Impl::doContext() {
     ContextRequest req;
     uint32_t gen = 0;
@@ -684,8 +803,15 @@ void SongEngine::Impl::doContext() {
         req = ctxReq_;
         gen = ctxGen_;
     }
+    gaveWay_ = false;
+    auto again = [&] {
+        std::lock_guard<std::recursive_mutex> l(songMutex_);
+        if (gen == ctxGen_) ctxPending_.store(true);
+    };
     const std::string& name = req.chain.front();
     AudioSong song;
+    pace();
+    if (gaveWay_) return again();
     if (song.load(std::string(p.songsRoot()) + "/" + name) != SongLoad::Loaded) {
         contextDone(gen, {}, 0, 0, 0.0f, ContextState::Incomplete, name + " cannot be read.");
         return;
@@ -697,36 +823,212 @@ void SongEngine::Impl::doContext() {
     const uint32_t from = req.songFrame;
     const uint32_t frames = from < cut ? std::min(req.frames, cut - from) : 0;
 
-    ContextMix mix(p.songsRoot(), sampleRate_, bpm, req.chain.back(), cardHashReader());
+    ContextMix mix(p.songsRoot(), sampleRate_, bpm, req.chain.back(), pacedHashReader(),
+                   [this](const std::string& path, uint64_t atLeast) { return pacedIsFile(path, atLeast); });
     std::vector<BakedPiece> pieces;
     const float unity[2] = {1.0f, 1.0f};
     mix.pieces(song, name, name, -(int64_t)from, from, from + frames, unity, pieces);
+    const uint64_t hash = pieces.empty() ? 0 : mix.hash(song, name);
+    if (gaveWay_) return again();
     const ContextState done = mix.whole() ? ContextState::Ready : ContextState::Incomplete;
     if (pieces.empty()) {
         contextDone(gen, {}, req.focusFrame, frames, bpm, done, mix.why());
         return;
     }
-    const std::string file = context_bake_file(context_bake_key(mix.hash(song, name), from, frames, mix.lacks(), bpm, sampleRate_));
+    const std::string file = context_bake_file(context_bake_key(hash, from, frames, mix.lacks(), bpm, sampleRate_));
     const std::string path = bakePath(file);
-    if (!fsx::isFile(path, 1)) {
-        std::string lost;
-        switch (mixDown(std::move(pieces), frames, path, lost)) {
-            case BakeRun::Done:
-                logf(false, "context of %s baked into %s", req.chain.back().c_str(), file.c_str());
-                break;
-            case BakeRun::GaveWay: {
-                std::lock_guard<std::recursive_mutex> l(songMutex_);
-                if (gen == ctxGen_) ctxPending_.store(true);
-                return;
+    const bool found = pacedIsFile(path, 1);
+    if (gaveWay_) return again();
+    if (found) {
+        contextDone(gen, path, req.focusFrame, frames, bpm, done, mix.why());
+        return;
+    }
+    auto job = std::make_unique<MixJob>();
+    job->what = MixJob::For::Context;
+    job->gen = gen;
+    job->at = req.focusFrame;
+    job->frames = frames;
+    job->bpm = bpm;
+    job->state = done;
+    job->why = mix.why();
+    job->focus = req.chain.back();
+    startMix(std::move(job), std::move(pieces), frames, path);
+}
+
+void SongEngine::Impl::pace() {
+    for (;;) {
+        const bool streaming = streamingNow();
+        if (requestTaken(streaming) || play_.load() == Play::Ended || (idleWork_ && !idleNow())) {
+            gaveWay_ = true;
+            break;
+        }
+        if (!streaming || ring_.used() >= ring_.cap / 2) break;
+        serviceTake();
+        fillRings();
+        if (ring_.used() < ring_.cap / 2) p.waitWake(kStreamPollMs);
+    }
+    p.yieldIo();
+}
+
+ElementHashReader SongEngine::Impl::pacedHashReader() {
+    ElementHashReader rd = cardHashReader();
+    rd.info = [this, info = rd.info](const std::string& path, uint64_t& bytes, int64_t& modified) {
+        pace();
+        return !gaveWay_ && info(path, bytes, modified);
+    };
+    rd.read = [this, read = rd.read](const std::string& path, std::string& bytes) {
+        pace();
+        return !gaveWay_ && read(path, bytes);
+    };
+    rd.list = [this, list = rd.list](const std::string& dir, const std::function<void(const std::string&)>& each) {
+        pace();
+        if (!gaveWay_) list(dir, each);
+    };
+    return rd;
+}
+
+bool SongEngine::Impl::pacedIsFile(const std::string& path, uint64_t atLeast) {
+    pace();
+    return !gaveWay_ && fsx::isFile(path, atLeast);
+}
+
+bool SongEngine::Impl::backgroundPending() {
+    return mix_ || contextPending() || (relinkReq_.load() && p.storageReady()) ||
+           (peaksPending() && p.storageReady()) || (stretchPending() && p.storageReady()) ||
+           diskBakePending() || idlePending();
+}
+
+void SongEngine::Impl::backgroundStep(bool streaming) {
+    /* The song around the element being edited first: it is what the player
+     * hears next. An element's mix under way gives way to it. */
+    if (contextPending() || mixing(MixJob::For::Context)) {
+        if (mixing(MixJob::For::Element)) endMix(BakeRun::GaveWay);
+        if (mix_) stepMix();
+        else doContext();
+        return;
+    }
+    if (relinkReq_.load() && p.storageReady()) doRelink();
+    /* A mix under way goes on before a waveform or a copy is started: its
+     * three descriptors are all the background holds. */
+    else if (mix_) stepMix();
+    else if (!streaming && peaksPending() && p.storageReady()) doPeaks();
+    else if (!streaming && stretchPending() && p.storageReady()) doStretch();
+    else if (diskBakePending()) doDiskBake();
+    else if (!streaming && idlePending()) idleStep();
+}
+
+void SongEngine::Impl::idleBaking(bool allowed) {
+    if (idleAllowed_.exchange(allowed) != allowed && workerStarted_.load()) p.wake();
+}
+
+void SongEngine::Impl::noteChanged(const std::set<std::string>& refs) {
+    bool grew = false;
+    for (const std::string& r : refs) grew = changed_.insert(r).second || grew;
+    if (!grew) return;
+    /* The songs to relink are found again, the new ones' too. */
+    idleListed_ = false;
+    idleScanAsked_ = false;
+    idleSongs_.clear();
+}
+
+/// Worker, idle: the uses scan is asked for first (the loop makes it as it
+/// makes any list), then the songs are taken from it one at a time; the
+/// elements they were found for are done with once the last is relinked. A
+/// song whose bakes are queued is done when the queue is through.
+void SongEngine::Impl::idleStep() {
+    if (bakeOther_) {
+        dropBakeQueue();
+        if (!idleSongs_.empty()) idleSongs_.erase(idleSongs_.begin());
+        return;
+    }
+    if (!idleListed_) {
+        if (!idleScanAsked_) {
+            idleScanAsked_ = true;
+            usesAsked_.fetch_add(1);
+            listReq_.fetch_or(kListUses);
+            return;
+        }
+        if (usesPending()) return;
+        idleServing_ = changed_;
+        idleSongs_ = songsPlaying(idleServing_);
+        idleListed_ = true;
+        return;
+    }
+    if (idleSongs_.empty()) {
+        for (const std::string& r : idleServing_) changed_.erase(r);
+        idleServing_.clear();
+        idleListed_ = false;
+        idleScanAsked_ = false;
+        return;
+    }
+    if (relinkOther(idleSongs_.front()) && !bakeOther_) idleSongs_.erase(idleSongs_.begin());
+}
+
+std::vector<std::string> SongEngine::Impl::songsPlaying(const std::set<std::string>& refs) {
+    std::string open;
+    {
+        std::lock_guard<std::recursive_mutex> l(songMutex_);
+        if (opened_) open = song_.name;
+    }
+    const ElementUses uses = usesIndex();
+    std::set<std::string> songs, seen(refs.begin(), refs.end());
+    std::vector<std::string> todo(refs.begin(), refs.end());
+    while (!todo.empty()) {
+        const std::string ref = todo.back();
+        todo.pop_back();
+        const auto it = uses.find(ref);
+        if (it == uses.end()) continue;
+        for (const ElementUse& u : it->second) {
+            if (u.song) {
+                if (u.user != open) songs.insert(u.user);
+            } else if (seen.insert(u.user).second) {
+                todo.push_back(u.user);
             }
-            case BakeRun::Failed:
-                contextDone(gen, {}, req.focusFrame, frames, bpm, ContextState::Incomplete,
-                            lost.empty() ? "The song around the element was not written: the card is full or would not take it."
-                                         : lost + " could not be read from the card whole.");
-                return;
         }
     }
-    contextDone(gen, path, req.focusFrame, frames, bpm, done, mix.why());
+    return {songs.begin(), songs.end()};
+}
+
+/// Worker, idle: @p name's song.json read (never opened: the pads keep the
+/// kit the player picked), each element block resolved at its tempo; those
+/// whose bake is on the card relinked there at once, those that can be mixed
+/// from the card queued for this song (bakeOther_) and relinked as each is
+/// made. A song that cannot be read, or is the open one now, is passed over.
+bool SongEngine::Impl::relinkOther(const std::string& name) {
+    {
+        std::lock_guard<std::recursive_mutex> l(songMutex_);
+        if (opened_ && song_.name == name) return true;
+    }
+    gaveWay_ = false;
+    idleWork_ = true;
+    struct Done { bool& flag; ~Done() { flag = false; } } done{idleWork_};
+    pace();
+    if (gaveWay_) return false;
+    AudioSong s;
+    if (s.load(std::string(p.songsRoot()) + "/" + name) != SongLoad::Loaded) return true;
+    std::vector<std::string> refs;
+    for (const SongTrack& tr : s.tracks)
+        for (const SongClip& c : tr.clips)
+            if (c.isElement() && std::find(refs.begin(), refs.end(), c.element) == refs.end()) refs.push_back(c.element);
+    const float bpm = effectiveBpm(s);
+    auto resolver = std::make_unique<ElementResolver>(p.songsRoot(), sampleRate_, bpm, pacedHashReader());
+    std::map<std::string, std::pair<std::string, uint32_t>> links;
+    std::vector<std::string> queue;
+    for (const std::string& ref : refs) {
+        const ResolvedElement& e = resolver->resolve(ref);
+        if (gaveWay_) return false;
+        if (e.exists) links[ref] = {e.file, e.frames};
+        else if (e.bakeable) queue.push_back(ref);
+    }
+    linkOnCard(s.dir, links);
+    if (queue.empty()) return true;
+    dropBakeQueue();
+    resolver_ = std::move(resolver);
+    bakeSong_ = s.dir;
+    bakeBpm_ = bpm;
+    bakeQueue_ = std::move(queue);
+    bakeOther_ = true;
+    return true;
 }
 
 } // namespace crosspad

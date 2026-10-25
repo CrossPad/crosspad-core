@@ -1017,6 +1017,7 @@ ElementNav::Result ElementNav::sounds()
     }
     phase_ = Phase::Freezing;
     freezeTrack_ = 0;
+    froze_ = false;
     asked_ = false;
     refusals_ = 0;
     return {};
@@ -1036,6 +1037,31 @@ int ElementNav::nextToFreeze()
     return AudioSong::kTracks;
 }
 
+bool ElementNav::bakeableFromCard()
+{
+    ISongEngine* se = songEngine();
+    if (job_ != Job::Leave || froze_ || se->stretchWaiting()) return false;
+    std::lock_guard<std::recursive_mutex> l(se->songMutex());
+    const AudioSong& song = se->song();
+    for (int t = 0; t < AudioSong::kTracks; ++t) {
+        const SongTrack& tr = song.tracks[t];
+        if (song.silenced(t)) continue;
+        if (tr.kind == TrackKind::Audio) {
+            /* A stretched recording whose length the song does not hold: only
+             * the engine, reading the file, knows it needs no fitted copy. */
+            if (tr.stretch == StretchMode::Off) continue;
+            for (const SongClip& c : tr.clips)
+                if (!c.isElement() && !c.file.empty() && !c.frames) return false;
+            continue;
+        }
+        if (!tr.inUse) continue;
+        if (!tr.seqBlocks) return false;
+        for (const SongClip& c : tr.clips)
+            if (!c.notes) return false;
+    }
+    return true;
+}
+
 /// A bake mixes a seq track from its freeze: each one not frozen is, in turn.
 ElementNav::Result ElementNav::freezing()
 {
@@ -1044,6 +1070,20 @@ ElementNav::Result ElementNav::freezing()
         if (!onLevel(parentFreeze_ ? path_.back().open : ref_)) return fail(kOtherSong);
         freezeTrack_ = nextToFreeze();
         if (freezeTrack_ >= AudioSong::kTracks && parentFreeze_) return toSnapshot();
+        if (freezeTrack_ >= AudioSong::kTracks && bakeableFromCard()) {
+            /* Nothing of it needs the engine: the level above opens at once,
+             * its blocks keep the old bake, and the relink pass that open asks
+             * for bakes the element from the card in the background and links
+             * it -- with the song playing or not. */
+            changed_ = edited_;
+            left_ = ref_;
+            bakeFile_.clear();
+            bakeFrames_ = 0;
+            phase_ = Phase::Reopening;
+            asked_ = false;
+            refusals_ = 0;
+            return {};
+        }
         if (freezeTrack_ >= AudioSong::kTracks) {
             phase_ = Phase::Stretching;
             lastWaiting_ = 0;
@@ -1052,6 +1092,7 @@ ElementNav::Result ElementNav::freezing()
         }
         if (!se->freezeTrack((uint8_t)freezeTrack_))
             return refused("track " + std::to_string(freezeTrack_ + 1) + " cannot be frozen now");
+        froze_ = true;
         asked_ = true;
         refusals_ = 0;
         return {};
@@ -1210,6 +1251,7 @@ ElementNav::Result ElementNav::linked()
             for (SongClip& c : t.clips) {
                 if (c.element != ref_) continue;
                 c.element = to;
+                if (bakeFile_.empty()) continue;   // a leave that did not wait: the old bake plays until relinked
                 c.file = bakeFile_;
                 c.frames = bakeFrames_;
             }

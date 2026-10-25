@@ -33,19 +33,24 @@ namespace crosspad {
 /// become time-stretched, so a recording follows the song. Leaving stops,
 /// puts the element back at the song's tempo when it was turned inside it,
 /// waits for its kit and instrument to be loaded (PlatformServices::songSounds),
-/// freezes every seq track that is not frozen, waits for the fitted copies of
-/// stretched tracks, bakes the element (ISongEngine::requestBakeElement) and
-/// opens the parent, where every block of the element takes the bake's file
-/// and length. A bake that fails, or anything else, stops the job where it
-/// is: a leave that failed leaves the engine on the element and path() as it
-/// was. Another song opened behind its back stops it too, before it freezes,
-/// bakes or links anything in that song; idle, the breadcrumb starts over at
-/// the song the engine has open.
+/// and then waits no longer than it must: an element whose heard seq tracks
+/// all play their freezes of their own notes and whose recordings are all
+/// fitted opens the parent at once, its blocks playing the old bake until the
+/// engine has baked it from the card -- in the background, the song playing or
+/// not -- and relinked them. Any other freezes every seq track that is not
+/// frozen, waits for the fitted copies of stretched tracks, bakes the element
+/// (ISongEngine::requestBakeElement) and opens the parent, where every block
+/// of the element takes the bake's file and length. A bake that fails, or
+/// anything else, stops the job where it is: a leave that failed leaves the
+/// engine on the element and path() as it was. Another song opened behind its
+/// back stops it too, before it freezes, bakes or links anything in that song;
+/// idle, the breadcrumb starts over at the song the engine has open.
 ///
 /// An element edited inside and played by anything besides the level above is
 /// a question as it is left (asking()): Replace keeps the edit where it is, for
-/// everyone (the other songs bake it again as they open); Copy makes it a new
-/// element only this song plays, and puts the original back from its snapshot
+/// everyone (the other songs bake it again as they open, or while the player
+/// is away: ISongEngine::idleBaking()); Copy makes it a new element only this
+/// song plays, and puts the original back from its snapshot
 /// (ISongEngine::requestSnapshot()). A copy goes up the open path -- every
 /// element above it on the path that something else plays is copied too, as
 /// it is left, without asking -- and, once the song is reached again, to every
@@ -318,6 +323,11 @@ private:
     Result openChild();
     /// Seq tracks of the open song a bake would find not frozen, from @c track_ on.
     int nextToFreeze();
+    /// The leave can open the level above at once: nothing was frozen for it,
+    /// nothing waits to be fitted, and the card tells all that the engine
+    /// does -- every heard seq track plays notes of its own (not a scene), and
+    /// every stretched recording's length is in the song.
+    bool bakeableFromCard();
     /// The song around the level being edited asked of the engine: its chosen
     /// pass, one pass of the focus long; none at the song, and an element heard
     /// nowhere asks with no frames (the engine says why).
@@ -341,6 +351,7 @@ private:
     uint32_t    bar_ = 0;
     uint32_t    regionBars_ = 0;
     int         freezeTrack_ = 0;
+    bool        froze_ = false;          ///< the leave froze a track: it bakes as it goes
     bool        parentFreeze_ = false;   ///< Freezing is the parent's, before the element opens
     uint32_t    lastWaiting_ = 0;     ///< stretched blocks still unfitted at the last poll
     bool        wasPending_ = false;  ///< a snapshot of ref_ was on the card before this enter asked for one
