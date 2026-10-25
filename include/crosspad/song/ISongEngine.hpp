@@ -68,6 +68,12 @@ struct ClipPeaks {
     bool missing = false;
 };
 
+/// An element block against its element as it is now, at the song's tempo
+/// (ISongEngine::elementClipState()): it plays that element's bake, an older
+/// one (the element cannot be baked from the card yet), an older one while the
+/// new one is being made, or nothing -- its bake is not on the card.
+enum class ElementClipState : uint8_t { Fresh, Stale, Baking, Missing };
+
 /// A seq track's freeze (ISongEngine::freezeTrack()): none made, one that
 /// plays in its place, one its notes, sound or tempo have moved past (the
 /// track plays live until it is frozen again), or one being made now. An
@@ -140,9 +146,27 @@ public:
     /// edit: editState()/editProgress(); Failed with editReport() naming why
     /// when a seq track is not frozen or a stretched block is not fitted yet.
     /// A bake already in the cache is found, not written (ElementBake::cached).
+    /// Keyed as the song above resolves it (ElementResolver): at the song's
+    /// effective tempo, an element block by its element's bake as it is now
+    /// when that is on the card -- and then mixed from it too.
     virtual bool requestBakeElement() { return false; }
     /// The last bake request's result; empty after one that failed.
     virtual ElementBake bakeResult() { return {}; }
+    /// What element block @p clip of @p track plays now against its element's
+    /// current version at the song's tempo, as of the last relink pass -- the
+    /// pass runs after every open and every commit that moves an element block
+    /// (or the tempo): a block whose element's bake is on the card is linked to
+    /// it, one that can be mixed from files on the card is baked in the
+    /// background while the song is stopped, and one that cannot keeps playing
+    /// the bake it has. Fresh for anything else, and before any pass.
+    virtual ElementClipState elementClipState(uint8_t track, size_t clip) { (void)track; (void)clip; return ElementClipState::Fresh; }
+    /// Why that block is Stale or Missing: the first thing its element lacks
+    /// to be baked from the card (a seq track not frozen, ...); empty otherwise.
+    virtual std::string elementClipWhy(uint8_t track, size_t clip) { (void)track; (void)clip; return {}; }
+    /// How far the background bake under way is, 0..100.
+    virtual uint8_t backgroundProgress() const { return 0; }
+    /// A relink pass or a background bake is waiting or running.
+    virtual bool backgroundBusy() const { return false; }
     /// The open project. Read or edit it holding songMutex().
     virtual AudioSong& song() = 0;
     virtual std::recursive_mutex& songMutex() = 0;

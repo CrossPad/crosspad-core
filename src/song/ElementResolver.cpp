@@ -40,7 +40,7 @@ ResolvedElement ElementResolver::make(const std::string& ref) {
         r.why = "Element " + ref + " cannot be read.";
         return r;
     }
-    /* A freeze was rendered on the grid of the tempo the element had. */
+    /* A freeze was rendered, and a recording laid, on the grid of the tempo the element had. */
     const bool apart = std::fabs((song.bpm > 0.0f ? song.bpm : AudioSong::kDefaultBpm) - bpm_) > kSameTempoBpm;
     song.bpm = bpm_;
     const uint32_t spb = song.samplesPerBar(rate_);
@@ -63,7 +63,14 @@ ResolvedElement ElementResolver::make(const std::string& ref) {
         }
         for (const SongClip& c : tr.clips) {
             if (!c.isElement()) {
-                if (tr.stretch == StretchMode::Off || tr.kind != TrackKind::Audio || !r.why.empty()) continue;
+                if (tr.kind != TrackKind::Audio || !r.why.empty()) continue;
+                /* A recording made at another tempo is stretched to the bars when the
+                 * element is entered at this one (ElementNav); as recorded it is not
+                 * the element at this tempo. */
+                if (tr.stretch == StretchMode::Off) {
+                    if (apart) r.why = "Track " + std::to_string(t + 1) + " is not fitted to the tempo yet.";
+                    continue;
+                }
                 const uint32_t fit = bars_to_frames(c.bars, spb);
                 uint64_t bytes = 0;
                 int64_t modified = 0;

@@ -129,6 +129,10 @@ void SongEngine::Impl::worker() {
         const bool peaking = !streaming && peaksPending() && p.storageReady();
         /* Stretched copies likewise, after the waveforms. */
         const bool stretching = !streaming && !peaking && stretchPending() && p.storageReady();
+        /* Element bakes from the card after them, also only while nothing
+         * plays: one waiting while the song streams is no reason to skip the
+         * wait. */
+        const bool baking = !streaming && !peaking && !stretching && diskBakePending();
         /* Until a project is open, look for the card once a second; with a
          * save waiting, back in time to make it. */
         /* A request made while the last one was handled has had its wake-up
@@ -137,7 +141,7 @@ void SongEngine::Impl::worker() {
          * loop leaves them until the stop. */
         if (!requestWaiting(streaming))
             p.waitWake(streaming ? kStreamPollMs
-                                 : peaking || stretching ? 0
+                                 : peaking || stretching || baking ? 0
                                  : saveReq_.load() ? kSaveDelayMs : (lastTried_ ? UINT32_MAX : kCardPollMs));
         if (quit_.load()) break;
 
@@ -212,6 +216,12 @@ void SongEngine::Impl::worker() {
          * worker off the ring for longer than the ring lasts. The save
          * waits for the stop, which is never far off on a loop. */
         if (!streaming && saveReq_.load() && p.nowUs() >= saveAtUs_.load() && saveReq_.exchange(false)) doSave();
+        /* The relink pass reads every element's song.json: like the elements'
+         * list, it waits for the stop. */
+        if (!streaming && relinkReq_.load() && p.storageReady()) {
+            doRelink();
+            continue;
+        }
         if (bounceReq_.exchange(false)) {
             if (bFreeze_) runFreeze();
             else runBounce();
@@ -224,6 +234,7 @@ void SongEngine::Impl::worker() {
         }
         else if (peaksPending() && p.storageReady()) doPeaks();
         else if (stretchPending() && p.storageReady()) doStretch();
+        else if (diskBakePending()) doDiskBake();
     }
 }
 
@@ -233,7 +244,8 @@ bool SongEngine::Impl::requestWaiting(bool streaming) const {
     const uint8_t held = streaming ? kListsAfterStop : 0;
     return quit_.load() || releaseReq_.load() || stopReq_.load() || playReq_.load() || openReq_.load() ||
            editReq_.load() != 0 || (listReq_.load() & (uint8_t)~held) != 0 || bounceReq_.load() ||
-           (!streaming && saveReq_.load() && p.nowUs() >= saveAtUs_.load());
+           (!streaming && saveReq_.load() && p.nowUs() >= saveAtUs_.load()) ||
+           (!streaming && relinkReq_.load() && p.storageReady());
 }
 
 SongEngine::SongEngine(ISongEnginePlatform& platform, MetronomeNode& clock, PatternSequencer& seq)
@@ -297,6 +309,10 @@ bool SongEngine::requestElements() { return impl_->requestElements(); }
 std::vector<ElementInfo> SongEngine::elements() { return impl_->elements(); }
 bool SongEngine::requestBakeElement() { return impl_->requestBakeElement(); }
 ElementBake SongEngine::bakeResult() { return impl_->bakeResult(); }
+ElementClipState SongEngine::elementClipState(uint8_t track, size_t clip) { return impl_->elementClipState(track, clip); }
+std::string SongEngine::elementClipWhy(uint8_t track, size_t clip) { return impl_->elementClipWhy(track, clip); }
+uint8_t SongEngine::backgroundProgress() const { return impl_->backgroundProgress(); }
+bool SongEngine::backgroundBusy() const { return impl_->backgroundBusy(); }
 bool SongEngine::clipPeaks(const std::string& file, ClipPeaks& out) { return impl_->clipPeaks(file, out); }
 uint32_t SongEngine::peaksGeneration() const { return impl_->peaksGeneration(); }
 uint32_t SongEngine::framesPerBar() { return impl_->framesPerBar(); }

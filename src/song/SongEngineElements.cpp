@@ -8,6 +8,7 @@
 #include "SongEngineImpl.hpp"
 
 #include "crosspad/song/ElementHash.hpp"
+#include "crosspad/song/ElementResolver.hpp"
 
 namespace crosspad {
 
@@ -16,8 +17,6 @@ namespace {
 /// The most a kit.json or an instrument.json is read whole for the hash.
 constexpr size_t kMaxHashedFileBytes = 1u << 20;
 constexpr size_t kHashReadChunk      = 512;
-/// How far a bake's mix has come when its last chunk is written (the rest is the rename).
-constexpr uint8_t kBakeMixedPercent  = 99;
 
 } // namespace
 
@@ -55,6 +54,31 @@ void SongEngine::Impl::doListElements() {
     std::sort(out.begin(), out.end(), [](const ElementInfo& a, const ElementInfo& b) { return a.ref < b.ref; });
     std::lock_guard<std::mutex> l(listMutex_);
     elements_ = std::move(out);
+}
+
+ElementHashReader SongEngine::Impl::cardHashReader() {
+    ElementHashReader rd;
+    rd.info = [](const std::string& path, uint64_t& bytes, int64_t& modified) {
+        FileStat st;
+        if (fsx::fs().stat(path.c_str(), &st) != FsStat::Found || st.isDir) return false;
+        bytes = st.size;
+        modified = st.modified;
+        return true;
+    };
+    rd.read = [](const std::string& path, std::string& bytes) {
+        const int fd = fsx::openRead(path);
+        if (fd < 0) return false;
+        char buf[kHashReadChunk];
+        bytes.clear();
+        for (long n; (n = fsx::readSome(fd, buf, sizeof buf)) > 0 && bytes.size() <= kMaxHashedFileBytes;)
+            bytes.append(buf, (size_t)n);
+        fsx::close(fd);
+        return bytes.size() <= kMaxHashedFileBytes;
+    };
+    rd.list = [](const std::string& dir, const std::function<void(const std::string&)>& each) {
+        fsx::listDir(dir, [&](const std::string& name, bool isDir) { if (!isDir) each(dir + "/" + name); });
+    };
+    return rd;
 }
 
 bool SongEngine::Impl::requestBakeElement() {
@@ -115,24 +139,31 @@ SongOpState SongEngine::Impl::doBakeElement() {
     if (!bars) return fail("The song is empty.");
     const uint32_t total = bars * spBar;
 
-    ElementHashReader rd;
-    rd.info = [](const std::string& path, uint64_t& bytes, int64_t& modified) {
-        return fsx::fileInfo(path, bytes, modified);
+    /* Keyed as the resolver keys it from the song above, at the tempo it is
+     * played at there (this one's, after ElementNav's fit; the default for a
+     * song never given one), so the song above finds this bake by its key. */
+    const float bpm = copy.bpm > 0.0f ? copy.bpm : AudioSong::kDefaultBpm;
+    ElementHashReader rd = cardHashReader();
+    ElementResolver children(p.songsRoot(), sampleRate_, bpm, rd);
+    /* A block plays its element's bake as it is now when that is on the card,
+     * and is named by it in the key; one whose element has no such bake yet is
+     * mixed and named by the bake it holds -- a bake of an older child is never
+     * named as one of the newer. */
+    for (SongTrack& tr : copy.tracks) {
+        for (SongClip& c : tr.clips) {
+            if (!c.isElement()) continue;
+            const ResolvedElement& e = children.resolve(c.element);
+            if (!e.exists) continue;
+            c.file = e.file;
+            c.frames = e.frames;
+        }
+    }
+    rd.childKey = [&children](const std::string& ref, uint64_t& key) {
+        const ResolvedElement& e = children.resolve(ref);
+        key = e.key;
+        return e.exists;
     };
-    rd.read = [](const std::string& path, std::string& bytes) {
-        const int fd = fsx::openRead(path);
-        if (fd < 0) return false;
-        char buf[kHashReadChunk];
-        bytes.clear();
-        for (long n; (n = fsx::readSome(fd, buf, sizeof buf)) > 0 && bytes.size() <= kMaxHashedFileBytes;)
-            bytes.append(buf, (size_t)n);
-        fsx::close(fd);
-        return bytes.size() <= kMaxHashedFileBytes;
-    };
-    rd.list = [](const std::string& dir, const std::function<void(const std::string&)>& each) {
-        fsx::listDir(dir, [&](const std::string& name, bool isDir) { if (!isDir) each(dir + "/" + name); });
-    };
-    const uint64_t key = element_bake_key(element_content_hash(copy, rd), copy.bpm, sampleRate_);
+    const uint64_t key = element_bake_key(element_content_hash(copy, rd), bpm, sampleRate_);
     ElementBake result;
     result.file = element_bake_file(key);
     result.bars = (uint16_t)std::min<uint32_t>(bars, UINT16_MAX);

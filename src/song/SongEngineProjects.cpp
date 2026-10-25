@@ -246,6 +246,10 @@ SongOpState SongEngine::Impl::doOpen(const std::string& name, bool remember) {
         lastChangeUs_ = 0;
         rebuild();
     }
+    /* Its element blocks are looked at again, whatever the last song's pass found:
+     * a child may have changed on the card since this one was open. */
+    relinkReq_.store(true);
+    forgetElements();
     opened_ = true;
     if (remember) p.saveCurrent(name);
     {

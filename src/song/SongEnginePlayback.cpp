@@ -520,10 +520,15 @@ void SongEngine::Impl::meterReset() {
 }
 
 /// The song for the worker, and the per-track gains and loop for RT --
-/// so a mute or a fader acts at once while playing. Caller holds
-/// songMutex_.
+/// so a mute or a fader acts at once while playing; a relink pass asked for
+/// when element blocks or the tempo moved. Caller holds songMutex_.
 void SongEngine::Impl::rebuild() {
     noteChange();
+    std::string sig = elementSignature(song_);
+    if (sig != elementSig_) {
+        elementSig_ = std::move(sig);
+        relinkReq_.store(true);
+    }
     Arrangement a = flatten(song_);
     for (int t = 0; t < kTracks; ++t) {
         const auto& tr = song_.tracks[t];

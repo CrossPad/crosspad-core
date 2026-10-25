@@ -73,6 +73,10 @@ public:
     std::vector<ElementInfo> elements() override;
     bool requestBakeElement() override;
     ElementBake bakeResult() override;
+    ElementClipState elementClipState(uint8_t track, size_t clip) override;
+    std::string elementClipWhy(uint8_t track, size_t clip) override;
+    uint8_t backgroundProgress() const override;
+    bool backgroundBusy() const override;
     bool clipPeaks(const std::string& file, ClipPeaks& out) override;
     uint32_t peaksGeneration() const override;
     uint32_t framesPerBar() override;

@@ -57,6 +57,9 @@ void openDemo(Rig& r, const std::string& ref) {
         s.addClip(1, c);
     }
     r.engine->commit();
+    /* The block laid, the background bakes what it can of it from the card and
+     * links it: every job below starts from a song at rest. */
+    REQUIRE(waitFor([&] { return !r.engine->backgroundBusy(); }, 10000));
 }
 
 ElementNav::Result runNav() {
@@ -82,6 +85,19 @@ bool listElements(Rig& r) {
 
 fs::path bakeOf(Rig& r, const std::string& file) {
     return fs::path(r.platform.root) / AudioSong::bakeDir() / file;
+}
+
+/// Once the background is through: the block on @p track plays its element's
+/// bake as the card has it, and that is the only bake there is -- nothing of
+/// the song open was baked into it.
+void onlyCardBake(Rig& r, int track) {
+    REQUIRE(waitFor([&] { return !r.engine->backgroundBusy(); }, 10000));
+    const SongClip c = clipOf(r, track);
+    CHECK(r.engine->elementClipState((uint8_t)track, 0) == ElementClipState::Fresh);
+    std::vector<std::string> bakes;
+    for (const auto& e : fs::directory_iterator(fs::path(r.platform.root) / AudioSong::bakeDir()))
+        bakes.push_back(e.path().filename().string());
+    CHECK(bakes == std::vector<std::string>{c.file});
 }
 
 /// The board's SongSounds over a host whose kit loads end when the test says.
@@ -163,7 +179,8 @@ TEST_CASE("element nav: leaving unchanged finds the bake in the cache", "[elemen
         REQUIRE(runNav().ok);
         REQUIRE(elementNav().leave());
         REQUIRE(runNav().ok);
-        CHECK(r.engine->bakeResult().cached == (round == 1));
+        /* The first time too: the background baked it when the block was laid, by the same key. */
+        CHECK(r.engine->bakeResult().cached);
     }
 }
 
@@ -242,6 +259,7 @@ TEST_CASE("element nav: a bake that fails keeps you in the element", "[element][
     REQUIRE(elementNav().enter(1, 0));
     REQUIRE(runNav().ok);
     {
+        fs::remove_all(fs::path(r.platform.root) / AudioSong::bakeDir());
         std::FILE* f = std::fopen((fs::path(r.platform.root) / AudioSong::bakeDir()).string().c_str(), "wb");
         REQUIRE(f);
         std::fclose(f);                      // .bake is a file: nothing can be made in it
@@ -538,7 +556,7 @@ TEST_CASE("element nav: a song opened behind its back starts the breadcrumb over
          * element's own blocks. */
         CHECK_FALSE(elementNav().leave());
         CHECK_FALSE(elementNav().busy());
-        CHECK(clipOf(r, 1).file.empty());
+        onlyCardBake(r, 1);
     }
     SECTION("another song") {
         REQUIRE(r.open("Other"));
@@ -567,8 +585,7 @@ TEST_CASE("element nav: a song opened during a leave is neither baked nor linked
     CHECK_FALSE(out.ok);
     CHECK(out.error.find("another song") != std::string::npos);
     CHECK(openName(r) == "Demo");
-    CHECK(clipOf(r, 1).file.empty());
-    CHECK_FALSE(fs::exists(fs::path(r.platform.root) / AudioSong::bakeDir()));
+    onlyCardBake(r, 1);
     CHECK(elementNav().depth() == 0);
 }
 

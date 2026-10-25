@@ -157,6 +157,16 @@ TEST_CASE("resolver: a stretched track not fitted yet, or a freeze at another te
     CHECK(other.resolve(kC).why.find("another tempo") != std::string::npos);
 }
 
+TEST_CASE("resolver: a recording that keeps its speed is not bakeable at another tempo", "[song][resolver]") {
+    Card card("cp_resolver_unstretched");
+    card.write(kC, 100);                                     // at 120, StretchMode::Off
+    ElementResolver same(card.root, kRate, 120.0f, card.reader());
+    CHECK(same.resolve(kC).bakeable);
+    ElementResolver other(card.root, kRate, 100.0f, card.reader());
+    CHECK_FALSE(other.resolve(kC).bakeable);
+    CHECK(other.resolve(kC).why.find("not fitted") != std::string::npos);
+}
+
 TEST_CASE("resolver: a cycle is reported, not followed", "[song][resolver]") {
     Card card("cp_resolver_cycle");
     card.write(kA, 10, {kB});

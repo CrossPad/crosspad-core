@@ -21,6 +21,7 @@
 #include "crosspad/sequencer/MetronomeNode.hpp"
 #include "crosspad/sequencer/PatternSequencer.hpp"
 #include "crosspad/song/BakedView.hpp"
+#include "crosspad/song/ElementResolver.hpp"
 #include "crosspad/song/LiveSet.hpp"
 
 #include <algorithm>
@@ -90,6 +91,8 @@ constexpr uint32_t kPeakChunkFrames  = 4096;
 constexpr const char* kPeaksDir      = ".peaks";
 /// A freeze's renders, in clips/, named by what they play (pieceKey()).
 constexpr const char* kFreezeDir     = ".freeze";
+/// How far a bake's mix has come when its last chunk is written (the rest is the rename).
+constexpr uint8_t  kBakeMixedPercent = 99;
 
 /// A name that stays one folder under the songs root.
 inline bool valid_name(const std::string& n)
@@ -106,6 +109,12 @@ inline long readSome(int fd, void* dst, size_t n) { return fs().read(fd, dst, n)
 inline bool seek(int fd, uint32_t at) { return fs().seek(fd, at); }
 inline void close(int fd) { fs().close(fd); }
 inline bool exists(const std::string& p) { return fs().exists(p.c_str()); }
+/// @p p is a file, not a folder, and holds @p atLeast bytes.
+inline bool isFile(const std::string& p, uint64_t atLeast = 0)
+{
+    FileStat st;
+    return fs().stat(p.c_str(), &st) == FsStat::Found && !st.isDir && st.size >= atLeast;
+}
 /// @p p's size, and when it was last written in unix seconds.
 inline bool fileInfo(const std::string& p, uint64_t& bytes, int64_t& modified)
 {
@@ -367,6 +376,10 @@ struct SongEngine::Impl {
     std::vector<ElementInfo> elements();
     bool requestBakeElement();
     ElementBake bakeResult();
+    ElementClipState elementClipState(uint8_t track, size_t clip);
+    std::string elementClipWhy(uint8_t track, size_t clip);
+    uint8_t backgroundProgress() const { return bakeProgress_.load(); }
+    bool backgroundBusy() const { return relinkReq_.load() || relinking_.load() || bakeQueued_.load() != 0; }
     SongOpState openState() const { return openState_.load(); }
     bool requestRename(const std::string& name);
     bool requestDelete();
@@ -464,6 +477,34 @@ private:
     SongOpState doOpen(const std::string& name, bool remember = true);
     bool askToOpen(const std::string& name, bool remember);
     SongOpState doBakeElement();
+    /// How element hashes and the resolver look at the card: sizes and times
+    /// of files (a folder is no file), kit.json read whole, kit folders listed.
+    static ElementHashReader cardHashReader();
+    // ── Element blocks against their elements (SongEngineDiskBake.cpp) ────
+    /// What a relink pass of @p s depends on: its folder and tempo, and every
+    /// element block's element, place, bake and pass length.
+    static std::string elementSignature(const AudioSong& s);
+    /// The open song's element blocks linked to their elements' bakes as they
+    /// are now; the ones that can be mixed from the card queued.
+    void doRelink();
+    /// The queue's first bake, made or given up -- or left where it is when a
+    /// request comes first.
+    void doDiskBake();
+    bool diskBakePending() { return !bakeQueue_.empty() && p.storageReady(); }
+    /// A disk bake's mix: Done, given way to a request (tried again after
+    /// it), or Failed with no file left behind.
+    enum class BakeRun : uint8_t { Done, GaveWay, Failed };
+    BakeRun mixDown(std::vector<BakedPiece> pieces, uint32_t total, const std::string& path);
+    /// The resolver's answer for @p ref, or the bake this queue has made of it since.
+    const ResolvedElement& bakeView(const std::string& ref);
+    void bakeMade(const std::string& ref, const ResolvedElement& e);
+    void bakeFailed(const std::string& ref, const std::string& why);
+    /// Blocks of each element in @p links, in the open song @p dir, take that
+    /// bake and pass length -- committed and saved, but no undo step.
+    void linkBlocks(const std::string& dir, const std::map<std::string, std::pair<std::string, uint32_t>>& links);
+    void dropBakeQueue();
+    /// A song opened: nothing the last one's pass found holds.
+    void forgetElements();
     void openLast();
     SongOpState doRename();
     SongOpState doDelete();
@@ -611,6 +652,33 @@ private:
     std::vector<std::string> report_;             // the last export's, under reportMutex_
     std::mutex  reportMutex_;
     ElementBake bake_;                            // the last bake's, under reportMutex_
+    /* The relink pass: asked for by an open and by a rebuild whose element
+     * blocks or tempo moved (elementSig_, under songMutex_). What it found of
+     * each element the open song's blocks use, and which of those blocks' bakes
+     * are on the card, under elementMutex_ -- what elementClipState() reads. */
+    struct ElementSeen {
+        std::string file;           ///< the element's bake as it is now
+        uint32_t    frames = 0;
+        bool        exists = false; ///< on the card
+        bool        baking = false; ///< queued or being mixed
+        std::string why;            ///< what keeps it from being baked from the card
+    };
+    std::atomic<bool> relinkReq_{false}, relinking_{false};
+    std::string elementSig_;
+    std::map<std::string, ElementSeen> elementSeen_;
+    std::set<std::string> bakesOnCard_;
+    std::mutex elementMutex_;
+    /* The disk bakes the last pass queued, the next first (worker only): the
+     * resolver it asked, the song and tempo they are for, the ones made and
+     * given up since. */
+    std::unique_ptr<ElementResolver> resolver_;
+    std::vector<std::string> bakeQueue_;
+    std::string bakeSong_;
+    float       bakeBpm_ = 0.0f;
+    std::map<std::string, ResolvedElement> bakesMade_;
+    std::map<std::string, std::string> bakesFailed_;
+    std::atomic<uint32_t> bakeQueued_{0};
+    std::atomic<uint8_t>  bakeProgress_{0};
     /* Waveforms of the project in peaksDir_, by clip name, and the ones asked
      * for and not had yet, oldest first; under peaksMutex_. */
     std::map<std::string, std::shared_ptr<const std::vector<uint8_t>>> peaks_;
