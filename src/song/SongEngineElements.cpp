@@ -23,7 +23,7 @@ constexpr size_t kHashReadChunk      = 512;
 constexpr uint32_t kCopyPiecesPerStep = 256;
 /// An element's files as they were before an edit, in its own folder; the
 /// song's is written last, so one that is there is a whole snapshot.
-constexpr char kSongSnapshot[]   = "song.orig.json";
+constexpr const char* kSongSnapshot = AudioSong::snapshotFileName();
 constexpr char kScenesSnapshot[] = "sequences.orig.json";
 constexpr char kScenesFile[]     = "sequences.json";
 /// A file restored from a snapshot, written whole beside the one it replaces.
@@ -239,6 +239,23 @@ SongOpState SongEngine::Impl::doBakeElement() {
     }
     copy.armed = -1;
     const uint32_t spBar = copy.samplesPerBar(sampleRate_);
+    /* A kit saved under its name since the song opened, before anything heard
+     * of it: those tracks are no longer frozen, and the bake waits for them. */
+    const std::vector<int> stale = kitChangedFreezes(copy);
+    if (!stale.empty()) {
+        {
+            std::lock_guard<std::recursive_mutex> l(songMutex_);
+            if (song_.name == copy.name) {
+                unfreeze(song_, stale);
+                rebuild();
+                saveAtUs_.store(p.nowUs() + (int64_t)kSaveDelayMs * 1000);
+                saveReq_.store(true);
+            }
+        }
+        for (int t : stale)
+            if (!copy.silenced(t))
+                return fail("Track " + std::to_string(t + 1) + "'s kit changed since it was frozen: freeze it again.");
+    }
     for (int t = 0; t < kTracks; ++t) {
         const SongTrack& tr = copy.tracks[t];
         if (copy.silenced(t)) continue;

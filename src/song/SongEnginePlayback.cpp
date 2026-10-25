@@ -535,6 +535,7 @@ void SongEngine::Impl::rebuild() {
     }
     Arrangement a = flatten(song_);
     a.context = contextSegments();
+    ctxApart_.store(contextApart());
     for (int t = 0; t < kTracks; ++t) {
         const auto& tr = song_.tracks[t];
         gain_[t].store(song_.silenced(t) ? 0.0f : tr.volume);

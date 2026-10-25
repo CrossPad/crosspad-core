@@ -150,6 +150,7 @@ uint64_t element_edit_hash(const AudioSong& song, const std::string& scenes) {
         f.value(tr.muted);
         f.value(tr.solo);
         f.value((uint8_t)tr.input);
+        f.value((uint8_t)tr.stretch);
         f.text(tr.kit);
         for (const SongClip& c : tr.clips) {
             f.text(c.isElement() ? c.element : c.file);
@@ -165,6 +166,13 @@ uint64_t element_edit_hash(const AudioSong& song, const std::string& scenes) {
     f.text(song.instrument);
     f.text(scenesEdited(scenes));
     return f.h;
+}
+
+uint32_t sound_identity(const AudioSong& song, const std::string& ref, const ElementHashReader& rd) {
+    Fnv f;
+    soundOf(f, rd, song, ref);
+    const uint32_t folded = (uint32_t)(f.h ^ (f.h >> 32));
+    return folded ? folded : 1;
 }
 
 uint64_t element_bake_key(uint64_t content, float bpm, uint32_t sampleRate) {

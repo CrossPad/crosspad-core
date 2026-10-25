@@ -352,6 +352,7 @@ private:
     uint32_t    regionBars_ = 0;
     int         freezeTrack_ = 0;
     bool        froze_ = false;          ///< the leave froze a track: it bakes as it goes
+    bool        refroze_ = false;        ///< the bake found a freeze stale and the leave froze again
     bool        parentFreeze_ = false;   ///< Freezing is the parent's, before the element opens
     uint32_t    lastWaiting_ = 0;     ///< stretched blocks still unfitted at the last poll
     bool        wasPending_ = false;  ///< a snapshot of ref_ was on the card before this enter asked for one

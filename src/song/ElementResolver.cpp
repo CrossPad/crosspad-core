@@ -9,8 +9,10 @@
 
 namespace crosspad {
 
-ElementResolver::ElementResolver(std::string songsRoot, uint32_t sampleRate, float bpm, ElementHashReader rd)
-    : root_(std::move(songsRoot)), rate_(sampleRate), bpm_(bpm), rd_(std::move(rd)) {
+ElementResolver::ElementResolver(std::string songsRoot, uint32_t sampleRate, float bpm, ElementHashReader rd,
+                                 std::string heardDraft, std::string editing)
+    : root_(std::move(songsRoot)), rate_(sampleRate), bpm_(bpm), rd_(std::move(rd)),
+      heardDraft_(std::move(heardDraft)), editing_(std::move(editing)) {
     rd_.childKey = [this](const std::string& ref, uint64_t& key) {
         key = resolve(ref).key;
         return true;
@@ -33,12 +35,30 @@ const ResolvedElement& ElementResolver::resolve(const std::string& ref) {
     return done_.emplace(ref, std::move(r)).first->second;
 }
 
+SongLoad ElementResolver::load(AudioSong& song, const std::string& ref, bool* kept) const {
+    const std::string dir = root_ + "/" + ref;
+    if (ref != heardDraft_) {
+        const SongLoad got = song.load(dir, AudioSong::snapshotFileName());
+        if (got != SongLoad::New) {
+            if (kept) *kept = true;
+            return got;
+        }
+    }
+    if (kept) *kept = false;
+    return song.load(dir);
+}
+
 ResolvedElement ElementResolver::make(const std::string& ref) {
     ResolvedElement r;
     r.ref = ref;
     AudioSong song;
-    if (song.load(root_ + "/" + ref) != SongLoad::Loaded) {
+    if (load(song, ref, &r.kept) != SongLoad::Loaded) {
         r.why = "Element " + ref + " cannot be read.";
+        return r;
+    }
+    /* What the player is editing now is no bake of anyone's yet. */
+    if (ref == editing_ && !r.kept) {
+        r.why = "Element " + ref + " is being edited.";
         return r;
     }
     /* A freeze was rendered, and a recording laid, on the grid of the tempo the element had. */
@@ -61,6 +81,11 @@ ResolvedElement ElementResolver::make(const std::string& ref) {
              * key, not bakeable. */
             if (r.why.empty() && (tr.freezeKey == 0 || tr.freezeKey != seq_freeze_key(song, t, rate_, SceneLookup{})))
                 r.why = "Track " + std::to_string(t + 1) + ": its freeze is older than its notes.";
+            /* The key names the kit by its path; a kit saved under it since --
+             * whenever, wherever -- is told by what the card holds now. */
+            if (r.why.empty() && tr.freezeKit && tr.freezeKit != sound_identity(song, seq_track_sound(song, t), rd_))
+                r.why = "Track " + std::to_string(t + 1) + ": its " +
+                        (tr.source == SeqSource::Pitch ? "instrument" : "kit") + " changed since it was frozen.";
             for (const SongClip& fz : tr.freeze) {
                 uint64_t bytes = 0;
                 int64_t modified = 0;

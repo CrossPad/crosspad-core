@@ -50,16 +50,22 @@ struct ElementHashReader {
 uint64_t element_content_hash(const AudioSong& song, const std::string& identity, const ElementHashReader& rd);
 
 /// What the player has edited of @p song, and nothing the engine derives:
-/// each track's kind, source, scene, levels, pan, mute, solo, input and kit;
-/// each block's file (an element block by its ref), place, cut and notes; the
-/// length, the metre, the kit's and the instrument's names; and @p scenes, the
-/// project's sequences.json less the tempo it was last saved at and the scene
-/// left selected (the store rewrites both when the clock moves or a scene is
-/// looked at). Not the tempo, the stretch modes, the
-/// freezes or the copies stretched to a tempo, which ElementNav's enter and
-/// leave rewrite on an element nobody touched. Memory and @p scenes only: it
-/// reads no file, so it is the same for the same edits however the card is.
+/// each track's kind, source, scene, levels, pan, mute, solo, input, stretch
+/// mode and kit; each block's file (an element block by its ref), place, cut
+/// and notes; the length, the metre, the kit's and the instrument's names; and
+/// @p scenes, the project's sequences.json less the tempo it was last saved at
+/// and the scene left selected (the store rewrites both when the clock moves or
+/// a scene is looked at). Not the tempo, the freezes or the copies stretched to
+/// a tempo, which ElementNav's enter and leave rewrite on an element nobody
+/// touched. The stretch modes the enter's fit sets (ElementNav) are set before
+/// the hash it is compared with is taken, so only the player's own count.
+/// Memory and @p scenes only: it reads no file, so it is the same for the same
+/// edits however the card is.
 uint64_t element_edit_hash(const AudioSong& song, const std::string& scenes);
+
+/// What a kit or an instrument @p ref of @p song sounds as, as element_content_hash()
+/// hears it: the file whole and every file beside it, by size and time. Never 0.
+uint32_t sound_identity(const AudioSong& song, const std::string& ref, const ElementHashReader& rd);
 
 /// The bake's key: @p content at @p bpm and @p sampleRate under kRenderVersion.
 uint64_t element_bake_key(uint64_t content, float bpm, uint32_t sampleRate);

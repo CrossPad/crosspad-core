@@ -27,8 +27,9 @@
 // first. A file's last use is a counter in .bake/usage.json, bumped by the relink
 // pass and by the context stem. Never removed: a file the open song's tree plays
 // (every element block's file, the stem in use), any element's newest bake
-// (AudioSong::newestBake, kept with the element) -- an evicted bake is just
-// baked again -- and a .part a mix is writing. The parts an earlier run left
+// (AudioSong::newestBake, kept with the element; while an edit of it is not
+// decided, its snapshot's too) -- an evicted bake is just baked again -- and a
+// .part a mix is writing. The parts an earlier run left
 // are removed by the first pass.
 
 #include "SongEngineImpl.hpp"
@@ -58,6 +59,8 @@ std::string lacking(const BakedReport& r) {
 /// What a context stem's key names the open element's blocks by, wherever they
 /// are: they are silent in it, whatever the element holds.
 constexpr uint64_t kSilentFocusKey = 0;
+/// The longest why contextWhy() makes up itself, terminator included.
+constexpr size_t kContextWhyChars = 96;
 
 /// @p pc heard through a track at @p outer (left, right): the side gains
 /// multiplied, given back as a gain and a balance (pan_side_gains()).
@@ -351,7 +354,9 @@ void SongEngine::Impl::doRelink() {
     bakeSong_ = copy.dir;
     bakeBpm_ = effectiveBpm(copy);
     gaveWay_ = false;
-    resolver_ = std::make_unique<ElementResolver>(p.songsRoot(), sampleRate_, bakeBpm_, pacedHashReader());
+    /* The element just left is heard here as it was edited, its question
+     * decided or not: this is the song the edit was made for. */
+    resolver_ = std::make_unique<ElementResolver>(p.songsRoot(), sampleRate_, bakeBpm_, pacedHashReader(), leftRef_);
     std::map<std::string, ElementSeen> seen;
     std::map<std::string, std::pair<std::string, uint32_t>> links;
     /* An element whose blocks here hold another bake than the one it has now
@@ -371,7 +376,7 @@ void SongEngine::Impl::doRelink() {
             links[ref] = {e.file, e.frames};
             pace();
             if (gaveWay_) return relinkGaveWay();
-            noteNewestBake(ref, e.file);
+            if (!e.kept) noteNewestBake(ref, e.file);   // a snapshot's bake is not the edit's
         } else if (e.bakeable) { s.baking = true; bakeQueue_.push_back(ref); }
         if (e.exists || e.bakeable) {
             for (const SongTrack& tr : copy.tracks)
@@ -476,7 +481,7 @@ void SongEngine::Impl::bakeMade(const std::string& ref, const ResolvedElement& e
     now.exists = true;
     bakesMade_[ref] = now;
     bakeQueue_.erase(std::remove(bakeQueue_.begin(), bakeQueue_.end(), ref), bakeQueue_.end());
-    noteNewestBake(ref, now.file);
+    if (!now.kept) noteNewestBake(ref, now.file);
     bumpUse(now.file);
     if (!bakeOther_) {
         std::lock_guard<std::mutex> l(elementMutex_);
@@ -527,7 +532,7 @@ void SongEngine::Impl::doDiskBake() {
     AudioSong el;
     pace();
     if (gaveWay_) return;
-    if (el.load(std::string(p.songsRoot()) + "/" + ref) != SongLoad::Loaded) {
+    if (resolver_->load(el, ref) != SongLoad::Loaded) {   // the version the resolver keyed
         bakeFailed(ref, "Element " + ref + " cannot be read.");
         return;
     }
@@ -792,6 +797,12 @@ bool SongEngine::Impl::requestContext(const ContextRequest& r) {
 
 std::string SongEngine::Impl::contextWhy() {
     std::lock_guard<std::recursive_mutex> l(songMutex_);
+    if (contextApart()) {
+        char why[kContextWhyChars];
+        std::snprintf(why, sizeof why, "The song around the element is at %.1f BPM: it is heard again at that tempo.",
+                      (double)ctxBpm_);
+        return why;
+    }
     return ctxWhy_;
 }
 
@@ -804,8 +815,12 @@ void SongEngine::Impl::dropContext(ContextState state, const std::string& why) {
     publishContext();
 }
 
+bool SongEngine::Impl::contextApart() const {
+    return !ctxPath_.empty() && ctxSong_ == song_.dir && std::fabs(effectiveBpm(song_) - ctxBpm_) > kSameTempoBpm;
+}
+
 std::vector<Segment> SongEngine::Impl::contextSegments() const {
-    if (ctxPath_.empty() || ctxSong_ != song_.dir || std::fabs(effectiveBpm(song_) - ctxBpm_) > kSameTempoBpm) return {};
+    if (ctxPath_.empty() || ctxSong_ != song_.dir || contextApart()) return {};
     Segment s;
     s.path = ctxPath_;
     s.start = ctxAt_;
@@ -814,6 +829,7 @@ std::vector<Segment> SongEngine::Impl::contextSegments() const {
 }
 
 void SongEngine::Impl::publishContext() {
+    ctxApart_.store(contextApart());
     std::lock_guard<std::mutex> l(snapMutex_);
     snap_.context = contextSegments();
 }
@@ -943,7 +959,7 @@ bool SongEngine::Impl::backgroundPending() {
     return mix_ || contextPending() || (relinkReq_.load() && p.storageReady()) ||
            (peaksPending() && p.storageReady()) || (stretchPending() && p.storageReady()) ||
            diskBakePending() || idlePending() || (evictPending_ && p.storageReady()) ||
-           (usageDirty_ && !streamingNow() && p.storageReady());
+           ((usageDirty_ || !newestDue_.empty()) && !streamingNow() && p.storageReady());
 }
 
 void SongEngine::Impl::backgroundStep(bool streaming) {
@@ -963,6 +979,7 @@ void SongEngine::Impl::backgroundStep(bool streaming) {
     else if (!streaming && stretchPending() && p.storageReady()) doStretch();
     else if (diskBakePending()) doDiskBake();
     else if (evictPending_ && p.storageReady()) doEvict();
+    else if (!streaming && !newestDue_.empty() && p.storageReady()) writeNewestDue();   // bakes made while it played
     else if (!streaming && usageDirty_ && p.storageReady()) saveUsage();   // counters bumped by relinks, once the song stops
     else if (!streaming && idlePending()) idleStep();
 }
@@ -1017,20 +1034,57 @@ void SongEngine::Impl::saveUsage() {
     std::string text;
     serializeJson(doc, text);
     const std::string path = bakePath(kUsageFile), part = path + kPartSuffix;
-    FILE* f = std::fopen(part.c_str(), "wb");
-    if (!f) return;
-    const bool wrote = std::fwrite(text.data(), 1, text.size(), f) == text.size();
-    const bool closed = std::fclose(f) == 0;
-    std::remove(path.c_str());   // FATFS renames over nothing
-    if (wrote && closed && fsx::rename(part, path)) usageDirty_ = false;
-    else std::remove(part.c_str());
+    /* Written or not, nothing is due until the next use: a card that will not
+     * take the book (full, read-only) would otherwise be asked again at once,
+     * without end, and the worker would never wait. */
+    usageDirty_ = false;
+    bool done = false;
+    if (FILE* f = std::fopen(part.c_str(), "wb")) {
+        const bool wrote = std::fwrite(text.data(), 1, text.size(), f) == text.size();
+        const bool closed = std::fclose(f) == 0;
+        std::remove(path.c_str());   // FATFS renames over nothing
+        done = wrote && closed && fsx::rename(part, path);
+        if (!done) std::remove(part.c_str());
+    }
+    if (!done) logf(true, "bake cache: %s could not be written", kUsageFile);
 }
 
 void SongEngine::Impl::noteNewestBake(const std::string& ref, const std::string& file) {
+    /* Not while the song streams: a song.json written takes the worker off the
+     * ring for longer than the ring lasts. Until the stop the open song's blocks
+     * play the bake, which keeps it in the cache. */
+    if (streamingNow()) {
+        newestDue_[ref] = file;
+        return;
+    }
+    writeNewestBake(ref, file);
+}
+
+void SongEngine::Impl::writeNewestBake(const std::string& ref, const std::string& file) {
+    {
+        /* The open element's song.json is the engine's to write: a save of the
+         * song in memory would put back what the card was told here. */
+        std::lock_guard<std::recursive_mutex> l(songMutex_);
+        if (opened_ && song_.name == ref) {
+            if (song_.newestBake != file) {
+                song_.newestBake = file;
+                saveAtUs_.store(p.nowUs() + (int64_t)kSaveDelayMs * 1000);
+                saveReq_.store(true);
+            }
+            return;
+        }
+    }
     AudioSong el;
     if (el.load(std::string(p.songsRoot()) + "/" + ref) != SongLoad::Loaded || el.newestBake == file) return;
     el.newestBake = file;
     if (!el.save()) logf(true, "%s: its newest bake could not be recorded", ref.c_str());
+}
+
+void SongEngine::Impl::writeNewestDue() {
+    const auto first = newestDue_.begin();
+    const std::string ref = first->first, file = first->second;
+    newestDue_.erase(first);   // tried once: the next bake of it says it again
+    writeNewestBake(ref, file);
 }
 
 void SongEngine::Impl::ownBake(const std::string& file) {
@@ -1064,6 +1118,16 @@ bool SongEngine::Impl::protectedBakes(std::set<std::string>& keep) {
         if (opened_) tree(song_);
         if (!ctxPath_.empty()) keep.insert(file_of(ctxPath_));
     }
+    /* An element's newest bake, and while an edit of it is not decided the one
+     * its snapshot names: what every other song plays meanwhile. False when
+     * the snapshot cannot be read. */
+    auto newest = [&](const std::string& ref, const AudioSong& el) {
+        if (!el.newestBake.empty()) keep.insert(el.newestBake);
+        AudioSong was;
+        const SongLoad got = was.load(root + "/" + ref, AudioSong::snapshotFileName());
+        if (got == SongLoad::Loaded && !was.newestBake.empty()) keep.insert(was.newestBake);
+        return got != SongLoad::Unreadable;
+    };
     /* The open song's tree: what its blocks play, and each element's newest bake. */
     while (!todo.empty()) {
         const std::string ref = todo.back();
@@ -1075,7 +1139,7 @@ bool SongEngine::Impl::protectedBakes(std::set<std::string>& keep) {
         if (got == SongLoad::Unreadable) return false;   // mid-save, perhaps: what it plays is not known
         if (got != SongLoad::Loaded) continue;
         tree(el);
-        if (!el.newestBake.empty()) keep.insert(el.newestBake);
+        if (!newest(ref, el)) return false;
     }
     /* Every other element of the library. */
     std::vector<std::string> library;
@@ -1091,7 +1155,7 @@ bool SongEngine::Impl::protectedBakes(std::set<std::string>& keep) {
         AudioSong el;
         const SongLoad got = el.load(root + "/" + ref);
         if (got == SongLoad::Unreadable) return false;   // its newest bake is not known: nothing is removed
-        if (got == SongLoad::Loaded && !el.newestBake.empty()) keep.insert(el.newestBake);
+        if (got == SongLoad::Loaded && !newest(ref, el)) return false;
     }
     return true;
 }
@@ -1246,9 +1310,11 @@ std::vector<std::string> SongEngine::Impl::songsPlaying(const std::set<std::stri
 /// from the card queued for this song (bakeOther_) and relinked as each is
 /// made. A song that cannot be read, or is the open one now, is passed over.
 bool SongEngine::Impl::relinkOther(const std::string& name) {
+    std::string open;
     {
         std::lock_guard<std::recursive_mutex> l(songMutex_);
         if (opened_ && song_.name == name) return true;
+        if (opened_) open = song_.name;
     }
     gaveWay_ = false;
     idleWork_ = true;
@@ -1262,7 +1328,10 @@ bool SongEngine::Impl::relinkOther(const std::string& name) {
         for (const SongClip& c : tr.clips)
             if (c.isElement() && std::find(refs.begin(), refs.end(), c.element) == refs.end()) refs.push_back(c.element);
     const float bpm = effectiveBpm(s);
-    auto resolver = std::make_unique<ElementResolver>(p.songsRoot(), sampleRate_, bpm, pacedHashReader());
+    /* The element open now, and so every element holding it, is mid-edit: no
+     * other song is given its edit. */
+    auto resolver = std::make_unique<ElementResolver>(p.songsRoot(), sampleRate_, bpm, pacedHashReader(),
+                                                      std::string(), open);
     std::map<std::string, std::pair<std::string, uint32_t>> links;
     std::vector<std::string> queue;
     for (const std::string& ref : refs) {

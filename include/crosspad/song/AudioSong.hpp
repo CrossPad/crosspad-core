@@ -189,6 +189,11 @@ struct SongTrack {
     /// (an instrument saved from edits): a freeze's renders are found on the
     /// card by what they play, sound included, and this is the sound's part.
     uint32_t  freezeSalt = 0;
+    /// What the freeze was rendered through, as the card had it then: the
+    /// kit's or the instrument's identity (sound_identity()). A kit saved under
+    /// its name since -- in this boot or another -- reads otherwise, and the
+    /// freeze is of the old sound. 0: not known (a freeze made before it was kept).
+    uint32_t  freezeKit = 0;
     /// A track the player has made. All four exist in this struct from the
     /// start; this is what tells an empty track waiting for a recording from
     /// one nobody has asked for, which is what "2 / 4 tracks" counts and what
@@ -227,6 +232,9 @@ public:
     static constexpr float kDefaultBpm = 120.0f;       ///< the grid before a clip sets one
     static constexpr uint8_t kDefaultBeatsPerBar = 4;
     static const char* fileName() { return "song.json"; }
+    /// An element's song.json as it was before an edit not decided yet
+    /// (copy or replace), kept beside it: what every other song plays meanwhile.
+    static constexpr const char* snapshotFileName() { return "song.orig.json"; }
     static const char* clipsDir() { return "clips"; }
     /// Where the elements live, one project folder each, under the songs
     /// root beside the songs (the library every song shares); and where their
@@ -289,7 +297,9 @@ public:
     void removeClipSet(int index);
     static constexpr int kMaxSets = 8;
 
-    SongLoad load(const std::string& projectDir);
+    SongLoad load(const std::string& projectDir) { return load(projectDir, fileName()); }
+    /// The project in @p projectDir from its file @p file (snapshotFileName()) instead of song.json.
+    SongLoad load(const std::string& projectDir, const char* file);
     /// Written beside song.json and swapped in, the old file kept as .bak
     /// until the new one is in place; load() falls back to either, so a cut
     /// at any point costs at most the edit being saved.

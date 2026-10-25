@@ -233,6 +233,13 @@ SongOpState SongEngine::Impl::doOpen(const std::string& name, bool remember) {
     }
     fresh.name = name;
     endPlayback();
+    /* A freeze of a kit saved since, where no save was heard (another boot),
+     * plays and bakes no more: the track plays live until frozen again. */
+    const std::vector<int> stale = kitChangedFreezes(fresh);
+    if (!stale.empty()) {
+        logf(false, "%s: track %d's kit changed since it was frozen", name.c_str(), stale.front() + 1);
+        unfreeze(fresh, stale);
+    }
     {
         std::lock_guard<std::mutex> l(stretchMutex_);
         stretchReady_.clear();

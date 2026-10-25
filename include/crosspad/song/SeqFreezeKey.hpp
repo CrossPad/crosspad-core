@@ -32,6 +32,10 @@ uint32_t song_end_bars(const AudioSong& song, const SceneLookup& scenes, bool* u
 void seq_freeze_range(const AudioSong& song, int track, const SceneLookup& scenes, uint32_t& from, uint32_t& to,
                       bool* unknown = nullptr);
 
+/// The kit or the instrument seq track @p track plays through: a Pitch track
+/// the song's instrument, a Kit track its own kit or else the song's.
+const std::string& seq_track_sound(const AudioSong& song, int track);
+
 /// What a freeze of seq track @p track at @p sampleRate is made of: its bars,
 /// its blocks and their notes (the scene's, for a block without), what it
 /// plays through (and SongTrack::freezeSalt, once a sound changed under its

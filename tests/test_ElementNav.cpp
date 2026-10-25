@@ -6,6 +6,7 @@
 
 #include "song_engine_rig.hpp"
 
+#include "crosspad/kit/KitPathUtils.hpp"
 #include "crosspad/platform/IFileSystem.hpp"
 #include "crosspad/sequencer/SequenceStore.hpp"
 #include "crosspad/song/ElementNav.hpp"
@@ -103,7 +104,7 @@ void onlyCardBake(Rig& r, int track) {
     CHECK(r.engine->elementClipState((uint8_t)track, 0) == ElementClipState::Fresh);
     std::vector<std::string> bakes;
     for (const auto& e : fs::directory_iterator(fs::path(r.platform.root) / AudioSong::bakeDir())) {
-        if (e.path().filename() != "usage.json") bakes.push_back(e.path().filename().string());   // the cache's own book
+        if (!cacheBook(e.path())) bakes.push_back(e.path().filename().string());
     }
     CHECK(bakes == std::vector<std::string>{c.file});
 }
@@ -304,7 +305,7 @@ TEST_CASE("element nav: a block laid and entered at once, while the background b
     /* B's bake and A's: the same two whoever made them. */
     size_t bakes = 0;
     for (const auto& e : fs::directory_iterator(fs::path(r.platform.root) / AudioSong::bakeDir())) {
-        if (e.path().filename() != "usage.json") ++bakes;
+        if (!cacheBook(e.path())) ++bakes;
     }
     CHECK(bakes == 2);
 }
@@ -1736,6 +1737,28 @@ TEST_CASE("element nav: a tempo fit and an edit together are still an edit", "[e
     CHECK_FALSE(r.engine->snapshotPending(kA));            // nothing else plays it: nothing to decide
 }
 
+TEST_CASE("element nav: a recording's stretch the player changed inside is an edit", "[element][nav][snapshot]") {
+    Rig r;
+    Services svc(r.engine.get(), nullptr);
+    NavGuard guard;
+    writeAudioElement(r, kA, "Loop", 2, 120.0f);
+    openDemo(r, kA);
+    REQUIRE(elementNav().enter(1, 0));
+    REQUIRE(runNav().ok);
+    {
+        std::lock_guard<std::recursive_mutex> l(r.engine->songMutex());
+        AudioSong& s = r.engine->song();
+        REQUIRE(s.tracks[0].stretch == StretchMode::Off);   // entered at its own tempo: nothing fitted
+        s.tracks[0].stretch = StretchMode::Repitch;
+    }
+    r.engine->commit();
+    REQUIRE(elementNav().leave());
+    const auto res = runNav();
+    INFO("error: " << res.error);
+    REQUIRE(res.ok);
+    CHECK(elementNav().changed());
+}
+
 TEST_CASE("element nav: a scene edited inside is an edit", "[element][nav][snapshot]") {
     Rig r;
     Services svc(r.engine.get(), nullptr);
@@ -2427,4 +2450,144 @@ TEST_CASE("element delete: refused while a song plays", "[element][delete]") {
     r.engine->stop();
     REQUIRE(waitFor([&] { return !r.engine->playing(); }));
     CHECK(fs::exists(elementDir(r, kB)));
+}
+
+// ── a kit changed under the name a freeze plays it by ─────────────────────
+
+namespace {
+
+const char* const kSavedKit = "/crosspad/kits/Saved/kit.json";
+
+/// The kits on the rig's card: kitFsPath() reads them under its folder.
+struct KitMount {
+    explicit KitMount(Rig& r) { setKitPathFsPrefix(r.dir.string()); }
+    ~KitMount() { setKitPathFsPrefix(""); }
+};
+
+/// kSavedKit on the card holding @p text, written in place as a save of the kit would.
+void writeSavedKit(const std::string& text) {
+    const fs::path path = fs::path(kitFsPath(kSavedKit));
+    fs::create_directories(path.parent_path());
+    std::ofstream(path, std::ios::binary | std::ios::trunc) << text;
+}
+
+/// kA in "Demo" given a seq track playing kSavedKit, left: frozen and baked, its snapshot gone.
+void leaveWithKitTrack(Rig& r) {
+    writeAudioElement(r, kA, "Beat", 2, 120.0f);
+    openDemo(r, kA);
+    REQUIRE(elementNav().enter(1, 0));
+    REQUIRE(runNav().ok);
+    {
+        std::lock_guard<std::recursive_mutex> l(r.engine->songMutex());
+        AudioSong& s = r.engine->song();
+        s.kit = kSavedKit;
+        REQUIRE(s.addSeqTrack(1, SeqSource::Kit, 0));
+        SeqNote n;
+        n.pad = 1; n.vel = 100;
+        s.putSeqTake(1, 0, makeSeqPattern(1, {n}), s.samplesPerBar(kRate));
+        s.armed = -1;
+    }
+    r.engine->commit();
+    REQUIRE(elementNav().leave());
+    const auto res = runRendering(r);
+    INFO("error: " << res.error);
+    REQUIRE(res.ok);
+    REQUIRE(openName(r) == "Demo");
+    REQUIRE(waitFor([&] { return !r.engine->snapshotPending(kA) && !r.engine->backgroundBusy(); }, 10000));
+    REQUIRE(r.engine->elementClipState(1, 0) == ElementClipState::Fresh);
+}
+
+} // namespace
+
+TEST_CASE("element nav: a kit changed on the card since an element froze leaves its block stale, never baked from the old freeze", "[element][nav][kit]") {
+    Rig r;
+    Services svc(r.engine.get(), nullptr);
+    NavGuard guard;
+    KitMount mount(r);
+    writeSavedKit("{\"name\":\"Saved\",\"pads\":1}");
+    leaveWithKitTrack(r);
+    const std::string frozenBake = clipOf(r, 1).file;
+
+    /* Saved in another boot: nothing in memory heard of it. */
+    writeSavedKit("{\"name\":\"Saved\",\"pads\":2}");
+    REQUIRE(r.open("Demo"));
+    REQUIRE(waitFor([&] { return !r.engine->backgroundBusy(); }, 10000));
+    CHECK(clipOf(r, 1).file == frozenBake);
+    CHECK(r.engine->elementClipState(1, 0) == ElementClipState::Stale);
+    CHECK(r.engine->elementClipWhy(1, 0).find("kit changed") != std::string::npos);
+}
+
+TEST_CASE("element nav: a kit saved right after the element opened leaves it stale, and the next leave freezes it again", "[element][nav][kit]") {
+    Rig r;
+    Services svc(r.engine.get(), nullptr);
+    NavGuard guard;
+    KitMount mount(r);
+    writeSavedKit("{\"name\":\"Saved\",\"pads\":1}");
+    leaveWithKitTrack(r);
+    const std::string first = clipOf(r, 1).file;
+
+    REQUIRE(elementNav().enter(1, 0));
+    REQUIRE(runNav().ok);
+    /* Before anything that watches the kits has looked: the track still reads as frozen. */
+    writeSavedKit("{\"name\":\"Saved\",\"pads\":2}");
+    REQUIRE(r.engine->freezeState(1) == FreezeState::Frozen);
+    /* Nothing of it needs the engine: the song above opens at once, and the
+     * card says the freeze is of the old kit. */
+    REQUIRE(elementNav().leave());
+    REQUIRE(runRendering(r).ok);
+    REQUIRE(openName(r) == "Demo");
+    REQUIRE(waitFor([&] { return !r.engine->backgroundBusy(); }, 10000));
+    CHECK(clipOf(r, 1).file == first);
+    CHECK(r.engine->elementClipState(1, 0) == ElementClipState::Stale);
+    CHECK(r.engine->elementClipWhy(1, 0).find("kit changed") != std::string::npos);
+
+    /* Opened again, the element knows: the leave freezes the track anew. */
+    REQUIRE(elementNav().enter(1, 0));
+    REQUIRE(runNav().ok);
+    CHECK(r.engine->freezeState(1) == FreezeState::Stale);
+    REQUIRE(elementNav().leave());
+    const auto res = runRendering(r);
+    INFO("error: " << res.error);
+    REQUIRE(res.ok);
+    CHECK(loadElement(r, kA).tracks[1].freezeSalt > 0);       // rendered anew, not found by its old name
+    REQUIRE(waitFor([&] { return !r.engine->backgroundBusy(); }, 10000));
+    CHECK(clipOf(r, 1).file != first);
+    CHECK(r.engine->elementClipState(1, 0) == ElementClipState::Fresh);
+}
+
+TEST_CASE("element nav: a kit saved right after the element opened is frozen again by a leave that bakes on the engine", "[element][nav][kit]") {
+    Rig r;
+    Services svc(r.engine.get(), nullptr);
+    NavGuard guard;
+    KitMount mount(r);
+    writeSavedKit("{\"name\":\"Saved\",\"pads\":1}");
+    leaveWithKitTrack(r);
+    const std::string first = clipOf(r, 1).file;
+
+    REQUIRE(elementNav().enter(1, 0));
+    REQUIRE(runNav().ok);
+    /* A new seq track to freeze: this leave bakes on the engine. */
+    while (r.seq.sceneCount() < 2) REQUIRE(r.seq.addScene());
+    {
+        std::lock_guard<std::recursive_mutex> l(r.engine->songMutex());
+        AudioSong& s = r.engine->song();
+        REQUIRE(s.addSeqTrack(2, SeqSource::Pitch, 1));
+        SeqNote n;
+        n.pad = 2; n.vel = 100;
+        s.putSeqTake(2, 0, makeSeqPattern(1, {n}), s.samplesPerBar(kRate));
+        s.armed = -1;
+    }
+    r.engine->commit();
+    writeSavedKit("{\"name\":\"Saved\",\"pads\":2}");
+    REQUIRE(r.engine->freezeState(1) == FreezeState::Frozen);
+    REQUIRE(elementNav().leave());
+    const auto res = runRendering(r);
+    INFO("error: " << res.error);
+    REQUIRE(res.ok);
+    CHECK(openName(r) == "Demo");
+    CHECK(loadElement(r, kA).tracks[1].freezeSalt > 0);
+    REQUIRE(waitFor([&] { return !r.engine->backgroundBusy(); }, 10000));
+    CHECK(clipOf(r, 1).file != first);
+    CHECK(clipOf(r, 1).file == r.engine->bakeResult().file);
+    CHECK(r.engine->elementClipState(1, 0) == ElementClipState::Fresh);
 }

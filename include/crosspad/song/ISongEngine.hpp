@@ -100,7 +100,8 @@ enum class ElementClipState : uint8_t { Fresh, Stale, Baking, Missing };
 /// The song around the element being edited (ISongEngine::requestContext()):
 /// none asked for (or nothing of the element is heard in the song), being
 /// baked, playing, or playing what could be baked -- or nothing, when the bake
-/// failed -- with contextWhy() saying what is missing.
+/// failed or the song plays at another tempo than the stem was made at (a
+/// tempo turned inside the element) -- with contextWhy() saying what is missing.
 enum class ContextState : uint8_t { None, Baking, Ready, Incomplete };
 
 /// One pass of the open element in the song (ISongEngine::requestContext()).

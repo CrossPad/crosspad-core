@@ -184,7 +184,7 @@ void AudioSong::removeClipSet(int index)
     else if (currentSet >= sets.size()) currentSet = (uint8_t)(sets.size() - 1);
 }
 
-SongLoad AudioSong::load(const std::string& projectDir)
+SongLoad AudioSong::load(const std::string& projectDir, const char* file)
 {
     dir = projectDir;
     const size_t slash = projectDir.find_last_of('/');
@@ -204,7 +204,7 @@ SongLoad AudioSong::load(const std::string& projectDir)
 
     /* song.json, else what save() leaves when it is cut short: the new file
      * complete beside it (.tmp), or only the old one moved aside (.bak). */
-    const std::string path = dir + "/" + fileName();
+    const std::string path = dir + "/" + file;
     JsonDocument doc;
     bool any = false;
     bool found = false;
@@ -246,6 +246,7 @@ SongLoad AudioSong::load(const std::string& projectDir)
         JsonObjectConst fz = tr["freeze"];
         if (tracks[t].kind == TrackKind::Seq && !fz.isNull()) {
             tracks[t].freezeKey = fz["key"] | 0u;
+            tracks[t].freezeKit = fz["kit"] | 0u;
             auto one = [&](JsonObjectConst c) {
                 SongClip clip;
                 clip.file   = c["file"] | "";
@@ -433,6 +434,7 @@ bool AudioSong::save() const
             if (!t.freeze.empty()) {
                 JsonObject fz = o["freeze"].to<JsonObject>();
                 fz["key"] = t.freezeKey;
+                if (t.freezeKit) fz["kit"] = t.freezeKit;
                 JsonArray fc = fz["clips"].to<JsonArray>();
                 for (const auto& c : t.freeze) {
                     JsonObject co = fc.add<JsonObject>();

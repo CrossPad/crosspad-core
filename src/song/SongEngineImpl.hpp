@@ -544,7 +544,11 @@ struct SongEngine::Impl {
     void idleBaking(bool allowed);
     bool requestContext(const ContextRequest& r);
     void contextSolo(bool on) { ctxSolo_.store(on); }
-    ContextState contextState() const { return ctxState_.load(); }
+    /// A stem made at another tempo than the song plays now is not heard: Incomplete, until the tempo is back.
+    ContextState contextState() const {
+        const ContextState s = ctxState_.load();
+        return ctxApart_.load() && s == ContextState::Ready ? ContextState::Incomplete : s;
+    }
     std::string contextWhy();
     SongOpState openState() const { return openState_.load(); }
     bool requestRename(const std::string& name);
@@ -732,8 +736,13 @@ private:
     void bumpUse(const std::string& file);
     void loadUsage();
     void saveUsage();
-    /// @p ref's own song.json names @p file as its newest bake.
+    /// @p ref's own song.json names @p file as its newest bake -- once the song
+    /// stops, when it streams (newestDue_).
     void noteNewestBake(const std::string& ref, const std::string& file);
+    /// The same now: on the card, or in memory when @p ref is the song open.
+    void writeNewestBake(const std::string& ref, const std::string& file);
+    /// One newest bake noted while the song streamed, written.
+    void writeNewestDue();
     /// The open song, an element, has made @p file from itself.
     void ownBake(const std::string& file);
     // ── Background work and playback (SongEngineDiskBake.cpp) ─────────────
@@ -789,6 +798,9 @@ private:
     /// in another song, or with the song at another tempo than the stem was
     /// mixed at. Caller holds songMutex_.
     std::vector<Segment> contextSegments() const;
+    /// The open song plays at another tempo than its stem was mixed at (a tempo
+    /// turned inside the element), so the stem is not heard. Caller holds songMutex_.
+    bool contextApart() const;
     /// The stem handed to playback now. Caller holds songMutex_.
     void publishContext();
     void openLast();
@@ -821,6 +833,14 @@ private:
                       const std::vector<PatternSequencer::SongSpan>& spans) const;
     void runFreeze();
     bool frozenPlays(const AudioSong& song, int track) const;
+    /// Worker: the seq tracks of @p s frozen through a kit or an instrument the
+    /// card holds otherwise now (SongTrack::freezeKit) -- saved under its name
+    /// since, maybe in another boot, where no save was heard.
+    static std::vector<int> kitChangedFreezes(const AudioSong& s);
+    /// Each of @p tracks of @p s plays its freeze no longer, and its next one
+    /// renders anew rather than finding the old renders by their names (as
+    /// SongSounds leaves a track whose kit it hears saved).
+    static void unfreeze(AudioSong& s, const std::vector<int>& tracks);
     Arrangement flatten(const AudioSong& song) const;
     std::vector<PatternSequencer::SongSpan> seqSpansOf(const SongTrack& tr, uint32_t spb, uint32_t tpb,
                                                        uint32_t cut, uint8_t route = 0) const;
@@ -992,6 +1012,8 @@ private:
     bool        evictPending_ = false, partsSwept_ = false, usageLoaded_ = false, usageDirty_ = false;
     std::map<std::string, uint64_t> usage_;
     uint64_t    usageClock_ = 0;
+    /// Newest bakes noted while the song streamed, by element ref (worker only).
+    std::map<std::string, std::string> newestDue_;
     /// The mix under way, and the sum of its span (worker only, held while a
     /// mix is).
     std::unique_ptr<MixJob> mix_;
@@ -1024,6 +1046,7 @@ private:
     std::atomic<bool> ctxPending_{false};
     std::atomic<bool> ctxSolo_{false};            ///< SOLO: the stem is neither read nor heard
     std::atomic<ContextState> ctxState_{ContextState::None};
+    std::atomic<bool> ctxApart_{false};           ///< contextApart() as the last rebuild or publish found it
     /* Waveforms of the project in peaksDir_, by clip name, and the ones asked
      * for and not had yet, oldest first; under peaksMutex_. */
     std::map<std::string, std::shared_ptr<const std::vector<uint8_t>>> peaks_;

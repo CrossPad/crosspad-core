@@ -30,7 +30,7 @@ std::set<std::string> bakes(Rig& r) {
     std::set<std::string> out;
     std::error_code ec;
     for (const auto& e : fs::directory_iterator(bakeDir(r), ec)) {
-        if (e.path().filename() != "usage.json") out.insert(e.path().filename().string());   // the cache's own book
+        if (!cacheBook(e.path())) out.insert(e.path().filename().string());
     }
     return out;
 }
@@ -984,4 +984,160 @@ TEST_CASE("bake cache: a library element that cannot be read stops the pass", "[
     REQUIRE(idle(r));
     std::this_thread::sleep_for(std::chrono::milliseconds(500));
     CHECK(bakes(r).count(spare) == 1);
+}
+
+TEST_CASE("bake cache: a usage file the card will not take is given up and the worker waits again", "[song][element][diskbake][bakecache]") {
+    Rig r;
+    writeAudioElement(r, kChild, 8000, 2);
+    writeSongWith(r, "Parent", kChild, 2, "");
+    /* A folder where the book is written through: no write of it can work. */
+    fs::create_directories(bakeDir(r) / "usage.json.part" / "x");
+    REQUIRE(r.open("Parent"));
+    REQUIRE(idle(r));
+    REQUIRE_FALSE(block(r).file.empty());
+    /* A worker trying again at once would go to its wait thousands of times
+     * over: one with nothing to do goes there and stays. */
+    constexpr int kQuietMs = 500;
+    constexpr int kMostWaits = 20;
+    std::this_thread::sleep_for(std::chrono::milliseconds(kQuietMs));
+    const int before = r.platform.waits;
+    std::this_thread::sleep_for(std::chrono::milliseconds(kQuietMs));
+    CHECK(r.platform.waits - before < kMostWaits);
+    CHECK_FALSE(fs::exists(bakeDir(r) / "usage.json"));
+}
+
+TEST_CASE("disk bake: a bake made while the song plays is written into its element once it stops", "[song][element][diskbake]") {
+    Rig r;
+    writeAudioElement(r, kChild, 8000, 2);
+    writeSongWith(r, "Parent", kChild, 2, "");
+    REQUIRE(r.open("Parent"));
+    REQUIRE(idle(r));
+    const std::string first = block(r).file;
+    REQUIRE_FALSE(first.empty());
+    const fs::path child = fs::path(r.platform.root) / kChild;
+    auto newest = [&] {
+        AudioSong s;
+        return s.load(child.string()) == SongLoad::Loaded ? s.newestBake : std::string();
+    };
+    REQUIRE(waitFor([&] { return newest() == first; }, kBakeWaitMs));
+    const std::string before = slurp(child / AudioSong::fileName());
+
+    /* The child changed on the card and a block of it laid while the song plays. */
+    constexpr int kBlockMs = 5;
+    std::vector<float> out(kBlock * 2), bus(kBlock * 2, 0.0f);
+    auto render = [&] {
+        r.block(out, bus);
+        std::this_thread::sleep_for(std::chrono::milliseconds(kBlockMs));
+    };
+    REQUIRE(r.engine->play(0));
+    REQUIRE(waitFor([&] {
+        render();
+        return r.engine->framesPlayed() > 0;
+    }));
+    writeClip(childClip(r), 2 * kBar, 12000);
+    fs::last_write_time(childClip(r), fs::last_write_time(childClip(r)) + std::chrono::seconds(10));
+    {
+        std::lock_guard<std::recursive_mutex> l(r.engine->songMutex());
+        SongClip c;
+        c.element = kChild;
+        c.bar = 4;
+        c.bars = 2;
+        r.engine->song().addClip(0, c);
+    }
+    r.engine->commit();
+    std::string second;
+    REQUIRE(waitFor([&] {
+        render();
+        second = block(r, 0, 1).file;
+        return r.engine->elementClipState(0, 1) == ElementClipState::Fresh && !second.empty() && second != first;
+    }, kBakeWaitMs));
+    /* Played on a while: the element's song.json was not written under the song. */
+    constexpr int kPlayOn = 60;
+    for (int i = 0; i < kPlayOn; ++i) render();
+    CHECK(r.engine->playing());
+    CHECK(slurp(child / AudioSong::fileName()) == before);
+    r.engine->stop();
+    REQUIRE(waitFor([&] { return !r.engine->playing(); }));
+    CHECK(waitFor([&] { return newest() == second; }, kBakeWaitMs));
+}
+
+namespace {
+
+/// An edit of the child left unfinished: its snapshot beside it, as entering
+/// it keeps one, and the child on the card changed since (track 0 at half).
+void draftChild(Rig& r) {
+    const fs::path dir = fs::path(r.platform.root) / kChild;
+    fs::copy_file(dir / AudioSong::fileName(), dir / AudioSong::snapshotFileName(), fs::copy_options::overwrite_existing);
+    AudioSong el;
+    REQUIRE(el.load(dir.string()) == SongLoad::Loaded);
+    el.tracks[0].volume = 0.5f;
+    REQUIRE(el.save());
+}
+
+/// The block "Other" holds on the card.
+std::string otherPlays(Rig& r) {
+    AudioSong s;
+    if (s.load(r.platform.root + "/Other") != SongLoad::Loaded || s.tracks[0].clips.empty()) return {};
+    return s.tracks[0].clips[0].file;
+}
+
+} // namespace
+
+TEST_CASE("disk bake: an element left mid-edit by a power cut plays as it was in another song", "[song][element][diskbake]") {
+    Rig r;
+    writeAudioElement(r, kChild, 8000, 2);
+    writeSongWith(r, "Parent", kChild, 2, "");
+    REQUIRE(r.open("Parent"));
+    REQUIRE(idle(r));
+    const std::string baked = block(r).file;
+    REQUIRE_FALSE(baked.empty());
+    draftChild(r);
+    const std::string draft = slurp(fs::path(r.platform.root) / kChild / AudioSong::fileName());
+
+    writeSongWith(r, "Other", kChild, 2, baked);
+    REQUIRE(r.open("Other"));
+    REQUIRE(idle(r));
+    std::this_thread::sleep_for(std::chrono::milliseconds(600));   // a save the pass asked for would be through
+    CHECK(block(r).file == baked);
+    CHECK(r.engine->elementClipState(0, 0) == ElementClipState::Fresh);
+    CHECK(bakes(r) == std::set<std::string>{baked});
+    CHECK(slurp(fs::path(r.platform.root) / kChild / AudioSong::fileName()) == draft);
+}
+
+TEST_CASE("disk bake: idle inside an element, other songs keep it as it was and nothing writes it", "[song][element][diskbake]") {
+    Rig r;
+    writeOldBake(r);
+    writeAudioElement(r, kChild, 8000, 2);
+    writeSongWith(r, "Parent", kChild, 2, kOldBake);
+    writeSongWith(r, "Other", kChild, 2, kOldBake);
+    REQUIRE(r.open("Parent"));
+    REQUIRE(idle(r));
+    const std::string baked = block(r).file;
+    REQUIRE(baked != kOldBake);
+
+    /* Entered as ElementNav enters it: kept as it is, then opened and edited. */
+    REQUIRE(r.engine->requestSnapshot(kChild));
+    REQUIRE(waitFor([&] { return r.engine->editState() != SongOpState::Busy; }));
+    REQUIRE(r.engine->editState() == SongOpState::Ready);
+    REQUIRE(r.engine->requestOpenElement(kChild));
+    REQUIRE(waitFor([&] { return r.engine->openState() == SongOpState::Ready && block(r).element.empty(); }));
+    const fs::path json = fs::path(r.platform.root) / kChild / AudioSong::fileName();
+    {
+        std::lock_guard<std::recursive_mutex> l(r.engine->songMutex());
+        r.engine->song().tracks[0].volume = 0.5f;
+    }
+    r.engine->commit();
+    REQUIRE(waitFor([&] {
+        AudioSong s;
+        return s.load(json.parent_path().string()) == SongLoad::Loaded && s.tracks[0].volume == 0.5f;
+    }));
+    const std::string edited = slurp(json);
+    const auto before = bakes(r);
+
+    r.engine->idleBaking(true);
+    CHECK(waitFor([&] { return otherPlays(r) == baked; }, kBakeWaitMs));
+    std::this_thread::sleep_for(std::chrono::milliseconds(600));
+    CHECK(otherPlays(r) == baked);
+    CHECK(bakes(r) == before);
+    CHECK(slurp(json) == edited);
 }

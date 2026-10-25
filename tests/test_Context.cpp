@@ -412,3 +412,24 @@ TEST_CASE("context: an element that grows is heard around again over its new len
     }, kWaitMs));
     stemIs(r, longer, 6 * kBar, q(0.25f));
 }
+
+TEST_CASE("context: a tempo turned inside the element says the song around it is not heard, until it is put back", "[song][element][context]") {
+    Rig r;
+    Services svc(r.engine.get(), nullptr);
+    NavGuard guard;
+    writeElement(r, kE, 4, q(0.5f));
+    openDemo(r, {{"bed.wav", 0, 8, q(0.25f)}}, {{1, kE, 4, 4}});
+    enter(1, 4);
+    REQUIRE(contextIs(r, ContextState::Ready));
+    auto tempo = [&](float bpm) {
+        REQUIRE(r.engine->requestTempo(bpm));
+        REQUIRE(waitFor([&] { return r.engine->editState() != SongOpState::Busy; }));
+        REQUIRE(r.engine->editState() == SongOpState::Ready);
+    };
+    tempo(100.0f);
+    CHECK(contextIs(r, ContextState::Incomplete));
+    CHECK(r.engine->contextWhy().find("BPM") != std::string::npos);
+    tempo(120.0f);
+    CHECK(contextIs(r, ContextState::Ready));
+    CHECK(r.engine->contextWhy().empty());
+}

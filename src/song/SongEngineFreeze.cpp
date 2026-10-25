@@ -314,6 +314,8 @@ void SongEngine::Impl::runFreeze() {
     std::vector<FreezePiece> plan;
     uint32_t spb = 0;
     std::string dir;
+    AudioSong where;   // the song's folder, for a sound named inside it
+    std::string sound;
     {
         std::lock_guard<std::recursive_mutex> l(songMutex_);
         const SongTrack& t = song_.tracks[bTrack_];
@@ -324,7 +326,11 @@ void SongEngine::Impl::runFreeze() {
         spb = song_.samplesPerBar(sampleRate_);
         plan = freezePlan(song_, bTrack_, spb);
         dir = song_.clipPath(kFreezeDir);
+        where.dir = song_.dir;
+        sound = seq_track_sound(song_, bTrack_);
     }
+    /* What it renders through, read before the render as the card holds it. */
+    const uint32_t kit = sound_identity(where, sound, cardHashReader());
     if (plan.empty()) {
         setStatus(BounceState::Failed, "nothing to freeze");
         return;
@@ -399,6 +405,7 @@ void SongEngine::Impl::runFreeze() {
         } else {
             tr.freeze = std::move(clips);
             tr.freezeKey = bFreezeKey_;
+            tr.freezeKit = kit;
         }
         for (const auto& f : old)
             if (!named(f)) std::remove(song_.clipPath(f).c_str());
@@ -414,6 +421,25 @@ void SongEngine::Impl::runFreeze() {
     }
     doSave();
     setStatus(BounceState::Done, "");
+}
+
+std::vector<int> SongEngine::Impl::kitChangedFreezes(const AudioSong& s) {
+    std::vector<int> out;
+    const ElementHashReader rd = cardHashReader();
+    for (int t = 0; t < kTracks; ++t) {
+        const SongTrack& tr = s.tracks[t];
+        if (tr.kind == TrackKind::Seq && !tr.freeze.empty() && tr.freezeKit &&
+            tr.freezeKit != sound_identity(s, seq_track_sound(s, t), rd))
+            out.push_back(t);
+    }
+    return out;
+}
+
+void SongEngine::Impl::unfreeze(AudioSong& s, const std::vector<int>& tracks) {
+    for (int t : tracks) {
+        s.tracks[t].freezeKey = 0;
+        ++s.tracks[t].freezeSalt;
+    }
 }
 
 /// Seq track @p track plays its freeze: one made, not armed, and still

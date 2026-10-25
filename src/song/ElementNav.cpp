@@ -1020,6 +1020,7 @@ ElementNav::Result ElementNav::sounds()
     phase_ = Phase::Freezing;
     freezeTrack_ = 0;
     froze_ = false;
+    refroze_ = false;
     asked_ = false;
     refusals_ = 0;
     return {};
@@ -1122,6 +1123,16 @@ ElementNav::Result ElementNav::baking()
         case SongOpState::Busy: return {};
         case SongOpState::Ready: break;
         default: {
+            /* A freeze the bake found stale -- its kit saved since, unheard --
+             * is no longer frozen: frozen again, once. */
+            freezeTrack_ = 0;
+            if (!refroze_ && onLevel(ref_) && nextToFreeze() < AudioSong::kTracks) {
+                refroze_ = true;
+                phase_ = Phase::Freezing;
+                asked_ = false;
+                refusals_ = 0;
+                return {};
+            }
             const auto report = se->editReport();
             return fail(report.empty() ? "the element could not be baked" : report.front());
         }

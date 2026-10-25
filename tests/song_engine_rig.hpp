@@ -230,6 +230,13 @@ std::vector<int16_t> readWavData(const std::string& path) {
     return {};
 }
 
+/// The bake cache's own book, usage.json, or the part it is written through:
+/// a listing of the cache taken while the book is saved sees either.
+bool cacheBook(const fs::path& file) {
+    const std::string n = file.filename().string();
+    return n == "usage.json" || n == "usage.json.part";
+}
+
 /// The segments flatten() gave track @p t, as debugLine() says them.
 int segmentsOf(ISongEngine& e, int t) {
     const std::string line = e.debugLine();

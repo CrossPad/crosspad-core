@@ -12,6 +12,11 @@ Elements, stages 1b-4: an element made from a region or a song, the song
 around the one being edited, copy or replace for a shared one, and bakes that
 never make the player wait.
 
+The v2.24.0 tag already holds the first part of this work -- an element from a
+region or a song, the baked view, the resolver, disk bakes with the relink
+pass, and the context stem -- though its entry names only TRS MIDI OUT. It is
+described here, with the rest.
+
 ### Added
 
 - An element from a region or a song: `ISongEngine::requestElementFromRegion()`
@@ -62,7 +67,19 @@ never make the player wait.
   `ISongEnginePlatform::freeStorageBytes()`.
 - A kit saved under its own name makes the freezes that play it stale
   (`kit_saved_notify()`, `kit_saved_generation()`, `KitSaved.hpp`; the
-  freeze salt is in the element key).
+  freeze salt is in the element key). A freeze is stamped with what it was
+  rendered through, `SongTrack::freezeKit` (`sound_identity()`, the kit's or
+  instrument's files as the element key hears them; `kit` in the freeze's
+  song.json object, written only where set), so a kit changed on the
+  card in any boot is told: the resolver does not bake from such a freeze, an
+  open unfreezes it, and an engine bake that finds one unfreezes it and fails
+  -- `ElementNav` freezes it again, once. `seq_track_sound()`.
+- An edit not decided yet is no other song's: an element holding a snapshot
+  (`AudioSong::snapshotFileName()`, `AudioSong::load(dir, file)`) is resolved,
+  baked and linked everywhere from the snapshot (`ResolvedElement::kept`),
+  except in the song it was just left to (`ElementResolver`'s `heardDraft`);
+  the element open in the engine is never baked or linked from its song.json
+  by idle work (`editing`). The snapshot's newest bake is kept by the cache.
 - Stale bakes played varispeed: `SongClip::bakeBpm` (song.json, written only
   where set) is the tempo a block's bake was made at; after a tempo change the
   old bake plays resampled, its passes the element's beats at the song's tempo
@@ -75,6 +92,15 @@ never make the player wait.
   in the bake.
 - The worker runs a request made during another; a save due while the song
   streams does not keep the worker from waiting.
+- An element's newest bake noted while the song streams is written into its
+  song.json once it stops (the open element's in memory, with its next save);
+  a usage book the card will not take is given up until the next use, so the
+  worker never retries it without waiting.
+- `element_edit_hash()` counts each track's stretch mode: a stretch the player
+  changes inside an element is an edit (the enter's own fit comes before the
+  hash it is compared with).
+- `contextState()` is Incomplete, with `contextWhy()` naming the tempo, while
+  the song plays at another tempo than its stem was made at.
 
 ## 2.24.0 — 2026-10-25
 
