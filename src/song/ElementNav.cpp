@@ -110,7 +110,8 @@ uint8_t ElementNav::progress() const
             return b.framesTotal ? (uint8_t)((uint64_t)b.framesDone * 100 / b.framesTotal) : 0;
         }
         case Phase::Stretching: return se->stretchProgress();
-        case Phase::Baking:     return se->editProgress();
+        case Phase::Baking:
+        case Phase::Making:     return se->editProgress();
         default:                return 0;
     }
 }
@@ -118,6 +119,8 @@ uint8_t ElementNav::progress() const
 const char* ElementNav::stage() const
 {
     switch (phase_) {
+        case Phase::Making:
+        case Phase::Listing:    return "copying";
         case Phase::Stopping:   return "stopping";
         case Phase::Opening:
         case Phase::Retempo:    return "opening";
@@ -241,6 +244,12 @@ bool ElementNav::insertNew(int track, uint32_t bar, const std::string& title)
 bool ElementNav::insertExisting(int track, uint32_t bar, const std::string& ref)
 {
     if (busy()) return refuse("busy");
+    if (!engine()) return false;
+    return placeExisting(track, bar, ref);
+}
+
+bool ElementNav::placeExisting(int track, uint32_t bar, const std::string& ref)
+{
     ISongEngine* se = engine();
     if (!se) return false;
     if (!is_element_ref(ref)) return refuse("not an element");
@@ -269,6 +278,117 @@ bool ElementNav::insertExisting(int track, uint32_t bar, const std::string& ref)
     newTitle_.clear();
     targetDepth_ = depth();
     return startEnter(ref, track, bar, Job::Insert);
+}
+
+bool ElementNav::makeFromRegion(uint32_t fromBar, uint32_t toBar)
+{
+    if (busy()) return refuse("busy");
+    ISongEngine* se = engine();
+    if (!se) return false;
+    if (toBar <= fromBar) return refuse("the region is empty");
+    syncRoot();
+    {
+        std::lock_guard<std::recursive_mutex> l(se->songMutex());
+        const AudioSong& song = se->song();
+        /* The lowest audio track the region touches holds the element, as the
+         * blocks it replaces did; with only seq tracks there, the lowest one
+         * nobody has made. */
+        int track = -1;
+        for (const RangeClip& k : song.copyRange(fromBar, toBar, 1)) {
+            if (song.tracks[k.track].kind == TrackKind::Audio && (track < 0 || k.track < track)) track = k.track;
+        }
+        for (int t = 0; track < 0 && t < AudioSong::kTracks; ++t) {
+            if (!song.tracks[t].inUse && song.tracks[t].clips.empty()) track = t;
+        }
+        if (track < 0) return refuse("a region of seq tracks needs an audio or free track to hold the element");
+        track_ = track;
+    }
+    if (!se->requestElementFromRegion(fromBar, toBar)) return refuse("the element cannot be made now");
+    bar_ = fromBar;
+    regionBars_ = toBar - fromBar;
+    startMaking(Job::Make);
+    return true;
+}
+
+bool ElementNav::insertSong(int track, uint32_t bar, const std::string& songName)
+{
+    if (busy()) return refuse("busy");
+    ISongEngine* se = engine();
+    if (!se) return false;
+    syncRoot();
+    {
+        /* Refused before the copy, which would be left in the library. */
+        std::lock_guard<std::recursive_mutex> l(se->songMutex());
+        if (track < 0 || track >= AudioSong::kTracks) return refuse("no such track");
+        const SongTrack& t = se->song().tracks[track];
+        if ((t.inUse || !t.clips.empty()) && t.kind != TrackKind::Audio)
+            return refuse("a seq track cannot hold an element: use an audio track");
+    }
+    if (!se->requestElementFromSong(songName)) return refuse("that song cannot be copied now");
+    track_ = track;
+    bar_ = bar;
+    startMaking(Job::Insert);
+    return true;
+}
+
+void ElementNav::startMaking(Job job)
+{
+    job_ = job;
+    phase_ = Phase::Making;
+    asked_ = true;
+    refusals_ = 0;
+    error_.clear();
+}
+
+/// The engine's copy of what the element is made of: when it is on the card
+/// the element is laid in the song, as insertNew() and insertExisting() do.
+ElementNav::Result ElementNav::making()
+{
+    ISongEngine* se = songEngine();
+    switch (se->editState()) {
+        case SongOpState::Busy: return {};
+        case SongOpState::Ready: break;
+        default: {
+            const auto report = se->editReport();
+            return fail(report.empty() ? "the element could not be made" : report.front());
+        }
+    }
+    ref_ = se->elementMade();
+    if (ref_.empty()) return fail("the element could not be made");
+    if (job_ == Job::Make) return laidFromRegion();
+    /* A copied song is not in the library list yet. */
+    listGen_ = se->listGeneration();
+    if (!se->requestElements()) return fail("the library cannot be read now");
+    phase_ = Phase::Listing;
+    return {};
+}
+
+ElementNav::Result ElementNav::listing()
+{
+    ISongEngine* se = songEngine();
+    if (se->listGeneration() == listGen_) return {};
+    if (!placeExisting(track_, bar_, ref_)) return fail(error_);
+    return {};
+}
+
+/// The region's blocks give way to one block of the new element.
+ElementNav::Result ElementNav::laidFromRegion()
+{
+    ISongEngine* se = songEngine();
+    {
+        std::lock_guard<std::recursive_mutex> l(se->songMutex());
+        AudioSong& song = se->song();
+        /* A seq track that plays its scene over the whole song has no blocks
+         * to give way: it gets them, empty of notes, as the scene plays. */
+        song.seqBlocksExplicit(std::max(song.playEnd(), bar_ + regionBars_));
+        song.clearRange(bar_, bar_ + regionBars_, se->framesPerBar());
+    }
+    if (!addBlock(track_, bar_, (uint16_t)std::min<uint32_t>(regionBars_, UINT16_MAX), ref_)) return fail(error_);
+    se->commit();
+    leaveAfterEnter_ = true;
+    newTitle_.clear();
+    targetDepth_ = depth();
+    return startEnter(ref_, track_, bar_, Job::Make) ? Result{} : fail(error_);
 }
 
 ElementNav::Result ElementNav::fail(const std::string& why)
@@ -306,6 +426,8 @@ ElementNav::Result ElementNav::poll()
     if (job_ == Job::None) return {};
     if (!se) return fail("no song engine in this firmware");
     switch (phase_) {
+        case Phase::Making:     return making();
+        case Phase::Listing:    return listing();
         case Phase::Stopping:   return stopped();
         case Phase::Opening:    return opened();
         case Phase::Retempo:    return retempo();

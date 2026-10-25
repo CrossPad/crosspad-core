@@ -2,6 +2,8 @@
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/matchers/catch_matchers_floating_point.hpp>
 
+#include <fstream>
+
 #include "song_engine_rig.hpp"
 
 #include "fake_file_system.hpp"
@@ -3037,4 +3039,179 @@ TEST_CASE("song engine: a bake found in the cache does not show the last one's p
     CHECK(r.engine->editProgress() == 0);
     REQUIRE(waitFor([&] { return r.engine->editState() != SongOpState::Busy; }, 10000));
     CHECK(r.engine->bakeResult().cached);
+}
+
+// ── an element made from a region, from a song ────────────────────────────
+
+namespace {
+
+bool madeAndWait(Rig& r, bool region, uint32_t from, uint32_t to, const std::string& name = {}) {
+    if (!(region ? r.engine->requestElementFromRegion(from, to) : r.engine->requestElementFromSong(name))) return false;
+    return waitFor([&] { return r.engine->editState() != SongOpState::Busy; }, 10000);
+}
+
+AudioSong elementOnCard(Rig& r, const std::string& ref) {
+    AudioSong e;
+    REQUIRE(e.load(r.platform.root + "/" + ref) == SongLoad::Loaded);
+    return e;
+}
+
+size_t elementFolders(Rig& r) {
+    const fs::path lib = fs::path(r.platform.root) / AudioSong::elementsDir();
+    return fs::exists(lib) ? (size_t)std::distance(fs::directory_iterator(lib), fs::directory_iterator()) : 0;
+}
+
+/// "Demo": an audio track (a panned half-volume quarter, 4 bars) and a Kit seq
+/// track with notes in its blocks, a kit, a song-kept instrument and a freeze.
+void regionSong(Rig& r) {
+    REQUIRE(r.open("Demo"));
+    writeClip((r.clipsDir("Demo") / "a.wav").string(), kRate * 8, 8192);
+    const fs::path pitch = fs::path(r.platform.root) / "Demo" / "pitch";
+    fs::create_directories(pitch);
+    writeClip((pitch / "root.wav").string(), 64, 100);
+    std::ofstream((pitch / "instrument.json").string()) << "{}";
+    {
+        std::lock_guard<std::recursive_mutex> l(r.engine->songMutex());
+        AudioSong& s = r.engine->song();
+        s.bpm = 120.0f;
+        s.kit = "/crosspad/kits/x/kit.json";
+        s.instrument = "pitch/instrument.json";
+        s.tracks[0].inUse = true;
+        s.tracks[0].volume = 0.5f;
+        s.tracks[0].pan = -0.25f;
+        s.tracks[0].stretch = StretchMode::KeepPitch;
+        s.addClip(0, {"a.wav", 0, 4});
+        REQUIRE(s.addSeqTrack(1, SeqSource::Kit, 0));
+        s.tracks[1].kit = "/crosspad/kits/y/kit.json";
+        s.tracks[1].solo = true;
+        SeqNote n;
+        n.pad = 3; n.vel = 99; n.tick = AudioSong::kSeqPpq;
+        s.putSeqTake(1, 0, makeSeqPattern(4, {n}), s.samplesPerBar(kRate));
+        s.tracks[1].freeze.push_back({"x.wav", 0, 4});
+        s.tracks[1].freezeKey = 7;
+        s.armed = -1;
+    }
+    r.engine->commit();
+}
+
+} // namespace
+
+TEST_CASE("song engine: an element from a region carries the tracks, the sounds and the recordings", "[song][element]") {
+    Rig r;
+    regionSong(r);
+    REQUIRE(madeAndWait(r, true, 1, 3));
+    INFO("report: " << (r.engine->editReport().empty() ? "" : r.engine->editReport()[0]));
+    REQUIRE(r.engine->editState() == SongOpState::Ready);
+    const std::string ref = r.engine->elementMade();
+    REQUIRE(is_element_ref(ref));
+    const AudioSong e = elementOnCard(r, ref);
+    CHECK(e.length == 2);
+    CHECK(e.bpm == 120.0f);
+    CHECK(e.kit == "/crosspad/kits/x/kit.json");
+    CHECK(e.instrument == "pitch/instrument.json");
+    CHECK(fs::exists(fs::path(r.platform.root) / ref / "pitch" / "root.wav"));
+    CHECK(fs::exists(fs::path(r.platform.root) / ref / "clips" / "a.wav"));
+    const SongTrack& a = e.tracks[0];
+    REQUIRE(a.clips.size() == 1);
+    CHECK(a.inUse);
+    CHECK(a.clips[0].bar == 0);
+    CHECK(a.clips[0].bars == 2);
+    CHECK(a.clips[0].offset == 88200);          // cut one bar in, at the song's 120 BPM
+    CHECK(a.volume == 0.5f);
+    CHECK(a.pan == -0.25f);
+    CHECK(a.stretch == StretchMode::KeepPitch);
+    const SongTrack& q = e.tracks[1];
+    REQUIRE(q.clips.size() == 1);
+    CHECK(q.kind == TrackKind::Seq);
+    CHECK(q.source == SeqSource::Kit);
+    CHECK(q.kit == "/crosspad/kits/y/kit.json");
+    CHECK(q.solo);
+    CHECK(q.seqBlocks);
+    CHECK(q.clips[0].bars == 2);
+    REQUIRE(q.clips[0].notes);
+    CHECK(q.clips[0].notes->notes.size() == 1);
+    CHECK(q.freeze.empty());
+    CHECK(q.freezeKey == 0);
+    {
+        std::lock_guard<std::recursive_mutex> l(r.engine->songMutex());
+        const AudioSong& s = r.engine->song();
+        CHECK(s.name == "Demo");
+        CHECK(s.tracks[0].clips.size() == 1);
+        CHECK(s.tracks[1].freeze.size() == 1);   // the song is as it was
+    }
+}
+
+TEST_CASE("song engine: a seq track that plays its scene gives the element the scene's notes", "[song][element]") {
+    Rig r;
+    REQUIRE(r.open("Demo"));
+    REQUIRE(r.seq.addEventTicks(0, 0, 8, 100));
+    {
+        std::lock_guard<std::recursive_mutex> l(r.engine->songMutex());
+        AudioSong& s = r.engine->song();
+        s.bpm = 120.0f;
+        REQUIRE(s.addSeqTrack(0, SeqSource::Kit, 0));
+        s.tracks[0].seqBlocks = false;              // a track from before blocks: it plays its scene
+        s.length = 4;
+    }
+    r.engine->commit();
+    REQUIRE(madeAndWait(r, true, 0, 2));
+    REQUIRE(r.engine->editState() == SongOpState::Ready);
+    const AudioSong e = elementOnCard(r, r.engine->elementMade());
+    REQUIRE(e.tracks[0].clips.size() == 1);
+    REQUIRE(e.tracks[0].clips[0].notes);
+    CHECK(e.tracks[0].clips[0].notes->notes.size() == 1);
+    CHECK(e.tracks[0].clips[0].notes->notes[0].pad == 8);
+}
+
+TEST_CASE("song engine: an element from a region that cannot be copied leaves nothing behind", "[song][element]") {
+    Rig r;
+    regionSong(r);
+    fs::remove(r.clipsDir("Demo") / "a.wav");
+    CHECK_FALSE(r.engine->requestElementFromRegion(3, 3));
+    REQUIRE(madeAndWait(r, true, 1, 3));
+    CHECK(r.engine->editState() == SongOpState::Failed);
+    CHECK_FALSE(r.engine->editReport().empty());
+    CHECK(r.engine->elementMade().empty());
+    CHECK(elementFolders(r) == 0);
+    std::lock_guard<std::recursive_mutex> l(r.engine->songMutex());
+    CHECK(r.engine->song().tracks[0].clips.size() == 1);
+}
+
+TEST_CASE("song engine: an element from a song copies it, clips and all, without its freezes", "[song][element]") {
+    Rig r;
+    {
+        AudioSong s;
+        s.dir = r.platform.root + "/Src";
+        fs::create_directories(fs::path(s.dir) / "clips" / ".freeze");
+        fs::create_directories(fs::path(s.dir) / "pitch");
+        writeClip((fs::path(s.dir) / "clips" / "a.wav").string(), kRate * 4, 8192);
+        writeClip((fs::path(s.dir) / "clips" / ".freeze" / "FRZ00000001.wav").string(), 64, 1);
+        s.bpm = 90.0f;
+        s.length = 2;
+        s.tracks[0].inUse = true;
+        s.addClip(0, {"a.wav", 0, 2});
+        REQUIRE(s.addSeqTrack(1, SeqSource::Kit, 0));
+        s.tracks[1].freeze.push_back({".freeze/FRZ00000001.wav", 0, 2});
+        s.tracks[1].freezeKey = 9;
+        REQUIRE(s.save());
+    }
+    REQUIRE(r.open("Demo"));
+    CHECK_FALSE(r.engine->requestElementFromSong("../Src"));
+    REQUIRE(madeAndWait(r, false, 0, 0, "Nothing"));
+    CHECK(r.engine->editState() == SongOpState::Failed);
+    CHECK(elementFolders(r) == 0);
+    REQUIRE(madeAndWait(r, false, 0, 0, "Src"));
+    INFO("report: " << (r.engine->editReport().empty() ? "" : r.engine->editReport()[0]));
+    REQUIRE(r.engine->editState() == SongOpState::Ready);
+    const std::string ref = r.engine->elementMade();
+    const AudioSong e = elementOnCard(r, ref);
+    CHECK(e.title == "Src");
+    CHECK(e.bpm == 90.0f);
+    CHECK(e.tracks[0].clips.size() == 1);
+    CHECK(e.tracks[1].freeze.empty());
+    CHECK(e.tracks[1].freezeKey == 0);
+    CHECK(fs::exists(fs::path(r.platform.root) / ref / "clips" / "a.wav"));
+    CHECK_FALSE(fs::exists(fs::path(r.platform.root) / ref / "clips" / ".freeze"));
+    CHECK(fs::exists(fs::path(r.platform.root) / "Src" / "clips" / ".freeze" / "FRZ00000001.wav"));
+    CHECK(r.platform.current == "Demo");
 }

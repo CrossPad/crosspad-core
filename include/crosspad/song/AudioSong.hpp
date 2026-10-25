@@ -391,6 +391,10 @@ public:
     /// reaching in from before is copied from @p from, one reaching past is
     /// copied up to @p to. Seq blocks as much as audio ones.
     std::vector<RangeClip> copyRange(uint32_t from, uint32_t to, uint32_t spBar) const;
+    /// Nothing sounds in [@p from, @p to) on any track: a block reaching in from
+    /// before is cut at @p from, one reaching past plays on from @p to, and
+    /// the blocks starting inside go.
+    void clearRange(uint32_t from, uint32_t to, uint32_t spBar);
     /// @p clips back in, the range's first bar on @p at. Over what is there:
     /// insertBars() first to keep it. A block whose track is no longer of
     /// its kind is left out.

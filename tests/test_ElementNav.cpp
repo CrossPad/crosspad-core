@@ -706,3 +706,194 @@ TEST_CASE("element nav: nothing is frozen before the level's sounds are loaded",
         CHECK(openName(r) == kA);
     }
 }
+
+// ── an element made from a region, from a song ────────────────────────────
+
+namespace {
+
+/// The job run to its end, rendering as the board would: a leave freezes seq tracks off the audio clock.
+ElementNav::Result runRendering(Rig& r) {
+    std::vector<float> out(kBlock * 2), bus(kBlock * 2, 0.0f);
+    ElementNav::Result res;
+    waitFor([&] { r.block(out, bus); res = elementNav().poll(); return res.done; }, 20000);
+    return res;
+}
+
+/// "Demo" with a 4-bar audio clip on track 0 and, on track 1, a seq block of one note.
+void regionDemo(Rig& r, bool audio = true) {
+    REQUIRE(r.open("Demo"));
+    while (r.seq.sceneCount() < 2) REQUIRE(r.seq.addScene());
+    writeClip((r.clipsDir("Demo") / "a.wav").string(), 4 * kBarFrames, 8192);
+    {
+        std::lock_guard<std::recursive_mutex> l(r.engine->songMutex());
+        AudioSong& s = r.engine->song();
+        s.bpm = 120.0f;
+        if (audio) {
+            s.tracks[0].inUse = true;
+            s.addClip(0, {"a.wav", 0, 4});
+        } else {
+            REQUIRE(s.addSeqTrack(0, SeqSource::Pitch, 0));
+        }
+        REQUIRE(s.addSeqTrack(1, SeqSource::Kit, 1));
+        SeqNote n;
+        n.pad = 5; n.vel = 100; n.tick = AudioSong::kSeqPpq;
+        s.putSeqTake(1, 0, makeSeqPattern(4, {n}), s.samplesPerBar(kRate));
+        s.armed = -1;
+    }
+    r.engine->commit();
+    REQUIRE(waitFor([&] { return !r.engine->backgroundBusy(); }, 10000));
+}
+
+} // namespace
+
+TEST_CASE("element nav: a region becomes an element, one block in its place, baked and linked", "[element][nav]") {
+    Rig r;
+    Services svc(r.engine.get(), nullptr);
+    NavGuard guard;
+    regionDemo(r);
+    REQUIRE(elementNav().makeFromRegion(1, 3));
+    CHECK(elementNav().busy());
+    const auto res = runRendering(r);
+    INFO("error: " << res.error);
+    REQUIRE(res.ok);
+    CHECK(res.job == ElementNav::Job::Make);
+    CHECK(elementNav().depth() == 0);
+    CHECK(openName(r) == "Demo");
+    std::string ref;
+    SongClip block;
+    {
+        std::lock_guard<std::recursive_mutex> l(r.engine->songMutex());
+        const AudioSong& s = r.engine->song();
+        int elements = 0;
+        for (const SongClip& c : s.tracks[0].clips) {
+            if (c.isElement()) { ++elements; block = c; ref = c.element; }
+            else CHECK((c.bar + c.bars <= 1 || c.bar >= 3));            // the region is empty of anything else
+        }
+        CHECK(elements == 1);
+        for (const SongClip& c : s.tracks[1].clips) CHECK((c.bar + c.bars <= 1 || c.bar >= 3));
+    }
+    REQUIRE(is_element_ref(ref));
+    CHECK(block.bar == 1);
+    CHECK(block.bars == 2);
+    CHECK(block.file == r.engine->bakeResult().file);
+    CHECK(block.frames == 2 * kBarFrames);
+    const auto pcm = readWavData(bakeOf(r, block.file).string());
+    REQUIRE(pcm.size() == (size_t)2 * kBarFrames * 2);
+    for (size_t i : {size_t(0), pcm.size() / 2, pcm.size() - 2}) CHECK(std::abs(pcm[i] - 8192) <= 1);   // the audio the region held
+    AudioSong e;
+    REQUIRE(e.load(r.platform.root + "/" + ref) == SongLoad::Loaded);
+    REQUIRE(e.tracks[1].clips.size() == 1);
+    REQUIRE(e.tracks[1].clips[0].notes);
+    CHECK(e.tracks[1].clips[0].notes->notes.size() == 1);
+    CHECK(e.tracks[1].clips[0].notes->notes[0].pad == 5);
+    CHECK(e.tracks[1].clips[0].notes->notes[0].tick == AudioSong::kSeqPpq);   // the notes are the block's, and the element starts a bar into them
+    CHECK(e.tracks[1].clips[0].from == 1);
+    size_t at = 0;
+    {
+        std::lock_guard<std::recursive_mutex> l(r.engine->songMutex());
+        for (const SongClip& c : r.engine->song().tracks[0].clips) { if (c.isElement()) break; ++at; }
+    }
+    CHECK(r.engine->elementClipState(0, at) == ElementClipState::Fresh);
+}
+
+TEST_CASE("element nav: a region over seq tracks only goes on the lowest free track", "[element][nav]") {
+    Rig r;
+    Services svc(r.engine.get(), nullptr);
+    NavGuard guard;
+    regionDemo(r, false);
+    REQUIRE(elementNav().makeFromRegion(0, 2));
+    const auto res = runRendering(r);
+    INFO("error: " << res.error);
+    REQUIRE(res.ok);
+    std::lock_guard<std::recursive_mutex> l(r.engine->songMutex());
+    const AudioSong& s = r.engine->song();
+    REQUIRE(s.tracks[2].clips.size() == 1);
+    CHECK(s.tracks[2].kind == TrackKind::Audio);
+    CHECK(s.tracks[2].clips[0].isElement());
+}
+
+TEST_CASE("element nav: a region over seq tracks with no free track is refused and changes nothing", "[element][nav]") {
+    Rig r;
+    Services svc(r.engine.get(), nullptr);
+    NavGuard guard;
+    REQUIRE(r.open("Demo"));
+    {
+        std::lock_guard<std::recursive_mutex> l(r.engine->songMutex());
+        AudioSong& s = r.engine->song();
+        s.bpm = 120.0f;
+        for (int t = 0; t < 3; ++t) {
+            REQUIRE(s.addSeqTrack(t, t == 1 ? SeqSource::Pitch : SeqSource::Kit, (uint8_t)t, t == 2 ? "k.json" : ""));
+            s.putSeqTake(t, 0, makeSeqPattern(2, {SeqNote{}}), s.samplesPerBar(kRate));
+        }
+        s.tracks[3].inUse = true;
+        s.addClip(3, {"a.wav", 8, 2});               // an audio track the region does not touch
+    }
+    r.engine->commit();
+    CHECK_FALSE(elementNav().makeFromRegion(0, 2));
+    CHECK(elementNav().lastError().find("needs an audio or free track") != std::string::npos);
+    CHECK_FALSE(elementNav().busy());
+    CHECK(listElements(r));
+    CHECK(r.engine->elements().empty());
+    std::lock_guard<std::recursive_mutex> l(r.engine->songMutex());
+    CHECK(r.engine->song().tracks[3].clips.size() == 1);
+    CHECK(r.engine->song().tracks[0].clips.size() == 1);
+}
+
+TEST_CASE("element nav: a song is copied into the library and laid as an element", "[element][nav]") {
+    Rig r;
+    Services svc(r.engine.get(), nullptr);
+    NavGuard guard;
+    {
+        AudioSong s;
+        s.dir = r.platform.root + "/Src";
+        fs::create_directories(fs::path(s.dir) / AudioSong::clipsDir());
+        writeClip((fs::path(s.dir) / AudioSong::clipsDir() / "a.wav").string(), 2 * kBarFrames, 8192);
+        s.bpm = 120.0f;
+        s.tracks[0].inUse = true;
+        s.addClip(0, {"a.wav", 0, 2});
+        REQUIRE(s.save());
+    }
+    REQUIRE(r.open("Demo"));
+    {
+        std::lock_guard<std::recursive_mutex> l(r.engine->songMutex());
+        r.engine->song().bpm = 120.0f;
+    }
+    r.engine->commit();
+    CHECK_FALSE(elementNav().insertSong(0, 0, "../Src"));
+    REQUIRE(elementNav().insertSong(1, 2, "Src"));
+    const auto res = runRendering(r);
+    INFO("error: " << res.error);
+    REQUIRE(res.ok);
+    CHECK(res.job == ElementNav::Job::Insert);
+    const SongClip c = clipOf(r, 1);
+    REQUIRE(is_element_ref(c.element));
+    CHECK(c.bar == 2);
+    CHECK(c.bars == 2);
+    CHECK(c.file == r.engine->bakeResult().file);
+    CHECK(fs::exists(fs::path(r.platform.root) / c.element / "clips" / "a.wav"));
+    fs::rename(fs::path(r.platform.root) / "Src", fs::path(r.platform.root) / "Gone");   // a rename breaks nothing
+    CHECK(fs::exists(fs::path(r.platform.root) / c.element / "clips" / "a.wav"));
+    CHECK(fs::exists(bakeOf(r, c.file)));
+}
+
+TEST_CASE("element nav: a region that cannot be copied changes nothing in the song", "[element][nav]") {
+    Rig r;
+    Services svc(r.engine.get(), nullptr);
+    NavGuard guard;
+    regionDemo(r);
+    fs::remove(r.clipsDir("Demo") / "a.wav");
+    REQUIRE(elementNav().makeFromRegion(1, 3));
+    const auto res = runRendering(r);
+    CHECK_FALSE(res.ok);
+    CHECK(res.job == ElementNav::Job::Make);
+    CHECK_FALSE(res.error.empty());
+    CHECK_FALSE(elementNav().busy());
+    CHECK(openName(r) == "Demo");
+    const fs::path library = fs::path(r.platform.root) / AudioSong::elementsDir();
+    CHECK((!fs::exists(library) || fs::is_empty(library)));          // the folder that was started is gone
+    std::lock_guard<std::recursive_mutex> l(r.engine->songMutex());
+    const AudioSong& s = r.engine->song();
+    REQUIRE(s.tracks[0].clips.size() == 1);
+    CHECK_FALSE(s.tracks[0].clips[0].isElement());
+    CHECK(s.tracks[0].clips[0].bars == 4);
+}

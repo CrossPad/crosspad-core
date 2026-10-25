@@ -384,6 +384,9 @@ struct SongEngine::Impl {
     std::vector<ElementInfo> elements();
     bool requestBakeElement();
     ElementBake bakeResult();
+    bool requestElementFromRegion(uint32_t fromBar, uint32_t toBar);
+    bool requestElementFromSong(const std::string& name);
+    std::string elementMade();
     ElementClipState elementClipState(uint8_t track, size_t clip);
     std::string elementClipWhy(uint8_t track, size_t clip);
     uint8_t backgroundProgress() const { return bakeProgress_.load(); }
@@ -485,6 +488,15 @@ private:
     SongOpState doOpen(const std::string& name, bool remember = true);
     bool askToOpen(const std::string& name, bool remember);
     SongOpState doBakeElement();
+    SongOpState doElementFromRegion();
+    SongOpState doElementFromSong();
+    /// A ref no element on the card has, with its folder made under the
+    /// library (its clips/ too when @p withClips). Empty when the card would
+    /// not; @p dir is then whatever was made, to be removed.
+    std::string makeElementFolder(std::string& dir, bool withClips);
+    /// Worker: an element that was not made -- @p why in the report, the
+    /// folder @p dir (when one was started) taken off the card again.
+    SongOpState elementFailed(const std::string& why, const std::string& dir);
     /// How element hashes and the resolver look at the card: sizes and times
     /// of files (a folder is no file), kit.json read whole, kit folders listed.
     static ElementHashReader cardHashReader();
@@ -651,7 +663,7 @@ private:
     mutable std::vector<NoteCache> noteCache_;
     mutable std::mutex noteCacheMutex_;
     static constexpr uint8_t kEditRename = 1, kEditTempo = 2, kEditMerge = 3, kEditImport = 4,
-                             kEditDelete = 5, kEditExport = 6, kEditBake = 7;
+                             kEditDelete = 5, kEditExport = 6, kEditBake = 7, kEditElementRegion = 8, kEditElementSong = 9;
     uint32_t    importA_ = 0, importB_ = 0, importBar_ = 0, importLead_ = 0;   // owned by claimEdit()'s caller until editReq_
     uint8_t     importTrack_ = 0;
     std::atomic<uint8_t>  editMask_{0}, editProgress_{0};
@@ -663,6 +675,7 @@ private:
     std::vector<std::string> report_;             // the last export's, under reportMutex_
     std::mutex  reportMutex_;
     ElementBake bake_;                            // the last bake's, under reportMutex_
+    std::string elementMade_;                     // the last element made's ref, under reportMutex_
     /* The relink pass: asked for by an open and by a rebuild whose element
      * blocks or tempo moved (elementSig_, under songMutex_). What it found of
      * each element the open song's blocks use, and which of those blocks' bakes

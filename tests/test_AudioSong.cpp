@@ -935,6 +935,23 @@ TEST_CASE("AudioSong: a region copy of a seq block shares its notes", "[song][se
     CHECK(cs[1].notes == p);
 }
 
+TEST_CASE("AudioSong: clearing a range cuts what reaches in, trims what reaches past and drops the rest", "[song][region]") {
+    AudioSong s = songAt120();
+    s.tracks[0].inUse = true;
+    s.addClip(0, {"a.wav", 0, 4});         // bars 0-3: cut at both ends
+    s.addClip(0, {"b.wav", 5, 1});         // bar 5: out of it
+    s.tracks[1].inUse = true;
+    s.addClip(1, {"c.wav", 1, 1});         // bar 1: inside, goes
+    s.clearRange(1, 3, kSpb);
+    const auto& a = s.tracks[0].clips;
+    REQUIRE(a.size() == 3);
+    CHECK((a[0].bar == 0 && a[0].bars == 1));
+    CHECK((a[1].bar == 3 && a[1].bars == 1));
+    CHECK(a[1].offset == 3 * kSpb);        // the rest plays on from where it was
+    CHECK(a[2].bar == 5);
+    CHECK(s.tracks[1].clips.empty());
+}
+
 TEST_CASE("AudioSong: the song's kit and instrument survive a save, and a Pitch track is found", "[song][sounds]") {
     const auto d = freshProject("cp_song_sounds");
     AudioSong a = songAt120();

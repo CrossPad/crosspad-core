@@ -756,6 +756,17 @@ std::vector<RangeClip> AudioSong::copyRange(uint32_t from, uint32_t to, uint32_t
     return out;
 }
 
+void AudioSong::clearRange(uint32_t from, uint32_t to, uint32_t spBar)
+{
+    for (int t = 0; t < kTracks; ++t) {
+        cutClip(t, from, spBar);
+        cutClip(t, to, spBar);
+        auto& cs = tracks[t].clips;
+        cs.erase(std::remove_if(cs.begin(), cs.end(), [&](const SongClip& c) { return c.bar >= from && c.bar < to; }),
+                 cs.end());
+    }
+}
+
 void AudioSong::pasteRange(const std::vector<RangeClip>& clips, uint32_t at)
 {
     for (const auto& k : clips) {

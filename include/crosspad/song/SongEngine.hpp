@@ -73,6 +73,9 @@ public:
     std::vector<ElementInfo> elements() override;
     bool requestBakeElement() override;
     ElementBake bakeResult() override;
+    bool requestElementFromRegion(uint32_t fromBar, uint32_t toBar) override;
+    bool requestElementFromSong(const std::string& name) override;
+    std::string elementMade() override;
     ElementClipState elementClipState(uint8_t track, size_t clip) override;
     std::string elementClipWhy(uint8_t track, size_t clip) override;
     uint8_t backgroundProgress() const override;

@@ -9,6 +9,7 @@
 
 #include "crosspad/song/ElementHash.hpp"
 #include "crosspad/song/ElementResolver.hpp"
+#include "crosspad/song/SongFiles.hpp"
 
 namespace crosspad {
 
@@ -228,6 +229,187 @@ SongOpState SongEngine::Impl::doBakeElement() {
     logf(false, "baked %u bars into %s", (unsigned)bars, result.file.c_str());
     std::lock_guard<std::mutex> l(reportMutex_);
     bake_ = result;
+    return SongOpState::Ready;
+}
+
+bool SongEngine::Impl::requestElementFromRegion(uint32_t fromBar, uint32_t toBar) {
+    if (toBar <= fromBar || !ensureWorker() || !claimEdit()) return false;
+    editFrom_.store(fromBar);
+    editTo_.store(toBar);
+    editProgress_.store(0);
+    return requestEdit(kEditElementRegion);
+}
+
+bool SongEngine::Impl::requestElementFromSong(const std::string& name) {
+    if (!valid_name(name) || !ensureWorker() || !claimEdit()) return false;
+    {
+        std::lock_guard<std::recursive_mutex> l(songMutex_);
+        editName_ = name;
+    }
+    editProgress_.store(0);
+    return requestEdit(kEditElementSong);
+}
+
+std::string SongEngine::Impl::elementMade() {
+    std::lock_guard<std::mutex> l(reportMutex_);
+    return elementMade_;
+}
+
+std::string SongEngine::Impl::makeElementFolder(std::string& dir, bool withClips) {
+    const std::string root = p.songsRoot();
+    const std::string library = root + "/" + AudioSong::elementsDir();
+    dir.clear();
+    if (!fsx::makeDir(root) || !fsx::makeDir(library)) return {};
+    uint32_t seed = (uint32_t)p.nowUs();
+    std::string ref;
+    do {
+        ref = std::string(AudioSong::elementsDir()) + "/" + make_element_id(seed++);
+        dir = root + "/" + ref;
+    } while (fsx::exists(dir));
+    if (!withClips) return ref;
+    if (!fsx::makeDir(dir) || !fsx::makeDir(dir + "/" + AudioSong::clipsDir())) return {};
+    return ref;
+}
+
+SongOpState SongEngine::Impl::elementFailed(const std::string& why, const std::string& dir) {
+    logf(true, "element: %s", why.c_str());
+    if (!dir.empty() && fsx::exists(dir)) fsx::removeTree(dir, [this] { p.yieldIo(); });
+    std::lock_guard<std::mutex> l(reportMutex_);
+    report_.push_back(why);
+    elementMade_.clear();
+    return SongOpState::Failed;
+}
+
+/// Worker: a new element of the open song's [from, to) bars -- see
+/// ISongEngine::requestElementFromRegion. The song is read from a copy and
+/// never changed; what is written is a folder of its own under the library,
+/// which is taken off the card again when any piece of it fails.
+SongOpState SongEngine::Impl::doElementFromRegion() {
+    {
+        std::lock_guard<std::mutex> l(reportMutex_);
+        report_.clear();
+        elementMade_.clear();
+    }
+    if (!opened_ || !p.storageReady()) return elementFailed("No song open, or no card.", {});
+    const uint32_t from = editFrom_.load(), to = editTo_.load();
+    AudioSong src;
+    std::vector<RangeClip> parts;
+    {
+        std::lock_guard<std::recursive_mutex> l(songMutex_);
+        src = song_;
+        /* A block that plays its track's scene is given the scene's notes, as
+         * the seq view does before it edits: the element has no scenes. */
+        const uint32_t bars = std::max(endBars(src), to);
+        for (int t = 0; t < kTracks; ++t) src.adoptSceneNotes(t, scenePattern(src.tracks[t].scene), bars);
+        parts = src.copyRange(from, to, src.samplesPerBar(sampleRate_));
+    }
+    if (parts.empty()) return elementFailed("Nothing plays in those bars.", {});
+
+    std::string dir;
+    const std::string ref = makeElementFolder(dir, true);
+    if (ref.empty()) return elementFailed("The card would not take the element's folder.", dir);
+    AudioSong el;
+    el.dir = dir;
+    el.name = ref;
+    el.bpm = src.bpm;
+    el.beatsPerBar = src.beatsPerBar;
+    el.loop = src.loop;
+    el.length = to - from;
+    el.kit = src.kit;
+    el.instrument = src.instrument;
+    for (const RangeClip& k : parts) {
+        SongTrack& d = el.tracks[k.track];
+        if (!d.inUse) {
+            const SongTrack& s = src.tracks[k.track];
+            d.inUse = true;
+            d.name = s.name;
+            d.volume = s.volume;
+            d.pan = s.pan;
+            d.muted = s.muted;
+            d.solo = s.solo;
+            d.kind = s.kind;
+            d.source = s.source;
+            d.scene = s.scene;
+            d.seqBlocks = s.seqBlocks;
+            d.stretch = s.stretch;
+            d.kit = s.kit;
+        }
+        SongClip c = k.clip;
+        c.bar = k.rel;
+        d.clips.push_back(c);
+    }
+    for (int t = 0; t < kTracks; ++t) el.sortTrack(t);
+
+    /* The recordings the blocks play, once each; an element block plays an
+     * element's bake, which is no file of the song's. */
+    std::vector<std::string> copied;
+    const auto yield = [this] { p.yieldIo(); };
+    for (const RangeClip& k : parts) {
+        const std::string& file = k.clip.file;
+        if (file.empty() || k.clip.isElement() || std::find(copied.begin(), copied.end(), file) != copied.end()) continue;
+        if (!song_copy_file(src.clipPath(file), el.clipPath(file), yield))
+            return elementFailed("The recording " + file + " could not be copied.", dir);
+        copied.push_back(file);
+    }
+    /* An instrument the song keeps is a folder of its own beside the clips. */
+    if (!src.instrument.empty() && src.instrument[0] != '/') {
+        const std::string kept = src.instrument.substr(0, src.instrument.find('/'));
+        const bool isFolder = kept != src.instrument;
+        const bool ok = isFolder ? song_copy_tree(src.dir + "/" + kept, dir + "/" + kept,
+                                                  [](const std::string&) { return true; }, yield)
+                                 : song_copy_file(src.dir + "/" + kept, dir + "/" + kept, yield);
+        if (!ok) return elementFailed("The song's instrument could not be copied.", dir);
+    }
+    if (!el.save()) return elementFailed("The element's song could not be written.", dir);
+    editProgress_.store(100);
+    logf(false, "element %s made of bars %u-%u", ref.c_str(), (unsigned)from + 1, (unsigned)to);
+    std::lock_guard<std::mutex> l(reportMutex_);
+    elementMade_ = ref;
+    return SongOpState::Ready;
+}
+
+/// Worker: the project asked for copied into the library as an element -- see
+/// ISongEngine::requestElementFromSong. Its folder as it is on the card, less
+/// what is made again from it (freezes, fitted copies), and its song.json
+/// rewritten as the element's.
+SongOpState SongEngine::Impl::doElementFromSong() {
+    std::string name;
+    {
+        std::lock_guard<std::recursive_mutex> l(songMutex_);
+        name = editName_;
+    }
+    {
+        std::lock_guard<std::mutex> l(reportMutex_);
+        report_.clear();
+        elementMade_.clear();
+    }
+    if (!p.storageReady()) return elementFailed("No card.", {});
+    if (saveReq_.exchange(false)) doSave();   // the song may be the open one: its last edits go first
+    const std::string from = std::string(p.songsRoot()) + "/" + name;
+    AudioSong s;
+    if (s.load(from) != SongLoad::Loaded) return elementFailed("There is no song called " + name + ".", {});
+    std::string dir;
+    const std::string ref = makeElementFolder(dir, false);
+    if (ref.empty()) return elementFailed("The card would not take the element's folder.", dir);
+    const std::string clips = std::string(AudioSong::clipsDir()) + "/";
+    const auto keep = [&](const std::string& rel) {
+        return rel.rfind(AudioSong::fileName(), 0) != 0 && rel != clips + kFreezeDir && rel != clips + kStretchDir;
+    };
+    if (!song_copy_tree(from, dir, keep, [this] { p.yieldIo(); }))
+        return elementFailed("The song could not be copied.", dir);
+    s.dir = dir;
+    s.name = ref;
+    s.title = name;
+    s.armed = -1;
+    for (SongTrack& t : s.tracks) {
+        t.freeze.clear();
+        t.freezeKey = 0;
+    }
+    if (!s.save()) return elementFailed("The element's song could not be written.", dir);
+    editProgress_.store(100);
+    logf(false, "element %s copied from %s", ref.c_str(), name.c_str());
+    std::lock_guard<std::mutex> l(reportMutex_);
+    elementMade_ = ref;
     return SongOpState::Ready;
 }
 

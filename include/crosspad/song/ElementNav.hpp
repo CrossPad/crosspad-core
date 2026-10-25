@@ -40,7 +40,7 @@ public:
         int         track = -1;   ///< where the level above holds this element
         uint32_t    bar = 0;
     };
-    enum class Job : uint8_t { None, Enter, Leave, Insert };
+    enum class Job : uint8_t { None, Enter, Leave, Insert, Make };
     /// What poll() has to say about a job that has just ended.
     struct Result {
         bool        done = false;   ///< a job ended since the last poll
@@ -59,7 +59,8 @@ public:
     uint8_t progress() const;
     /// What the job is doing: "stopping", "opening", "fitting" (back to the
     /// song's tempo), "loading" (the kit and instrument), "freezing",
-    /// "baking", "linking"; empty while none runs.
+    /// "baking", "linking", "copying" (an element being made); empty while
+    /// none runs.
     const char* stage() const;
 
     /// Open the element block sounding on @p bar of @p track of the open song.
@@ -79,6 +80,20 @@ public:
     /// requestElements() -- does not list it.
     bool insertExisting(int track, uint32_t bar, const std::string& ref);
 
+    /// A new element made of [@p fromBar, @p toBar) of the open song
+    /// (ISongEngine::requestElementFromRegion), the region cleared on every
+    /// track and one block of it laid on the lowest audio track the region
+    /// touched -- else the lowest free one --, then entered and left, which
+    /// bakes it and links the block. Refused ("needs an audio or free track")
+    /// when there is neither. The song is not touched until the element is
+    /// made; one that fails leaves it as it was.
+    bool makeFromRegion(uint32_t fromBar, uint32_t toBar);
+    /// The project @p songName copied into the library as a new element
+    /// (ISongEngine::requestElementFromSong) and laid as insertExisting() lays
+    /// one. The copy is the element: a song renamed or edited later changes
+    /// nothing in it, and the reference stays an id.
+    bool insertSong(int track, uint32_t bar, const std::string& songName);
+
     /// Walks the job one step; Arrange's timer calls it every ~50 ms. Cheap
     /// while none runs.
     Result poll();
@@ -92,7 +107,7 @@ public:
 
 private:
     enum class Phase : uint8_t {
-        Idle, Stopping, Opening, Retempo, Refit, Sounds, Freezing, Stretching, Baking, Reopening
+        Idle, Making, Listing, Stopping, Opening, Retempo, Refit, Sounds, Freezing, Stretching, Baking, Reopening
     };
 
     /// The engine the job runs on, or null with lastError() set.
@@ -105,6 +120,14 @@ private:
     bool refuse(const std::string& why);
     /// Lay an element block on @p track at @p bar of the open song.
     bool addBlock(int track, uint32_t bar, uint16_t bars, const std::string& ref);
+    /// insertExisting() with the checks on the job and the engine done.
+    bool placeExisting(int track, uint32_t bar, const std::string& ref);
+    /// An element being made: waits for the engine's copy, then lays it.
+    void startMaking(Job job);
+    Result making();
+    /// The library read again after a song was copied into it.
+    Result listing();
+    Result laidFromRegion();
     bool startEnter(const std::string& ref, int track, uint32_t bar, Job job);
     void startLeave(Job job);
     Result fail(const std::string& why);
@@ -139,6 +162,10 @@ private:
     std::string newTitle_;            ///< insertNew's, set once entered
     bool        leaveAfterEnter_ = false;   ///< insertExisting: bake what was just laid
     int         targetDepth_ = 0;     ///< where a leave stops
+    int         track_ = 0;           ///< where a made element's block goes
+    uint32_t    bar_ = 0;
+    uint32_t    regionBars_ = 0;
+    uint32_t    listGen_ = 0;         ///< ISongEngine::listGeneration() before the library was asked for
     int         freezeTrack_ = 0;
     uint32_t    lastWaiting_ = 0;     ///< stretched blocks still unfitted at the last poll
     std::string bakeFile_;

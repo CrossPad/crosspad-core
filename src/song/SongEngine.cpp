@@ -200,6 +200,8 @@ void SongEngine::Impl::worker() {
                            : edit == kEditImport ? doImport()
                            : edit == kEditExport ? doExport()
                            : edit == kEditBake   ? doBakeElement()
+                           : edit == kEditElementRegion ? doElementFromRegion()
+                           : edit == kEditElementSong   ? doElementFromSong()
                            : doMerge(editMask_.load(), editFrom_.load(), editTo_.load()));
             continue;
         }
@@ -309,6 +311,9 @@ bool SongEngine::requestElements() { return impl_->requestElements(); }
 std::vector<ElementInfo> SongEngine::elements() { return impl_->elements(); }
 bool SongEngine::requestBakeElement() { return impl_->requestBakeElement(); }
 ElementBake SongEngine::bakeResult() { return impl_->bakeResult(); }
+bool SongEngine::requestElementFromRegion(uint32_t fromBar, uint32_t toBar) { return impl_->requestElementFromRegion(fromBar, toBar); }
+bool SongEngine::requestElementFromSong(const std::string& name) { return impl_->requestElementFromSong(name); }
+std::string SongEngine::elementMade() { return impl_->elementMade(); }
 ElementClipState SongEngine::elementClipState(uint8_t track, size_t clip) { return impl_->elementClipState(track, clip); }
 std::string SongEngine::elementClipWhy(uint8_t track, size_t clip) { return impl_->elementClipWhy(track, clip); }
 uint8_t SongEngine::backgroundProgress() const { return impl_->backgroundProgress(); }

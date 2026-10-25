@@ -152,6 +152,25 @@ public:
     virtual bool requestBakeElement() { return false; }
     /// The last bake request's result; empty after one that failed.
     virtual ElementBake bakeResult() { return {}; }
+    /// Make a new element of [@p fromBar, @p toBar) of the open song: every
+    /// track's blocks there (AudioSong::copyRange, counted from bar 0), the
+    /// tracks' settings (kind, source, scene, seqBlocks, stretch, the second
+    /// kit, volume, pan, mute, solo), the song's kit and instrument (a
+    /// song-relative instrument copied with its pitch/ folder), the
+    /// recordings copied into its clips/, seq blocks that played their scene
+    /// given its notes first (AudioSong::adoptSceneNotes), its length the
+    /// region's, its tempo the song's, no freezes (leaving it freezes again).
+    /// The open song is not changed. An edit: editState()/editProgress();
+    /// Failed with editReport() naming why, the partial folder removed.
+    /// elementMade() names the new element when it is Ready.
+    virtual bool requestElementFromRegion(uint32_t fromBar, uint32_t toBar) { (void)fromBar; (void)toBar; return false; }
+    /// Copy the project @p name into the library as a new element, its title
+    /// the project's name, its clips and all (not its freezes or fitted
+    /// copies). An edit, as requestElementFromRegion().
+    virtual bool requestElementFromSong(const std::string& name) { (void)name; return false; }
+    /// The ref (".elements/E%08X") the last requestElementFrom...() made;
+    /// empty after one that failed.
+    virtual std::string elementMade() { return {}; }
     /// What element block @p clip of @p track plays now against its element's
     /// current version at the song's tempo, as of the last relink pass -- the
     /// pass runs after every open and every commit that moves an element block
