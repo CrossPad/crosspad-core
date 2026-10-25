@@ -45,8 +45,13 @@ jobs:
           mkdir -p docs/doxygen
           doxygen
 
+      # Nothing downloads it; it is there to look at a run's output. At the
+      # default 90 days, one 10-17 MB copy per push to main came to 505 MB of
+      # the org's 2 GB Actions storage, and platform-idf's CI could no longer
+      # upload its images (25.10.2026).
       - name: Upload docs artifact
         uses: actions/upload-artifact@v4
         with:
           name: api-docs
+          retention-days: 3
           path: docs/doxygen/html
