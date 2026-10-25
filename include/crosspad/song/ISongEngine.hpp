@@ -255,15 +255,17 @@ public:
     /// song's sequences.json is what its scenes are.
     virtual bool scenesSaved() const { return true; }
     /// Copy each of @p forks to a new element of the library, under its title:
-    /// its folder less what is made again from it (freezes, fitted copies,
-    /// waveforms) and its snapshot, its freezes cleared. Then re-point every
+    /// its folder less its snapshot and what is made again from it as it is
+    /// used (fitted copies, waveforms); its freezes go with it, as valid in the
+    /// copy as in the element (their keys name what is played). Then re-point every
     /// element block of each copy and of each of @p rewrites (elements heard
     /// only in the song the copies are for) whose element is in @p copied (an
     /// element and the copy already made of it) or among @p forks, to the copy;
     /// then put each fork marked to restore back to its snapshot. An edit, Failed
     /// with editReport() saying why and nothing changed: copies made are taken
     /// off the card, elements re-pointed are written back. elementsCopied()
-    /// names the copies when it is Ready.
+    /// names the copies when it is Ready. Refused with more than one fork
+    /// marked to restore: a second failing after the first could not be undone.
     virtual bool requestCopyElements(const std::vector<ElementFork>& forks, const std::vector<std::string>& rewrites,
                                      const std::map<std::string, std::string>& copied)
     { (void)forks; (void)rewrites; (void)copied; return false; }
@@ -272,7 +274,7 @@ public:
     /// Take the element @p ref off the card, its folder and all. An edit, with a
     /// fresh reading of who uses it: Failed while anything does, editReport()
     /// saying how many and naming them (a project by its name, an element by its
-    /// title), and for the element that is open.
+    /// title), and for the element that is open. Refused while a song plays.
     virtual bool requestDeleteElement(const std::string& ref) { (void)ref; return false; }
     /// What element block @p clip of @p track plays now against its element's
     /// current version at the song's tempo, as of the last relink pass -- the

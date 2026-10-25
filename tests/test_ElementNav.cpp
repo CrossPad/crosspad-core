@@ -1711,20 +1711,20 @@ void openNest(Rig& r) {
     openDemo(r, kA);
 }
 
-/// kC ("Verse", two bars) holding kB on its track 1, laid in the song open on track 2.
-void layVerse(Rig& r) {
-    writeAudioElement(r, kC, "Verse", 0, 120.0f, {kB});
-    AudioSong c = loadElement(r, kC);
+/// @p ref (@p title, two bars) holding kB on its track 1, laid in the song open on @p track.
+void layHolder(Rig& r, const std::string& ref, const std::string& title, int track) {
+    writeAudioElement(r, ref, title, 0, 120.0f, {kB});
+    AudioSong c = loadElement(r, ref);
     c.length = 2;
     REQUIRE(c.save());
     {
         std::lock_guard<std::recursive_mutex> l(r.engine->songMutex());
         AudioSong& s = r.engine->song();
-        s.tracks[2].inUse = true;
+        s.tracks[track].inUse = true;
         SongClip clip;
-        clip.element = kC;
+        clip.element = ref;
         clip.bars = 2;
-        s.addClip(2, clip);
+        s.addClip(track, clip);
     }
     r.engine->commit();
     REQUIRE(waitFor([&] { return !r.engine->backgroundBusy(); }, 10000));
@@ -1814,8 +1814,11 @@ TEST_CASE("element copy: Copy gives the song a new element with the edit and put
     CHECK(made.title == "Intro 2");
     CHECK(made.tracks[2].clips.size() == 1);                // the edit
     CHECK(slurp(elementDir(r, copy) / "sequences.json") == "{\"scenes\":[7]}");
-    for (const char* left : {"song.orig.json", "sequences.orig.json", "clips/.freeze", "clips/.stretch", ".peaks"})
+    for (const char* left : {"song.orig.json", "sequences.orig.json", "clips/.stretch", ".peaks"})
         CHECK_FALSE(fs::exists(elementDir(r, copy) / left));
+    CHECK(slurp(elementDir(r, copy) / "clips/.freeze/x") == "derived");   // freezes hold in the copy
+    REQUIRE(waitFor([&] { return !r.engine->backgroundBusy(); }, 10000));
+    CHECK(r.engine->elementClipState(1, 0) == ElementClipState::Fresh);
 
     CHECK(slurp(dir / "song.json") == song);                // the original, byte for byte
     CHECK(slurp(dir / "sequences.json") == scenes);
@@ -1905,7 +1908,7 @@ TEST_CASE("element copy: the copied element under another element of the song ta
     Services svc(r.engine.get(), nullptr);
     NavGuard guard;
     openNest(r);
-    layVerse(r);
+    layHolder(r, kC, "Verse", 2);
     writeSongUsing(r, "Other", kB);
     const std::string b = slurp(elementDir(r, kB) / "song.json");
 
@@ -1932,7 +1935,7 @@ TEST_CASE("element copy: an element of the song played elsewhere too is copied t
     Services svc(r.engine.get(), nullptr);
     NavGuard guard;
     openNest(r);
-    layVerse(r);
+    layHolder(r, kC, "Verse", 2);
     writeSongUsing(r, "Other", kB);
     writeSongUsing(r, "Other3", kC);
     const std::string c = slurp(elementDir(r, kC) / "song.json");
@@ -2176,4 +2179,104 @@ TEST_CASE("element copy: scenes that never reach the card make no copy, and the 
     CHECK(elementFolders(r) == 1);
     CHECK(r.engine->snapshotPending(kA));
     CHECK(fs::exists(elementDir(r, kA) / "song.orig.json"));
+}
+
+TEST_CASE("element copy: shared parent, holders here and elsewhere -- one question names every copy, each made once", "[element][nav][copy]") {
+    Rig r;
+    Services svc(r.engine.get(), nullptr);
+    NavGuard guard;
+    const char* const kD = ".elements/E00000004";
+    openNest(r);
+    layHolder(r, kC, "Verse", 2);                          // heard only in Demo
+    layHolder(r, kD, "Bridge", 3);                         // played by Other4 too
+    writeSongUsing(r, "Other", kA);
+    writeSongUsing(r, "Other2", kB);
+    writeSongUsing(r, "Other4", kD);
+    const std::string d = slurp(elementDir(r, kD) / "song.json");
+
+    editHatInGroove(r);
+    REQUIRE(elementNav().leaveTo(0));
+    REQUIRE(pollUntilAsking());
+    CHECK(elementNav().question().uses == 3);              // Other2, Verse, Bridge
+    CHECK(elementNav().question().copies == std::vector<std::string>{"Hat 2", "Groove 2", "Bridge 2"});
+    REQUIRE(elementNav().choose(ElementNav::Choice::Copy));
+    const auto out = runNav();
+    INFO("error: " << out.error);
+    REQUIRE(out.ok);
+    REQUIRE(elementNav().depth() == 0);
+    const std::string groove2 = elementOf(r, 1), bridge2 = elementOf(r, 3);
+    CHECK(groove2 != kA);
+    CHECK(elementOf(r, 2) == kC);
+    CHECK(bridge2 != kD);
+    const std::string hat2 = loadElement(r, groove2).tracks[1].clips.at(0).element;
+    CHECK(hat2 != kB);
+    CHECK(loadElement(r, kC).tracks[1].clips.at(0).element == hat2);
+    CHECK(loadElement(r, bridge2).tracks[1].clips.at(0).element == hat2);
+    CHECK(loadElement(r, bridge2).title == "Bridge 2");
+    CHECK(slurp(elementDir(r, kD) / "song.json") == d);
+    CHECK(elementFolders(r) == 7);                         // A, B, C, D and one copy each of B, A, D
+}
+
+TEST_CASE("element nav: scenes edited inside that never reach the card are an edit all the same", "[element][nav][copy]") {
+    Rig r;
+    Services svc(r.engine.get(), nullptr);
+    NavGuard guard;
+    writeElementWithScenes(r, kA);
+    openDemo(r, kA);
+    writeSongUsing(r, "Other", kA);
+    REQUIRE(elementNav().enter(1, 0));
+    REQUIRE(runNav().ok);
+    r.seq.setSceneBars(0, 2);                              // no store sweeps here: never written
+    REQUIRE(elementNav().leave());
+    REQUIRE(pollUntilAsking());
+    REQUIRE(elementNav().choose(ElementNav::Choice::Replace));
+    CHECK(runNav().ok);
+}
+
+TEST_CASE("element copy: one original put back per request", "[element][copy]") {
+    Rig r;
+    Services svc(r.engine.get(), nullptr);
+    NavGuard guard;
+    writeAudioElement(r, kA, "Intro", 2, 120.0f);
+    writeAudioElement(r, kB, "Hat", 2, 120.0f);
+    REQUIRE(r.open("Demo"));
+    CHECK_FALSE(r.engine->requestCopyElements({{kA, "Intro 2", true}, {kB, "Hat 2", true}}, {}, {}));
+    CHECK(elementFolders(r) == 2);
+}
+
+TEST_CASE("element snapshot: a restore the card fails part way leaves the element as it was", "[element][snapshot]") {
+    Rig r;
+    Services svc(r.engine.get(), nullptr);
+    NavGuard guard;
+    writeElementWithScenes(r, kA);
+    REQUIRE(r.open("Demo"));
+    const fs::path dir = elementDir(r, kA);
+    REQUIRE(r.engine->requestSnapshot(kA));
+    REQUIRE(editEnd(r) == SongOpState::Ready);
+    spit(dir / "song.json", "edited");
+    spit(dir / "sequences.json", "edited too");
+    /* The song's copy cannot be written, wherever it is put. */
+    fs::create_directories(dir / "song.json.part");
+    fs::create_directories(dir / "song.json.restored.part");
+    REQUIRE(r.engine->requestRestore(kA));
+    CHECK(editEnd(r) == SongOpState::Failed);
+    CHECK(slurp(dir / "song.json") == "edited");
+    CHECK(slurp(dir / "sequences.json") == "edited too");
+    CHECK(fs::exists(dir / "song.orig.json"));
+    CHECK(fs::exists(dir / "sequences.orig.json"));
+}
+
+TEST_CASE("element delete: refused while a song plays", "[element][delete]") {
+    Rig r;
+    Services svc(r.engine.get(), nullptr);
+    NavGuard guard;
+    writeAudioElement(r, kA, "Intro", 2, 120.0f);
+    writeAudioElement(r, kB, "Hat", 2, 120.0f);
+    openDemo(r, kA);
+    REQUIRE(r.engine->play(0));
+    REQUIRE(waitFor([&] { return r.engine->playing(); }));
+    CHECK_FALSE(r.engine->requestDeleteElement(kB));
+    r.engine->stop();
+    REQUIRE(waitFor([&] { return !r.engine->playing(); }));
+    CHECK(fs::exists(elementDir(r, kB)));
 }

@@ -349,6 +349,7 @@ private:
     std::string left_;
     bool        usesAsked_ = false;   ///< the library and its uses were read at the first poll since the breadcrumb began
     bool        edited_ = false;      ///< the level being left was edited since it was entered
+    bool        scenesUnsaved_ = false;   ///< its scene edits never reached the card: an edit all the same
     bool        copying_ = false;     ///< the level being left is copied on its way up
     std::string copyTitle_;           ///< and the copy's title
     Question    question_;

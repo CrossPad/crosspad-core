@@ -103,3 +103,21 @@ TEST_CASE("copy plan: a copy's title is the next number free", "[element][copypl
     CHECK(element_copy_title("", {}) == "ELEMENT 2");
     CHECK(element_copy_title("TAKE 1234567", {}) == "TAKE 1234567 2");
 }
+
+TEST_CASE("copy plan: a shared parent, a holder heard only here and one heard elsewhere", "[element][copyplan]") {
+    /* SONG > a > b; b also under c (only in SONG) and d (also in OTHER_D); a and b played elsewhere. */
+    const auto before = usesOf({{"SONG", "a"}, {"SONG", "c"}, {"SONG", "d"}, {"OTHER_A", "a"},
+                                {"a", "b"}, {"c", "b"}, {"d", "b"}, {"OTHER_B", "b"}, {"OTHER_D", "d"}});
+    const ElementCopyPlan asked = plan_element_copies("SONG", before, {"b"}, {});
+    CHECK(asked.forks == Refs{"b", "a", "d"});
+    CHECK(asked.rewrites == Refs{"c"});
+    CHECK(asked.song);
+
+    /* On the way up b became b2 inside a2, and a became a2 in the song. */
+    const auto after = usesOf({{"SONG", "a2"}, {"SONG", "c"}, {"SONG", "d"}, {"OTHER_A", "a"},
+                               {"a", "b"}, {"a2", "b2"}, {"c", "b"}, {"d", "b"}, {"OTHER_B", "b"}, {"OTHER_D", "d"}});
+    const ElementCopyPlan rest = plan_element_copies("SONG", after, {}, {"b", "a"});
+    CHECK(rest.forks == Refs{"d"});
+    CHECK(rest.rewrites == Refs{"c"});
+    CHECK(rest.song);
+}

@@ -837,7 +837,7 @@ ElementNav::Result ElementNav::leaveKeying()
     Result wait;
     if (!hashed(*se, leaveHash_, wait)) return wait;
     const Level& lv = path_.back();
-    edited_ = job_ == Job::Leave && (!lv.hashAtEntry || leaveHash_ != lv.hashAtEntry);
+    edited_ = job_ == Job::Leave && (scenesUnsaved_ || !lv.hashAtEntry || leaveHash_ != lv.hashAtEntry);
     if (lv.copyOnLeave) {
         copying_ = true;
         copyTitle_ = element_copy_title(lv.title, takenTitles(*se));
@@ -856,6 +856,7 @@ ElementNav::Result ElementNav::toLeaving()
     asked_ = false;
     refusals_ = 0;
     edited_ = false;
+    scenesUnsaved_ = false;
     copying_ = false;
     plan_ = {};
     return {};
@@ -864,13 +865,15 @@ ElementNav::Result ElementNav::toLeaving()
 /// The scenes edited inside reach the card before the edit hash reads them:
 /// the store writes them on its next sweep, and opening the level above would
 /// otherwise write them into the element after its question was decided. A
-/// sequencer that still holds edits after kScenesPolls has nowhere to write
-/// them (no card, a file it cannot read), and the card is all there is.
+/// sequencer that still holds edits after kScenesPolls is an edit the hash
+/// cannot see: the level is taken as edited, so a shared element is asked
+/// about rather than handed the edit whenever the store does write it.
 ElementNav::Result ElementNav::leaveScenes()
 {
     ISongEngine* se = songEngine();
     if (!onLevel(ref_)) return fail(kOtherSong);
     if (!se->scenesSaved() && ++refusals_ < kScenesPolls) return {};
+    scenesUnsaved_ = !se->scenesSaved();
     phase_ = Phase::LeaveKeying;
     asked_ = false;
     refusals_ = 0;
