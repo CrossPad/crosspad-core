@@ -6,6 +6,19 @@ carries the same number) and consumers gate on it with
 `crosspad/RequireVersion.hpp`. This file starts at 1.45.0; earlier releases
 are described in their `chore: X.Y.Z` commits.
 
+## 2.24.0 — 2026-10-25
+
+TRS MIDI OUT on the STM (STM 1.14, register map 0x0012).
+
+### Added
+
+- `REG_CTL_MIDI_OUT_TYPE` and `Stm32Settings::midiOutType` (NVS
+  `cfg_stm/midi_out`, pushed by `Stm32ConfigSync`): Type A or B wiring of the
+  jack.
+- Loop-test hooks: `REG_CTL_MIDI_TX_SKEW`, `REG_CTL_MIDI_FLIP_SEG` /
+  `_FLIP_B3..B0` with `MIDI_SEG_*`, `REG_CMD_MIDI_STATS_RESET` and the
+  per-segment counters at `REG_DEBUG_MIDI`.
+
 ## 2.23.0 — 2026-10-25
 
 Elements: an arrangement inside an arrangement. A block of a song can be

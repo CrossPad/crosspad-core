@@ -101,6 +101,18 @@ TEST_CASE("Stm32ConfigSync::pushAll carries the hit window", "[stm][sync]") {
     REQUIRE(bus.lastByteAt(REG_CTL_BTN_HIT_PEAK_SAMPLES) == 4);
 }
 
+TEST_CASE("Stm32ConfigSync::pushAll carries the TRS MIDI OUT type", "[stm][sync]") {
+    MockStm32Bus bus;
+    Stm32ConfigSync sync(bus);
+    Stm32Settings s;
+    REQUIRE(sync.pushAll(s) == true);
+    REQUIRE(bus.lastByteAt(REG_CTL_MIDI_OUT_TYPE) == 0);
+
+    s.midiOutType = 1;
+    REQUIRE(sync.pushAll(s) == true);
+    REQUIRE(bus.lastByteAt(REG_CTL_MIDI_OUT_TYPE) == 1);
+}
+
 TEST_CASE("Stm32ConfigSync::readBootCount", "[stm][sync]") {
     MockStm32Bus bus;
     bus.readValues[REG_IDENT_BOOT_COUNT] = 42;
