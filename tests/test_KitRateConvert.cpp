@@ -6,6 +6,7 @@
 #include "crosspad/kit/KitInfo.hpp"
 #include "crosspad/kit/KitPathUtils.hpp"
 #include "crosspad/kit/KitRateConvert.hpp"
+#include "crosspad/kit/KitSaved.hpp"
 #include "../src/kit/KitJsonParser.hpp"
 #include "../src/util/JsonStdio.hpp"
 #include "wav_fixture.hpp"
@@ -306,8 +307,10 @@ TEST_CASE("a kit is converted, retargeted and tidied", "[KitRateConvert]") {
 
     TestHost host;
     KitRateConverter c;
+    const uint32_t saves = kit_saved_generation(json);
     REQUIRE(c.begin(host, json, 44100));
     REQUIRE(runAll(c) == KitRateConverter::Phase::Done);
+    CHECK(kit_saved_generation(json) == saves + 1);   // the kit.json it rewrote
     const auto& p = c.progress();
     CHECK(p.files == 6);
     CHECK(p.toConvert == 4);

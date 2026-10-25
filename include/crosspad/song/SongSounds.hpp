@@ -75,10 +75,11 @@ public:
     /// The song engine's worker, as a song opens.
     void songOpened();
 
-    /// UI thread: one step towards the open song's sounds; nothing once there
-    /// but a kit saved under its own name making the freezes of the tracks
-    /// that play it stale (kit_saved_notify()), the second kit asked for again, which costs nothing while it holds
-    /// it, and a look at whether the song was given another kit since.
+    /// UI thread: one step towards the open song's sounds. Once there: the
+    /// second kit asked for again (nothing while it holds it), a look at
+    /// whether the song was given another kit since, and one at whether a kit
+    /// a seq track plays was saved under its own name -- its freeze is then
+    /// stale (kit_saved_notify()).
     void step();
 
     /// UI thread, from a kit load that finished: the open song takes the kit,
@@ -118,6 +119,7 @@ private:
     void unloadKit();
     void keepSecondKit();
     void freezesHearKitSaves();
+    void seedSavesHeard();
 
     ISongSoundsHost& host_;
     /// A song opened and the board is not at it yet.
@@ -129,8 +131,10 @@ private:
     /// given to the song since. UI thread.
     std::string lastKit_;
     /// How many saves of each kit.json a step has heard of (kit_saved_generation()):
-    /// a kit not in here yet is taken as it is. UI thread.
+    /// seeded as a song is adopted; a kit it gains later is taken as it is. UI thread.
     std::unordered_map<std::string, uint32_t> savesHeard_;
+    /// The openGen_ savesHeard_ was seeded for. UI thread.
+    uint32_t seededGen_ = UINT32_MAX;
     /// A second kit that would not load, said once. UI thread.
     std::string secondKitSaid_;
 };

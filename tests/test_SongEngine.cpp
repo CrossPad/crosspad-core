@@ -3335,6 +3335,14 @@ TEST_CASE("song engine: a kit saved under its own name makes the freeze that pla
         sounds.step();
         CHECK(r.engine->freezeState(0) == FreezeState::Frozen);
     }
+    SECTION("saved right after the song opened, before any look at the kit: heard") {
+        SongSounds opened(host);
+        opened.songOpened();
+        opened.step();
+        kit_saved_notify(kPlayed);
+        opened.step();
+        CHECK(r.engine->freezeState(0) == FreezeState::Stale);
+    }
     SECTION("the kit it plays saved: stale, and rendered again on request") {
         kit_saved_notify(kPlayed);
         sounds.step();

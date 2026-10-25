@@ -114,6 +114,9 @@ uint64_t element_content_hash(const AudioSong& song, const std::string& identity
             f.value(c.bar); f.value(c.bars); f.value(c.offset); f.value(resolved ? 0u : c.frames); f.value(c.from);
             notesOf(f, c.notes);
         }
+        /* A freeze's sound moved under its name (a kit saved): the bake is of the old one.
+         * Left out at 0, so no key of an element that never saw it changes. */
+        if (tr.freezeSalt) f.value(tr.freezeSalt);
         for (const SongClip& z : tr.freeze) {
             f.text(z.file);
             uint64_t bytes = 0;

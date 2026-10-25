@@ -526,6 +526,40 @@ TEST_CASE("disk bake: a frozen seq track is mixed from its freeze until its note
     CHECK(bakes(r) == std::set<std::string>{kOldBake, frozen});
 }
 
+TEST_CASE("disk bake: a kit saved under its name makes the freeze an element block plays stale", "[song][element][diskbake]") {
+    Rig r;
+    writeOldBake(r);
+    AudioSong el = audioElement(r, kChild, {8000}, 2);
+    el.kit = "/crosspad/kits/Saved/kit.json";
+    REQUIRE(el.addSeqTrack(1, SeqSource::Kit, 0));
+    SeqNote n;
+    n.pad = 1;
+    n.vel = 100;
+    el.putSeqTake(1, 0, makeSeqPattern(1, {n}), el.samplesPerBar(kRate), 2);
+    SongClip fz;
+    fz.file = "f.wav";
+    fz.bars = 2;
+    el.tracks[1].freeze = {fz};
+    el.tracks[1].freezeKey = seq_freeze_key(el, 1, kRate, SceneLookup{});
+    const uint32_t stamped = el.tracks[1].freezeKey;
+    writeClip(el.clipPath("f.wav"), 2 * kBar, 4000);
+    REQUIRE(el.save());
+    writeSongWith(r, "Parent", kChild, 2, kOldBake);
+    REQUIRE(r.open("Parent"));
+    REQUIRE(idle(r));
+    REQUIRE(r.engine->elementClipState(0, 0) == ElementClipState::Fresh);
+    const std::string frozen = block(r).file;
+
+    /* What SongSounds does to the open element when its kit is saved. */
+    el.tracks[1].freezeSalt = 1;
+    CHECK(seq_freeze_key(el, 1, kRate, SceneLookup{}) != stamped);
+    REQUIRE(el.save());
+    REQUIRE(r.open("Parent"));
+    REQUIRE(idle(r));
+    CHECK(block(r).file == frozen);
+    CHECK(r.engine->elementClipState(0, 0) == ElementClipState::Stale);
+}
+
 TEST_CASE("disk bake: an element block laid while a pass links is resolved by a pass of its own", "[song][element][diskbake]") {
     HookFs card;
     Rig r;

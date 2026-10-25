@@ -4,6 +4,7 @@
 #include "crosspad/dsp/FftResampler.hpp"
 #include "crosspad/kit/KitInfo.hpp"
 #include "crosspad/kit/KitPathUtils.hpp"
+#include "crosspad/kit/KitSaved.hpp"
 #include "crosspad/platform/IFileSystem.hpp"
 #include "crosspad/sampler/SampleStore.hpp"
 #include "KitJsonParser.hpp"
@@ -952,6 +953,7 @@ bool KitRateConverter::commit() {
         edits_.clear();
         return fail("cannot save the kit");
     }
+    kit_saved_notify(kitJson_);   // it names other files now: what was rendered from it is of the old ones
     progress_.phase = Phase::Done;
     return false;
 }
