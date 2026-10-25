@@ -6,6 +6,33 @@ carries the same number) and consumers gate on it with
 `crosspad/RequireVersion.hpp`. This file starts at 1.45.0; earlier releases
 are described in their `chore: X.Y.Z` commits.
 
+## 2.23.0 — 2026-10-25
+
+Elements: an arrangement inside an arrangement. A block of a song can be
+another song, kept as a project of its own in the library and played from a
+bake of it.
+
+### Added
+
+- `SongClip::element` and `AudioSong::title` (song.json version 5): a block
+  that names an element ref (`.elements/E%08X`, `make_element_id()`,
+  `is_element_ref()`, `AudioSong::elementsDir()`) plays the element's bake,
+  one pass of it round the block's bars, from the cache in `.bake/`.
+- `ISongEngine::requestOpenElement()` opens an element as the song without
+  making it the project a boot opens; `requestElements()` / `elements()`
+  list the library (title, bars, the elements each uses);
+  `requestBakeElement()` / `bakeResult()` mix the open song down into the
+  cache, named by what it was mixed from (`ElementHash.hpp`), and find a
+  bake that is already there. Core refuses to rename an open element.
+- `ElementNav` (`crosspad/song/ElementNav.hpp`, `elementNav()`): Arrange's
+  breadcrumb and the jobs behind it, driven by `poll()` from its timer --
+  `enter()`, `leave()`, `leaveTo()`, `insertNew()` and `insertExisting()`.
+  Entering fits an element made at another tempo to its parent's
+  (`StretchMode::KeepPitch` on audio tracks that kept their speed); leaving
+  freezes the seq tracks that are not frozen, waits for the fitted copies,
+  bakes and links the bake into every block of the element in the parent.
+  An element cannot hold itself, directly or through another.
+
 ## 2.22.0 — 2026-10-25
 
 ### Added
