@@ -167,7 +167,14 @@ public:
     /// Copy the project @p name into the library as a new element, its title
     /// the project's name, its clips and all (not its freezes or fitted
     /// copies). An edit, as requestElementFromRegion().
-    virtual bool requestElementFromSong(const std::string& name) { (void)name; return false; }
+    /// @p openElements are the refs on Arrange's breadcrumb: a song that holds
+    /// one of them, or an element that does, is refused before anything is
+    /// copied ("an element cannot hold itself").
+    virtual bool requestElementFromSong(const std::string& name, const std::vector<std::string>& openElements = {})
+    { (void)name; (void)openElements; return false; }
+    /// Take the element @p ref made by one of these off the card again (the
+    /// job that asked for it failed). An edit; Failed when it is the open song.
+    virtual bool requestElementDiscard(const std::string& ref) { (void)ref; return false; }
     /// The ref (".elements/E%08X") the last requestElementFrom...() made;
     /// empty after one that failed.
     virtual std::string elementMade() { return {}; }

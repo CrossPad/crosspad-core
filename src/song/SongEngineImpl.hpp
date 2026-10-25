@@ -385,7 +385,8 @@ struct SongEngine::Impl {
     bool requestBakeElement();
     ElementBake bakeResult();
     bool requestElementFromRegion(uint32_t fromBar, uint32_t toBar);
-    bool requestElementFromSong(const std::string& name);
+    bool requestElementFromSong(const std::string& name, const std::vector<std::string>& openElements);
+    bool requestElementDiscard(const std::string& ref);
     std::string elementMade();
     ElementClipState elementClipState(uint8_t track, size_t clip);
     std::string elementClipWhy(uint8_t track, size_t clip);
@@ -490,6 +491,7 @@ private:
     SongOpState doBakeElement();
     SongOpState doElementFromRegion();
     SongOpState doElementFromSong();
+    SongOpState doElementDiscard();
     /// A ref no element on the card has, with its folder made under the
     /// library (its clips/ too when @p withClips). Empty when the card would
     /// not; @p dir is then whatever was made, to be removed.
@@ -663,7 +665,8 @@ private:
     mutable std::vector<NoteCache> noteCache_;
     mutable std::mutex noteCacheMutex_;
     static constexpr uint8_t kEditRename = 1, kEditTempo = 2, kEditMerge = 3, kEditImport = 4,
-                             kEditDelete = 5, kEditExport = 6, kEditBake = 7, kEditElementRegion = 8, kEditElementSong = 9;
+                             kEditDelete = 5, kEditExport = 6, kEditBake = 7, kEditElementRegion = 8, kEditElementSong = 9,
+                             kEditElementDiscard = 10;
     uint32_t    importA_ = 0, importB_ = 0, importBar_ = 0, importLead_ = 0;   // owned by claimEdit()'s caller until editReq_
     uint8_t     importTrack_ = 0;
     std::atomic<uint8_t>  editMask_{0}, editProgress_{0};
@@ -672,6 +675,7 @@ private:
     std::atomic<SongOpState> editState_{SongOpState::Idle};
     std::atomic<float>    editBpm_{120.0f};
     std::string editName_;                        // under songMutex_
+    std::vector<std::string> editRefs_;           // the breadcrumb an element from a song is checked against, under songMutex_
     std::vector<std::string> report_;             // the last export's, under reportMutex_
     std::mutex  reportMutex_;
     ElementBake bake_;                            // the last bake's, under reportMutex_

@@ -14,6 +14,9 @@ namespace crosspad {
 
 namespace {
 
+/// Where SongEngine renders a seq track's freeze, inside clips/.
+constexpr const char* kFreezeSubdir = ".freeze";
+
 enum class Parse : uint8_t { Missing, Bad, Newer, Ok };
 
 Parse parseFile(const std::string& path, JsonDocument& doc)
@@ -248,6 +251,11 @@ SongLoad AudioSong::load(const std::string& projectDir)
                 clip.bar    = c["bar"]  | 0u;
                 clip.bars   = c["bars"] | 1u;
                 clip.offset = c["offset"] | 0u;
+                /* A render is a plain name or one inside the freeze folder, as the
+                 * engine writes them; anything else is a block with no file. */
+                const std::string freezeDir = std::string(kFreezeSubdir) + "/";
+                const bool inFreezeDir = clip.file.compare(0, freezeDir.size(), freezeDir) == 0;
+                if (!is_clip_file_name(inFreezeDir ? clip.file.substr(freezeDir.size()) : clip.file)) clip.file.clear();
                 if (!clip.file.empty() && clip.bars) tracks[t].freeze.push_back(clip);
             };
             /* One file whole, as 2.9 wrote it, or blocks over files. */
@@ -271,6 +279,9 @@ SongLoad AudioSong::load(const std::string& projectDir)
         for (JsonObjectConst c : tr["clips"].as<JsonArrayConst>()) {
             SongClip clip;
             clip.file = c["file"] | "";
+            /* A name that leaves clips/ is no file: the block goes as one with
+             * no file does, and a seq or element block keeps playing. */
+            if (!is_clip_file_name(clip.file)) clip.file.clear();
             clip.bar  = c["bar"]  | 0u;
             clip.bars = c["bars"] | 1u;
             clip.offset = c["offset"] | 0u;
@@ -334,6 +345,11 @@ SongLoad AudioSong::load(const std::string& projectDir)
     currentSet = doc["set"] | 0u;
     if (currentSet >= sets.size()) currentSet = 0;
     return SongLoad::Loaded;
+}
+
+bool is_clip_file_name(const std::string& name)
+{
+    return !name.empty() && name != "." && name != ".." && name.find_first_of("/\\") == std::string::npos;
 }
 
 std::string make_element_id(uint32_t seed)

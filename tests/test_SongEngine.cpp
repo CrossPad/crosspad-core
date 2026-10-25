@@ -3215,3 +3215,60 @@ TEST_CASE("song engine: an element from a song copies it, clips and all, without
     CHECK(fs::exists(fs::path(r.platform.root) / "Src" / "clips" / ".freeze" / "FRZ00000001.wav"));
     CHECK(r.platform.current == "Demo");
 }
+
+TEST_CASE("song engine: an element from a region keeps each track's recording input", "[song][element]") {
+    Rig r;
+    REQUIRE(r.open("Demo"));
+    writeClip((r.clipsDir("Demo") / "a.wav").string(), kRate * 4, 8192);
+    {
+        std::lock_guard<std::recursive_mutex> l(r.engine->songMutex());
+        AudioSong& s = r.engine->song();
+        s.bpm = 120.0f;
+        s.tracks[0].inUse = true;
+        s.tracks[0].input = RecInput::Pads;
+        s.addClip(0, {"a.wav", 0, 2});
+    }
+    r.engine->commit();
+    REQUIRE(madeAndWait(r, true, 0, 2));
+    REQUIRE(r.engine->editState() == SongOpState::Ready);
+    CHECK(elementOnCard(r, r.engine->elementMade()).tracks[0].input == RecInput::Pads);
+}
+
+TEST_CASE("song engine: names that climb out of the song are refused, not copied", "[song][element]") {
+    Rig r;
+    regionSong(r);
+    {
+        std::lock_guard<std::recursive_mutex> l(r.engine->songMutex());
+        r.engine->song().tracks[0].clips[0].file = "../Demo/clips/a.wav";
+    }
+    r.engine->commit();
+    REQUIRE(madeAndWait(r, true, 1, 3));
+    CHECK(r.engine->editState() == SongOpState::Failed);
+    CHECK(r.engine->editReport().at(0).find("plain file name") != std::string::npos);
+    CHECK(elementFolders(r) == 0);
+    {
+        std::lock_guard<std::recursive_mutex> l(r.engine->songMutex());
+        r.engine->song().tracks[0].clips[0].file = "a.wav";
+        r.engine->song().instrument = "../outside/instrument.json";
+    }
+    r.engine->commit();
+    REQUIRE(madeAndWait(r, true, 1, 3));
+    CHECK(r.engine->editState() == SongOpState::Failed);
+    CHECK(r.engine->editReport().at(0).find("instrument") != std::string::npos);
+    CHECK(elementFolders(r) == 0);
+}
+
+TEST_CASE("song engine: an element discarded leaves the card as it was, the open song stays", "[song][element]") {
+    Rig r;
+    regionSong(r);
+    REQUIRE(madeAndWait(r, true, 1, 3));
+    REQUIRE(r.engine->editState() == SongOpState::Ready);
+    const std::string ref = r.engine->elementMade();
+    CHECK_FALSE(r.engine->requestElementDiscard("Demo"));
+    CHECK_FALSE(r.engine->requestElementDiscard(".elements/../Demo"));
+    REQUIRE(r.engine->requestElementDiscard(ref));
+    REQUIRE(waitFor([&] { return r.engine->editState() != SongOpState::Busy; }, 10000));
+    CHECK(r.engine->editState() == SongOpState::Ready);
+    CHECK_FALSE(fs::exists(fs::path(r.platform.root) / ref));
+    CHECK(fs::exists(fs::path(r.platform.root) / "Demo"));
+}

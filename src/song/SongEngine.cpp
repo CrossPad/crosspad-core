@@ -202,6 +202,7 @@ void SongEngine::Impl::worker() {
                            : edit == kEditBake   ? doBakeElement()
                            : edit == kEditElementRegion ? doElementFromRegion()
                            : edit == kEditElementSong   ? doElementFromSong()
+                           : edit == kEditElementDiscard ? doElementDiscard()
                            : doMerge(editMask_.load(), editFrom_.load(), editTo_.load()));
             continue;
         }
@@ -312,7 +313,8 @@ std::vector<ElementInfo> SongEngine::elements() { return impl_->elements(); }
 bool SongEngine::requestBakeElement() { return impl_->requestBakeElement(); }
 ElementBake SongEngine::bakeResult() { return impl_->bakeResult(); }
 bool SongEngine::requestElementFromRegion(uint32_t fromBar, uint32_t toBar) { return impl_->requestElementFromRegion(fromBar, toBar); }
-bool SongEngine::requestElementFromSong(const std::string& name) { return impl_->requestElementFromSong(name); }
+bool SongEngine::requestElementFromSong(const std::string& name, const std::vector<std::string>& openElements) { return impl_->requestElementFromSong(name, openElements); }
+bool SongEngine::requestElementDiscard(const std::string& ref) { return impl_->requestElementDiscard(ref); }
 std::string SongEngine::elementMade() { return impl_->elementMade(); }
 ElementClipState SongEngine::elementClipState(uint8_t track, size_t clip) { return impl_->elementClipState(track, clip); }
 std::string SongEngine::elementClipWhy(uint8_t track, size_t clip) { return impl_->elementClipWhy(track, clip); }

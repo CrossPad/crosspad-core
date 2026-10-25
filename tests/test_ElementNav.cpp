@@ -764,13 +764,17 @@ TEST_CASE("element nav: a region becomes an element, one block in its place, bak
     {
         std::lock_guard<std::recursive_mutex> l(r.engine->songMutex());
         const AudioSong& s = r.engine->song();
+        /* Track 0 keeps blocks outside the region, so the element goes on the free track 2. */
         int elements = 0;
-        for (const SongClip& c : s.tracks[0].clips) {
-            if (c.isElement()) { ++elements; block = c; ref = c.element; }
-            else CHECK((c.bar + c.bars <= 1 || c.bar >= 3));            // the region is empty of anything else
+        for (int t = 0; t < AudioSong::kTracks; ++t) {
+            for (const SongClip& c : s.tracks[t].clips) {
+                if (c.isElement()) { ++elements; block = c; ref = c.element; CHECK(t == 2); }
+                else CHECK((c.bar + c.bars <= 1 || c.bar >= 3));        // the region is empty of anything else
+            }
         }
         CHECK(elements == 1);
-        for (const SongClip& c : s.tracks[1].clips) CHECK((c.bar + c.bars <= 1 || c.bar >= 3));
+        CHECK(s.tracks[0].clips.size() == 2);
+        CHECK(s.tracks[0].volume == 1.0f);
     }
     REQUIRE(is_element_ref(ref));
     CHECK(block.bar == 1);
@@ -791,9 +795,9 @@ TEST_CASE("element nav: a region becomes an element, one block in its place, bak
     size_t at = 0;
     {
         std::lock_guard<std::recursive_mutex> l(r.engine->songMutex());
-        for (const SongClip& c : r.engine->song().tracks[0].clips) { if (c.isElement()) break; ++at; }
+        for (const SongClip& c : r.engine->song().tracks[2].clips) { if (c.isElement()) break; ++at; }
     }
-    CHECK(r.engine->elementClipState(0, at) == ElementClipState::Fresh);
+    CHECK(r.engine->elementClipState(2, at) == ElementClipState::Fresh);
 }
 
 TEST_CASE("element nav: a region over seq tracks only goes on the lowest free track", "[element][nav]") {
@@ -830,7 +834,7 @@ TEST_CASE("element nav: a region over seq tracks with no free track is refused a
     }
     r.engine->commit();
     CHECK_FALSE(elementNav().makeFromRegion(0, 2));
-    CHECK(elementNav().lastError().find("needs an audio or free track") != std::string::npos);
+    CHECK(elementNav().lastError().find("needs a free track, or an audio track with nothing outside the region") != std::string::npos);
     CHECK_FALSE(elementNav().busy());
     CHECK(listElements(r));
     CHECK(r.engine->elements().empty());
@@ -896,4 +900,129 @@ TEST_CASE("element nav: a region that cannot be copied changes nothing in the so
     REQUIRE(s.tracks[0].clips.size() == 1);
     CHECK_FALSE(s.tracks[0].clips[0].isElement());
     CHECK(s.tracks[0].clips[0].bars == 4);
+}
+
+TEST_CASE("element nav: a host that holds only the region is neutral, and the element sounds as the region did", "[element][nav]") {
+    Rig r;
+    Services svc(r.engine.get(), nullptr);
+    NavGuard guard;
+    REQUIRE(r.open("Demo"));
+    writeClip((r.clipsDir("Demo") / "a.wav").string(), 2 * kBarFrames, 8192);
+    writeClip((r.clipsDir("Demo") / "b.wav").string(), 2 * kBarFrames, 16384);
+    {
+        std::lock_guard<std::recursive_mutex> l(r.engine->songMutex());
+        AudioSong& s = r.engine->song();
+        s.bpm = 120.0f;
+        s.tracks[0].inUse = s.tracks[1].inUse = true;
+        s.tracks[0].volume = 0.5f;
+        s.tracks[0].pan = 0.5f;                    // 0.25 left, 0.5 right of what the clip holds
+        s.tracks[0].solo = true;
+        s.tracks[1].muted = true;                  // silent in the song, and still in the element
+        s.addClip(0, {"a.wav", 0, 2});
+        s.addClip(1, {"b.wav", 0, 2});
+    }
+    r.engine->commit();
+    REQUIRE(waitFor([&] { return !r.engine->backgroundBusy(); }, 10000));
+    REQUIRE(elementNav().makeFromRegion(0, 2));
+    const auto res = runRendering(r);
+    INFO("error: " << res.error);
+    REQUIRE(res.ok);
+    SongClip block;
+    {
+        std::lock_guard<std::recursive_mutex> l(r.engine->songMutex());
+        const AudioSong& s = r.engine->song();
+        REQUIRE(s.tracks[0].clips.size() == 1);
+        block = s.tracks[0].clips[0];
+        CHECK(block.isElement());
+        CHECK(s.tracks[0].volume == 1.0f);         // the bake has the source's volume and pan already
+        CHECK(s.tracks[0].pan == 0.0f);
+        CHECK_FALSE(s.tracks[0].solo);
+        CHECK_FALSE(s.tracks[0].muted);
+        CHECK(s.tracks[1].clips.empty());
+    }
+    const auto pcm = readWavData(bakeOf(r, block.file).string());
+    REQUIRE(pcm.size() == (size_t)2 * kBarFrames * 2);
+    for (size_t i : {size_t(0), pcm.size() / 2 - 2, pcm.size() - 2}) {
+        CHECK(std::abs(pcm[i] - 2048) <= 1);       // 8192 * 0.5 * (1 - 0.5): the left
+        CHECK(std::abs(pcm[i + 1] - 4096) <= 1);   // the right: 8192 * 0.5
+    }
+}
+
+TEST_CASE("element nav: a region with no host is refused and changes nothing", "[element][nav]") {
+    Rig r;
+    Services svc(r.engine.get(), nullptr);
+    NavGuard guard;
+    REQUIRE(r.open("Demo"));
+    while (r.seq.sceneCount() < 2) REQUIRE(r.seq.addScene());
+    {
+        std::lock_guard<std::recursive_mutex> l(r.engine->songMutex());
+        AudioSong& s = r.engine->song();
+        s.bpm = 120.0f;
+        s.tracks[0].inUse = true;
+        s.addClip(0, {"a.wav", 0, 4});             // reaches outside the region
+        REQUIRE(s.addSeqTrack(1, SeqSource::Pitch, 0));
+        REQUIRE(s.addSeqTrack(2, SeqSource::Kit, 1));
+        s.tracks[3].inUse = true;
+        s.addClip(3, {"b.wav", 8, 1});
+    }
+    r.engine->commit();
+    CHECK_FALSE(elementNav().makeFromRegion(1, 3));
+    CHECK(elementNav().lastError().find("needs a free track") != std::string::npos);
+    CHECK_FALSE(elementNav().busy());
+    std::lock_guard<std::recursive_mutex> l(r.engine->songMutex());
+    REQUIRE(r.engine->song().tracks[0].clips.size() == 1);
+    CHECK(r.engine->song().tracks[0].clips[0].bars == 4);
+}
+
+TEST_CASE("element nav: a song opened while the element is made is not cleared, and the element goes", "[element][nav]") {
+    Rig r;
+    Services svc(r.engine.get(), nullptr);
+    NavGuard guard;
+    regionDemo(r);
+    REQUIRE(elementNav().makeFromRegion(1, 3));
+    REQUIRE(waitFor([&] { return r.engine->editState() != SongOpState::Busy; }, 10000));   // made, not yet laid
+    REQUIRE(r.open("Other"));                        // behind the job's back
+    const auto res = runRendering(r);
+    INFO("error: " << res.error);
+    CHECK_FALSE(res.ok);
+    CHECK(res.error.find("another song") != std::string::npos);
+    REQUIRE(r.open("Demo"));
+    {
+        std::lock_guard<std::recursive_mutex> l(r.engine->songMutex());
+        REQUIRE(r.engine->song().tracks[0].clips.size() == 1);
+        CHECK(r.engine->song().tracks[0].clips[0].bars == 4);
+    }
+    const fs::path library = fs::path(r.platform.root) / AudioSong::elementsDir();
+    CHECK(waitFor([&] { return !fs::exists(library) || fs::is_empty(library); }));   // discarded, none left in the library
+}
+
+TEST_CASE("element nav: a song holding an element on the breadcrumb is refused before it is copied", "[element][nav]") {
+    Rig r;
+    Services svc(r.engine.get(), nullptr);
+    NavGuard guard;
+    writeAudioElement(r, kA, "Intro", 2, 120.0f);
+    {
+        AudioSong s;
+        s.dir = r.platform.root + "/Src";
+        fs::create_directories(fs::path(s.dir) / AudioSong::clipsDir());
+        s.bpm = 120.0f;
+        s.tracks[0].inUse = true;
+        SongClip c;
+        c.element = kA;
+        c.bars = 2;
+        s.addClip(0, c);
+        REQUIRE(s.save());
+    }
+    openDemo(r, kA);
+    REQUIRE(elementNav().enter(1, 0));
+    REQUIRE(runNav().ok);
+    REQUIRE(elementNav().insertSong(2, 0, "Src"));
+    const auto res = runRendering(r);
+    CHECK_FALSE(res.ok);
+    CHECK(res.error.find("hold itself") != std::string::npos);
+    const fs::path library = fs::path(r.platform.root) / AudioSong::elementsDir();
+    size_t folders = 0;
+    for (const auto& e : fs::directory_iterator(library)) { (void)e; ++folders; }
+    CHECK(folders == 1);                             // Intro: the copy was never made
+    CHECK(openName(r) == kA);
 }

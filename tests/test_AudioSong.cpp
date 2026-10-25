@@ -3,6 +3,7 @@
 #include "crosspad/song/AudioSong.hpp"
 
 #include <filesystem>
+#include <cstring>
 #include <fstream>
 #include <iterator>
 #include <string>
@@ -950,6 +951,39 @@ TEST_CASE("AudioSong: clearing a range cuts what reaches in, trims what reaches 
     CHECK(a[1].offset == 3 * kSpb);        // the rest plays on from where it was
     CHECK(a[2].bar == 5);
     CHECK(s.tracks[1].clips.empty());
+}
+
+TEST_CASE("AudioSong: a clip name that leaves clips/ loads as a block with no file", "[song][load]") {
+    const auto d = freshProject("cp_song_names");
+    AudioSong a = songAt120();
+    a.dir = d;
+    a.tracks[0].inUse = true;
+    a.addClip(0, {"good.wav", 0, 1});
+    a.addClip(0, {"evil.wav", 1, 1});
+    a.addClip(0, {"back.wav", 2, 1});
+    REQUIRE(a.addSeqTrack(1, SeqSource::Kit, 0));
+    a.tracks[1].freeze.push_back({".freeze/FRZ00000001.wav", 0, 1});
+    a.tracks[1].freeze.push_back({"../../evil.wav", 1, 1});
+    REQUIRE(a.save());
+    std::string text;
+    {
+        std::ifstream in(d + "/song.json");
+        text.assign(std::istreambuf_iterator<char>(in), {});
+    }
+    for (const auto& [from, to] : {std::pair<const char*, const char*>{"evil.wav", "../evil.wav"}, {"back.wav", "x\\\\y.wav"}}) {
+        const size_t at = text.find(from);
+        REQUIRE(at != std::string::npos);
+        text.replace(at, std::strlen(from), to);
+    }
+    std::ofstream(d + "/song.json") << text;
+    AudioSong b;
+    REQUIRE(b.load(d) == SongLoad::Loaded);
+    REQUIRE(b.tracks[0].clips.size() == 1);          // the dropped ones are gone, as a block with no file is
+    CHECK(b.tracks[0].clips[0].file == "good.wav");
+    REQUIRE(b.tracks[1].freeze.size() == 1);
+    CHECK(b.tracks[1].freeze[0].file == ".freeze/FRZ00000001.wav");
+    CHECK(is_clip_file_name("a b.wav"));
+    for (const char* bad : {"", ".", "..", "a/b.wav", "a\\b.wav", "/abs.wav"}) CHECK_FALSE(is_clip_file_name(bad));
 }
 
 TEST_CASE("AudioSong: the song's kit and instrument survive a save, and a Pitch track is found", "[song][sounds]") {

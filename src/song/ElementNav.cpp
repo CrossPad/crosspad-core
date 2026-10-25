@@ -62,6 +62,29 @@ std::string freshElementRef(ISongEngine& se)
     }
 }
 
+/// Where an element made of [@p from, @p to) goes: the lowest audio track the
+/// region touches that holds nothing outside it (its settings are then the
+/// region's own, and are set neutral: the element's bake carries every source
+/// track's volume, pan, mute and solo), else the lowest track nobody has
+/// made. -1 when there is neither.
+int regionHost(const AudioSong& song, uint32_t from, uint32_t to, uint32_t spBar)
+{
+    AudioSong cleared = song;
+    cleared.clearRange(from, to, spBar);
+    int host = -1;
+    for (const RangeClip& k : song.copyRange(from, to, spBar)) {
+        if (song.tracks[k.track].kind == TrackKind::Audio && cleared.tracks[k.track].clips.empty() &&
+            (host < 0 || k.track < host))
+            host = k.track;
+    }
+    for (int t = 0; host < 0 && t < AudioSong::kTracks; ++t) {
+        if (!song.tracks[t].inUse && song.tracks[t].clips.empty()) host = t;
+    }
+    return host;
+}
+
+constexpr char kNoHost[] = "needs a free track, or an audio track with nothing outside the region";
+
 } // namespace
 
 ISongEngine* ElementNav::engine()
@@ -289,19 +312,8 @@ bool ElementNav::makeFromRegion(uint32_t fromBar, uint32_t toBar)
     syncRoot();
     {
         std::lock_guard<std::recursive_mutex> l(se->songMutex());
-        const AudioSong& song = se->song();
-        /* The lowest audio track the region touches holds the element, as the
-         * blocks it replaces did; with only seq tracks there, the lowest one
-         * nobody has made. */
-        int track = -1;
-        for (const RangeClip& k : song.copyRange(fromBar, toBar, 1)) {
-            if (song.tracks[k.track].kind == TrackKind::Audio && (track < 0 || k.track < track)) track = k.track;
-        }
-        for (int t = 0; track < 0 && t < AudioSong::kTracks; ++t) {
-            if (!song.tracks[t].inUse && song.tracks[t].clips.empty()) track = t;
-        }
-        if (track < 0) return refuse("a region of seq tracks needs an audio or free track to hold the element");
-        track_ = track;
+        track_ = regionHost(se->song(), fromBar, toBar, se->framesPerBar());
+        if (track_ < 0) return refuse(kNoHost);
     }
     if (!se->requestElementFromRegion(fromBar, toBar)) return refuse("the element cannot be made now");
     bar_ = fromBar;
@@ -324,7 +336,9 @@ bool ElementNav::insertSong(int track, uint32_t bar, const std::string& songName
         if ((t.inUse || !t.clips.empty()) && t.kind != TrackKind::Audio)
             return refuse("a seq track cannot hold an element: use an audio track");
     }
-    if (!se->requestElementFromSong(songName)) return refuse("that song cannot be copied now");
+    std::vector<std::string> open;
+    for (size_t i = 1; i < path_.size(); ++i) open.push_back(path_[i].open);
+    if (!se->requestElementFromSong(songName, open)) return refuse("that song cannot be copied now");
     track_ = track;
     bar_ = bar;
     startMaking(Job::Insert);
@@ -355,40 +369,76 @@ ElementNav::Result ElementNav::making()
     }
     ref_ = se->elementMade();
     if (ref_.empty()) return fail("the element could not be made");
+    /* A song opened meanwhile is not what the element was made of. */
+    if (!onLevel(path_.back().open)) return failMade(kOtherSong);
     if (job_ == Job::Make) return laidFromRegion();
     /* A copied song is not in the library list yet. */
-    listGen_ = se->listGeneration();
-    if (!se->requestElements()) return fail("the library cannot be read now");
+    if (!se->requestElements()) return failMade("the library cannot be read now");
     phase_ = Phase::Listing;
+    refusals_ = 0;
     return {};
 }
 
 ElementNav::Result ElementNav::listing()
 {
     ISongEngine* se = songEngine();
-    if (se->listGeneration() == listGen_) return {};
-    if (!placeExisting(track_, bar_, ref_)) return fail(error_);
+    if (!onLevel(path_.back().open)) return failMade(kOtherSong);
+    /* The copy is the one element no earlier list can hold. */
+    const auto library = se->elements();
+    const bool listed = std::any_of(library.begin(), library.end(), [&](const ElementInfo& e) { return e.ref == ref_; });
+    if (!listed) {
+        if (++refusals_ < kRefusalPolls) return {};
+        return failMade("the library does not list the copy");
+    }
+    if (!placeExisting(track_, bar_, ref_)) return failMade(error_);
     return {};
 }
 
-/// The region's blocks give way to one block of the new element.
+/// The region's blocks give way to one block of the new element, in one edit:
+/// the host is checked again first, so a refusal leaves the song as it was.
 ElementNav::Result ElementNav::laidFromRegion()
 {
     ISongEngine* se = songEngine();
     {
         std::lock_guard<std::recursive_mutex> l(se->songMutex());
         AudioSong& song = se->song();
+        const uint32_t to = bar_ + regionBars_;
+        const uint32_t spBar = se->framesPerBar();
         /* A seq track that plays its scene over the whole song has no blocks
          * to give way: it gets them, empty of notes, as the scene plays. */
-        song.seqBlocksExplicit(std::max(song.playEnd(), bar_ + regionBars_));
-        song.clearRange(bar_, bar_ + regionBars_, se->framesPerBar());
+        AudioSong edited = song;
+        edited.seqBlocksExplicit(std::max(song.playEnd(), to));
+        if (regionHost(edited, bar_, to, spBar) != track_) return failMade(kNoHost);
+        edited.clearRange(bar_, to, spBar);
+        SongTrack& host = edited.tracks[track_];
+        if (host.inUse) {
+            host.volume = 1.0f;
+            host.pan = 0.0f;
+            host.muted = false;
+            host.solo = false;
+        } else {
+            edited.addAudioTrack(track_);
+        }
+        SongClip c;
+        c.element = ref_;
+        c.bar = bar_;
+        c.bars = (uint16_t)std::min<uint32_t>(regionBars_, UINT16_MAX);
+        edited.addClip(track_, c);
+        song = std::move(edited);
     }
-    if (!addBlock(track_, bar_, (uint16_t)std::min<uint32_t>(regionBars_, UINT16_MAX), ref_)) return fail(error_);
     se->commit();
     leaveAfterEnter_ = true;
     newTitle_.clear();
     targetDepth_ = depth();
-    return startEnter(ref_, track_, bar_, Job::Make) ? Result{} : fail(error_);
+    return startEnter(ref_, track_, bar_, Job::Make) ? Result{} : failMade(error_);
+}
+
+/// A job that made an element and could not go on: the element is taken off the
+/// card again, so no copy is left in the library.
+ElementNav::Result ElementNav::failMade(const std::string& why)
+{
+    if (ISongEngine* se = songEngine()) se->requestElementDiscard(ref_);
+    return fail(why);
 }
 
 ElementNav::Result ElementNav::fail(const std::string& why)

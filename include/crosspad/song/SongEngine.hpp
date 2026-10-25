@@ -74,7 +74,8 @@ public:
     bool requestBakeElement() override;
     ElementBake bakeResult() override;
     bool requestElementFromRegion(uint32_t fromBar, uint32_t toBar) override;
-    bool requestElementFromSong(const std::string& name) override;
+    bool requestElementFromSong(const std::string& name, const std::vector<std::string>& openElements = {}) override;
+    bool requestElementDiscard(const std::string& ref) override;
     std::string elementMade() override;
     ElementClipState elementClipState(uint8_t track, size_t clip) override;
     std::string elementClipWhy(uint8_t track, size_t clip) override;

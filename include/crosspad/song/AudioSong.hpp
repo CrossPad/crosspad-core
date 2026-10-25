@@ -442,6 +442,12 @@ private:
     void dropSeqBlocks(int track);
 };
 
+/// @p name is one plain path component -- not empty, not "." or "..", no
+/// '/' or '\\' -- which is all a clip's file may be: songs come from other
+/// computers, and a name that climbs out of clips/ would be read or written
+/// wherever it points. load() empties a name that is not one.
+bool is_clip_file_name(const std::string& name);
+
 /// The folder name of an element made from @p seed: "E" and eight upper-case
 /// hex digits.
 std::string make_element_id(uint32_t seed);

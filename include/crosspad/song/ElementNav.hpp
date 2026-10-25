@@ -128,6 +128,8 @@ private:
     /// The library read again after a song was copied into it.
     Result listing();
     Result laidFromRegion();
+    /// fail() for a job whose element is already made: it is discarded.
+    Result failMade(const std::string& why);
     bool startEnter(const std::string& ref, int track, uint32_t bar, Job job);
     void startLeave(Job job);
     Result fail(const std::string& why);
@@ -165,7 +167,6 @@ private:
     int         track_ = 0;           ///< where a made element's block goes
     uint32_t    bar_ = 0;
     uint32_t    regionBars_ = 0;
-    uint32_t    listGen_ = 0;         ///< ISongEngine::listGeneration() before the library was asked for
     int         freezeTrack_ = 0;
     uint32_t    lastWaiting_ = 0;     ///< stretched blocks still unfitted at the last poll
     std::string bakeFile_;

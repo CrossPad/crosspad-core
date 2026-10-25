@@ -240,14 +240,24 @@ bool SongEngine::Impl::requestElementFromRegion(uint32_t fromBar, uint32_t toBar
     return requestEdit(kEditElementRegion);
 }
 
-bool SongEngine::Impl::requestElementFromSong(const std::string& name) {
+bool SongEngine::Impl::requestElementFromSong(const std::string& name, const std::vector<std::string>& openElements) {
     if (!valid_name(name) || !ensureWorker() || !claimEdit()) return false;
     {
         std::lock_guard<std::recursive_mutex> l(songMutex_);
         editName_ = name;
+        editRefs_ = openElements;
     }
     editProgress_.store(0);
     return requestEdit(kEditElementSong);
+}
+
+bool SongEngine::Impl::requestElementDiscard(const std::string& ref) {
+    if (!is_element_ref(ref) || !ensureWorker() || !claimEdit()) return false;
+    {
+        std::lock_guard<std::recursive_mutex> l(songMutex_);
+        editName_ = ref;
+    }
+    return requestEdit(kEditElementDiscard);
 }
 
 std::string SongEngine::Impl::elementMade() {
@@ -304,6 +314,16 @@ SongOpState SongEngine::Impl::doElementFromRegion() {
         parts = src.copyRange(from, to, src.samplesPerBar(sampleRate_));
     }
     if (parts.empty()) return elementFailed("Nothing plays in those bars.", {});
+    /* Names that reach outside the folders are refused before anything is written. */
+    for (const RangeClip& k : parts) {
+        if (!k.clip.isElement() && src.tracks[k.track].kind == TrackKind::Audio && !is_clip_file_name(k.clip.file))
+            return elementFailed("A recording's name is not a plain file name: " + k.clip.file, {});
+    }
+    std::string kept;   // the first component of an instrument the song keeps in its own folder
+    if (!src.instrument.empty() && src.instrument[0] != '/') {
+        kept = src.instrument.substr(0, src.instrument.find('/'));
+        if (!valid_name(kept)) return elementFailed("The song's instrument is not inside its own folder.", {});
+    }
 
     std::string dir;
     const std::string ref = makeElementFolder(dir, true);
@@ -332,6 +352,7 @@ SongOpState SongEngine::Impl::doElementFromRegion() {
             d.scene = s.scene;
             d.seqBlocks = s.seqBlocks;
             d.stretch = s.stretch;
+            d.input = s.input;
             d.kit = s.kit;
         }
         SongClip c = k.clip;
@@ -352,8 +373,7 @@ SongOpState SongEngine::Impl::doElementFromRegion() {
         copied.push_back(file);
     }
     /* An instrument the song keeps is a folder of its own beside the clips. */
-    if (!src.instrument.empty() && src.instrument[0] != '/') {
-        const std::string kept = src.instrument.substr(0, src.instrument.find('/'));
+    if (!kept.empty()) {
         const bool isFolder = kept != src.instrument;
         const bool ok = isFolder ? song_copy_tree(src.dir + "/" + kept, dir + "/" + kept,
                                                   [](const std::string&) { return true; }, yield)
@@ -374,9 +394,11 @@ SongOpState SongEngine::Impl::doElementFromRegion() {
 /// rewritten as the element's.
 SongOpState SongEngine::Impl::doElementFromSong() {
     std::string name;
+    std::vector<std::string> open;
     {
         std::lock_guard<std::recursive_mutex> l(songMutex_);
         name = editName_;
+        open = editRefs_;
     }
     {
         std::lock_guard<std::mutex> l(reportMutex_);
@@ -388,6 +410,24 @@ SongOpState SongEngine::Impl::doElementFromSong() {
     const std::string from = std::string(p.songsRoot()) + "/" + name;
     AudioSong s;
     if (s.load(from) != SongLoad::Loaded) return elementFailed("There is no song called " + name + ".", {});
+    /* The elements the song plays, and the ones those play: one on the breadcrumb
+     * would make the element hold itself. Read from the library's song.json. */
+    std::vector<std::string> reached;
+    const auto reach = [&](const AudioSong& song) {
+        for (const SongTrack& t : song.tracks)
+            for (const SongClip& c : t.clips)
+                if (c.isElement() && std::find(reached.begin(), reached.end(), c.element) == reached.end())
+                    reached.push_back(c.element);
+    };
+    reach(s);
+    for (size_t i = 0; i < reached.size(); ++i) {
+        if (std::find(open.begin(), open.end(), reached[i]) != open.end())
+            return elementFailed("An element cannot hold itself.", {});
+        AudioSong child;
+        if (is_element_ref(reached[i]) && child.load(std::string(p.songsRoot()) + "/" + reached[i]) == SongLoad::Loaded)
+            reach(child);
+        p.yieldIo();
+    }
     std::string dir;
     const std::string ref = makeElementFolder(dir, false);
     if (ref.empty()) return elementFailed("The card would not take the element's folder.", dir);
@@ -410,6 +450,21 @@ SongOpState SongEngine::Impl::doElementFromSong() {
     logf(false, "element %s copied from %s", ref.c_str(), name.c_str());
     std::lock_guard<std::mutex> l(reportMutex_);
     elementMade_ = ref;
+    return SongOpState::Ready;
+}
+
+/// Worker: an element made by one of the requests above, taken off the card
+/// again -- see ISongEngine::requestElementDiscard.
+SongOpState SongEngine::Impl::doElementDiscard() {
+    std::string ref, open;
+    {
+        std::lock_guard<std::recursive_mutex> l(songMutex_);
+        ref = editName_;
+        open = song_.name;
+    }
+    if (!p.storageReady() || ref == open) return SongOpState::Failed;
+    const std::string dir = std::string(p.songsRoot()) + "/" + ref;
+    if (fsx::exists(dir) && !fsx::removeTree(dir, [this] { p.yieldIo(); })) return SongOpState::Failed;
     return SongOpState::Ready;
 }
 
