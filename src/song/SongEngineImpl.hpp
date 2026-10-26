@@ -539,6 +539,7 @@ struct SongEngine::Impl {
     std::string elementMade();
     ElementClipState elementClipState(uint8_t track, size_t clip);
     std::string elementClipWhy(uint8_t track, size_t clip);
+    bool elementClipRebakes(uint8_t track, size_t clip);
     uint8_t backgroundProgress() const { return bakeProgress_.load(); }
     bool backgroundBusy() const { return relinkReq_.load() || relinking_.load() || bakeQueued_.load() != 0; }
     void idleBaking(bool allowed);
@@ -990,6 +991,7 @@ private:
         bool        exists = false; ///< on the card
         bool        baking = false; ///< queued or being mixed
         std::string why;            ///< what keeps it from being baked from the card
+        bool        rebakes = false; ///< and a rebake mends it (ResolvedElement::rebakes)
     };
     std::atomic<bool> relinkReq_{false}, relinking_{false};
     std::string elementSig_;

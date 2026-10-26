@@ -25,6 +25,11 @@ struct ResolvedElement {
     bool        bakeable = false; ///< every heard seq track is frozen to files that are there and every child exists or is bakeable
     bool        kept = false;    ///< resolved from its snapshot: an edit of it is not decided yet, and this is it as it was
     std::string why;             ///< the first thing that makes it not bakeable; empty when it is
+    /// What keeps it from the card is its own and a rebake mends it -- the element
+    /// entered and left: a track not frozen, frozen at another tempo, older than its
+    /// notes or kit, a freeze gone, a recording not fitted. Not a cycle, a song.json
+    /// that cannot be read, an edit undecided or a child's state.
+    bool        rebakes = false;
 };
 
 /// Worker only: it reads song.json files and asks the card about every file a

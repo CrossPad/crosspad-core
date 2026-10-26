@@ -293,6 +293,9 @@ public:
     /// Why that block is Stale or Missing: the first thing its element lacks
     /// to be baked from the card (a seq track not frozen, ...); empty otherwise.
     virtual std::string elementClipWhy(uint8_t track, size_t clip) { (void)track; (void)clip; return {}; }
+    /// The block is not Fresh for a reason of its element's own that a rebake mends
+    /// (ResolvedElement::rebakes): the element entered and left bakes it.
+    virtual bool elementClipRebakes(uint8_t track, size_t clip) { (void)track; (void)clip; return false; }
     /// How far the background bake under way is, 0..100.
     virtual uint8_t backgroundProgress() const { return 0; }
     /// A relink pass or a background bake is waiting or running.

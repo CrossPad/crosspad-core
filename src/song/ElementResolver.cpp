@@ -68,6 +68,7 @@ ResolvedElement ElementResolver::make(const std::string& ref) {
     r.bpm = bpm_;
 
     /* Children first: their keys are part of this one's hash. */
+    bool fromChild = false;   // the reason is a child's: a rebake of this one does not mend it
     for (int t = 0; t < AudioSong::kTracks; ++t) {
         if (song.silenced(t) || song.seqPlaysNothing(t)) continue;
         const SongTrack& tr = song.tracks[t];
@@ -113,11 +114,14 @@ ResolvedElement ElementResolver::make(const std::string& ref) {
                 continue;
             }
             const ResolvedElement& child = resolve(c.element);
-            if (r.why.empty() && !child.exists && !child.bakeable)
+            if (r.why.empty() && !child.exists && !child.bakeable) {
                 r.why = "Element " + c.element + ": " + (child.why.empty() ? "no bake." : child.why);
+                fromChild = true;
+            }
         }
     }
     r.bakeable = r.why.empty();
+    r.rebakes = !r.bakeable && !fromChild;
     r.key = element_bake_key(element_content_hash(song, ref, rd_), bpm_, rate_);
     r.file = element_bake_file(r.key);
     uint64_t bytes = 0;

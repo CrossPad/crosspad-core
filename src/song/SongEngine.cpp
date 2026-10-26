@@ -349,6 +349,7 @@ bool SongEngine::requestDeleteElement(const std::string& ref) { return impl_->re
 std::string SongEngine::elementMade() { return impl_->elementMade(); }
 ElementClipState SongEngine::elementClipState(uint8_t track, size_t clip) { return impl_->elementClipState(track, clip); }
 std::string SongEngine::elementClipWhy(uint8_t track, size_t clip) { return impl_->elementClipWhy(track, clip); }
+bool SongEngine::elementClipRebakes(uint8_t track, size_t clip) { return impl_->elementClipRebakes(track, clip); }
 uint8_t SongEngine::backgroundProgress() const { return impl_->backgroundProgress(); }
 bool SongEngine::backgroundBusy() const { return impl_->backgroundBusy(); }
 void SongEngine::idleBaking(bool allowed) { impl_->idleBaking(allowed); }

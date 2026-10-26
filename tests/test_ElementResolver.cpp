@@ -137,8 +137,10 @@ TEST_CASE("resolver: an unfrozen seq track makes an element, and the one above i
     ElementResolver rs(card.root, kRate, 120.0f, card.reader());
     CHECK_FALSE(rs.resolve(kC).bakeable);
     CHECK(rs.resolve(kC).why.find("Track 4") != std::string::npos);
+    CHECK(rs.resolve(kC).rebakes);                         // entered and left, it is frozen
     CHECK_FALSE(rs.resolve(kB).bakeable);
     CHECK(rs.resolve(kB).why.find(kC) != std::string::npos);
+    CHECK_FALSE(rs.resolve(kB).rebakes);                   // its child's to mend, not its own
 }
 
 TEST_CASE("resolver: a stretched track not fitted yet, or a freeze at another tempo, is not bakeable", "[song][resolver]") {
@@ -166,6 +168,7 @@ TEST_CASE("resolver: a stretched track not fitted yet, or a freeze at another te
     ElementResolver other(card.root, kRate, 100.0f, card.reader());
     CHECK_FALSE(other.resolve(kC).bakeable);
     CHECK(other.resolve(kC).why.find("another tempo") != std::string::npos);
+    CHECK(other.resolve(kC).rebakes);
 }
 
 TEST_CASE("resolver: a recording that keeps its speed is not bakeable at another tempo", "[song][resolver]") {
@@ -225,6 +228,7 @@ TEST_CASE("resolver: a cycle is reported, not followed", "[song][resolver]") {
     CHECK_FALSE(a.bakeable);
     CHECK_FALSE(a.exists);
     CHECK(a.why.find("cycle") != std::string::npos);
+    CHECK_FALSE(a.rebakes);
 }
 
 TEST_CASE("element hash: with a childKey an element block is hashed by it, without by its stored file", "[song][hash]") {

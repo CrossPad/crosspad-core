@@ -372,6 +372,7 @@ void SongEngine::Impl::doRelink() {
         s.frames = e.frames;
         s.exists = e.exists;
         s.why = e.why;
+        s.rebakes = e.rebakes;
         if (e.exists) {
             links[ref] = {e.file, e.frames};
             pace();
@@ -756,6 +757,21 @@ ElementClipState SongEngine::Impl::elementClipState(uint8_t track, size_t clip) 
     const bool plays = bakesOnCard_.count(file) != 0;
     if (s.baking) return plays ? ElementClipState::Baking : ElementClipState::Missing;
     return plays ? ElementClipState::Stale : ElementClipState::Missing;
+}
+
+bool SongEngine::Impl::elementClipRebakes(uint8_t track, size_t clip) {
+    std::string ref, file;
+    {
+        std::lock_guard<std::recursive_mutex> l(songMutex_);
+        if (track >= kTracks || clip >= song_.tracks[track].clips.size()) return false;
+        const SongClip& c = song_.tracks[track].clips[clip];
+        ref = c.element;
+        file = c.file;
+    }
+    std::lock_guard<std::mutex> l(elementMutex_);
+    const auto it = elementSeen_.find(ref);
+    if (it == elementSeen_.end() || (it->second.exists && file == it->second.file)) return false;
+    return !it->second.baking && it->second.rebakes;
 }
 
 std::string SongEngine::Impl::elementClipWhy(uint8_t track, size_t clip) {
