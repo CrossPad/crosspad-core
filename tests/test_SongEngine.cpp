@@ -3404,3 +3404,18 @@ TEST_CASE("song engine: a REC punched out while playing is heard on the next pas
     r.engine->stop();
     REQUIRE(waitFor([&] { return !r.engine->playing(); }));
 }
+
+TEST_CASE("Arrange's playhead is the song's: another song opened starts on its bar one", "[song][transport]") {
+    Rig r;
+    REQUIRE(r.open("Demo"));
+    Services svc(r.engine.get(), nullptr);
+    SongTransport& tr = songTransport();
+    tr.setStartBar(6);                                 // stopped on bar seven of this song
+    CHECK(tr.startBar() == 6);
+    CHECK(tr.position().bar == 7);
+    REQUIRE(r.open("Fresh"));                          // NEW: an empty song
+    CHECK(tr.startBar() == 0);
+    CHECK(tr.position().bar == 1);
+    tr.locate(2);                                      // the knob from there, not from bar seven
+    CHECK(tr.startBar() == 2);
+}
