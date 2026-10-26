@@ -593,6 +593,7 @@ struct SongEngine::Impl {
     uint32_t playEndBars();
     bool bounceSeqTrack(uint8_t track);
     bool freezeTrack(uint8_t track);
+    uint8_t renderScene(const SongTrack& t) const;
     FreezeState freezeState(uint8_t track);
     bool bounceScene(uint8_t scene, uint8_t track) { return requestBounce(scene, track, 0); }
     bool requestBounce(uint8_t scene, uint8_t track, uint32_t bars, uint32_t fromBar = 0,

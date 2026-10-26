@@ -140,6 +140,17 @@ TEST_CASE("song scenes: after the first, only a song with a seq track adopts", "
     REQUIRE(r.seq.dirty());
 }
 
+TEST_CASE("song scenes: an element never adopts the card's old shared scenes", "[song][scenes]") {
+    Card card("cp_scenes_element");
+    writeScenes(card.legacy(), 7);
+    { std::FILE* f = std::fopen(card.mark().c_str(), "w"); REQUIRE(f); std::fclose(f); }
+    Rig r;
+    r.open(card.song(".elements/E00000001"), true);         // a kit track, no scenes file yet
+    r.scenes.sweep(card.str());
+    CHECK(r.seq.eventCount() == 0);                          // not the shared file's hit
+    CHECK_FALSE(r.seq.dirty());                              // and nothing written for it
+}
+
 TEST_CASE("song scenes: two songs keep their own grooves", "[song][scenes]") {
     Card card("cp_scenes_two");
     const std::string a = card.song("a");

@@ -17,6 +17,7 @@
 #include "crosspad/song/ArrangeAudioTake.hpp"
 #include "crosspad/song/SongEngine.hpp"
 #include "crosspad/transport/SongTransport.hpp"
+#include "crosspad/sequencer/SequenceStore.hpp"
 
 TEST_CASE("song engine: a bad project name is refused", "[song]") {
     Rig r;
@@ -3420,4 +3421,54 @@ TEST_CASE("Arrange's playhead is the song's: another song opened starts on its b
     CHECK(tr.startBar() == 2);
     REQUIRE(r.open("Fresh"));                          // a NEW after a delete: the same name
     CHECK(tr.startBar() == 0);
+}
+
+TEST_CASE("song engine: an element from a region keeps the song's scenes, so its kit tracks freeze", "[song][element]") {
+    Rig r;
+    REQUIRE(r.open("Demo"));
+    REQUIRE(r.seq.addScene());
+    REQUIRE(r.seq.addScene());                             // scenes 0..2: the kit track's is 2
+    {
+        std::lock_guard<std::recursive_mutex> l(r.engine->songMutex());
+        AudioSong& s = r.engine->song();
+        s.bpm = 120.0f;
+        REQUIRE(s.addSeqTrack(0, SeqSource::Kit, 2));
+        SeqNote n;
+        n.pad = 3; n.vel = 99;
+        s.putSeqTake(0, 0, makeSeqPattern(2, {n}), s.samplesPerBar(kRate));
+        s.armed = -1;
+    }
+    r.engine->commit();
+    REQUIRE(madeAndWait(r, true, 0, 2));
+    REQUIRE(r.engine->editState() == SongOpState::Ready);
+    const std::string ref = r.engine->elementMade();
+    PatternSequencer scenes;
+    REQUIRE(SequenceStore::load(scenes, r.platform.root + "/" + ref + "/" + SequenceStore::fileName()));
+    CHECK(scenes.sceneCount() == 3);
+    CHECK(elementOnCard(r, ref).tracks[0].scene == 2);
+}
+
+TEST_CASE("song engine: a kit track whose blocks hold their notes freezes whatever its scene", "[song][freeze]") {
+    Rig r;
+    REQUIRE(r.open("Demo"));
+    {
+        std::lock_guard<std::recursive_mutex> l(r.engine->songMutex());
+        AudioSong& s = r.engine->song();
+        s.bpm = 120.0f;
+        REQUIRE(s.addSeqTrack(0, SeqSource::Kit, 5));      // a scene this sequencer has not got
+        SeqNote n;
+        n.pad = 3; n.vel = 99;
+        s.putSeqTake(0, 0, makeSeqPattern(1, {n}), s.samplesPerBar(kRate));
+        s.armed = -1;
+    }
+    r.engine->commit();
+    std::vector<float> out(kBlock * 2), bus(kBlock * 2, 0.25f);
+    REQUIRE(r.engine->freezeTrack(0));
+    for (int i = 0; i < 6000 && r.engine->bounceStatus().state == BounceState::Running; ++i) {
+        r.block(out, bus);
+        std::this_thread::sleep_for(std::chrono::milliseconds(2));
+    }
+    INFO("error: " << r.engine->bounceStatus().error);
+    CHECK(r.engine->bounceStatus().state == BounceState::Done);
+    CHECK(r.engine->freezeState(0) == FreezeState::Frozen);
 }

@@ -7,6 +7,8 @@
 
 #include "SongEngineImpl.hpp"
 
+#include "crosspad/sequencer/SequenceStore.hpp"
+
 #include "crosspad/song/ElementHash.hpp"
 #include "crosspad/song/ElementResolver.hpp"
 #include "crosspad/song/SongFiles.hpp"
@@ -522,6 +524,12 @@ SongOpState SongEngine::Impl::doElementFromRegion() {
         if (!ok) return elementFailed("The song's instrument could not be copied.", dir);
     }
     if (!el.save()) return elementFailed("The element's song could not be written.", dir);
+    /* The song's scenes with it: its kit tracks name them (SongTrack::scene),
+     * and an element with no scenes of its own was given the card's old shared
+     * file on open -- other scenes, and every freeze of a track on a scene it
+     * had not got failed ("no such scene"), so the element never baked. */
+    if (el.seqTracks() > 0 && !SequenceStore::save(seq_, dir + "/" + SequenceStore::fileName()))
+        return elementFailed("The song's scenes could not be written into the element.", dir);
     editProgress_.store(100);
     logf(false, "element %s made of bars %u-%u", ref.c_str(), (unsigned)from + 1, (unsigned)to);
     std::lock_guard<std::mutex> l(reportMutex_);
