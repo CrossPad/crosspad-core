@@ -4,12 +4,14 @@
 // kits made while the board runs added into it, and a removed kit's slot
 // taken once the spare is gone.
 #include <catch2/catch_test_macros.hpp>
+#include "crosspad/kit/KitFolders.hpp"
 #include "crosspad/kit/PortableKitLoader.hpp"
 
 #include <filesystem>
 #include <fstream>
 #include <string>
 
+using crosspad::KitFolders;
 using crosspad::PortableKitLoader;
 namespace fs = std::filesystem;
 
@@ -26,13 +28,13 @@ struct Card {
     }
     ~Card() { fs::remove_all(root); }
 
-    /// One kit folder with its kit.json; the logical path addKit() takes.
-    std::string kit(const std::string& name) const
+    /// One kit folder with its kit.json, in @p folder; the logical path addKit() takes.
+    std::string kit(const std::string& name, const char* folder = kKits) const
     {
-        const std::string dir = root + kKits + "/" + name;
+        const std::string dir = root + folder + "/" + name;
         fs::create_directories(dir);
         std::ofstream(dir + "/kit.json") << "{\"name\":\"" << name << "\",\"pads\":[]}";
-        return std::string(kKits) + "/" + name + "/kit.json";
+        return std::string(folder) + "/" + name + "/kit.json";
     }
 
     std::string root;
@@ -75,4 +77,20 @@ TEST_CASE("addKit takes a removed kit's slot once the spare is used up", "[kit]"
     CHECK(loader.addKit(late) == 1);
     CHECK(loader.getKit(1)->name == "LATE");
     CHECK(loader.findKitIdByPath(late) == 1);
+}
+
+TEST_CASE("scanKitFolders lists the kits of every folder, and a missing one has none", "[kit]")
+{
+    Card card("kitroom_folders");
+    card.kit("PERF");
+    const std::string drums = card.kit("808", KitFolders::kDrums);
+    const std::string slice = card.kit("Chops", KitFolders::kSlicer);
+    PortableKitLoader loader(card.root);
+    loader.scanKitFolders({KitFolders::kKits, KitFolders::kDrums, KitFolders::kSlicer, "/crosspad/none"});
+    REQUIRE(loader.getKitCount() == 3);
+    CHECK(loader.findKitIdByPath(drums) >= 0);
+    CHECK(loader.findKitIdByPath(slice) >= 0);
+    CHECK(KitFolders::in(drums, KitFolders::kDrums));
+    CHECK_FALSE(KitFolders::in(drums, KitFolders::kKits));
+    CHECK_FALSE(KitFolders::in("/crosspad/drumsX/a/kit.json", KitFolders::kDrums));
 }

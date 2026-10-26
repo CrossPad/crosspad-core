@@ -33,6 +33,7 @@
 #include "crosspad/audio/WavWriter.hpp"
 #include "crosspad/instrument/InstrumentPlayState.hpp"
 #include "crosspad/kit/IKitManager.hpp"
+#include "crosspad/kit/KitFolders.hpp"
 #include "crosspad/kit/KitInfo.hpp"
 #include "crosspad/platform/IFileSystem.hpp"
 #include "crosspad/platform/PlatformServices.hpp"
@@ -59,7 +60,9 @@ namespace {
 
 constexpr const char* kCrosspadDir = "/crosspad";
 constexpr const char* kRecSubdir   = "/crosspad/recordings";
-constexpr const char* kKitsLogical = "/crosspad/kits";
+/* A kit the Slicer makes goes with the others it made: the browser's SLICE
+ * list is that folder. */
+constexpr const char* kSlicerKits = KitFolders::kSlicer;
 constexpr uint32_t kRecRingFrames  = 65536;   // 256 kB, ~1.4 s of card stall
 constexpr uint32_t kRecMinFrames   = 16384;
 constexpr uint32_t kPrevRingFrames = 8192;    // ~170 ms ahead
@@ -1535,7 +1538,7 @@ struct SampleToolsEngine::Impl {
             std::lock_guard<std::mutex> l(paramMutex_);
             kit = pKit_;
         }
-        const std::string kitsDir = p.cardRoot() + kKitsLogical;
+        const std::string kitsDir = p.cardRoot() + kSlicerKits;
         const std::string dir = kitsDir + "/" + kit.name;
         if (!p.storageReady()) { finish(false, "no card"); return; }
         if (fsx::exists(dir)) { finish(false, "a kit called " + kit.name + " is already on the card"); return; }
@@ -1573,7 +1576,7 @@ struct SampleToolsEngine::Impl {
         info.version = "1.0";
         /* Varispeed moves the tempo with the pitch. */
         info.bpm = (uint16_t)std::lround((double)kit.bpm * SliceMath::pitchRatio(kit.semitones));
-        info.path = std::string(kKitsLogical) + "/" + kit.name + "/kit.json";
+        info.path = std::string(kSlicerKits) + "/" + kit.name + "/kit.json";
         for (int pad = 0; pad < KIT_PADS; ++pad) {
             Pad& kp = info.pads[pad];
             kp.color = kp.color_pressed = slice_color(pad);

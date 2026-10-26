@@ -393,7 +393,7 @@ TEST_CASE("SampleToolsEngine writes slices out as a Slice kit: one WAV, a region
     REQUIRE(exported == ToolJob::Ready);
     CHECK(r.tools->jobResult() == "Chops");
 
-    const fs::path kitDir = r.dir / "crosspad" / "kits" / "Chops";
+    const fs::path kitDir = r.dir / "crosspad" / "slicer" / "Chops";   // the SLICE list's folder
     /* The loop once, as it is -- no attack, no pitch written into it. */
     CHECK(readWavData((kitDir / "SAMPLES" / "loop.wav").string()).size() == 4000 * 2);
     CHECK_FALSE(fs::exists(kitDir / "SAMPLES" / "1.wav"));
@@ -401,11 +401,11 @@ TEST_CASE("SampleToolsEngine writes slices out as a Slice kit: one WAV, a region
     REQUIRE(loader.getKitCount() == 1);
     const KitInfo* listed = loader.getKit(0);
     CHECK(listed->name == "Chops");
-    CHECK(listed->path == "/crosspad/kits/Chops/kit.json");
+    CHECK(listed->path == "/crosspad/slicer/Chops/kit.json");
     CHECK(listed->engine == KitEngine::Slice);
     CHECK(listed->pitch == -2);
     CHECK(listed->bpm == (uint16_t)std::lround(120.0 * SliceMath::pitchRatio(-2)));
-    KitInfo full("/crosspad/kits/Chops/kit.json");
+    KitInfo full("/crosspad/slicer/Chops/kit.json");
     REQUIRE(loader.readKitCopy(listed->path, full));
     const uint32_t want[3][2] = {{0, 1000}, {1000, 3000}, {3000, 4000}};
     for (int p = 0; p < 3; ++p) {

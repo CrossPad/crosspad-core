@@ -65,6 +65,10 @@ std::string PortableKitLoader::toLogicalPath(const std::string& fsPath) const {
 // field: on the ESP32 that copy alone was a std::bad_alloc at boot (80 kits,
 // 412 kB of PSRAM left beside the sample engine).
 void PortableKitLoader::scanKits(const std::string& rootDir) {
+    scanKitFolders({rootDir});
+}
+
+void PortableKitLoader::scanKitFolders(const std::vector<std::string>& rootDirs) {
     // One block of capacity * sizeof(KitInfo) (~1 kB a kit), reserved once at
     // the count plus kSpareKits -- the room addKit() fills without moving the
     // list. Grown by doubling, the block was copied into a bigger one with the
@@ -77,8 +81,9 @@ void PortableKitLoader::scanKits(const std::string& rootDir) {
     try {
         std::string found;   // every kit's JSON on the card, NUL-separated
         size_t count = 0;
-        // rootDir is logical ("/crosspad/kits"); add the mount prefix for POSIX.
-        findKitJsons(toFsPath(rootDir), found, count);
+        // Each root is logical ("/crosspad/kits"); add the mount prefix for POSIX.
+        // A folder that is not on the card has no kits.
+        for (const std::string& rootDir : rootDirs) findKitJsons(toFsPath(rootDir), found, count);
         size_t room = count + kSpareKits;
         for (;;) {
             try {
