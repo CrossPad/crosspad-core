@@ -95,7 +95,7 @@ std::vector<BakedPiece> baked_view(const AudioSong& song, const BakedViewEnv& en
     const std::string bakes = env.songsRoot + "/" + AudioSong::bakeDir() + "/";
 
     for (int t = 0; t < AudioSong::kTracks; ++t) {
-        if (song.silenced(t)) continue;
+        if (song.silenced(t) || song.seqPlaysNothing(t)) continue;
         const SongTrack& tr = song.tracks[t];
         if (song.seqRoute(t) >= 0) {
             /* A seq track is only what its freeze rendered: its scenes are not here to play. */

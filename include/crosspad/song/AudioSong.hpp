@@ -358,6 +358,10 @@ public:
     /// Track @p t makes no sound: muted, or another track is soloed and it
     /// is not. What the engine plays by, for audio and seq tracks alike.
     bool silenced(int t) const;
+    /// Track @p t is a seq track laid out as blocks with none left -- they went
+    /// into an element, or were deleted: nothing of it is heard, so nothing of it
+    /// needs a freeze to be mixed from the card.
+    bool seqPlaysNothing(int t) const;
     /// The lowest track nobody has made yet, or -1 when all four are in use.
     int freeTrack() const;
 

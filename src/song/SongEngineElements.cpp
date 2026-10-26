@@ -260,7 +260,7 @@ SongOpState SongEngine::Impl::doBakeElement() {
     }
     for (int t = 0; t < kTracks; ++t) {
         const SongTrack& tr = copy.tracks[t];
-        if (copy.silenced(t)) continue;
+        if (copy.silenced(t) || copy.seqPlaysNothing(t)) continue;
         if (tr.kind == TrackKind::Seq) {
             if (tr.freeze.empty() || tr.freezeKey != seqKey(copy, t))
                 return fail("Track " + std::to_string(t + 1) + " is not frozen: freeze it first.");
@@ -503,6 +503,9 @@ SongOpState SongEngine::Impl::doElementFromRegion() {
         d.clips.push_back(c);
     }
     for (int t = 0; t < kTracks; ++t) el.sortTrack(t);
+    /* ARM where it was, when that track came along: CLIP EDIT into it and a DUB
+     * goes onto the part being played, not the first seq track (armed -1). */
+    if (src.armed >= 0 && src.armed < kTracks && el.tracks[src.armed].inUse) el.armed = src.armed;
 
     /* The recordings the blocks play, once each; an element block plays an
      * element's bake, which is no file of the song's. */

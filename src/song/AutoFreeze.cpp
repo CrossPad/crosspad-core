@@ -11,7 +11,7 @@ int autoFreezeNext(const AudioSong& song, const FreezeState* states, uint8_t ski
         const SongTrack& tr = song.tracks[t];
         if (t == song.armed || (skip & (1u << t))) continue;
         if (!tr.inUse || tr.kind != TrackKind::Seq || song.seqRoute(t) < 0) continue;
-        if (tr.seqBlocks && tr.clips.empty()) continue;   // nothing on it yet
+        if (song.seqPlaysNothing(t)) continue;           // nothing on it yet, or no more
         if (states[t] != FreezeState::Frozen) return t;
     }
     return -1;

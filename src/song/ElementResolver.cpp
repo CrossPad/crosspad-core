@@ -69,7 +69,7 @@ ResolvedElement ElementResolver::make(const std::string& ref) {
 
     /* Children first: their keys are part of this one's hash. */
     for (int t = 0; t < AudioSong::kTracks; ++t) {
-        if (song.silenced(t)) continue;
+        if (song.silenced(t) || song.seqPlaysNothing(t)) continue;
         const SongTrack& tr = song.tracks[t];
         if (song.seqRoute(t) >= 0) {
             if (r.why.empty() && tr.freeze.empty()) r.why = "Track " + std::to_string(t + 1) + " is not frozen.";

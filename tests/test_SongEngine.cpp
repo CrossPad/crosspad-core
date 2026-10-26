@@ -3448,6 +3448,19 @@ TEST_CASE("song engine: an element from a region keeps the song's scenes, so its
     CHECK(elementOnCard(r, ref).tracks[0].scene == 2);
 }
 
+TEST_CASE("song engine: an element from a region keeps ARM on the track it was on", "[song][element]") {
+    Rig r;
+    regionSong(r);
+    {
+        std::lock_guard<std::recursive_mutex> l(r.engine->songMutex());
+        r.engine->song().armed = 1;                        // the kit track: REC and DUB go there
+    }
+    r.engine->commit();
+    REQUIRE(madeAndWait(r, true, 1, 3));
+    REQUIRE(r.engine->editState() == SongOpState::Ready);
+    CHECK(elementOnCard(r, r.engine->elementMade()).armed == 1);
+}
+
 TEST_CASE("song engine: a kit track whose blocks hold their notes freezes whatever its scene", "[song][freeze]") {
     Rig r;
     REQUIRE(r.open("Demo"));
