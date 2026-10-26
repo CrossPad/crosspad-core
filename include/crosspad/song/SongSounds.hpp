@@ -2,6 +2,7 @@
 #pragma once
 
 #include "crosspad/kit/KitInfo.hpp"
+#include "crosspad/util/RetryBackoff.hpp"
 
 #include <atomic>
 #include <cstdint>
@@ -137,6 +138,13 @@ private:
     uint32_t seededGen_ = UINT32_MAX;
     /// A second kit that would not load, said once. UI thread.
     std::string secondKitSaid_;
+    /// The song's instrument when it would not load: asked for again on instRetry_'s
+    /// clock (stepMs_, kStepMs a step), said once. UI thread.
+    std::string instWanted_;
+    RetryBackoff instRetry_;
+    uint32_t stepMs_ = 0;
+    bool instAsked_ = false;
+    bool instSaid_ = false;
 };
 
 } // namespace crosspad

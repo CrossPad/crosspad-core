@@ -8,6 +8,7 @@
 #include "crosspad/kit/KitSaved.hpp"
 #include "crosspad/sampler/ISecondKit.hpp"
 #include "crosspad/song/SongSounds.hpp"
+#include "crosspad/util/RetryBackoff.hpp"
 
 #include <filesystem>
 #include <string>
@@ -205,6 +206,35 @@ TEST_CASE("song sounds: a song's Pitch track opens its instrument", "[song][soun
     REQUIRE(instrumentPlayState().instrumentPath == "/SONGS/a/pitch/instrument.json");
     REQUIRE(instrumentPlayState().instrumentName == "Keys");
     REQUIRE(instrumentPlayState().generation == gen + 1);
+}
+
+TEST_CASE("song sounds: an instrument that will not load is asked for again later, said once", "[song][sounds]") {
+    Rig r;
+    r.engine.addSeqTrack(SeqSource::Pitch);
+    r.engine.song().instrument = "/crosspad/pitchplay/Keys/instrument.json";
+    r.sounds.songOpened();
+    r.sounds.step();
+    REQUIRE(r.inst.opened.size() == 1);
+    r.inst.st = IInstrumentHost::State::Failed;            // no memory beside the kits
+    r.inst.msg = "zone 0: no memory (215640 B)";
+    auto stepsTo = [&](size_t opens) {                      // steps until the next try
+        int n = 0;
+        while (r.inst.opened.size() < opens && n < 400) { r.sounds.step(); ++n; }
+        return n;
+    };
+    const uint32_t first = (uint32_t)stepsTo(2) * SongSounds::kStepMs;
+    CHECK(first >= RetryBackoff::kFirstMs);                 // not a load a step
+    CHECK(first <= RetryBackoff::kFirstMs + 2 * SongSounds::kStepMs);
+    REQUIRE(r.host.warnings.size() == 1);
+    CHECK(r.host.warnings[0].find("no memory") != std::string::npos);
+    CHECK(r.sounds.pending());
+    const uint32_t second = (uint32_t)stepsTo(3) * SongSounds::kStepMs;   // failed again
+    CHECK(second >= 2 * RetryBackoff::kFirstMs);            // twice as long
+    CHECK(r.host.warnings.size() == 1);                     // and not said again
+    r.inst.st = IInstrumentHost::State::Ready;             // memory came back, the next try took
+    r.inst.inst.path = "/crosspad/pitchplay/Keys/instrument.json";
+    r.sounds.step();
+    CHECK_FALSE(r.sounds.pending());
 }
 
 TEST_CASE("song sounds: an instrument from the card's root is opened as named", "[song][sounds]") {
