@@ -460,6 +460,12 @@ void PatternSequencer::fireSong(uint32_t samples, uint32_t loop)
 {
     if (!loop) return;
     uint32_t pos = mapPos_;
+    /* Past the wrap already: a take ran the song on past its blocks and
+     * ended there, and the song came back shorter. The song's own ring
+     * wraps such a position the same way (wrap_position()); a map that did
+     * not went on past every block, silent until the next stop. */
+    if (mapWrapFrom_ > mapWrapTo_ && pos >= mapWrapFrom_)
+        pos = mapWrapTo_ + (pos - mapWrapFrom_) % (mapWrapFrom_ - mapWrapTo_);
     const uint8_t muted = mapMuted_.load(std::memory_order_relaxed);
     while (samples) {
         /* Up to the song's wrap, then on from where it wraps to. */

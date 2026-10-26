@@ -3374,3 +3374,33 @@ TEST_CASE("song engine: a kit saved under its own name makes the freeze that pla
         CHECK(r.engine->freezeState(0) == FreezeState::Stale);
     }
 }
+
+TEST_CASE("song engine: a REC punched out while playing is heard on the next pass, without a stop", "[song][songtake]") {
+    Rig r;
+    REQUIRE(r.open("Demo"));
+    struct Count { std::atomic<int> pad3{0}; } heard;
+    r.seq.setSink([](void* ctx, uint8_t pad, uint8_t, bool on) {
+        if (on && pad == 3) ++static_cast<Count*>(ctx)->pad3;
+    }, &heard);
+    {
+        std::lock_guard<std::recursive_mutex> l(r.engine->songMutex());
+        auto& s = r.engine->song();
+        s.bpm = 120.0f;
+        s.loop = true;
+    }
+    r.engine->commit();
+    const uint32_t bar = r.engine->framesPerBar();
+    Take t(r);
+    REQUIRE(t.start(0, SyncTake::Record));
+    for (uint32_t b = 0; b < 8; ++b) t.hit(3, b * bar / 4, bar / 16);   // two bars of quarters
+    t.to(2 * bar + bar / 4);
+    REQUIRE(r.engine->seqPunch(SyncTake::None));          // REC again: out, and playing on
+    CHECK(r.engine->playing());
+    /* The song comes back to its two bars: the sequencer with it, not past them. */
+    REQUIRE(waitFor([&] { t.r.block(t.out, t.bus); return r.seq.songMapPosition() < 2 * bar; }, 20000));
+    const int before = heard.pad3.load();
+    t.to(r.engine->framesPlayed() + 4 * bar);              // round the two-bar song twice more
+    CHECK(heard.pad3.load() - before >= 8);
+    r.engine->stop();
+    REQUIRE(waitFor([&] { return !r.engine->playing(); }));
+}
