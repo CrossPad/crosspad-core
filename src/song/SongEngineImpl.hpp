@@ -869,7 +869,7 @@ private:
     void meterReset();
     void rebuild();
     void applySeqSound();
-    bool openTake(SyncTake take);
+    bool openTake(SyncTake take, uint32_t fromBar);
     static int blockAt(const SongTrack& tr, uint32_t bar);
     static uint32_t roomAt(const SongTrack& tr, uint32_t bar);
     static bool samePattern(const SeqPatternPtr& a, const SeqPatternPtr& b);
@@ -938,6 +938,8 @@ private:
     int         takeTrack_ = -1;
     uint32_t    takeFrom_ = 0;
     bool        takeCycle_ = false;
+    bool        takeWhole_ = false;              // the cycle is the whole song, not a region
+    uint32_t    takeCycleA_ = 0, takeCycleB_ = 0;   // the bars a cycle goes round
     uint16_t    takeLaps_ = 0;
     bool        takeReplaced_ = false;
     std::vector<PatternSequencer::SongTakeNote> takeNotes_;

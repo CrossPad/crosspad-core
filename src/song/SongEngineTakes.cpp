@@ -13,9 +13,10 @@ bool SongEngine::Impl::recordSeq(uint32_t fromBar, SyncTake take, uint8_t beats)
     {
         std::lock_guard<std::recursive_mutex> l(songMutex_);
         if (!opened_ || seqTake_.load() != SyncTake::None) return false;
-        if (!openTake(take)) return false;
-        /* Round a region, from its start: the passes are its laps. */
-        if (takeCycle_) fromBar = song_.loopStart;
+        if (!openTake(take, fromBar)) return false;
+        /* Round a region, from its start: the passes are its laps. Round the
+         * whole song it is from the playhead, as without a cycle. */
+        if (takeCycle_ && !takeWhole_) fromBar = takeCycleA_;
         takeFrom_ = fromBar * song_.samplesPerBar(sampleRate_);
     }
     if (playCountedIn(fromBar, SyncTake::None, beats)) return true;
@@ -36,7 +37,8 @@ bool SongEngine::Impl::seqPunch(SyncTake take) {
         takeBound_ = false;
     }
     if (take == SyncTake::None) return true;
-    if (!openTake(take)) return false;
+    const uint32_t spb = song_.samplesPerBar(sampleRate_);
+    if (!openTake(take, spb ? seq_.songMapPosition() / spb : 0)) return false;
     takeFrom_ = seq_.songMapPosition();
     takeBound_ = true;
     return true;
@@ -156,7 +158,7 @@ bool SongEngine::Impl::seqPunchable() const {
 /// if there is none (the kit, on the lowest free track), its blocks given
 /// the scene's notes as their own, and the sequencer keeping hits. A REC
 /// is not heard under itself. Caller holds songMutex_.
-bool SongEngine::Impl::openTake(SyncTake take) {
+bool SongEngine::Impl::openTake(SyncTake take, uint32_t fromBar) {
     int t = song_.armedSeqTrack();
     const bool made = t < 0;
     if (made) {
@@ -178,7 +180,17 @@ bool SongEngine::Impl::openTake(SyncTake take) {
     if (!made) song_.adoptSceneNotes(t, scenePattern(song_.tracks[t].scene), endBars(song_));
     song_.tracks[t].seqBlocks = true;
     takeTrack_ = t;
-    takeCycle_ = song_.loop && song_.hasRegion();
+    /* LOOP on, a take goes round: a region, or else the whole song -- one with
+     * something in it already; a new song's first take sets its length. LOOP
+     * off runs the song on past its end (takeHorizon_), and so does a take from a
+     * bar past the end: the playhead put there is the song asked to grow. A take
+     * punched in at the end of a four-bar groove ran it on to bar six instead of
+     * laying the part over the groove (26.10.2026). */
+    const uint32_t songEnd = endBars(song_);
+    takeWhole_ = song_.loop && !song_.hasRegion() && fromBar < songEnd;
+    takeCycle_ = (song_.loop && song_.hasRegion()) || takeWhole_;
+    takeCycleA_ = takeWhole_ ? 0 : song_.loopStart;
+    takeCycleB_ = takeWhole_ ? songEnd : song_.loopEnd;
     takeReplaced_ = false;
     takeLaps_ = 0;
     takeNotes_.clear();
@@ -284,8 +296,11 @@ void SongEngine::Impl::landLaps(uint16_t upto) {
         for (const auto& n : takeNotes_) (n.lap == takeLaps_ ? pass : rest).push_back(n);
         takeNotes_.swap(rest);
         const bool replace = seqTake_.load() == SyncTake::Record && !takeReplaced_;
-        const uint32_t from = takeLaps_ == 0 ? takeFrom_ : song_.loopStart * spb;
-        if (landTake(pass, replace, from, song_.loopEnd * spb) && replace) {
+        const uint32_t from = takeLaps_ == 0 ? takeFrom_ : takeCycleA_ * spb;
+        /* A region's first pass replaces the region; round the whole song, to the
+         * bar of its last note, as a take without a cycle does. */
+        const uint32_t to = takeWhole_ ? from : takeCycleB_ * spb;
+        if (landTake(pass, replace, from, to) && replace) {
             takeReplaced_ = true;
             takeRecMute_ = false;
             applySeqSound();
@@ -360,7 +375,7 @@ bool SongEngine::Impl::landTake(const std::vector<PatternSequencer::SongTakeNote
 /// nothing else sounding. 0 = it ends with its notes. Caller holds
 /// songMutex_.
 uint32_t SongEngine::Impl::takeFillEnd(uint32_t fromBar, uint32_t last) const {
-    if (takeCycle_) return last <= song_.loopEnd ? song_.loopEnd : 0;
+    if (takeCycle_ && !takeWhole_) return last <= takeCycleB_ ? takeCycleB_ : 0;
     if (!song_.loop || takeTrack_ < 0) return 0;
     uint32_t end = endBars(song_);
     const auto& cs = song_.tracks[takeTrack_].clips;
@@ -388,7 +403,7 @@ void SongEngine::Impl::finishTake() {
         const uint16_t laps = seq_.songTakeLaps();
         if (laps != takeLaps_) landLaps(laps);
     }
-    const uint32_t from = takeCycle_ && takeLaps_ ? song_.loopStart * spb : takeFrom_;
+    const uint32_t from = takeCycle_ && takeLaps_ ? takeCycleA_ * spb : takeFrom_;
     landTake(takeNotes_, take == SyncTake::Record && !takeReplaced_, from, from);
     closeTake();
 }

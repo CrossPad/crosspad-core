@@ -3485,3 +3485,74 @@ TEST_CASE("song engine: a kit track whose blocks hold their notes freezes whatev
     CHECK(r.engine->bounceStatus().state == BounceState::Done);
     CHECK(r.engine->freezeState(0) == FreezeState::Frozen);
 }
+
+TEST_CASE("song engine: with LOOP on, a REC across the song's end goes round into it, not past it", "[song][songtake]") {
+    Rig r;
+    REQUIRE(r.open("Demo"));
+    {
+        std::lock_guard<std::recursive_mutex> l(r.engine->songMutex());
+        auto& s = r.engine->song();
+        s.bpm = 120.0f;
+        s.loop = true;
+        REQUIRE(s.addAudioTrack(0));
+        SongClip a;
+        a.file = "a.wav";
+        a.bars = 4;                                        // the groove: four bars, looping
+        s.addClip(0, a);
+        REQUIRE(s.addSeqTrack(1, SeqSource::Kit, 0));
+        s.armed = 1;
+    }
+    r.engine->commit();
+    const uint32_t bar = r.engine->framesPerBar();
+    Take t(r);
+    REQUIRE(r.engine->play(3));
+    REQUIRE(waitFor([&] { t.r.block(t.out, t.bus); return r.engine->framesPlayed() > 0; }, 20000));
+    t.to(bar / 2);                                         // bar four, half way
+    REQUIRE(r.engine->seqPunch(SyncTake::Record));
+    t.to(bar);                                             // round: bar one again
+    t.hit(5, bar + bar / 4, bar / 16);                     // its second beat
+    t.to(2 * bar + bar / 2);
+    REQUIRE(r.engine->seqPunch(SyncTake::None));
+    r.engine->stop();
+    REQUIRE(waitFor([&] { return !r.engine->playing(); }));
+    std::lock_guard<std::recursive_mutex> l(r.engine->songMutex());
+    const AudioSong& s = r.engine->song();
+    CHECK(s.playEnd() == 4);                               // not run on past the groove
+    const auto& cs = s.tracks[1].clips;
+    REQUIRE_FALSE(cs.empty());
+    CHECK(cs[0].bar == 0);
+    REQUIRE(cs[0].notes);
+    REQUIRE(cs[0].notes->notes.size() == 1);
+    CHECK(cs[0].notes->notes[0].pad == 5);
+    CHECK(cs[0].notes->notes[0].tick == AudioSong::kSeqPpq);
+}
+
+TEST_CASE("song engine: with LOOP off, a REC across the song's end makes the song longer", "[song][songtake]") {
+    Rig r;
+    REQUIRE(r.open("Demo"));
+    {
+        std::lock_guard<std::recursive_mutex> l(r.engine->songMutex());
+        auto& s = r.engine->song();
+        s.bpm = 120.0f;
+        s.loop = false;
+        REQUIRE(s.addAudioTrack(0));
+        SongClip a;
+        a.file = "a.wav";
+        a.bars = 4;
+        s.addClip(0, a);
+        REQUIRE(s.addSeqTrack(1, SeqSource::Kit, 0));
+        s.armed = 1;
+    }
+    r.engine->commit();
+    const uint32_t bar = r.engine->framesPerBar();
+    Take t(r);
+    REQUIRE(t.start(3, SyncTake::Record));
+    t.hit(5, bar + bar / 4, bar / 16);                     // bar five
+    t.to(2 * bar);
+    REQUIRE(t.stop());
+    std::lock_guard<std::recursive_mutex> l(r.engine->songMutex());
+    const auto& cs = r.engine->song().tracks[1].clips;
+    REQUIRE(cs.size() == 1);
+    CHECK(cs[0].bar == 3);
+    CHECK(cs[0].bars == 2);
+}
