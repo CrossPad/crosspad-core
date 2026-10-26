@@ -6,6 +6,47 @@ carries the same number) and consumers gate on it with
 `crosspad/RequireVersion.hpp`. This file starts at 1.45.0; earlier releases
 are described in their `chore: X.Y.Z` commits.
 
+## 2.26.0 — 2026-10-26
+
+A beat made from nothing on the screen (crosspad-hil beat_session and
+beat_to_song): what the two runs found.
+
+### Added
+
+- `ISongEngine::openGeneration()`: moves on every song read in.
+- `ISongEngine::elementClipRebakes()` / `ResolvedElement::rebakes`: a block not
+  Fresh for a reason of its element's own that a rebake (entered and left)
+  mends -- not a cycle, an unreadable song.json, an undecided edit or a child.
+- `autoFreezeNext()` (`song/AutoFreeze.hpp`): the seq track to freeze next with
+  the song stopped -- every one ARM is not on that is not frozen as it is.
+- `RetryBackoff` (`util/RetryBackoff.hpp`): at once, 2 s after a failure,
+  doubling to a minute.
+- `AudioSong::seqPlaysNothing()`: a seq track of blocks with none left.
+
+### Changed
+
+- With LOOP on (no region), a take that starts inside a song with something
+  in it goes round the whole song: its passes are laps, the first with notes
+  replaces to the bar of its last note, the next are dubbed. LOOP off, a take
+  from past the end and a new song's first take run the song on, as before.
+- `SongTransport`'s held bar belongs to the open song (by
+  `openGeneration()`): another song, a NEW after a delete under the same
+  name included, starts on its bar one.
+
+### Fixed
+
+- A REC punched out while the song played on was silent until the next stop:
+  the sequencer's map stayed past the song's new end (`fireSong()` wraps it).
+- An element made from a region of kit tracks never baked: it writes the
+  song's scenes, `SongScenes` never gives an element the card's old shared
+  file, and a render of a track whose blocks hold their notes no longer needs
+  its scene (`renderScene()`, mends elements made by 2.25.0).
+- Entering an element froze the song's emptied kit tracks (seconds of
+  silence each time); an emptied track needs no freeze to be mixed either.
+- An element from a region keeps ARM on the track it was on.
+- `SongSounds` asked for a song instrument that would not load on every step;
+  now on a `RetryBackoff`, and the failure is said once.
+
 ## 2.25.0 — 2026-10-25
 
 Elements, stages 1b-4: an element made from a region or a song, the song
