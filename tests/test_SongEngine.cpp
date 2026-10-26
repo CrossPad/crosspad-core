@@ -17,6 +17,7 @@
 #include "crosspad/song/ArrangeAudioTake.hpp"
 #include "crosspad/song/SongEngine.hpp"
 #include "crosspad/transport/SongTransport.hpp"
+#include "crosspad/sequencer/SequenceStore.hpp"
 
 TEST_CASE("song engine: a bad project name is refused", "[song]") {
     Rig r;
@@ -3373,4 +3374,185 @@ TEST_CASE("song engine: a kit saved under its own name makes the freeze that pla
         sounds.step();   // one save is heard once
         CHECK(r.engine->freezeState(0) == FreezeState::Stale);
     }
+}
+
+TEST_CASE("song engine: a REC punched out while playing is heard on the next pass, without a stop", "[song][songtake]") {
+    Rig r;
+    REQUIRE(r.open("Demo"));
+    struct Count { std::atomic<int> pad3{0}; } heard;
+    r.seq.setSink([](void* ctx, uint8_t pad, uint8_t, bool on) {
+        if (on && pad == 3) ++static_cast<Count*>(ctx)->pad3;
+    }, &heard);
+    {
+        std::lock_guard<std::recursive_mutex> l(r.engine->songMutex());
+        auto& s = r.engine->song();
+        s.bpm = 120.0f;
+        s.loop = true;
+    }
+    r.engine->commit();
+    const uint32_t bar = r.engine->framesPerBar();
+    Take t(r);
+    REQUIRE(t.start(0, SyncTake::Record));
+    for (uint32_t b = 0; b < 8; ++b) t.hit(3, b * bar / 4, bar / 16);   // two bars of quarters
+    t.to(2 * bar + bar / 4);
+    REQUIRE(r.engine->seqPunch(SyncTake::None));          // REC again: out, and playing on
+    CHECK(r.engine->playing());
+    /* The song comes back to its two bars: the sequencer with it, not past them. */
+    REQUIRE(waitFor([&] { t.r.block(t.out, t.bus); return r.seq.songMapPosition() < 2 * bar; }, 20000));
+    const int before = heard.pad3.load();
+    t.to(r.engine->framesPlayed() + 4 * bar);              // round the two-bar song twice more
+    CHECK(heard.pad3.load() - before >= 8);
+    r.engine->stop();
+    REQUIRE(waitFor([&] { return !r.engine->playing(); }));
+}
+
+TEST_CASE("Arrange's playhead is the song's: another song opened starts on its bar one", "[song][transport]") {
+    Rig r;
+    REQUIRE(r.open("Demo"));
+    Services svc(r.engine.get(), nullptr);
+    SongTransport& tr = songTransport();
+    tr.setStartBar(6);                                 // stopped on bar seven of this song
+    CHECK(tr.startBar() == 6);
+    CHECK(tr.position().bar == 7);
+    REQUIRE(r.open("Fresh"));                          // NEW: an empty song
+    CHECK(tr.startBar() == 0);
+    CHECK(tr.position().bar == 1);
+    tr.locate(2);                                      // the knob from there, not from bar seven
+    CHECK(tr.startBar() == 2);
+    REQUIRE(r.open("Fresh"));                          // a NEW after a delete: the same name
+    CHECK(tr.startBar() == 0);
+}
+
+TEST_CASE("song engine: an element from a region keeps the song's scenes, so its kit tracks freeze", "[song][element]") {
+    Rig r;
+    REQUIRE(r.open("Demo"));
+    REQUIRE(r.seq.addScene());
+    REQUIRE(r.seq.addScene());                             // scenes 0..2: the kit track's is 2
+    {
+        std::lock_guard<std::recursive_mutex> l(r.engine->songMutex());
+        AudioSong& s = r.engine->song();
+        s.bpm = 120.0f;
+        REQUIRE(s.addSeqTrack(0, SeqSource::Kit, 2));
+        SeqNote n;
+        n.pad = 3; n.vel = 99;
+        s.putSeqTake(0, 0, makeSeqPattern(2, {n}), s.samplesPerBar(kRate));
+        s.armed = -1;
+    }
+    r.engine->commit();
+    REQUIRE(madeAndWait(r, true, 0, 2));
+    REQUIRE(r.engine->editState() == SongOpState::Ready);
+    const std::string ref = r.engine->elementMade();
+    PatternSequencer scenes;
+    REQUIRE(SequenceStore::load(scenes, r.platform.root + "/" + ref + "/" + SequenceStore::fileName()));
+    CHECK(scenes.sceneCount() == 3);
+    CHECK(elementOnCard(r, ref).tracks[0].scene == 2);
+}
+
+TEST_CASE("song engine: an element from a region keeps ARM on the track it was on", "[song][element]") {
+    Rig r;
+    regionSong(r);
+    {
+        std::lock_guard<std::recursive_mutex> l(r.engine->songMutex());
+        r.engine->song().armed = 1;                        // the kit track: REC and DUB go there
+    }
+    r.engine->commit();
+    REQUIRE(madeAndWait(r, true, 1, 3));
+    REQUIRE(r.engine->editState() == SongOpState::Ready);
+    CHECK(elementOnCard(r, r.engine->elementMade()).armed == 1);
+}
+
+TEST_CASE("song engine: a kit track whose blocks hold their notes freezes whatever its scene", "[song][freeze]") {
+    Rig r;
+    REQUIRE(r.open("Demo"));
+    {
+        std::lock_guard<std::recursive_mutex> l(r.engine->songMutex());
+        AudioSong& s = r.engine->song();
+        s.bpm = 120.0f;
+        REQUIRE(s.addSeqTrack(0, SeqSource::Kit, 5));      // a scene this sequencer has not got
+        SeqNote n;
+        n.pad = 3; n.vel = 99;
+        s.putSeqTake(0, 0, makeSeqPattern(1, {n}), s.samplesPerBar(kRate));
+        s.armed = -1;
+    }
+    r.engine->commit();
+    std::vector<float> out(kBlock * 2), bus(kBlock * 2, 0.25f);
+    REQUIRE(r.engine->freezeTrack(0));
+    for (int i = 0; i < 6000 && r.engine->bounceStatus().state == BounceState::Running; ++i) {
+        r.block(out, bus);
+        std::this_thread::sleep_for(std::chrono::milliseconds(2));
+    }
+    INFO("error: " << r.engine->bounceStatus().error);
+    CHECK(r.engine->bounceStatus().state == BounceState::Done);
+    CHECK(r.engine->freezeState(0) == FreezeState::Frozen);
+}
+
+TEST_CASE("song engine: with LOOP on, a REC across the song's end goes round into it, not past it", "[song][songtake]") {
+    Rig r;
+    REQUIRE(r.open("Demo"));
+    {
+        std::lock_guard<std::recursive_mutex> l(r.engine->songMutex());
+        auto& s = r.engine->song();
+        s.bpm = 120.0f;
+        s.loop = true;
+        REQUIRE(s.addAudioTrack(0));
+        SongClip a;
+        a.file = "a.wav";
+        a.bars = 4;                                        // the groove: four bars, looping
+        s.addClip(0, a);
+        REQUIRE(s.addSeqTrack(1, SeqSource::Kit, 0));
+        s.armed = 1;
+    }
+    r.engine->commit();
+    const uint32_t bar = r.engine->framesPerBar();
+    Take t(r);
+    REQUIRE(r.engine->play(3));
+    REQUIRE(waitFor([&] { t.r.block(t.out, t.bus); return r.engine->framesPlayed() > 0; }, 20000));
+    t.to(bar / 2);                                         // bar four, half way
+    REQUIRE(r.engine->seqPunch(SyncTake::Record));
+    t.to(bar);                                             // round: bar one again
+    t.hit(5, bar + bar / 4, bar / 16);                     // its second beat
+    t.to(2 * bar + bar / 2);
+    REQUIRE(r.engine->seqPunch(SyncTake::None));
+    r.engine->stop();
+    REQUIRE(waitFor([&] { return !r.engine->playing(); }));
+    std::lock_guard<std::recursive_mutex> l(r.engine->songMutex());
+    const AudioSong& s = r.engine->song();
+    CHECK(s.playEnd() == 4);                               // not run on past the groove
+    const auto& cs = s.tracks[1].clips;
+    REQUIRE_FALSE(cs.empty());
+    CHECK(cs[0].bar == 0);
+    REQUIRE(cs[0].notes);
+    REQUIRE(cs[0].notes->notes.size() == 1);
+    CHECK(cs[0].notes->notes[0].pad == 5);
+    CHECK(cs[0].notes->notes[0].tick == AudioSong::kSeqPpq);
+}
+
+TEST_CASE("song engine: with LOOP off, a REC across the song's end makes the song longer", "[song][songtake]") {
+    Rig r;
+    REQUIRE(r.open("Demo"));
+    {
+        std::lock_guard<std::recursive_mutex> l(r.engine->songMutex());
+        auto& s = r.engine->song();
+        s.bpm = 120.0f;
+        s.loop = false;
+        REQUIRE(s.addAudioTrack(0));
+        SongClip a;
+        a.file = "a.wav";
+        a.bars = 4;
+        s.addClip(0, a);
+        REQUIRE(s.addSeqTrack(1, SeqSource::Kit, 0));
+        s.armed = 1;
+    }
+    r.engine->commit();
+    const uint32_t bar = r.engine->framesPerBar();
+    Take t(r);
+    REQUIRE(t.start(3, SyncTake::Record));
+    t.hit(5, bar + bar / 4, bar / 16);                     // bar five
+    t.to(2 * bar);
+    REQUIRE(t.stop());
+    std::lock_guard<std::recursive_mutex> l(r.engine->songMutex());
+    const auto& cs = r.engine->song().tracks[1].clips;
+    REQUIRE(cs.size() == 1);
+    CHECK(cs[0].bar == 3);
+    CHECK(cs[0].bars == 2);
 }

@@ -151,6 +151,7 @@ void SongSounds::freezesHearKitSaves()
 
 void SongSounds::step()
 {
+    stepMs_ += kStepMs;
     keepSecondKit();
     freezesHearKitSaves();
     if (!pending_.load(std::memory_order_acquire)) {
@@ -223,13 +224,33 @@ void SongSounds::step()
     }
 
     if (wantInst && host) {
-        const bool loaded = host->state() == IInstrumentHost::State::Ready &&
-                            host->instrument().path == inst;
+        const IInstrumentHost::State st = host->state();
+        const bool loaded = st == IInstrumentHost::State::Ready && host->instrument().path == inst;
         if (!loaded) {
+            if (inst != instWanted_) {
+                instWanted_ = inst;
+                instRetry_.reset();
+                instAsked_ = instSaid_ = false;
+            }
+            /* One that will not load -- no memory beside the kits -- is asked for
+             * again later, not every step: each try reads it off the card. */
+            if (st == IInstrumentHost::State::Failed && instAsked_) {
+                instAsked_ = false;
+                instRetry_.failed(stepMs_);
+                if (!instSaid_) {
+                    instSaid_ = true;
+                    char msg[kWarnChars];
+                    std::snprintf(msg, sizeof(msg), "Pitch sound did not load: %s", host->message().c_str());
+                    host_.warn(msg);
+                }
+            }
+            if (!instRetry_.due(stepMs_)) return;
             host_.log(false, ("the song's instrument: " + inst).c_str());
-            host->requestOpen(inst);
+            instAsked_ = host->requestOpen(inst);
             return;
         }
+        instRetry_.reset();
+        instAsked_ = false;
         /* What Arrange keeps loaded for the Pitch track, and what the
          * Sequencer and the Recorder borrow: this song's. */
         InstrumentPlayState& ps = instrumentPlayState();

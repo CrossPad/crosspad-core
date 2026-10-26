@@ -539,6 +539,7 @@ struct SongEngine::Impl {
     std::string elementMade();
     ElementClipState elementClipState(uint8_t track, size_t clip);
     std::string elementClipWhy(uint8_t track, size_t clip);
+    bool elementClipRebakes(uint8_t track, size_t clip);
     uint8_t backgroundProgress() const { return bakeProgress_.load(); }
     bool backgroundBusy() const { return relinkReq_.load() || relinking_.load() || bakeQueued_.load() != 0; }
     void idleBaking(bool allowed);
@@ -589,9 +590,11 @@ struct SongEngine::Impl {
     bool requestClips() { return request(kListClips); }
     std::vector<ClipInfo> clips();
     uint32_t listGeneration() const { return listGen_.load(); }
+    uint32_t openGeneration() const { return openGen_.load(); }
     uint32_t playEndBars();
     bool bounceSeqTrack(uint8_t track);
     bool freezeTrack(uint8_t track);
+    uint8_t renderScene(const SongTrack& t) const;
     FreezeState freezeState(uint8_t track);
     bool bounceScene(uint8_t scene, uint8_t track) { return requestBounce(scene, track, 0); }
     bool requestBounce(uint8_t scene, uint8_t track, uint32_t bars, uint32_t fromBar = 0,
@@ -866,7 +869,7 @@ private:
     void meterReset();
     void rebuild();
     void applySeqSound();
-    bool openTake(SyncTake take);
+    bool openTake(SyncTake take, uint32_t fromBar);
     static int blockAt(const SongTrack& tr, uint32_t bar);
     static uint32_t roomAt(const SongTrack& tr, uint32_t bar);
     static bool samePattern(const SeqPatternPtr& a, const SeqPatternPtr& b);
@@ -935,6 +938,8 @@ private:
     int         takeTrack_ = -1;
     uint32_t    takeFrom_ = 0;
     bool        takeCycle_ = false;
+    bool        takeWhole_ = false;              // the cycle is the whole song, not a region
+    uint32_t    takeCycleA_ = 0, takeCycleB_ = 0;   // the bars a cycle goes round
     uint16_t    takeLaps_ = 0;
     bool        takeReplaced_ = false;
     std::vector<PatternSequencer::SongTakeNote> takeNotes_;
@@ -988,6 +993,7 @@ private:
         bool        exists = false; ///< on the card
         bool        baking = false; ///< queued or being mixed
         std::string why;            ///< what keeps it from being baked from the card
+        bool        rebakes = false; ///< and a rebake mends it (ResolvedElement::rebakes)
     };
     std::atomic<bool> relinkReq_{false}, relinking_{false};
     std::string elementSig_;
@@ -1059,6 +1065,7 @@ private:
     uint32_t mapSentGen_ = 0;                      // worker: the snap the sequencer was given
     std::atomic<uint8_t>  listReq_{0};
     std::atomic<uint32_t> listGen_{0};
+    std::atomic<uint32_t> openGen_{0};    ///< openGeneration(): a song read in by doOpen()
     std::vector<std::string> projects_;
     std::vector<ClipInfo>    clips_;
     std::vector<ElementInfo> elements_;

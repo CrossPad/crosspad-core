@@ -258,6 +258,7 @@ SongOpState SongEngine::Impl::doOpen(const std::string& name, bool remember) {
         /* An element open until now was left to come here: its blocks are baked first. */
         leftRef_ = opened_ && is_element_ref(song_.name) && song_.name != name ? song_.name : std::string();
         song_ = std::move(fresh);
+        openGen_.fetch_add(1);
         /* Another song: nothing of the last one's to undo. */
         undo_.clear();
         redo_.clear();

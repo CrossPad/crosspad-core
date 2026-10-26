@@ -7,6 +7,8 @@
 
 #include "SongEngineImpl.hpp"
 
+#include "crosspad/sequencer/SequenceStore.hpp"
+
 #include "crosspad/song/ElementHash.hpp"
 #include "crosspad/song/ElementResolver.hpp"
 #include "crosspad/song/SongFiles.hpp"
@@ -258,7 +260,7 @@ SongOpState SongEngine::Impl::doBakeElement() {
     }
     for (int t = 0; t < kTracks; ++t) {
         const SongTrack& tr = copy.tracks[t];
-        if (copy.silenced(t)) continue;
+        if (copy.silenced(t) || copy.seqPlaysNothing(t)) continue;
         if (tr.kind == TrackKind::Seq) {
             if (tr.freeze.empty() || tr.freezeKey != seqKey(copy, t))
                 return fail("Track " + std::to_string(t + 1) + " is not frozen: freeze it first.");
@@ -501,6 +503,9 @@ SongOpState SongEngine::Impl::doElementFromRegion() {
         d.clips.push_back(c);
     }
     for (int t = 0; t < kTracks; ++t) el.sortTrack(t);
+    /* ARM where it was, when that track came along: CLIP EDIT into it and a DUB
+     * goes onto the part being played, not the first seq track (armed -1). */
+    if (src.armed >= 0 && src.armed < kTracks && el.tracks[src.armed].inUse) el.armed = src.armed;
 
     /* The recordings the blocks play, once each; an element block plays an
      * element's bake, which is no file of the song's. */
@@ -522,6 +527,12 @@ SongOpState SongEngine::Impl::doElementFromRegion() {
         if (!ok) return elementFailed("The song's instrument could not be copied.", dir);
     }
     if (!el.save()) return elementFailed("The element's song could not be written.", dir);
+    /* The song's scenes with it: its kit tracks name them (SongTrack::scene),
+     * and an element with no scenes of its own was given the card's old shared
+     * file on open -- other scenes, and every freeze of a track on a scene it
+     * had not got failed ("no such scene"), so the element never baked. */
+    if (el.seqTracks() > 0 && !SequenceStore::save(seq_, dir + "/" + SequenceStore::fileName()))
+        return elementFailed("The song's scenes could not be written into the element.", dir);
     editProgress_.store(100);
     logf(false, "element %s made of bars %u-%u", ref.c_str(), (unsigned)from + 1, (unsigned)to);
     std::lock_guard<std::mutex> l(reportMutex_);

@@ -626,6 +626,12 @@ bool AudioSong::anySolo() const
     return false;
 }
 
+bool AudioSong::seqPlaysNothing(int t) const {
+    if (t < 0 || t >= kTracks) return false;
+    const SongTrack& tr = tracks[t];
+    return tr.kind == TrackKind::Seq && tr.seqBlocks && tr.clips.empty();
+}
+
 bool AudioSong::silenced(int t) const
 {
     if (t < 0 || t >= kTracks) return true;

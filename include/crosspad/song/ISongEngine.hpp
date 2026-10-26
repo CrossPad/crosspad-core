@@ -293,6 +293,9 @@ public:
     /// Why that block is Stale or Missing: the first thing its element lacks
     /// to be baked from the card (a seq track not frozen, ...); empty otherwise.
     virtual std::string elementClipWhy(uint8_t track, size_t clip) { (void)track; (void)clip; return {}; }
+    /// The block is not Fresh for a reason of its element's own that a rebake mends
+    /// (ResolvedElement::rebakes): the element entered and left bakes it.
+    virtual bool elementClipRebakes(uint8_t track, size_t clip) { (void)track; (void)clip; return false; }
     /// How far the background bake under way is, 0..100.
     virtual uint8_t backgroundProgress() const { return 0; }
     /// A relink pass or a background bake is waiting or running.
@@ -331,6 +334,9 @@ public:
     virtual std::vector<ClipInfo> clips() = 0;
     /// Moves on every finished projects or clips refresh.
     virtual uint32_t listGeneration() const = 0;
+    /// Moves each time a song is opened, the same one reopened too: what was
+    /// held for the song open until now (a playhead) is not this one's.
+    virtual uint32_t openGeneration() const { return 0; }
     /// Rename the open project's folder; editState() says how it went
     /// (Failed: the name is taken or not one a folder can have).
     virtual bool requestRename(const std::string& name) { (void)name; return false; }

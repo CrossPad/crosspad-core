@@ -39,9 +39,9 @@ class SongTransport final : public ITransportTarget {
 public:
     /// Locate: where the next PLAY starts. Arrange sets it from its
     /// selection, so choosing a block is choosing where the song plays from.
-    void setStartBar(uint32_t bar) { heldBar_ = bar; }
+    void setStartBar(uint32_t bar) { hold(engine(), bar); }
     /// Where the next PLAY starts, 0-based: the playhead while stopped.
-    uint32_t startBar() const { return heldBar_; }
+    uint32_t startBar() const { return held(engine()); }
 
     /// From a stop, from the held bar -- where the last stop or a locate left
     /// it -- or from the loop region's start while looping one. In a take:
@@ -66,11 +66,11 @@ public:
         ArrangeAudioTake& audio = arrangeAudioTake();
         if (!se->playing()) {
             if (audio.recording()) audio.stop();    // a take with no song under it
-            else                   heldBar_ = 0;
+            else                   hold(se, 0);
             return;
         }
         double bars = se->positionBars();
-        heldBar_ = bars > 0.0 ? (uint32_t)bars : 0;
+        hold(se, bars > 0.0 ? (uint32_t)bars : 0);
         if (audio.recording()) audio.stop();        // the song stops with it
         se->stop();
     }
@@ -162,8 +162,9 @@ public:
     /// the song's bar one.
     void locate(int bars) override
     {
-        const int64_t to = (int64_t)heldBar_ + bars;
-        heldBar_ = (uint32_t)(to < 0 ? 0 : (to > kMaxBar ? kMaxBar : to));
+        ISongEngine* se = engine();
+        const int64_t to = (int64_t)held(se) + bars;
+        hold(se, (uint32_t)(to < 0 ? 0 : (to > kMaxBar ? kMaxBar : to)));
     }
 
     /// "ARR": the block song of the Song screen is "SONG".
@@ -192,7 +193,7 @@ public:
         ISongEngine* se = engine();
         if (!se) return p;
         /* Stopped, where the next PLAY starts. */
-        double bars = se->playing() ? se->positionBars() : (double)heldBar_;
+        double bars = se->playing() ? se->positionBars() : (double)held(se);
         if (bars < 0.0) bars = 0.0;
         const uint32_t whole = (uint32_t)bars;
         const double frac = bars - (double)whole;
@@ -214,7 +215,22 @@ private:
     {
         std::lock_guard<std::recursive_mutex> l(se.songMutex());
         const AudioSong& song = se.song();
-        return song.loop && song.hasRegion() ? song.loopStart : heldBar_;
+        return song.loop && song.hasRegion() ? song.loopStart : held(&se);
+    }
+
+    /// The held bar, in the song it was held in: a song opened since starts
+    /// at its bar one, not where the last one stopped (a REC in a new, empty
+    /// song landed on bar seven, 26.10.2026). By the open, not the name: a
+    /// NEW after a delete gets the deleted song's name.
+    uint32_t held(const ISongEngine* se) const
+    {
+        return !se || se->openGeneration() == heldGen_ ? heldBar_ : 0;
+    }
+
+    void hold(const ISongEngine* se, uint32_t bar)
+    {
+        heldBar_ = bar;
+        if (se) heldGen_ = se->openGeneration();
     }
 
     /// The pattern's PRE: a take in the song counts in as one in a scene does.
@@ -243,6 +259,7 @@ private:
     static constexpr int64_t kMaxBar = 998;
 
     uint32_t heldBar_ = 0;
+    uint32_t heldGen_ = 0;  ///< the open heldBar_ was held in (ISongEngine::openGeneration())
 };
 
 /// The board's one song transport, and where its playhead stands: Arrange

@@ -151,6 +151,18 @@ TEST_CASE("baked view: what cannot be heard from files is reported", "[song][bak
     CHECK_FALSE(r.complete());
 }
 
+TEST_CASE("baked view: a kit track whose blocks are all gone plays nothing and needs no freeze", "[song][baked]") {
+    View v;
+    v.track(0, TrackKind::Seq).seqBlocks = true;       // its blocks went into an element
+    v.track(1, TrackKind::Audio);
+    v.song.addClip(1, block("a.wav", 0, 1));
+    v.files = {"/songs/s/clips/a.wav"};
+    BakedReport r;
+    CHECK(v.view(0, kBar, r).size() == 1);
+    CHECK(r.unfrozenSeq.empty());
+    CHECK(r.complete());
+}
+
 TEST_CASE("baked view: a silenced track and the silent element give nothing", "[song][baked]") {
     View v;
     v.track(0, TrackKind::Audio).muted = true;

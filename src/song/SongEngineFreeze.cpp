@@ -66,11 +66,22 @@ bool SongEngine::Impl::bounceSeqTrack(uint8_t track) {
         std::lock_guard<std::recursive_mutex> l(songMutex_);
         const SongTrack& t = song_.tracks[track];
         if (!t.inUse || t.kind != TrackKind::Seq || song_.seqRoute(track) < 0) return false;
-        scene = t.scene;
+        scene = renderScene(t);
         seqRange(song_, track, from, to);
         key = seqKey(song_, track);
     }
     return requestBounce(scene, track, to - from, from, key, true);
+}
+
+/// The scene a render of @p t plays the clock on: its own -- or, when every block
+/// holds its notes, so no note of the scene is heard, the first one when the
+/// sequencer has no scene of that number (an element made by 2.25.0, which wrote
+/// no scenes of its own: each of its freezes failed, "no such scene").
+uint8_t SongEngine::Impl::renderScene(const SongTrack& t) const {
+    if (t.scene < seq_.sceneCount() || !t.seqBlocks) return t.scene;
+    for (const SongClip& c : t.clips)
+        if (!c.notes) return t.scene;
+    return 0;
 }
 
 bool SongEngine::Impl::freezeTrack(uint8_t track) {
@@ -81,7 +92,7 @@ bool SongEngine::Impl::freezeTrack(uint8_t track) {
         std::lock_guard<std::recursive_mutex> l(songMutex_);
         const SongTrack& t = song_.tracks[track];
         if (!t.inUse || t.kind != TrackKind::Seq || song_.seqRoute(track) < 0) return false;
-        scene = t.scene;
+        scene = renderScene(t);
         seqRange(song_, track, from, to);
         key = seqKey(song_, track);
     }

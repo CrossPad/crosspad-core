@@ -53,6 +53,7 @@ public:
     bool requestClips() override;
     std::vector<ClipInfo> clips() override;
     uint32_t listGeneration() const override;
+    uint32_t openGeneration() const override;
     bool requestRename(const std::string& name) override;
     bool requestDelete() override;
     bool requestTempo(float bpm) override;
@@ -94,6 +95,7 @@ public:
     std::string elementMade() override;
     ElementClipState elementClipState(uint8_t track, size_t clip) override;
     std::string elementClipWhy(uint8_t track, size_t clip) override;
+    bool elementClipRebakes(uint8_t track, size_t clip) override;
     uint8_t backgroundProgress() const override;
     bool backgroundBusy() const override;
     void idleBaking(bool allowed) override;

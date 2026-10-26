@@ -61,10 +61,11 @@ public:
     void release() override { ++releases; }
     State state() const override { return st; }
     crosspad::KitInfo instrument() const override { return inst; }
-    std::string message() const override { return {}; }
+    std::string message() const override { return msg; }
     std::string libraryRoot() const override { return "/crosspad/pitchplay"; }
 
     State st = State::Idle;
+    std::string msg;
     crosspad::KitInfo inst;
     std::vector<std::string> opened;
     int releases = 0;

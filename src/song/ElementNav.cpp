@@ -1033,7 +1033,7 @@ int ElementNav::nextToFreeze()
     const AudioSong& song = se->song();
     for (int t = freezeTrack_; t < AudioSong::kTracks; ++t) {
         const SongTrack& tr = song.tracks[t];
-        if (tr.kind == TrackKind::Seq && tr.inUse && !song.silenced(t) &&
+        if (tr.kind == TrackKind::Seq && tr.inUse && !song.silenced(t) && !song.seqPlaysNothing(t) &&
             se->freezeState((uint8_t)t) != FreezeState::Frozen)
             return t;
     }

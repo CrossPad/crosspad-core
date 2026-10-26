@@ -78,6 +78,15 @@ void SongScenes::adopt(const std::string& cardRoot, const std::string& path, boo
     const std::string legacy = cardRoot + kLegacyFile;
     const std::string mark = cardRoot + kAdoptedMark;
     const bool first = !getFileSystem().exists(mark.c_str());
+    /* An element is newer than the shared file and holds no song's grooves from
+     * before: it was given the card's old scenes, other than its kit tracks name. */
+    if (path.find(std::string("/") + AudioSong::elementsDir() + "/") != std::string::npos) {
+        seq_.resetScenes();
+        seq_.clearDirty();
+        log(false, path + ": an element, no scenes of its own");
+        setCurrent(path);
+        return;
+    }
     if (current_.empty() && seq_.dirty() && seq_.eventCount() > 0) {
         seq_.markDirty();
         setCurrent(path);

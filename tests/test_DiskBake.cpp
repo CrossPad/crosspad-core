@@ -181,6 +181,7 @@ TEST_CASE("disk bake: an element changed on the card is baked from it and its bl
     CHECK(first.frames == 2 * kBar);
     CHECK(r.engine->elementClipState(0, 0) == ElementClipState::Fresh);
     CHECK(r.engine->elementClipWhy(0, 0).empty());
+    CHECK_FALSE(r.engine->elementClipRebakes(0, 0));
     CHECK(r.engine->undoSteps() == 0);
     bakeIs(r, first.file, 2 * kBar, 8000);
     /* The link is a commit: the song on the card plays the new bake too. */
@@ -257,6 +258,7 @@ TEST_CASE("disk bake: an element with a seq track not frozen keeps its old bake,
     CHECK(block(r).file == kOldBake);
     CHECK(segmentsOf(*r.engine, 0) == 1);                    // the old bake still plays
     CHECK(r.engine->elementClipWhy(0, 0).find("not frozen") != std::string::npos);
+    CHECK(r.engine->elementClipRebakes(0, 0));              // entered and left, it bakes
     CHECK(bakes(r) == std::set<std::string>{kOldBake});
     CHECK(r.engine->undoSteps() == 0);
 }
