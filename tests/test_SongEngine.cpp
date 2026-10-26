@@ -1930,6 +1930,45 @@ TEST_CASE("song engine: a block going round is frozen from two of its passes", "
     CHECK(segmentsOf(*r.engine, 0) == 8);
 }
 
+TEST_CASE("song engine: a seq track shorter than the song freezes only the bars its block sounds in",
+          "[song][freeze]") {
+    Rig r;
+    REQUIRE(r.open("Demo"));
+    uint32_t at = 0, bars = 0;
+    SECTION("a take at the start") {
+        at = 0; bars = 4;
+    }
+    SECTION("a take in the middle") {
+        at = 8; bars = 2;
+    }
+    {
+        std::lock_guard<std::recursive_mutex> l(r.engine->songMutex());
+        auto& s = r.engine->song();
+        s.bpm = 120.0f;
+        s.length = 32;                                    // the song runs on long after the notes
+        REQUIRE(s.addSeqTrack(0, SeqSource::Kit, 0));
+        SeqNote n;
+        n.pad = 1; n.vel = 100;
+        s.putSeqTake(0, at, makeSeqPattern((uint8_t)bars, {n}), s.samplesPerBar(kRate));
+        s.armed = -1;
+    }
+    r.engine->commit();
+    std::vector<float> out(kBlock * 2), bus(kBlock * 2, 0.25f);
+    REQUIRE(r.engine->freezeTrack(0));
+    for (int i = 0; i < 4000 && r.engine->bounceStatus().state == BounceState::Running; ++i) {
+        r.block(out, bus);
+        std::this_thread::sleep_for(std::chrono::milliseconds(2));
+    }
+    const BounceStatus st = r.engine->bounceStatus();
+    REQUIRE(st.state == BounceState::Done);
+    CHECK(st.framesTotal == (bars + 1) * r.engine->framesPerBar());   // its bars and the bar it rings into
+    std::lock_guard<std::recursive_mutex> l(r.engine->songMutex());
+    const auto& fz = r.engine->song().tracks[0].freeze;
+    REQUIRE(fz.size() == 1);
+    CHECK(fz[0].bar == at);
+    CHECK(fz[0].bars == bars + 1);
+}
+
 TEST_CASE("song engine: a freeze renders a block once however often it recurs, and only what changed",
           "[song][freeze]") {
     Rig r;
