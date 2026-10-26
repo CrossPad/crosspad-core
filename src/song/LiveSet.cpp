@@ -27,8 +27,9 @@ constexpr float kMaxVolume = 1.995262f;
 /// that long: a bounce is exactly its bars on the engine's grid, whose beat
 /// is a whole number of samples, a hair short of the song's.
 constexpr double kSameLength = 0.001;
-/// Live palette indices, one per track.
-constexpr int kColors[AudioSong::kTracks] = {4, 1, 8, 11};
+/// Live palette indices, round the tracks.
+constexpr int kColors[] = {4, 1, 8, 11};
+constexpr int kColorCount = (int)(sizeof(kColors) / sizeof(kColors[0]));
 
 std::string num(double v)
 {
@@ -485,9 +486,11 @@ bool writeLiveSetXml(std::string skel, const AudioSong& song, const std::vector<
         if (v >= ta && v < tb) protoIds.insert(id);
     });
     perTrack = (uint32_t)protoIds.size();
+    /* The tracks in use, and never fewer than the four the set always had. */
+    const int exported = std::max(song.usedTracks(), AudioSong::kTracksV5);
     uint32_t nextId = std::max(kFirstId, maxId + 1);
     if (!setValue(skel, {"LiveSet"}, "<NextPointeeId Value=\"",
-                  std::to_string(nextId + perTrack * AudioSong::kTracks))) {
+                  std::to_string(nextId + perTrack * (uint32_t)exported))) {
         return false;
     }
     /* That edit is before the track: find it again. */
@@ -499,7 +502,7 @@ bool writeLiveSetXml(std::string skel, const AudioSong& song, const std::vector<
 
     if (!out(skel.data(), ta)) return false;
     std::set<std::string> unreadable;
-    for (int t = 0; t < AudioSong::kTracks; ++t) {
+    for (int t = 0; t < exported; ++t) {
         const SongTrack& tr = song.tracks[t];
         std::string track = cloneTrack(skel, ta, tb, nextId);
         const std::vector<Placed> clips = place(song, t, files, bpm, unreadable, report);
@@ -510,12 +513,12 @@ bool writeLiveSetXml(std::string skel, const AudioSong& song, const std::vector<
         if (ev == kNpos) return false;
         const size_t line = track.rfind('\n', ev) + 1;
         const std::string ind = track.substr(line, ev - line);
-        for (size_t i = 0; i < clips.size(); ++i) clipXml(events, ind + "\t", (int)i, clips[i], kColors[t], bpb);
+        for (size_t i = 0; i < clips.size(); ++i) clipXml(events, ind + "\t", (int)i, clips[i], kColors[t % kColorCount], bpb);
         report.clips = (uint16_t)(report.clips + clips.size());
         if (!clips.empty()) track.replace(ev, std::strlen("<Events />"), "<Events>\n" + events + ind + "</Events>");
         const std::string name = "Track " + std::to_string(t + 1);
         if (!setName(track, name) ||
-            !setValue(track, {"AudioTrack"}, "<Color Value=\"", std::to_string(kColors[t])) ||
+            !setValue(track, {"AudioTrack"}, "<Color Value=\"", std::to_string(kColors[t % kColorCount])) ||
             !setValue(track, {"Mixer", "Volume"}, "<Manual Value=\"", numf(std::min(std::max(tr.volume, 0.0f), kMaxVolume))) ||
             !setValue(track, {"Mixer", "Speaker"}, "<Manual Value=\"", tr.muted ? "false" : "true") ||
             !setValue(track, {"Mixer", "Pan"}, "<Manual Value=\"", numf(std::min(std::max(tr.pan, -1.0f), 1.0f))) ||

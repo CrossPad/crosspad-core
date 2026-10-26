@@ -120,7 +120,7 @@ SeqPatternPtr makeSeqPattern(uint16_t bars, std::vector<SeqNote> notes)
     return p;
 }
 
-static_assert(ClipSet::kCols == AudioSong::kTracks, "a set's row is one cell per track");
+static_assert(ClipSet::kCols <= AudioSong::kTracks, "a set's row is one cell per track, of the first tracks");
 
 namespace {
 const std::string kNoCell;
@@ -197,6 +197,7 @@ SongLoad AudioSong::load(const std::string& projectDir, const char* file)
     kit.clear();
     instrument.clear();
     armed = -1;
+    kitSlot = -1;
     loopStart = loopEnd = 0;
     for (auto& t : tracks) t = SongTrack{};
     sets.clear();
@@ -307,20 +308,25 @@ SongLoad AudioSong::load(const std::string& projectDir, const char* file)
         ++t;
     }
     armed = (int8_t)(doc["armed"] | -1);
-    /* A seq track per engine: the pads' kit, the second kit, Pitch Play's
-     * instrument. A file that claims more (hand-edited, or written by firmware
-     * that allowed more) keeps the first on each route, and the rest become
-     * plain audio tracks -- their clips, if any, still play. */
+    /* One seq track on the pads' kit and one Pitch track; any number with a
+     * kit of their own, which take turns on the second kit engine (kitSlot).
+     * A file that claims more of the first two (hand-edited) keeps the first
+     * of each, and the rest become plain audio tracks -- their clips, if
+     * any, still play. */
     bool route[3] = {false, false, false};
     for (int i = 0; i < kTracks; ++i) {
         SongTrack& tr = tracks[i];
         if (tr.kind != TrackKind::Seq) continue;
         const int r = tr.source == SeqSource::Pitch ? 2 : !tr.kit.empty() ? 1 : 0;
+        if (r == 1) {
+            /* A second kit's track never plays the scene over the whole
+             * song: the scene that sounds is the first one's. */
+            tr.seqBlocks = true;
+            if (kitSlot < 0 || i == armed) kitSlot = (int8_t)i;
+            continue;
+        }
         if (!route[r]) {
             route[r] = true;
-            /* The second kit's track never plays the scene over the whole
-             * song: the scene that sounds is the first one's. */
-            if (r == 1) tr.seqBlocks = true;
             continue;
         }
         tr.kind = TrackKind::Audio;
@@ -397,12 +403,15 @@ bool AudioSong::save() const
     for (const auto& t : tracks)
         for (const auto& c : t.clips) elements = elements || c.isElement();
     JsonDocument doc;
-    /* Element clips and a title are version 5, a Pitch track beside a kit
+    /* More tracks than kTracksV5 are version 6 (firmware before it would drop
+     * the rest), element clips and a title version 5, a Pitch track beside a kit
      * track version 4 (firmware before it keeps a Pitch track only alone, and
      * would drop one of the two): each older firmware refuses rather than
      * open what it cannot hold. */
     const bool pitchBeside = hasPitchTrack() && seqTracks() > 1;
-    doc["version"] = elements ? 5 : pitchBeside ? 4 : seqTracks() > 1 || ownKit ? 3 : notes ? 2 : 1;
+    int ownKits = 0;   // more than one is version 6 too: firmware before it keeps one
+    for (int t = 0; t < kTracks; ++t) ownKits += seqRoute(t) == 1 ? 1 : 0;
+    doc["version"] = usedTracks() > kTracksV5 || ownKits > 1 ? 6 : elements ? 5 : pitchBeside ? 4 : seqTracks() > 1 || ownKit ? 3 : notes ? 2 : 1;
     doc["bpm"]  = bpm;
     doc["bpb"]  = beatsPerBar;
     doc["loop"] = loop;
@@ -583,19 +592,23 @@ int AudioSong::seqRoute(int track) const
     return !t.kit.empty() ? 1 : 0;
 }
 
+int AudioSong::liveRoute(int track) const
+{
+    const int route = seqRoute(track);
+    return route == 1 && track != kitSlot ? -1 : route;
+}
+
 int AudioSong::seqTrackOnRoute(int route) const
 {
     for (int t = 0; t < kTracks; ++t)
-        if (seqRoute(t) == route) return t;
+        if (liveRoute(t) == route) return t;
     return -1;
 }
 
 int AudioSong::freeSeqRoute(SeqSource source) const
 {
     if (source == SeqSource::Pitch) return seqTrackOnRoute(2) < 0 ? 2 : -1;
-    if (seqTrackOnRoute(0) < 0) return 0;
-    if (seqTrackOnRoute(1) < 0) return 1;
-    return -1;
+    return seqTrackOnRoute(0) < 0 ? 0 : 1;
 }
 
 int AudioSong::armedAudioTrack() const
@@ -684,6 +697,7 @@ bool AudioSong::addSeqTrack(int track, SeqSource source, uint8_t scene, const st
     tracks[track].seqBlocks = true;
     if (route == 1) {
         tracks[track].kit = ownKit;
+        if (seqRoute(kitSlot) != 1) kitSlot = (int8_t)track;
     } else if (source == SeqSource::Kit && !ownKit.empty()) {
         kit = ownKit;
     }
@@ -998,6 +1012,10 @@ void AudioSong::removeTrack(int track)
      * as a track that lost its audio. */
     for (int t = track; t + 1 < kTracks; ++t) tracks[t] = std::move(tracks[t + 1]);
     tracks[kTracks - 1] = SongTrack{};
+    if (kitSlot == track) kitSlot = -1;
+    else if (kitSlot > track) --kitSlot;
+    if (armed == track) armed = -1;
+    else if (armed > track) --armed;
 }
 
 } // namespace crosspad

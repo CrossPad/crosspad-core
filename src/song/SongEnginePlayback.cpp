@@ -330,6 +330,9 @@ Arrangement SongEngine::Impl::flatten(const AudioSong& song) const {
             a.seqMapped = true;   // an empty map: the sequencer plays none of it
             continue;
         }
+        /* A kit of its own the second kit engine does not hold now: nothing
+         * to play its notes, until it is frozen or given the engine. */
+        if (song.liveRoute(t) < 0) continue;
         /* On the song's grid: the song sets the clock's tempo when it
          * starts the sequencer with it. A track that plays its scene
          * everywhere is one span of it over the whole song -- laid on the
@@ -541,7 +544,7 @@ void SongEngine::Impl::rebuild() {
         gain_[t].store(song_.silenced(t) ? 0.0f : tr.volume);
         pan_[t].store(tr.pan);
     }
-    for (int t = 0; t < kTracks; ++t) seqRoute_[t].store((int8_t)song_.seqRoute(t), std::memory_order_relaxed);
+    for (int t = 0; t < kTracks; ++t) seqRoute_[t].store((int8_t)song_.liveRoute(t), std::memory_order_relaxed);
     /* The live transport has a grid of its own and no end; a commit
      * made while it runs (a fader, a mute) must not hand RT the
      * arrangement's. */
@@ -575,7 +578,7 @@ void SongEngine::Impl::applySeqSound() {
     float gain[3] = {1.0f, 1.0f, 1.0f};   // the pads' kit, the instrument, the second kit
     float pan[3] = {0.0f, 0.0f, 0.0f};
     for (int t = 0; t < kTracks; ++t) {
-        const int route = song_.seqRoute(t);
+        const int route = song_.liveRoute(t);
         if (route < 0) continue;
         const SongTrack& tr = song_.tracks[t];
         if ((takeRecMute_ && t == takeTrack_) || (on && song_.silenced(t))) muted |= (uint8_t)(1u << route);
@@ -929,12 +932,8 @@ void SongEngine::Impl::fillRings() {
         if (stopReq_.load()) return;
         uint32_t wp = writePos_;
         uint32_t n = sz.chunkFrames;
-        /* Where each track's blocks fall in this chunk -- a block is at
-         * least a bar, so two at most, and a third for safety. The path
-         * is copied into the piece rather than a string: this runs every
-         * 20 ms, and small heap blocks come from internal RAM. */
-        struct Piece { char path[160]; uint32_t at, len, clipFrame; uint64_t step; };
-        Piece pieces[kTracks][3];
+        /* Where each track's blocks fall in this chunk (pieces_). */
+        Piece (&pieces)[kTracks][3] = pieces_;
         int pieceCount[kTracks] = {};
         Piece ctxPieces[3];
         int ctxCount = 0;

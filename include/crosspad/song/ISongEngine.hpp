@@ -362,7 +362,7 @@ public:
     /// range keep its volume and the clip is mixed relative to it; with none
     /// left the track goes to unity. editState() says when it is done,
     /// editProgress() how far it is.
-    virtual bool requestMerge(uint8_t trackMask, uint32_t fromBar, uint32_t toBar)
+    virtual bool requestMerge(uint32_t trackMask, uint32_t fromBar, uint32_t toBar)
     {
         (void)trackMask; (void)fromBar; (void)toBar;
         return false;
@@ -432,7 +432,8 @@ public:
     /// that same track -- a track cut into blocks from its first block's bar
     /// to its last one's end, one playing its scene everywhere over the whole
     /// song (playEndBars()). The caller turns the track into audio once it is
-    /// Done.
+    /// Done. False for a track whose engine is not playing it
+    /// (AudioSong::liveRoute()), as freezeTrack().
     virtual bool bounceSeqTrack(uint8_t track) { (void)track; return false; }
     /// Freeze the seq track @p track: what it plays, its engine's channel
     /// alone, into one clip the song plays in its place while the track is
@@ -440,7 +441,9 @@ public:
     /// (SongTrack::freeze). The track keeps its notes and stays a seq track.
     /// A bounce, but one that gives way: PLAY, REC, DUB, opening a song, an
     /// edit or a bounce cancel it (the track plays live) and go ahead. Poll
-    /// bounceStatus() and freezeState().
+    /// bounceStatus() and freezeState(). False for a track with a kit of
+    /// its own the second kit engine does not hold (AudioSong::kitSlot): its
+    /// engine would render another track's kit.
     virtual bool freezeTrack(uint8_t track) { (void)track; return false; }
     /// What @p track plays as now (FreezeState).
     virtual FreezeState freezeState(uint8_t track) { (void)track; return FreezeState::None; }

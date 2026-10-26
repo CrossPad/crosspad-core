@@ -24,6 +24,7 @@
 
 namespace crosspad {
 
+static_assert(AudioSong::kSeqScenes == PatternSequencer::kNumSequences, "a seq track plays a scene of its own");
 static_assert(AudioSong::kSeqPpq == PatternSequencer::kPpq,
               "a song's seq notes and a scene's events count the same ticks");
 static_assert(AudioSong::kSeqBlockBars == PatternSequencer::kMaxBars &&
@@ -34,6 +35,7 @@ SongEngine::Impl::Impl(ISongEnginePlatform& platform, MetronomeNode& clock, Patt
     : p(platform), clk_(clock), seq_(sequencer), sz(checkedSizes(platform.sizes())) {
     ring_.platform = &p;
     bRing_.platform = &p;
+    for (auto& r : seqRoute_) r.store(-1, std::memory_order_relaxed);
 }
 
 /// Rings no smaller than what they start with; a chunk longer than the
@@ -309,7 +311,7 @@ bool SongEngine::requestRename(const std::string& name) { return impl_->requestR
 bool SongEngine::requestDelete() { return impl_->requestDelete(); }
 bool SongEngine::requestTempo(float bpm) { return impl_->requestTempo(bpm); }
 SongOpState SongEngine::editState() const { return impl_->editState(); }
-bool SongEngine::requestMerge(uint8_t mask, uint32_t fromBar, uint32_t toBar) { return impl_->requestMerge(mask, fromBar, toBar); }
+bool SongEngine::requestMerge(uint32_t mask, uint32_t fromBar, uint32_t toBar) { return impl_->requestMerge(mask, fromBar, toBar); }
 uint8_t SongEngine::editProgress() const { return impl_->editProgress(); }
 uint32_t SongEngine::stretchWaiting() const { return impl_->stretchWaiting(); }
 void SongEngine::trackLevels(int track, float& left, float& right) { impl_->trackLevels(track, left, right); }

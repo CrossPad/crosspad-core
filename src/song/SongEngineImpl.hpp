@@ -556,7 +556,7 @@ struct SongEngine::Impl {
     bool requestDelete();
     bool requestTempo(float bpm);
     SongOpState editState() const { return editState_.load(); }
-    bool requestMerge(uint8_t trackMask, uint32_t fromBar, uint32_t toBar);
+    bool requestMerge(uint32_t trackMask, uint32_t fromBar, uint32_t toBar);
     uint8_t editProgress() const { return editProgress_.load(); }
     /// Counted when asked, not when the worker last had time to: right after an
     /// open or a tempo says Ready it is what that song waits for.
@@ -810,7 +810,7 @@ private:
     SongOpState doRename();
     SongOpState doDelete();
     SongOpState doTempo(float bpm);
-    SongOpState doMerge(uint8_t mask, uint32_t fromBar, uint32_t toBar);
+    SongOpState doMerge(uint32_t mask, uint32_t fromBar, uint32_t toBar);
     SongOpState doExport();
     SongOpState doImport();
     void doSave();
@@ -968,8 +968,8 @@ private:
                              kEditEditHash = 14, kEditCopyElements = 15, kEditDeleteElement = 16;
     uint32_t    importA_ = 0, importB_ = 0, importBar_ = 0, importLead_ = 0;   // owned by claimEdit()'s caller until editReq_
     uint8_t     importTrack_ = 0;
-    std::atomic<uint8_t>  editMask_{0}, editProgress_{0};
-    std::atomic<uint32_t> editFrom_{0}, editTo_{0};
+    std::atomic<uint8_t>  editProgress_{0};
+    std::atomic<uint32_t> editMask_{0}, editFrom_{0}, editTo_{0};
     std::atomic<uint8_t>  editReq_{0};
     std::atomic<SongOpState> editState_{SongOpState::Idle};
     std::atomic<float>    editBpm_{120.0f};
@@ -1096,6 +1096,13 @@ private:
     // Playback.
     FrameRing   ring_;
     ClipReader  readers_[kTracks];
+    /// Where each track's blocks fall in the chunk being filled -- a block is
+    /// at least a bar, so two at most, and a third for safety. The path is
+    /// copied into the piece rather than a string: it is filled every 20 ms,
+    /// and small heap blocks come from internal RAM. A member, not on the
+    /// worker's stack: 184 B x 3 a track.
+    struct Piece { char path[160]; uint32_t at, len, clipFrame; uint64_t step; };
+    Piece       pieces_[kTracks][3];
     ClipReader  ctxReader_;                       // the context stem's: one descriptor beside the tracks'
     uint32_t    writePos_ = 0;
     std::atomic<uint32_t> debt_{0};
@@ -1108,7 +1115,7 @@ private:
     };
     Meter                 meter_[kMeterSlots];
     std::atomic<float>    padsPeak_[2] = {};
-    std::atomic<int8_t>   seqRoute_[kTracks] = {{-1}, {-1}, {-1}, {-1}};   ///< AudioSong::seqRoute(), per track
+    std::atomic<int8_t>   seqRoute_[kTracks];   ///< AudioSong::seqRoute(), per track; -1 from the constructor
     std::atomic<Play>     play_{Play::Idle};
     std::atomic<bool>     syncing_{false};         // this playback runs the sequencer
     uint32_t              startPos_ = 0;           // song sample playback started at

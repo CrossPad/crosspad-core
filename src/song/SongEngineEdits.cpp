@@ -13,8 +13,8 @@ bool SongEngine::Impl::requestTempo(float bpm) {
     return requestEdit(kEditTempo);
 }
 
-bool SongEngine::Impl::requestMerge(uint8_t trackMask, uint32_t fromBar, uint32_t toBar) {
-    const uint8_t all = (uint8_t)((1u << kTracks) - 1);
+bool SongEngine::Impl::requestMerge(uint32_t trackMask, uint32_t fromBar, uint32_t toBar) {
+    const uint32_t all = (uint32_t)((1ull << kTracks) - 1);
     if (!(trackMask & all) || toBar <= fromBar || !ensureWorker() || !claimEdit()) return false;
     editMask_.store(trackMask & all);
     editFrom_.store(fromBar);
@@ -132,7 +132,7 @@ SongOpState SongEngine::Impl::doTempo(float bpm) {
 /// them -- see ISongEngine::requestMerge. Read from a copy of the song,
 /// so the UI is not held out while the card works; the song is changed
 /// only once the clip is written.
-SongOpState SongEngine::Impl::doMerge(uint8_t mask, uint32_t fromBar, uint32_t toBar) {
+SongOpState SongEngine::Impl::doMerge(uint32_t mask, uint32_t fromBar, uint32_t toBar) {
     if (!opened_ || !p.storageReady() || !io_ || !acc_) return SongOpState::Failed;
     AudioSong copy;
     {
@@ -143,7 +143,7 @@ SongOpState SongEngine::Impl::doMerge(uint8_t mask, uint32_t fromBar, uint32_t t
      * A seq track has no audio to mix until it is bounced: likewise. */
     for (int t = 0; t < kTracks; ++t) {
         if (copy.tracks[t].muted || copy.tracks[t].volume <= 0.0f ||
-            copy.tracks[t].kind == TrackKind::Seq) mask &= (uint8_t)~(1u << t);
+            copy.tracks[t].kind == TrackKind::Seq) mask &= ~(1u << t);
     }
     if (!mask) return SongOpState::Failed;
     for (int t = 0; t < kTracks; ++t) {

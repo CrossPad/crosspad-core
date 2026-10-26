@@ -985,8 +985,10 @@ TEST_CASE("element nav: a region over seq tracks with no free track is refused a
             REQUIRE(s.addSeqTrack(t, t == 1 ? SeqSource::Pitch : SeqSource::Kit, (uint8_t)t, t == 2 ? "k.json" : ""));
             s.putSeqTake(t, 0, makeSeqPattern(2, {SeqNote{}}), s.samplesPerBar(kRate));
         }
-        s.tracks[3].inUse = true;
-        s.addClip(3, {"a.wav", 8, 2});               // an audio track the region does not touch
+        for (int t = 3; t < AudioSong::kTracks; ++t) {
+            s.tracks[t].inUse = true;
+            s.addClip(t, {"a.wav", 8, 2});           // audio tracks the region does not touch
+        }
     }
     r.engine->commit();
     CHECK_FALSE(elementNav().makeFromRegion(0, 2));
@@ -1118,8 +1120,10 @@ TEST_CASE("element nav: a region with no host is refused and changes nothing", "
         s.addClip(0, {"a.wav", 0, 4});             // reaches outside the region
         REQUIRE(s.addSeqTrack(1, SeqSource::Pitch, 0));
         REQUIRE(s.addSeqTrack(2, SeqSource::Kit, 1));
-        s.tracks[3].inUse = true;
-        s.addClip(3, {"b.wav", 8, 1});
+        for (int t = 3; t < AudioSong::kTracks; ++t) {
+            s.tracks[t].inUse = true;
+            s.addClip(t, {"b.wav", 8, 1});
+        }
     }
     r.engine->commit();
     CHECK_FALSE(elementNav().makeFromRegion(1, 3));

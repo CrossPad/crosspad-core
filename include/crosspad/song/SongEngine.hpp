@@ -58,7 +58,7 @@ public:
     bool requestDelete() override;
     bool requestTempo(float bpm) override;
     SongOpState editState() const override;
-    bool requestMerge(uint8_t trackMask, uint32_t fromBar, uint32_t toBar) override;
+    bool requestMerge(uint32_t trackMask, uint32_t fromBar, uint32_t toBar) override;
     uint8_t editProgress() const override;
     uint32_t stretchWaiting() const override;
     void trackLevels(int track, float& left, float& right) override;

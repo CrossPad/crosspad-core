@@ -43,6 +43,21 @@ TEST_CASE("auto-freeze: one at a time, and a track skipped waits", "[song][freez
     CHECK(autoFreezeNext(s, st, 1u << 0) == 1);           // track 0's last try failed
 }
 
+TEST_CASE("auto-freeze: a kit of its own waits for the second kit engine", "[song][freeze]") {
+    AudioSong s = twoKits();
+    REQUIRE(s.addSeqTrack(2, SeqSource::Kit, 2, "/crosspad/kits/C/kit.json"));
+    SeqNote n;
+    n.pad = 1;
+    n.vel = 100;
+    s.putSeqTake(2, 0, makeSeqPattern(1, {n}), s.samplesPerBar(44100), 1);
+    s.armed = -1;
+    REQUIRE(s.kitSlot == 1);                              // the first kit of its own holds it
+    FreezeState st[AudioSong::kTracks] = {FreezeState::Frozen, FreezeState::Frozen};
+    CHECK(autoFreezeNext(s, st, 0) == -1);                // track 2 has no engine to render it
+    s.kitSlot = 2;
+    CHECK(autoFreezeNext(s, st, 0) == 2);
+}
+
 TEST_CASE("auto-freeze: an empty kit track and an audio track are never frozen", "[song][freeze]") {
     AudioSong s;
     REQUIRE(s.addAudioTrack(0));

@@ -87,7 +87,7 @@ struct SongClip {
 /// predates them ignores the key and drops it the next time it saves that
 /// project, which is why nothing else depends on them.
 struct ClipSet {
-    static constexpr int      kCols    = 4;      ///< == AudioSong::kTracks
+    static constexpr int      kCols    = 4;      ///< the first kCols of AudioSong::kTracks
     static constexpr uint32_t kMaxRows = 32;
 
     std::string name;
@@ -202,7 +202,7 @@ struct SongTrack {
     bool      inUse = false;
 };
 
-/// An audio song: four tracks of clips on a bar grid, at one tempo.
+/// An audio song: up to kTracks tracks of clips on a bar grid, at one tempo.
 ///
 /// A project is a folder -- <root>/<name>/song.json and <root>/<name>/clips/
 /// -- so clips bounced from different kits can sit in one song. The grid is
@@ -214,14 +214,16 @@ struct SongTrack {
 /// copy (see ISongEngine::commit), so editing never races playback.
 class AudioSong {
 public:
-    static constexpr int kTracks = 4;
+    static constexpr int kTracks = 8;
+    /// What firmware before version 6 holds: a song using more is written as 6.
+    static constexpr int kTracksV5 = 4;
     /// 2: seq blocks carry notes of their own. 3: two seq tracks, a track
     /// with a kit of its own. 4: a Pitch track beside kit tracks. 5: element
-    /// clips (SongClip::element, ::bakeBpm) and a title. Each written
+    /// clips (SongClip::element, ::bakeBpm) and a title. 6: more than kTracksV5 tracks. Each written
     /// only by a song that needs it, so the rest stay readable by firmware from
     /// before -- which refuses a newer one rather than open it and drop what it
     /// cannot hold on its next save.
-    static constexpr int kVersion = 5;
+    static constexpr int kVersion = 6;
     /// Ticks to the quarter of a seq block's notes: PatternSequencer::kPpq.
     static constexpr uint16_t kSeqPpq = 96;
     /// The most one seq block a take lays holds: what one scene of the
@@ -276,6 +278,14 @@ public:
     /// is the first seq track (armedSeqTrack()). Not part of undo, as the
     /// sounds are not.
     int8_t      armed = -1;
+    /// The kit track with a kit of its own that the second kit engine plays
+    /// now (seqRoute() 1); -1 for none. There is one such engine and any
+    /// number of those tracks: the others play their freeze (SongTrack::freeze)
+    /// and are silent while they have none that is current (liveRoute()). It
+    /// moves to the armed track once the one holding it is frozen (Arrange).
+    /// Not saved and not part of undo: load() gives it to the armed track, else
+    /// the first one with a kit of its own.
+    int8_t      kitSlot = -1;
     /// The loop region, in bars, [loopStart, loopEnd): with loop on, playback
     /// goes round it instead of the whole song. loopEnd <= loopStart = none.
     uint32_t    loopStart = 0;
@@ -324,27 +334,30 @@ public:
     static uint32_t samplesPerBar(uint32_t sampleRate, float bpm, uint8_t beatsPerBar);
 
     // ── tracks a player makes ──────────────────────────────────────────────
-    /// Tracks that may hold a seq at once: one per engine (seqRoute()) --
-    /// the pads' kit, the second kit, Pitch Play's instrument. With the
-    /// fourth track audio, that is Drums, Slice, Pitch and a loop in one song.
-    static constexpr int kMaxSeqTracks = 3;
-
     /// Tracks in use: what Arrange counts, and what decides whether it still
     /// offers "+ ADD TRACK".
     int usedTracks() const;
-    /// Tracks that hold a seq -- 0 to kMaxSeqTracks.
+    /// Tracks that hold a seq: one on the pads' kit, one Pitch, and any number
+    /// with a kit of their own (kitSlot), each on a scene of its own.
     int seqTracks() const;
-    bool seqSlotFree() const { return freeSeqRoute(SeqSource::Kit) >= 0; }
+    /// The sequencer's scenes (PatternSequencer::kNumSequences): a seq track
+    /// plays one of its own, so there are never more seq tracks than this.
+    static constexpr int kSeqScenes = 8;
+    bool seqSlotFree() const { return seqTracks() < kSeqScenes && freeSeqRoute(SeqSource::Kit) >= 0; }
     /// Which engine seq track @p track plays through, as the sequencer routes
     /// its notes (PatternSequencer::SongSpan::route): 0 the pads' -- the
     /// song's kit --, 1 the second kit engine, for a kit track with a kit of
     /// its own (SongTrack::kit), 2 the Pitch instrument. -1 for no seq.
     int seqRoute(int track) const;
+    /// seqRoute(), but -1 for a track with a kit of its own that is not the
+    /// one the second kit engine plays (kitSlot): its notes go nowhere.
+    int liveRoute(int track) const;
     /// The route a new seq track on @p source would take, or -1 when there is
-    /// no room for it: route 2 for a Pitch track while no other has it, the
-    /// first kit route no kit track has for a kit track.
+    /// no room for it: route 2 for a Pitch track while no other has it; for a
+    /// kit track 0 while no track plays the song's kit, else 1.
     int freeSeqRoute(SeqSource source) const;
-    /// The seq track on route @p route, or -1.
+    /// The seq track playing through route @p route's engine now -- on 1 the
+    /// one holding kitSlot --, or -1.
     int seqTrackOnRoute(int route) const;
     /// The track @c armed names when it is a seq track in use, else the first
     /// seq track, else -1.
@@ -362,7 +375,7 @@ public:
     /// into an element, or were deleted: nothing of it is heard, so nothing of it
     /// needs a freeze to be mixed from the card.
     bool seqPlaysNothing(int t) const;
-    /// The lowest track nobody has made yet, or -1 when all four are in use.
+    /// The lowest track nobody has made yet, or -1 when all are in use.
     int freeTrack() const;
 
     /// Make @p track an empty audio track, in use and waiting for a clip.
@@ -379,7 +392,7 @@ public:
     /// Make @p track a seq on @p source playing @p scene. A kit track takes
     /// the route that is free (freeSeqRoute()): on 0 it plays the song's kit,
     /// which @p kit, given, becomes; on 1 @p kit is its own and must be
-    /// given. Every new seq track is empty and plays only under its blocks
+    /// given, and it takes kitSlot when no track holds it. Every new seq track is empty and plays only under its blocks
     /// (SongTrack::seqBlocks). Returns false when the track is
     /// in use, there is no room for the seq, or another seq track plays
     /// @p scene -- two tracks on one scene overwrite each other's notes.

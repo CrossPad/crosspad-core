@@ -887,7 +887,7 @@ TEST_CASE("song engine: an import never writes over a clip of the same name", "[
     REQUIRE(r.engine->song().tracks[1].clips.size() == 1);
     CHECK(r.engine->song().tracks[1].inUse);
     CHECK(r.engine->song().tracks[1].clips[0].file == "take_2.wav");
-    CHECK_FALSE(r.engine->requestImport(src, 0, 0, 4, 0, 0));      // no track 5
+    CHECK_FALSE(r.engine->requestImport(src, 0, 0, AudioSong::kTracks, 0, 0));   // past the last track
 }
 
 TEST_CASE("song engine: framesPlayed counts from the first block heard", "[song]") {

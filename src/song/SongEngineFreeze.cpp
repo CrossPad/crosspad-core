@@ -65,7 +65,7 @@ bool SongEngine::Impl::bounceSeqTrack(uint8_t track) {
     {
         std::lock_guard<std::recursive_mutex> l(songMutex_);
         const SongTrack& t = song_.tracks[track];
-        if (!t.inUse || t.kind != TrackKind::Seq || song_.seqRoute(track) < 0) return false;
+        if (!t.inUse || t.kind != TrackKind::Seq || song_.liveRoute(track) < 0) return false;
         scene = renderScene(t);
         seqRange(song_, track, from, to);
         key = seqKey(song_, track);
@@ -91,7 +91,7 @@ bool SongEngine::Impl::freezeTrack(uint8_t track) {
     {
         std::lock_guard<std::recursive_mutex> l(songMutex_);
         const SongTrack& t = song_.tracks[track];
-        if (!t.inUse || t.kind != TrackKind::Seq || song_.seqRoute(track) < 0) return false;
+        if (!t.inUse || t.kind != TrackKind::Seq || song_.liveRoute(track) < 0) return false;
         scene = renderScene(t);
         seqRange(song_, track, from, to);
         key = seqKey(song_, track);
