@@ -331,6 +331,9 @@ public:
     virtual std::vector<ClipInfo> clips() = 0;
     /// Moves on every finished projects or clips refresh.
     virtual uint32_t listGeneration() const = 0;
+    /// Moves each time a song is opened, the same one reopened too: what was
+    /// held for the song open until now (a playhead) is not this one's.
+    virtual uint32_t openGeneration() const { return 0; }
     /// Rename the open project's folder; editState() says how it went
     /// (Failed: the name is taken or not one a folder can have).
     virtual bool requestRename(const std::string& name) { (void)name; return false; }

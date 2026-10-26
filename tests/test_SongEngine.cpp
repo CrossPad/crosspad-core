@@ -3418,4 +3418,6 @@ TEST_CASE("Arrange's playhead is the song's: another song opened starts on its b
     CHECK(tr.position().bar == 1);
     tr.locate(2);                                      // the knob from there, not from bar seven
     CHECK(tr.startBar() == 2);
+    REQUIRE(r.open("Fresh"));                          // a NEW after a delete: the same name
+    CHECK(tr.startBar() == 0);
 }

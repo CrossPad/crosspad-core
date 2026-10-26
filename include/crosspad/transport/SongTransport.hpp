@@ -8,7 +8,6 @@
 #include "crosspad/transport/Transport.hpp"
 
 #include <mutex>
-#include <string>
 
 /**
  * @file SongTransport.hpp
@@ -216,25 +215,22 @@ private:
     {
         std::lock_guard<std::recursive_mutex> l(se.songMutex());
         const AudioSong& song = se.song();
-        return song.loop && song.hasRegion() ? song.loopStart : (song.dir == heldDir_ ? heldBar_ : 0);
+        return song.loop && song.hasRegion() ? song.loopStart : held(&se);
     }
 
-    /// The held bar, in the song it was held in: another song opened since
-    /// starts at its bar one, not where the last one stopped (a REC in a new,
-    /// empty song landed on bar seven, 26.10.2026).
-    uint32_t held(ISongEngine* se) const
+    /// The held bar, in the song it was held in: a song opened since starts
+    /// at its bar one, not where the last one stopped (a REC in a new, empty
+    /// song landed on bar seven, 26.10.2026). By the open, not the name: a
+    /// NEW after a delete gets the deleted song's name.
+    uint32_t held(const ISongEngine* se) const
     {
-        if (!se) return heldBar_;
-        std::lock_guard<std::recursive_mutex> l(se->songMutex());
-        return se->song().dir == heldDir_ ? heldBar_ : 0;
+        return !se || se->openGeneration() == heldGen_ ? heldBar_ : 0;
     }
 
-    void hold(ISongEngine* se, uint32_t bar)
+    void hold(const ISongEngine* se, uint32_t bar)
     {
         heldBar_ = bar;
-        if (!se) return;
-        std::lock_guard<std::recursive_mutex> l(se->songMutex());
-        heldDir_ = se->song().dir;
+        if (se) heldGen_ = se->openGeneration();
     }
 
     /// The pattern's PRE: a take in the song counts in as one in a scene does.
@@ -263,7 +259,7 @@ private:
     static constexpr int64_t kMaxBar = 998;
 
     uint32_t heldBar_ = 0;
-    std::string heldDir_;   ///< the song heldBar_ was held in (AudioSong::dir)
+    uint32_t heldGen_ = 0;  ///< the open heldBar_ was held in (ISongEngine::openGeneration())
 };
 
 /// The board's one song transport, and where its playhead stands: Arrange

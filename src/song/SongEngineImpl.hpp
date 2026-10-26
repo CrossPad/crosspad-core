@@ -589,6 +589,7 @@ struct SongEngine::Impl {
     bool requestClips() { return request(kListClips); }
     std::vector<ClipInfo> clips();
     uint32_t listGeneration() const { return listGen_.load(); }
+    uint32_t openGeneration() const { return openGen_.load(); }
     uint32_t playEndBars();
     bool bounceSeqTrack(uint8_t track);
     bool freezeTrack(uint8_t track);
@@ -1059,6 +1060,7 @@ private:
     uint32_t mapSentGen_ = 0;                      // worker: the snap the sequencer was given
     std::atomic<uint8_t>  listReq_{0};
     std::atomic<uint32_t> listGen_{0};
+    std::atomic<uint32_t> openGen_{0};    ///< openGeneration(): a song read in by doOpen()
     std::vector<std::string> projects_;
     std::vector<ClipInfo>    clips_;
     std::vector<ElementInfo> elements_;

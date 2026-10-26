@@ -297,6 +297,7 @@ void SongEngine::commit() { impl_->commit(); }
 bool SongEngine::requestClips() { return impl_->requestClips(); }
 std::vector<ClipInfo> SongEngine::clips() { return impl_->clips(); }
 uint32_t SongEngine::listGeneration() const { return impl_->listGeneration(); }
+uint32_t SongEngine::openGeneration() const { return impl_->openGeneration(); }
 bool SongEngine::bounceScene(uint8_t scene, uint8_t track) { return impl_->bounceScene(scene, track); }
 bool SongEngine::bounceSeqTrack(uint8_t track) { return impl_->bounceSeqTrack(track); }
 bool SongEngine::freezeTrack(uint8_t track) { return impl_->freezeTrack(track); }

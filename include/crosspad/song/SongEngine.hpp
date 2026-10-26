@@ -53,6 +53,7 @@ public:
     bool requestClips() override;
     std::vector<ClipInfo> clips() override;
     uint32_t listGeneration() const override;
+    uint32_t openGeneration() const override;
     bool requestRename(const std::string& name) override;
     bool requestDelete() override;
     bool requestTempo(float bpm) override;
