@@ -6,6 +6,31 @@ carries the same number) and consumers gate on it with
 `crosspad/RequireVersion.hpp`. This file starts at 1.45.0; earlier releases
 are described in their `chore: X.Y.Z` commits.
 
+## 2.27.0 — 2026-10-27
+
+More tracks in a song, kits filed by folder, instruments by group.
+
+### Added
+
+- `AudioSong::kitSlot`, `AudioSong::liveRoute()`: any number of kit tracks
+  with a kit of their own take turns on the one second kit engine; the others
+  play their freeze. `kSeqScenes` (8): a seq track plays a scene of its own.
+  `kTracksV5` (4): what firmware before song `version` 6 holds.
+- `KitFolders` (`kit/KitFolders.hpp`): `/crosspad/kits`, `/crosspad/drums`,
+  `/crosspad/slicer` -- the kit browser's PERF, DRUMS and SLICE.
+- `PortableKitLoader::scanKitFolders()`: one kit list from several folders.
+- `InstrumentGroups` (`instrument/InstrumentGroups.hpp`): an instrument's group
+  from its name ("BASS_Reese" -> BASS) and its name inside the group.
+
+### Changed
+
+- `AudioSong::kTracks` 4 -> 8. A song with more than four tracks, or more than
+  one kit of its own, is written as `version` 6; firmware before refuses it.
+- `ISongEngine::requestMerge()` takes a `uint32_t` track mask.
+- `autoFreezeNext()` takes a `uint32_t` skip mask and passes over a track whose
+  engine is not playing it (`liveRoute()` -1).
+- The Slicer's KIT writes to `/crosspad/slicer` (was `/crosspad/kits`).
+
 ## 2.26.0 — 2026-10-26
 
 A beat made from nothing on the screen (crosspad-hil beat_session and
