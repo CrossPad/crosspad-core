@@ -6,6 +6,18 @@ carries the same number) and consumers gate on it with
 `crosspad/RequireVersion.hpp`. This file starts at 1.45.0; earlier releases
 are described in their `chore: X.Y.Z` commits.
 
+## 2.29.0 — 2026-10-27
+
+- A freeze is never heard. `ISongEnginePlatform::beginRouteCapture()` now
+  also keeps the captured engine off the outputs (the board: the mixer's
+  tap-only channel), so a freeze that cannot go off the clock -- someone just
+  played, a USB host streams -- renders in real time in silence instead of
+  playing the track through the speakers. One that would silence the player
+  -- its engine is the one the pads play, and they were pressed just now
+  (`ISongEnginePlatform::padsPlayedRecently()`, new, default false) -- waits:
+  refused, or given up at a press mid-take, with "waiting: ...", and Arrange
+  tries it again later.
+
 ## 2.28.0 — 2026-10-27
 
 - `SampleFx::keepLength`: with `semitones`, a rendered copy

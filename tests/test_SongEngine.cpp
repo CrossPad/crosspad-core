@@ -1889,6 +1889,44 @@ TEST_CASE("song engine: a frozen seq track keeps its notes and plays its freeze 
     }
 }
 
+TEST_CASE("song engine: a freeze of the engine the pads play waits while they are played", "[song][freeze]") {
+    Rig r;
+    REQUIRE(r.open("Demo"));
+    {
+        std::lock_guard<std::recursive_mutex> l(r.engine->songMutex());
+        auto& s = r.engine->song();
+        s.bpm = 120.0f;
+        s.length = 16;
+        REQUIRE(s.addSeqTrack(0, SeqSource::Kit, 0));
+        SeqNote n;
+        n.pad = 1; n.vel = 100;
+        s.putSeqTake(0, 0, makeSeqPattern(1, {n}), s.samplesPerBar(kRate));
+        s.armed = -1;                                      // no seq track armed: the pads play the kit
+    }
+    r.engine->commit();
+    std::vector<float> out(kBlock * 2), bus(kBlock * 2, 0.25f);
+    auto run = [&] {
+        for (int i = 0; i < 4000 && r.engine->bounceStatus().state == BounceState::Running; ++i) {
+            r.block(out, bus);
+            std::this_thread::sleep_for(std::chrono::milliseconds(4));
+        }
+        return r.engine->bounceStatus();
+    };
+    r.platform.padsPlayed = true;
+    REQUIRE(r.engine->freezeTrack(0));
+    BounceStatus st = run();
+    CHECK(st.state == BounceState::Failed);
+    CHECK(st.error.find("waiting") != std::string::npos);
+    CHECK(r.engine->freezeState(0) == FreezeState::None);
+    CHECK(r.platform.captureEnded.load() == r.platform.captureBegun.load());   // the engine back on the outputs
+
+    r.platform.padsPlayed = false;                         // quiet: it goes through
+    REQUIRE(r.engine->freezeTrack(0));
+    st = run();
+    CHECK(st.state == BounceState::Done);
+    CHECK(r.engine->freezeState(0) == FreezeState::Frozen);
+}
+
 TEST_CASE("song engine: a block going round is frozen from two of its passes", "[song][freeze]") {
     Rig r;
     REQUIRE(r.open("Demo"));

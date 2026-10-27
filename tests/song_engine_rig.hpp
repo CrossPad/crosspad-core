@@ -133,6 +133,8 @@ struct FakePlatform final : ISongEnginePlatform {
     std::atomic<int> routeCaptured{-1};
     void beginRouteCapture(uint8_t route) override { ++captureBegun; routeCaptured = route; }
     void endPadsCapture() override { ++captureEnded; }
+    std::atomic<bool> padsPlayed{false};
+    bool padsPlayedRecently() override { return padsPlayed.load(); }
     std::atomic<float> seqGain[2] = {{1.0f}, {1.0f}};   // kit, pitch
     std::mutex openedMutex;
     std::vector<std::string> openedKits;                 // AudioSong::kit at every songOpened()

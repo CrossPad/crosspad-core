@@ -539,11 +539,15 @@ void SongEngine::Impl::runBounce() {
     };
     seq.stop();
     seq.setCountIn(false);
+    /* The engine the fingers play: the armed seq track's, the pads' kit
+     * without one. */
+    bool fingersOnIt = false;
     if (bFreeze_) {
         int route = 0;
         {
             std::lock_guard<std::recursive_mutex> l(songMutex_);
             route = std::max(0, song_.seqRoute(bTrack_));
+            fingersOnIt = std::max(0, song_.liveRoute(song_.armedSeqTrack())) == route;
         }
         p.beginRouteCapture((uint8_t)route);
     } else {
@@ -622,12 +626,20 @@ void SongEngine::Impl::runBounce() {
      * off the clock, as fast as the card lets it, where the platform can
      * (ISongEnginePlatform::beginOffline()); in real time where not. */
     const bool offline = p.beginOffline();
-    seq.playback();
 
     int16_t* chunk = io_;
+    const char* error = nullptr;
+    /* A freeze is never heard: off the clock the outputs are silent, and in
+     * real time its engine is kept off them (beginRouteCapture()) -- which
+     * would silence a player on that engine and put their notes in the take.
+     * So with someone playing it the freeze waits for quiet: refused here,
+     * or given up at a press mid-take, and tried again later. */
+    const bool waitQuiet = bFreeze_ && fingersOnIt;
+    if (waitQuiet && p.padsPlayedRecently()) error = "waiting: the pads play its engine";
+    else seq.playback();
+
     const int64_t deadline = p.nowUs() +
                              (int64_t)(total + bSkip_) * 1000000 / sampleRate_ + 3000000;
-    const char* error = nullptr;
     char why[80];
     uint32_t done = 0;
     int64_t maxGapUs = 0, lastPop = 0;   // from the first block on: not the wait for bar one
@@ -635,7 +647,8 @@ void SongEngine::Impl::runBounce() {
     uint32_t ioUs = 0, ioMaxUs = 0, ioChunks = 0, drain = 0;
     bool tooSlow = false;
     bool seqStopped = false;
-    for (;;) {
+    while (!error) {
+        if (waitQuiet && p.padsPlayedRecently()) { error = "waiting: the pads play its engine"; break; }
         /* A lost block is a failed take, whatever else is true: checked
          * first, so a ring that overflowed and then drained is never
          * reported as a finished clip. */

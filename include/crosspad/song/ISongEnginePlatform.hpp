@@ -78,8 +78,10 @@ public:
     virtual void endPadsCapture() = 0;
     /// A freeze's capture: only the engine on @p route (0 the pads' kit, 1
     /// the second kit, 2 the Pitch instrument), so fingers on another
-    /// track's engine stay out of the take. endPadsCapture() ends it. A
-    /// platform without a tap per engine takes the pads as a bounce does.
+    /// track's engine stay out of the take, and that engine kept off the
+    /// outputs while it lasts -- a freeze is a file and is never heard, off
+    /// the clock or in real time. endPadsCapture() ends it. A platform
+    /// without a tap per engine takes the pads as a bounce does.
     virtual void beginRouteCapture(uint8_t route) { (void)route; beginPadsCapture(); }
     /// A bounce's or a freeze's render off the clock, as fast as the platform can go: the
     /// outputs fall silent, the render runs the clock and the captured
@@ -89,6 +91,9 @@ public:
     /// endOffline() puts the clock back on the outputs.
     virtual bool beginOffline() { return false; }
     virtual void endOffline() {}
+    /// A player has pressed a pad just now (the platform's measure of
+    /// "just"): a freeze of the engine the fingers play waits for quiet.
+    virtual bool padsPlayedRecently() { return false; }
 
     /// The seq track's fader on the engine its notes play through -- @p
     /// source's: the kit's engines, or the pitched instrument -- while the
