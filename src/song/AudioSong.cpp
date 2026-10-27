@@ -197,7 +197,7 @@ SongLoad AudioSong::load(const std::string& projectDir, const char* file)
     kit.clear();
     instrument.clear();
     armed = -1;
-    kitSlot = -1;
+    kitSlots[0] = kitSlots[1] = -1;
     loopStart = loopEnd = 0;
     for (auto& t : tracks) t = SongTrack{};
     sets.clear();
@@ -308,7 +308,7 @@ SongLoad AudioSong::load(const std::string& projectDir, const char* file)
     }
     armed = (int8_t)(doc["armed"] | -1);
     /* One seq track on the pads' kit and one Pitch track; any number with a
-     * kit of their own, which take turns on the second kit engine (kitSlot).
+     * kit of their own, which take turns on the two kit engines (kitSlots).
      * A file that claims more of the first two (hand-edited) keeps the first
      * of each, and the rest become plain audio tracks -- their clips, if
      * any, still play. */
@@ -321,7 +321,7 @@ SongLoad AudioSong::load(const std::string& projectDir, const char* file)
             /* A second kit's track never plays the scene over the whole
              * song: the scene that sounds is the first one's. */
             tr.seqBlocks = true;
-            if (kitSlot < 0 || i == armed) kitSlot = (int8_t)i;
+            if (kitSlots[0] < 0 || i == armed) kitSlots[0] = (int8_t)i;
             continue;
         }
         if (!route[r]) {
@@ -601,7 +601,9 @@ int AudioSong::seqRoute(int track) const
 int AudioSong::liveRoute(int track) const
 {
     const int route = seqRoute(track);
-    return route == 1 && track != kitSlot ? -1 : route;
+    if (route != 1) return route;
+    const int slot = kitSlotOf(track);
+    return slot < 0 ? -1 : slotRoute(slot);
 }
 
 int AudioSong::seqTrackOnRoute(int route) const
@@ -703,7 +705,11 @@ bool AudioSong::addSeqTrack(int track, SeqSource source, uint8_t scene, const st
     tracks[track].seqBlocks = true;
     if (route == 1) {
         tracks[track].kit = ownKit;
-        if (seqRoute(kitSlot) != 1) kitSlot = (int8_t)track;
+        for (int s = 0; s < kKitSlots; ++s) {
+            if (seqRoute(kitSlots[s]) == 1 && kitSlots[s] != track) continue;
+            kitSlots[s] = (int8_t)track;
+            break;
+        }
     } else if (source == SeqSource::Kit && !ownKit.empty()) {
         kit = ownKit;
     }
@@ -1018,8 +1024,10 @@ void AudioSong::removeTrack(int track)
      * as a track that lost its audio. */
     for (int t = track; t + 1 < kTracks; ++t) tracks[t] = std::move(tracks[t + 1]);
     tracks[kTracks - 1] = SongTrack{};
-    if (kitSlot == track) kitSlot = -1;
-    else if (kitSlot > track) --kitSlot;
+    for (int8_t& slot : kitSlots) {
+        if (slot == track) slot = -1;
+        else if (slot > track) --slot;
+    }
     if (armed == track) armed = -1;
     else if (armed > track) --armed;
 }

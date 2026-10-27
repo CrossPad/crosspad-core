@@ -13,4 +13,26 @@ namespace crosspad {
 /// @p states is freezeState() of each of the song's kTracks tracks.
 int autoFreezeNext(const AudioSong& song, const FreezeState* states, uint32_t skip);
 
+/// Where the two kit slots (AudioSong::kitSlots) go next, playing or stopped,
+/// so that ARM moving between kit tracks with kits of their own never waits
+/// for the song to stop:
+///  - @p want (the track the fingers play: the seq view's, else the armed
+///    one) takes a slot at once when it has a kit of its own and holds none:
+///    a free one, else one whose track is frozen as it is (it plays its
+///    freeze) or plays nothing, else one whose freeze keeps failing
+///    (@p skip), else the one not held by @p prevWant -- the track the
+///    fingers played before, whose notes were the last to change.
+///  - a track that is not @p want gives its slot back once it plays nothing,
+///    or, with the song stopped (@p playing false), once it is frozen as it
+///    is: its engine's memory and voices come back. While the song plays a
+///    frozen one keeps its kit loaded, idle -- ARM going back to it is then
+///    at once, not a load (a live set goes back and forth between two).
+///  - a free slot goes to a track with a kit of its own that plays, holds
+///    none and is not frozen as it is (not one in @p skip): heard live
+///    instead of silent, and an engine there for the freeze that ends it.
+/// @p states is freezeState() of each of the song's kTracks tracks. Writes
+/// @p slots; returns whether they differ from the song's.
+bool kitSlotsNext(const AudioSong& song, const FreezeState* states, int want, int prevWant, uint32_t skip,
+                  bool playing, int8_t (&slots)[AudioSong::kKitSlots]);
+
 } // namespace crosspad

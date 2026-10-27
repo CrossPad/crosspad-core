@@ -60,9 +60,10 @@ public:
     /// which. Route 0 is the pads' kit; a sink without routes plays only it.
     using RoutedSink = void (*)(void* ctx, uint8_t route, uint8_t pad, uint8_t velocity, bool on,
                                 PadPerformance performance);
-    /// Routes a note can play through: the pads' kit (0), a second kit track's
-    /// (1), a Pitch track's instrument (2).
-    static constexpr uint8_t kRoutes = 3;
+    /// Routes a note can play through: the pads' kit (0), the two engines of
+    /// kit tracks with a kit of their own (1, 3), a Pitch track's instrument
+    /// (2). Four of sixteen pads is the 64 bits of held_.
+    static constexpr uint8_t kRoutes = 4;
     /// What a hit coming in would sound as (PadManager::performanceFor());
     /// @p velocity becomes the one that would sound.
     using PerformanceSource = PadPerformance (*)(void* ctx, uint8_t pad, uint8_t& velocity);

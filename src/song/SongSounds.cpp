@@ -73,26 +73,32 @@ void SongSounds::songOpened()
     pending_.store(true, std::memory_order_release);
 }
 
-/// The song's second kit track's kit in the second kit engine, or none.
+/// Each kit slot's track's kit in that slot's engine, or none.
 void SongSounds::keepSecondKit()
 {
-    ISecondKit* k = getPlatformServices().secondKit;
     ISongEngine* se = songs();
-    if (!k || !se || se->openState() != SongOpState::Ready) return;
-    std::string want;
+    if (!se || se->openState() != SongOpState::Ready) return;
+    ISecondKit* engines[AudioSong::kKitSlots] = {getPlatformServices().secondKit, getPlatformServices().thirdKit};
+    std::string want[AudioSong::kKitSlots];
     {
         std::lock_guard<std::recursive_mutex> l(se->songMutex());
         const AudioSong& song = se->song();
-        const int t = song.seqTrackOnRoute(1);
-        if (t >= 0) want = song.tracks[t].kit;
+        for (int s = 0; s < AudioSong::kKitSlots; ++s) {
+            const int t = song.seqTrackOnRoute(AudioSong::slotRoute(s));
+            if (t >= 0) want[s] = song.tracks[t].kit;
+        }
     }
-    k->hold(want);
-    if (k->state() == ISecondKit::State::Failed && want != secondKitSaid_) {
-        secondKitSaid_ = want;
-        host_.log(true, ("the second kit would not load: " + want).c_str());
-        char msg[kWarnChars];
-        std::snprintf(msg, sizeof(msg), "The second kit would not load: %s", want.c_str());
-        host_.warn(msg);
+    for (int s = 0; s < AudioSong::kKitSlots; ++s) {
+        ISecondKit* k = engines[s];
+        if (!k) continue;
+        k->hold(want[s]);
+        if (k->state() == ISecondKit::State::Failed && want[s] != secondKitSaid_[s]) {
+            secondKitSaid_[s] = want[s];
+            host_.log(true, ("the second kit would not load: " + want[s]).c_str());
+            char msg[kWarnChars];
+            std::snprintf(msg, sizeof(msg), "The second kit would not load: %s", want[s].c_str());
+            host_.warn(msg);
+        }
     }
 }
 
@@ -266,8 +272,9 @@ void SongSounds::step()
 bool SongSounds::settled() const
 {
     if (pending() || !host_.kitsSettled()) return false;
-    const ISecondKit* k = getPlatformServices().secondKit;
-    return !k || k->state() != ISecondKit::State::Loading;
+    for (const ISecondKit* k : {getPlatformServices().secondKit, getPlatformServices().thirdKit})
+        if (k && k->state() == ISecondKit::State::Loading) return false;
+    return true;
 }
 
 void SongSounds::kitLoaded()

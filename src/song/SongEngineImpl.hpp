@@ -1014,8 +1014,8 @@ private:
     bool        takeRecMute_ = false;            // a REC's pass not landed yet: not heard under it
     /* What applySeqSound() last gave setSeqGain(), kit and pitch; under
      * songMutex_. */
-    float       seqGain_[3] = {1.0f, 1.0f, 1.0f};
-    float       seqPan_[3] = {0.0f, 0.0f, 0.0f};
+    float       seqGain_[4] = {1.0f, 1.0f, 1.0f, 1.0f};
+    float       seqPan_[4] = {0.0f, 0.0f, 0.0f, 0.0f};
     /* The seq view's block (openSeqEdit), under songMutex_: its track (-1
      * none), the bar it starts on, the scene it is edited in, whether it is
      * on the track yet, and the sequencer's edit count last handed over. */

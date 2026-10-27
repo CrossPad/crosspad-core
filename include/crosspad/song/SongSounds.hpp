@@ -2,6 +2,7 @@
 #pragma once
 
 #include "crosspad/kit/KitInfo.hpp"
+#include "crosspad/song/AudioSong.hpp"
 #include "crosspad/util/RetryBackoff.hpp"
 
 #include <atomic>
@@ -55,8 +56,9 @@ public:
  * The song's kit is followed after it settles too: a kit given to the song
  * later (Arrange's kit track) is loaded as an opening song's is, and a kit
  * load that finishes after the song was given a newer one is not written
- * over it -- the newer pick wins. A song's second kit track plays its own kit
- * (AudioSong::seqRoute() 1), held every step in PlatformServices::secondKit.
+ * over it -- the newer pick wins. A song's kit tracks with a kit of their own
+ * play it in the kit slot they hold (AudioSong::kitSlots), held every step in
+ * PlatformServices::secondKit and ::thirdKit.
  *
  * Reads the song engine, the kit manager, the instrument host and the second
  * kit from PlatformServices.
@@ -137,7 +139,7 @@ private:
     /// The openGen_ savesHeard_ was seeded for. UI thread.
     uint32_t seededGen_ = UINT32_MAX;
     /// A second kit that would not load, said once. UI thread.
-    std::string secondKitSaid_;
+    std::string secondKitSaid_[AudioSong::kKitSlots];
     /// The song's instrument when it would not load: asked for again on instRetry_'s
     /// clock (stepMs_, kStepMs a step), said once. UI thread.
     std::string instWanted_;

@@ -278,14 +278,27 @@ public:
     /// is the first seq track (armedSeqTrack()). Not part of undo, as the
     /// sounds are not.
     int8_t      armed = -1;
-    /// The kit track with a kit of its own that the second kit engine plays
-    /// now (seqRoute() 1); -1 for none. There is one such engine and any
-    /// number of those tracks: the others play their freeze (SongTrack::freeze)
-    /// and are silent while they have none that is current (liveRoute()). It
-    /// moves to the armed track once the one holding it is frozen (Arrange).
-    /// Not saved and not part of undo: load() gives it to the armed track, else
-    /// the first one with a kit of its own.
-    int8_t      kitSlot = -1;
+    /// The kit tracks with a kit of their own that the two kit engines play
+    /// now (seqRoute() 1; slot 0 is PlatformServices::secondKit on route 1,
+    /// slot 1 ::thirdKit on route 3); -1 for none. Any number of those tracks
+    /// are in a song: the others play their freeze (SongTrack::freeze) and are
+    /// silent while they have none that is current (liveRoute()). Two, so ARM
+    /// can move between them while the song plays: the armed track takes one
+    /// at once, the one it left keeps the other until it is frozen
+    /// (crosspad::kitSlotsNext(), Arrange). Not saved and not part of undo:
+    /// load() gives slot 0 to the armed track, else the first one with a kit
+    /// of its own.
+    static constexpr int kKitSlots = 2;
+    int8_t      kitSlots[kKitSlots] = {-1, -1};
+    /// The slot @p track holds, or -1.
+    int kitSlotOf(int track) const
+    {
+        for (int s = 0; s < kKitSlots; ++s)
+            if (track >= 0 && kitSlots[s] == track) return s;
+        return -1;
+    }
+    /// The route slot @p slot's engine is on: 1, 3.
+    static constexpr int slotRoute(int slot) { return slot == 0 ? 1 : 3; }
     /// The loop region, in bars, [loopStart, loopEnd): with loop on, playback
     /// goes round it instead of the whole song. loopEnd <= loopStart = none.
     uint32_t    loopStart = 0;
@@ -349,15 +362,16 @@ public:
     /// song's kit --, 1 the second kit engine, for a kit track with a kit of
     /// its own (SongTrack::kit), 2 the Pitch instrument. -1 for no seq.
     int seqRoute(int track) const;
-    /// seqRoute(), but -1 for a track with a kit of its own that is not the
-    /// one the second kit engine plays (kitSlot): its notes go nowhere.
+    /// The engine seq track @p track's notes go to now: seqRoute(), but for a
+    /// track with a kit of its own the route of the slot it holds -- 1 or 3
+    /// (slotRoute()) --, and -1 when it holds none: its notes go nowhere.
     int liveRoute(int track) const;
     /// The route a new seq track on @p source would take, or -1 when there is
     /// no room for it: route 2 for a Pitch track while no other has it; for a
     /// kit track 0 while no track plays the song's kit, else 1.
     int freeSeqRoute(SeqSource source) const;
-    /// The seq track playing through route @p route's engine now -- on 1 the
-    /// one holding kitSlot --, or -1.
+    /// The seq track playing through route @p route's engine now -- on 1 and
+    /// 3 the one holding that kit slot --, or -1.
     int seqTrackOnRoute(int route) const;
     /// The track @c armed names when it is a seq track in use, else the first
     /// seq track, else -1.
@@ -392,7 +406,7 @@ public:
     /// Make @p track a seq on @p source playing @p scene. A kit track takes
     /// the route that is free (freeSeqRoute()): on 0 it plays the song's kit,
     /// which @p kit, given, becomes; on 1 @p kit is its own and must be
-    /// given, and it takes kitSlot when no track holds it. Every new seq track is empty and plays only under its blocks
+    /// given, and it takes a kit slot no track holds. Every new seq track is empty and plays only under its blocks
     /// (SongTrack::seqBlocks). Returns false when the track is
     /// in use, there is no room for the seq, or another seq track plays
     /// @p scene -- two tracks on one scene overwrite each other's notes.

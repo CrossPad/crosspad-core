@@ -123,9 +123,11 @@ struct PlatformServices {
     /// the app's instrument library. Null where the platform has none.
     IInstrumentHost*  instrumentHost  = nullptr;
 
-    /// The kit a song's second kit track plays, in an engine of its own
-    /// beside the pads' one. Null where the platform has only the one.
+    /// The kits a song's kit tracks with a kit of their own play, two
+    /// engines beside the pads' one (AudioSong::kitSlots 0 and 1). Null where
+    /// the platform has fewer; thirdKit only where it has secondKit.
     ISecondKit*       secondKit       = nullptr;
+    ISecondKit*       thirdKit        = nullptr;
 
     /// The kit browser, for an app that picks a kit of its own (a song's
     /// kit tracks). Null where the platform has none.

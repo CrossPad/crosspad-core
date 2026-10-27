@@ -11,9 +11,10 @@
 
 namespace crosspad {
 
-/// The fingers on a song's second kit (ISecondKit): Arrange pushes it while
-/// that kit's track is armed, so what is played is what a REC on the track
-/// keeps. Plain hits -- the 16 levels are the Sampler's, on its own kit.
+/// The fingers on a kit of a track's own (ISecondKit): Arrange pushes it while
+/// such a track is armed, aimed at the kit slot the track holds (setSlot()),
+/// so what is played is what a REC on the track keeps. Plain hits -- the 16
+/// levels are the Sampler's, on its own kit.
 ///
 /// Only the fingers: a song's notes on the pads' route (the first kit track,
 /// EventSource::SequencerCallback) still reach the pads through whichever
@@ -39,11 +40,16 @@ public:
     /// HOLD would sound on until its sample ends.
     void onDeactivate(PadManager&) override
     {
-        ISecondKit* k = getPlatformServices().secondKit;
-        for (uint8_t i = 0; i < 16; ++i)
-            if ((held_ & (1u << i)) && k) k->noteOff(i);
-        held_ = 0;
+        for (uint8_t i = 0; i < 16; ++i) {
+            if (heldOn_[i]) heldOn_[i]->noteOff(i);
+            heldOn_[i] = nullptr;
+        }
     }
+
+    /// The kit slot the fingers play (AudioSong::kitSlots): 0 the second kit
+    /// engine, 1 the third. A pad held as it changes lets go where it was hit.
+    void setSlot(int slot) { slot_ = slot ? 1 : 0; }
+    int slot() const { return slot_; }
 
     void onPadPress(PadManager& pm, uint8_t pad, uint8_t velocity) override
     {
@@ -52,8 +58,9 @@ public:
             if (auto base = beneath(pm)) base->onPadPress(pm, pad, velocity);
             return;
         }
-        if (ISecondKit* k = getPlatformServices().secondKit) k->noteOn(pad, velocity);
-        held_ |= (uint16_t)(1u << pad);
+        if (heldOn_[pad]) heldOn_[pad]->noteOff(pad);
+        heldOn_[pad] = engine();
+        if (heldOn_[pad]) heldOn_[pad]->noteOn(pad, velocity);
         pm.notifyNoteOn(pad, velocity, /*fromSampler=*/true);
     }
     void onPadRelease(PadManager& pm, uint8_t pad) override
@@ -63,8 +70,8 @@ public:
             if (auto base = beneath(pm)) base->onPadRelease(pm, pad);
             return;
         }
-        if (ISecondKit* k = getPlatformServices().secondKit) k->noteOff(pad);
-        held_ &= (uint16_t)~(1u << pad);
+        if (heldOn_[pad]) heldOn_[pad]->noteOff(pad);
+        heldOn_[pad] = nullptr;
         pm.notifyNoteOff(pad, /*fromSampler=*/true);
     }
     void onPadPressure(PadManager&, uint8_t, uint8_t) override {}
@@ -77,7 +84,13 @@ private:
         return base.get() == this ? nullptr : base;
     }
 
-    uint16_t held_ = 0;   ///< pads a finger holds on the second kit
+    ISecondKit* engine() const
+    {
+        return slot_ ? getPlatformServices().thirdKit : getPlatformServices().secondKit;
+    }
+
+    int slot_ = 0;
+    ISecondKit* heldOn_[16] = {};   ///< the engine each pad a finger holds was hit on
 };
 
 } // namespace crosspad

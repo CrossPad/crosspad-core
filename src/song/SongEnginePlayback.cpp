@@ -576,30 +576,31 @@ void SongEngine::Impl::rebuild() {
 void SongEngine::Impl::applySeqSound() {
     const bool on = playing();
     uint8_t muted = 0;
-    float gain[3] = {1.0f, 1.0f, 1.0f};   // the pads' kit, the instrument, the second kit
-    float pan[3] = {0.0f, 0.0f, 0.0f};
+    float gain[4] = {1.0f, 1.0f, 1.0f, 1.0f};   // the pads' kit, the instrument, the kit slots' engines
+    float pan[4] = {0.0f, 0.0f, 0.0f, 0.0f};
     for (int t = 0; t < kTracks; ++t) {
         const int route = song_.liveRoute(t);
         if (route < 0) continue;
         const SongTrack& tr = song_.tracks[t];
         if ((takeRecMute_ && t == takeTrack_) || (on && song_.silenced(t))) muted |= (uint8_t)(1u << route);
         if (on) {
-            const int e = tr.source == SeqSource::Pitch ? 1 : route ? 2 : 0;
+            const int e = tr.source == SeqSource::Pitch ? 1 : route == 3 ? 3 : route ? 2 : 0;
             gain[e] = tr.volume;
             pan[e] = tr.pan;
         }
     }
     seq_.setSongRoutesMuted(muted);
-    for (int i = 0; i < 3; ++i) {
+    for (int i = 0; i < 4; ++i) {
+        const uint8_t kitRoute = i == 3 ? 3 : i == 2 ? 1 : 0;
         if (gain[i] != seqGain_[i]) {
             seqGain_[i] = gain[i];
             if (i == 1) p.setSeqGain(SeqSource::Pitch, gain[i]);
-            else        p.setKitGain(i == 2 ? 1 : 0, gain[i]);
+            else        p.setKitGain(kitRoute, gain[i]);
         }
         if (pan[i] != seqPan_[i]) {
             seqPan_[i] = pan[i];
             if (i == 1) p.setSeqPan(SeqSource::Pitch, pan[i]);
-            else        p.setKitPan(i == 2 ? 1 : 0, pan[i]);
+            else        p.setKitPan(kitRoute, pan[i]);
         }
     }
 }

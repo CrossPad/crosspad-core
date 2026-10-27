@@ -181,13 +181,14 @@ TEST_CASE("AudioSong: two kit tracks, the second on a kit of its own; a bounce f
     REQUIRE(s.tracks[1].kit == "/crosspad/kits/B/kit.json");
     REQUIRE(s.tracks[1].seqBlocks);                        // never the first's scene over everything
     REQUIRE(s.seqTracks() == 2);
-    REQUIRE(s.kitSlot == 1);
-    /* A third kit takes turns with it on the second kit engine. */
+    REQUIRE(s.kitSlots[0] == 1);
+    /* A third kit takes the other kit engine. */
     REQUIRE(s.seqSlotFree());
     REQUIRE(s.addSeqTrack(2, SeqSource::Kit, 4, "/crosspad/kits/C/kit.json"));
     REQUIRE(s.seqRoute(2) == 1);
-    REQUIRE(s.kitSlot == 1);                               // the first keeps the engine
-    REQUIRE(s.liveRoute(2) == -1);
+    REQUIRE(s.kitSlots[0] == 1);                               // the first keeps its engine
+    REQUIRE(s.kitSlots[1] == 2);
+    REQUIRE(s.liveRoute(2) == 3);
 
     const SongClip bounced{"t1_bnc.wav", 0, 4};
     REQUIRE(s.bounceSeqTrack(0, &bounced));
@@ -262,21 +263,25 @@ TEST_CASE("AudioSong: kits of their own take turns on the second kit engine", "[
         REQUIRE(a.addSeqTrack(t, SeqSource::Kit, (uint8_t)t, kit));
         CHECK(a.seqRoute(t) == 1);
     }
-    /* One plays through the engine, the rest have nothing to play them. */
-    CHECK(a.kitSlot == 1);
+    /* Two play through the engines, the rest have nothing to play them. */
+    CHECK(a.kitSlots[0] == 1);
+    CHECK(a.kitSlots[1] == 2);
     CHECK(a.seqTrackOnRoute(1) == 1);
+    CHECK(a.seqTrackOnRoute(3) == 2);
     CHECK(a.liveRoute(0) == 0);
     CHECK(a.liveRoute(1) == 1);
+    CHECK(a.liveRoute(2) == 3);
     CHECK(a.liveRoute(3) == -1);
-    a.kitSlot = 3;
+    a.kitSlots[0] = 3;
+    a.kitSlots[1] = -1;
     CHECK(a.seqTrackOnRoute(1) == 3);
     CHECK(a.liveRoute(1) == -1);
     /* A track above it removed: the slot moves up with its track. */
     a.removeTrack(1);
-    CHECK(a.kitSlot == 2);
+    CHECK(a.kitSlots[0] == 2);
     CHECK(a.tracks[2].kit == "/crosspad/kits/K3/kit.json");
     a.removeTrack(2);
-    CHECK(a.kitSlot == -1);
+    CHECK(a.kitSlots[0] == -1);
     CHECK(a.seqTrackOnRoute(1) == -1);
     /* More than one kit of its own is version 6; the armed one has the engine
      * when the song opens. */
@@ -292,7 +297,7 @@ TEST_CASE("AudioSong: kits of their own take turns on the second kit engine", "[
     CHECK(b.seqTracks() == 3);
     CHECK(b.seqRoute(1) == 1);
     CHECK(b.seqRoute(2) == 1);
-    CHECK(b.kitSlot == 2);
+    CHECK(b.kitSlots[0] == 2);
     /* A seq track is a scene: eight at most. */
     AudioSong c;
     for (int t = 0; t < AudioSong::kSeqScenes; ++t)
