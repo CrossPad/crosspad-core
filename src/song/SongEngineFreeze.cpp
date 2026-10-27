@@ -256,7 +256,7 @@ std::vector<SongEngine::Impl::FreezePiece> SongEngine::Impl::freezePlan(const Au
 std::vector<PatternSequencer::SongSpan> SongEngine::Impl::windowSpans(const AudioSong& song, int track, uint32_t spb,
                                                                       uint32_t w0, uint32_t w1) const {
     const SongTrack& t = song.tracks[track];
-    const int route = std::max(0, song.seqRoute(track));
+    const int route = std::max(0, song.engineRoute(track));
     std::vector<PatternSequencer::SongSpan> all;
     if (t.seqBlocks) {
         all = seqSpansOf(t, spb, song.seqTicksPerBar(), w1, (uint8_t)route);
@@ -571,7 +571,7 @@ void SongEngine::Impl::runBounce() {
         int route = 0;
         {
             std::lock_guard<std::recursive_mutex> l(songMutex_);
-            route = std::max(0, song_.seqRoute(bTrack_));
+            route = std::max(0, song_.engineRoute(bTrack_));
             fingersOnIt = std::max(0, song_.liveRoute(song_.armedSeqTrack())) == route;
         }
         /* A bounce asked for waits for the player before it takes their
@@ -610,7 +610,7 @@ void SongEngine::Impl::runBounce() {
             /* A track off the pads' route never plays the clock's scene:
              * its notes are mapped whether it has blocks or not. */
             if (tr.kind == TrackKind::Seq && (tr.seqBlocks || song_.seqRoute(bTrack_) > 0)) {
-                const int route = song_.seqRoute(bTrack_);
+                const int route = song_.engineRoute(bTrack_);
                 const uint32_t spb = clk.samplesPerBeat() * clk.beatsPerBar();
                 const uint32_t off = bFrom_ * spb;
                 std::vector<PatternSequencer::SongSpan> all;

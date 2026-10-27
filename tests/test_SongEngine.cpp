@@ -2356,6 +2356,56 @@ TEST_CASE("song engine: the seq view of the second kit's block plays its scene o
     r.engine->closeSeqEdit();
 }
 
+TEST_CASE("song engine: two kits of their own play on their slots' engines, faders and renders too",
+          "[song][route][slots]") {
+    Rig r;
+    REQUIRE(r.open("Demo"));
+    const uint32_t bar = r.engine->framesPerBar();
+    {
+        std::lock_guard<std::recursive_mutex> l(r.engine->songMutex());
+        auto& s = r.engine->song();
+        s.bpm = 120.0f;
+        REQUIRE(s.addSeqTrack(0, SeqSource::Kit, 0, "/crosspad/kits/DRUMS/kit.json"));
+        REQUIRE(s.addSeqTrack(1, SeqSource::Kit, 1, "/crosspad/kits/B/kit.json"));
+        REQUIRE(s.addSeqTrack(2, SeqSource::Kit, 2, "/crosspad/kits/C/kit.json"));
+        REQUIRE(s.kitSlots[0] == 1);
+        REQUIRE(s.kitSlots[1] == 2);
+        SeqNote a; a.pad = 1; a.vel = 100;
+        SeqNote b; b.pad = 2; b.vel = 100; b.tick = AudioSong::kSeqPpq;
+        SeqNote c; c.pad = 3; c.vel = 100; c.tick = 2 * AudioSong::kSeqPpq;
+        s.putSeqTake(0, 0, makeSeqPattern(1, {a}), s.samplesPerBar(kRate));
+        s.putSeqTake(1, 0, makeSeqPattern(1, {b}), s.samplesPerBar(kRate));
+        s.putSeqTake(2, 0, makeSeqPattern(1, {c}), s.samplesPerBar(kRate));
+        s.tracks[1].volume = 0.5f;
+        s.tracks[2].volume = 0.25f;
+    }
+    r.engine->commit();
+
+    RoutedHits heard;
+    r.seq.setSink(&RoutedHits::sink, &heard);
+    std::vector<float> out(kBlock * 2), bus(kBlock * 2, 0.0f);
+    REQUIRE(r.engine->play(0));
+    REQUIRE(waitFor([&] { r.block(out, bus); return r.engine->framesPlayed() > 0; }, 20000));
+    while (r.engine->framesPlayed() < bar - bar / 8) r.block(out, bus);
+    CHECK(r.platform.kitGain[1] == 0.5f);
+    CHECK(r.platform.kitGain[3] == 0.25f);
+    r.engine->stop();
+    REQUIRE(waitFor([&] { return !r.engine->playing(); }));
+    {
+        std::lock_guard<std::mutex> l(heard.m);
+        CHECK(heard.ons == std::vector<std::pair<uint8_t, uint8_t>>{{0, 1}, {1, 2}, {3, 3}});
+    }
+    /* The seq view of the second slot's track plays its scene on its engine. */
+    REQUIRE(r.engine->openSeqEdit(2, 0, 2));
+    CHECK(r.seq.sceneRoute() == 3);
+    r.engine->closeSeqEdit();
+    /* Its freeze renders through that engine too. */
+    REQUIRE(r.engine->freezeTrack(2));
+    REQUIRE(waitFor([&] { r.block(out, bus); return r.engine->freezeState(2) != FreezeState::Freezing &&
+                                                    r.platform.captureBegun > 0; }, 20000));
+    CHECK(r.platform.routeCaptured == 3);
+}
+
 // ── the seq track through Arrange's mixer ─────────────────────────────────
 
 TEST_CASE("song engine: a seq track's fader is on its engine while the song plays, and off at stop", "[song][seqmix]") {

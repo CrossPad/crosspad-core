@@ -316,8 +316,9 @@ Arrangement SongEngine::Impl::flatten(const AudioSong& song) const {
     }
     const uint32_t cut = std::max(a.end, a.loopB);
     for (int t = 0; t < kTracks; ++t) {
-        const int route = song.seqRoute(t);
-        if (route < 0) continue;
+        if (song.seqRoute(t) < 0) continue;
+        /* Each track's notes on the engine that plays them now. */
+        const int route = song.liveRoute(t);
         /* Frozen: its file, as an audio track's block, and no notes. */
         if (frozenPlays(song, t)) {
             for (const SongClip& fz : song.tracks[t].freeze) {
@@ -331,9 +332,9 @@ Arrangement SongEngine::Impl::flatten(const AudioSong& song) const {
             a.seqMapped = true;   // an empty map: the sequencer plays none of it
             continue;
         }
-        /* A kit of its own the second kit engine does not hold now: nothing
-         * to play its notes, until it is frozen or given the engine. */
-        if (song.liveRoute(t) < 0) continue;
+        /* A kit of its own neither kit engine holds now: nothing to play its
+         * notes, until it is frozen or given an engine. */
+        if (route < 0) continue;
         /* On the song's grid: the song sets the clock's tempo when it
          * starts the sequencer with it. A track that plays its scene
          * everywhere is one span of it over the whole song -- laid on the

@@ -366,6 +366,14 @@ public:
     /// track with a kit of its own the route of the slot it holds -- 1 or 3
     /// (slotRoute()) --, and -1 when it holds none: its notes go nowhere.
     int liveRoute(int track) const;
+    /// The engine a render or edit of track @p track plays through: liveRoute(),
+    /// else seqRoute() for a kit of its own in no slot (nothing then holds its
+    /// kit -- Arrange gives the track being played a slot first).
+    int engineRoute(int track) const
+    {
+        const int live = liveRoute(track);
+        return live >= 0 ? live : seqRoute(track);
+    }
     /// The route a new seq track on @p source would take, or -1 when there is
     /// no room for it: route 2 for a Pitch track while no other has it; for a
     /// kit track 0 while no track plays the song's kit, else 1.
