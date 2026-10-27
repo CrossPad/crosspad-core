@@ -1,6 +1,6 @@
 {
     "name": "crosspad-core",
-    "version": "2.27.0",
+    "version": "2.28.0",
     "license": "GPL-3.0-or-later",
     "description": "CrossPad portable core library",
     "keywords": ["crosspad", "midi", "sampler", "embedded"],

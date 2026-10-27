@@ -19,5 +19,6 @@ TEST_CASE("kit paths: a sample with fx lives beside it, a file per setting", "[k
     CHECK(renderedSamplePath("/k/kick.WAV", SampleFx{-12, 200, 8000}) == "/k/.fx/kick_p-12_h200_l8000.wav");
     CHECK(renderedSamplePath(s, SampleFx{0, 0, 5000}) == "/crosspad/kits/BASIC/SAMPLES/.fx/1_l5000.wav");
     CHECK(renderedSamplePath(s, SampleFx{0, 0, 0, true}) == "/crosspad/kits/BASIC/SAMPLES/.fx/1_r.wav");
+    CHECK(renderedSamplePath(s, SampleFx{-2, 0, 0, false, true}) == "/crosspad/kits/BASIC/SAMPLES/.fx/1_p-2k.wav");
     CHECK(renderedSamplePath(s, SampleFx{}) == s);
 }

@@ -9,16 +9,23 @@ namespace crosspad {
 /// (varispeed) and filtered, high pass then low pass, 12 dB per octave each.
 /// The sample player can do none of it, so a pad with any of it plays a copy
 /// rendered once (renderedSamplePath()); an audition applies the same live.
+///
+/// @c keepLength transposes without the tempo: the sample stretched by the
+/// pitch's ratio (TimeStretch::run), then read back at it (repitch), so it
+/// lasts as long as before -- what a clip on a song's bars needs. Rendered
+/// only; an audition plays it varispeed.
 struct SampleFx {
     int      semitones = 0;    ///< -12..+12 (SliceMath::pitchRatio)
     uint16_t hpHz = 0;         ///< high pass cutoff; 0 = off
     uint16_t lpHz = 0;         ///< low pass cutoff; 0 = off
     bool     reverse = false;  ///< played from its end to its start
+    bool     keepLength = false; ///< with semitones: the length kept, not varispeed
 
     bool any() const { return semitones || hpHz || lpHz || reverse; }
     bool operator==(const SampleFx& o) const
     {
-        return semitones == o.semitones && hpHz == o.hpHz && lpHz == o.lpHz && reverse == o.reverse;
+        return semitones == o.semitones && hpHz == o.hpHz && lpHz == o.lpHz && reverse == o.reverse &&
+               keepLength == o.keepLength;
     }
 };
 

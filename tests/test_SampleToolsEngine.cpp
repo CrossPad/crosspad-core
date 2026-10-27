@@ -367,6 +367,40 @@ TEST_CASE("SampleToolsEngine renders a pad's copy once", "[sampletools]") {
     CHECK(readWavData(out).size() == 2000 * 2);
 }
 
+TEST_CASE("SampleToolsEngine transposes a clip and keeps its length", "[sampletools]") {
+    Rig r;
+    const std::string src = (r.dir / "tone.wav").string();
+    const std::string out = (r.dir / "tone_p+12k.wav").string();
+    constexpr uint32_t kFrames = 44100;
+    {
+        std::vector<int16_t> pcm(kFrames * 2);
+        for (uint32_t i = 0; i < kFrames; ++i) {
+            pcm[i * 2] = pcm[i * 2 + 1] =
+                (int16_t)std::lround(12000.0 * std::sin(2.0 * 3.14159265358979323846 * 441.0 * i / 44100.0));
+        }
+        WavWriter w;
+        REQUIRE(w.open(src.c_str(), 44100, 2));
+        REQUIRE(w.write(pcm.data(), kFrames));
+        REQUIRE(w.close());
+    }
+    SampleFx fx;
+    fx.semitones = 12;
+    fx.keepLength = true;
+    const int freedBefore = r.platform.freed.load();
+    REQUIRE(r.tools->requestRendered(src, out, fx));
+    REQUIRE(r.finished() == ToolJob::Ready);
+    CHECK_FALSE(fs::exists(out + ".tmp"));
+    CHECK_FALSE(fs::exists(out + ".tmp.str"));                // the stretched pass is gone
+    CHECK(r.platform.freed.load() == freedBefore + 1);             // and its working memory given back
+    const auto pcm = readWavData(out);
+    REQUIRE(pcm.size() == kFrames * 2);                       // as long as it was
+    /* An octave up: twice the rising zero crossings over the middle. */
+    int crossings = 0;
+    for (uint32_t i = 11025; i < 33075; ++i) crossings += pcm[(i - 1) * 2] < 0 && pcm[i * 2] >= 0;
+    CHECK(crossings >= 435);
+    CHECK(crossings <= 447);                                  // 882 Hz over 0.5 s: 441
+}
+
 TEST_CASE("SampleToolsEngine writes slices out as a Slice kit: one WAV, a region a pad", "[sampletools][slice]") {
     Rig r;
     PortableKitLoader loader(r.dir.string());

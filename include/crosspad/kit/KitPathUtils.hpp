@@ -38,7 +38,8 @@ std::string kitFsPath(const std::string& logicalPath);
 /// Where a sample played with @p fx is kept: the sample player can neither
 /// transpose nor filter, so such a pad plays a copy rendered once, in a hidden
 /// folder beside the sample, a file per setting --
-/// "<dir>/.fx/<stem>_p+3_h200_l8000.wav", only what is set named. Logical in,
+/// "<dir>/.fx/<stem>_p+3_h200_l8000.wav", only what is set named ("_p+3k" for
+/// a pitch that keeps the length). Logical in,
 /// logical out; no fx is the sample itself.
 std::string renderedSamplePath(const std::string& logicalPath, const SampleFx& fx);
 

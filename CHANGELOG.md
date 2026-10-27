@@ -6,6 +6,16 @@ carries the same number) and consumers gate on it with
 `crosspad/RequireVersion.hpp`. This file starts at 1.45.0; earlier releases
 are described in their `chore: X.Y.Z` commits.
 
+## 2.28.0 — 2026-10-27
+
+- `SampleFx::keepLength`: with `semitones`, a rendered copy
+  (`ISampleTools::requestRendered()`) is transposed without its tempo --
+  `TimeStretch::run` to the pitch's ratio, then `repitch` back to the frames it
+  had, filters on the way out, reverse on the way in. Two passes over the card,
+  the working memory (`TimeStretch::workBytes()`) borrowed from
+  `allocRingSegment()` for the run. What the Recorder's FX puts on a clip in a
+  song, whose bars must not move. `renderedSamplePath()` names it `_p+3k`.
+
 ## 2.27.0 — 2026-10-27
 
 More tracks in a song, kits filed by folder, instruments by group.

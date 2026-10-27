@@ -31,6 +31,7 @@
 #include "crosspad/sampletools/SampleToolsEngine.hpp"
 
 #include "crosspad/audio/WavWriter.hpp"
+#include "crosspad/dsp/TimeStretch.hpp"
 #include "crosspad/instrument/InstrumentPlayState.hpp"
 #include "crosspad/kit/IKitManager.hpp"
 #include "crosspad/kit/KitFolders.hpp"
@@ -1458,17 +1459,94 @@ struct SampleToolsEngine::Impl {
         const std::string tmp = out + ".tmp";
         SampleFilters filters;
         filters.set(fx, r.rate ? r.rate : sampleRate_);
-        const bool ok = copyRegion(r, 0, r.frames, tmp, 0, SliceMath::pitchRatio(fx.semitones), 0, r.frames, r.rate,
-                                   &filters, fx.reverse);
+        const bool ok = fx.keepLength && fx.semitones
+                            ? renderKeepingLength(r, fx, tmp, filters)
+                            : copyRegion(r, 0, r.frames, tmp, 0, SliceMath::pitchRatio(fx.semitones), 0, r.frames,
+                                         r.rate, &filters, fx.reverse);
         r.close();
         if (!ok || !fsx::rename(tmp, out)) {
             fsx::remove(tmp);
             finish(false, "card write failed");
             return;
         }
-        logf(false, "%s %+d st hp %u lp %u%s -> %s", base_of(file).c_str(), fx.semitones, (unsigned)fx.hpHz,
-             (unsigned)fx.lpHz, fx.reverse ? " reversed" : "", out.c_str());
+        logf(false, "%s %+d st%s hp %u lp %u%s -> %s", base_of(file).c_str(), fx.semitones,
+             fx.keepLength && fx.semitones ? " (length kept)" : "", (unsigned)fx.hpHz, (unsigned)fx.lpHz,
+             fx.reverse ? " reversed" : "", out.c_str());
         finish(true, out);
+    }
+
+    /// What the TimeStretch callbacks of one pass work on.
+    struct StretchPass {
+        Impl*          self;
+        ClipReader*    in;
+        WavWriter*     out;
+        SampleFilters* filters;      ///< pass two: on the way out
+        bool           reverse;      ///< pass one: the input read from its end
+        uint32_t       pctFrom;      ///< where this pass's progress starts, of 99
+        uint32_t       pctSpan;
+    };
+
+    static bool stretch_read(void* c, uint32_t frame, int16_t* dst, uint32_t n) {
+        auto* sp = static_cast<StretchPass*>(c);
+        if (!sp->reverse) { sp->in->read(frame, dst, n); return true; }
+        /* Frames [frame, frame + n) of the file backwards: [len - frame - n,
+         * len - frame) forwards, turned round. TimeStretch asks only inside it. */
+        sp->in->read(sp->in->frames - frame - n, dst, n);
+        for (uint32_t a = 0, b = n - 1; a < b; ++a, --b) {
+            std::swap(dst[a * 2], dst[b * 2]);
+            std::swap(dst[a * 2 + 1], dst[b * 2 + 1]);
+        }
+        return true;
+    }
+
+    static bool stretch_write(void* c, const int16_t* src, uint32_t n) {
+        auto* sp = static_cast<StretchPass*>(c);
+        if (!sp->filters) return sp->out->write(src, n);
+        int16_t* io = sp->self->io_;           // kChunk frames, a hop is fewer
+        std::memcpy(io, src, (size_t)n * 4);
+        sp->filters->process(io, n);
+        return sp->out->write(io, n);
+    }
+
+    static bool stretch_keep(void* c, uint32_t done, uint32_t total) {
+        auto* sp = static_cast<StretchPass*>(c);
+        sp->self->progress_.store((uint8_t)(sp->pctFrom + (uint64_t)done * sp->pctSpan / total));
+        sp->self->giveWay();
+        return true;
+    }
+
+    /// @p r transposed by @p fx's semitones, its length kept: stretched by the
+    /// pitch's ratio into a file of its own (the pitch as it was), then that
+    /// read back at the ratio into exactly @p r's frames -- through
+    /// @p filters -- at @p path. Two passes over the card, half the progress
+    /// each; the working memory is borrowed for the run and given back.
+    bool renderKeepingLength(ClipReader& r, const SampleFx& fx, const std::string& path, SampleFilters& filters) {
+        if (!r.frames) return false;
+        const uint32_t rate = r.rate ? r.rate : sampleRate_;
+        const uint32_t stretched = (uint32_t)std::max<double>(
+            1.0, std::round((double)r.frames * SliceMath::pitchRatio(fx.semitones)));
+        bool lent = false;
+        void* work = p.allocRingSegment(TimeStretch::workBytes(), 1, false, lent);
+        if (!work) return false;
+        const std::string mid = path + ".str";
+        WavWriter w;
+        StretchPass one{this, &r, &w, nullptr, fx.reverse, 0, 49};
+        bool ok = w.open(mid.c_str(), rate, 2) &&
+                  TimeStretch::run(r.frames, stretched, work, stretch_read, stretch_write, stretch_keep, &one);
+        ok = w.close() && ok;
+        ClipReader m;
+        if (ok) ok = m.open(mid, p.storageReady());
+        if (ok) {
+            WavWriter w2;
+            StretchPass two{this, &m, &w2, filters.on() ? &filters : nullptr, false, 49, 50};
+            ok = w2.open(path.c_str(), rate, 2) &&
+                 TimeStretch::repitch(m.frames, r.frames, work, stretch_read, stretch_write, stretch_keep, &two);
+            ok = w2.close() && ok;
+        }
+        m.close();
+        fsx::remove(mid);
+        p.freeRingSegment(work);
+        return ok;
     }
 
     /// A sample brought up to the asked peak: one pass finds its loudest

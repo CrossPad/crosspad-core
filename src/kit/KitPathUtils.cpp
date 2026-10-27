@@ -139,6 +139,7 @@ std::string renderedSamplePath(const std::string& logicalPath, const SampleFx& f
     const auto dot = name.rfind('.');
     if (dot != std::string::npos) name.resize(dot);
     if (fx.semitones) name += (fx.semitones > 0 ? "_p+" : "_p") + std::to_string(fx.semitones);
+    if (fx.semitones && fx.keepLength) name += "k";
     if (fx.hpHz) name += "_h" + std::to_string(fx.hpHz);
     if (fx.lpHz) name += "_l" + std::to_string(fx.lpHz);
     if (fx.reverse) name += "_r";
