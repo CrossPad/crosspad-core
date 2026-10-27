@@ -35,6 +35,10 @@ public:
     /// tap this block. Without one it only keeps the pads' peak, which a
     /// platform whose seqLevel() answers never reads.
     bool capturing() const;
+    /// RT, after the render: one block of the harvested engine
+    /// (ISongEnginePlatform::beginHarvest()), stereo floats. Does nothing
+    /// while no harvest runs.
+    void rtHarvest(const float* bus, uint32_t frames);
     /// RT: the capture's ring is past half full -- an offline render waits
     /// here for the card to catch up instead of overflowing it.
     bool captureBacklogged() const;
@@ -111,6 +115,8 @@ public:
     bool bounceScene(uint8_t scene, uint8_t track) override;
     bool bounceSeqTrack(uint8_t track) override;
     bool freezeTrack(uint8_t track) override;
+    bool harvestTrack(uint8_t track) override;
+    int harvestingTrack(uint32_t* done = nullptr, uint32_t* total = nullptr) const override;
     FreezeState freezeState(uint8_t track) override;
     uint32_t playEndBars() override;
     bool liveStart() override;

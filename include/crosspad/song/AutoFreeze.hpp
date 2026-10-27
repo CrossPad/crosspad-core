@@ -28,9 +28,10 @@ int autoFreezeNext(const AudioSong& song, const FreezeState* states, uint32_t sk
 ///    is: its engine's memory and voices come back. While the song plays a
 ///    frozen one keeps its kit loaded, idle -- ARM going back to it is then
 ///    at once, not a load (a live set goes back and forth between two).
-///  - a free slot goes to a track with a kit of its own that plays, holds
-///    none and is not frozen as it is (not one in @p skip): heard live
-///    instead of silent, and an engine there for the freeze that ends it.
+///  - a track with a kit of its own that plays, holds none and is not
+///    frozen as it is (not one in @p skip) takes a free slot, else one a
+///    frozen track only keeps cached: heard live instead of silent, and an
+///    engine there for the freeze -- or the harvest -- that ends it.
 /// @p states is freezeState() of each of the song's kTracks tracks. Writes
 /// @p slots; returns whether they differ from the song's.
 bool kitSlotsNext(const AudioSong& song, const FreezeState* states, int want, int prevWant, uint32_t skip,

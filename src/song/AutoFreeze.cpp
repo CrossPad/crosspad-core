@@ -58,13 +58,18 @@ bool kitSlotsNext(const AudioSong& song, const FreezeState* states, int want, in
         if (h >= 0 && h != want && ((!playing && frozen(h)) || !plays(h))) slots[s] = -1;
     }
 
-    for (int s = 0; s < kSlots; ++s) {
-        if (slots[s] >= 0) continue;
-        for (int t = 0; t < AudioSong::kTracks; ++t) {
-            if (t == want || !plays(t) || frozen(t) || skipped(t) || slotOf(t) >= 0) continue;
-            slots[s] = (int8_t)t;
-            break;
-        }
+    /* A track nobody plays that is not frozen as it is is silent without
+     * an engine: it takes a free slot, else one a frozen track only keeps
+     * cached (never the fingers' or the one they just left). */
+    for (int t = 0; t < AudioSong::kTracks; ++t) {
+        if (t == want || !plays(t) || frozen(t) || skipped(t) || slotOf(t) >= 0) continue;
+        int pick = -1;
+        for (int s = 0; s < kSlots && pick < 0; ++s)
+            if (slots[s] < 0) pick = s;
+        for (int s = 0; s < kSlots && pick < 0; ++s)
+            if (frozen(slots[s]) && slots[s] != want && slots[s] != prevWant) pick = s;
+        if (pick < 0) break;
+        slots[pick] = (int8_t)t;
     }
 
     for (int s = 0; s < kSlots; ++s)

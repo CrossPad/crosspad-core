@@ -185,6 +185,20 @@ TEST_CASE("kit slots: the track the fingers just left keeps its engine while ano
     CHECK(slots[1] == 1);
 }
 
+TEST_CASE("kit slots: a stale track nobody plays takes a slot a frozen one only keeps cached",
+          "[song][freeze][slots]") {
+    AudioSong s = fourKits();
+    s.armed = 0;
+    s.kitSlots[0] = 1;                                    // frozen, cached while the song plays
+    s.kitSlots[1] = 2;                                    // the one the fingers just left
+    const FreezeState st[AudioSong::kTracks] = {FreezeState::Frozen, FreezeState::Frozen, FreezeState::Frozen,
+                                                FreezeState::Stale};
+    int8_t slots[AudioSong::kKitSlots];
+    CHECK(kitSlotsNext(s, st, 0, 2, 0, true, slots));
+    CHECK(slots[0] == 3);
+    CHECK(slots[1] == 2);
+}
+
 TEST_CASE("kit slots: an empty armed kit track gets a slot for the fingers", "[song][freeze][slots]") {
     AudioSong s = fourKits();
     REQUIRE(s.addSeqTrack(4, SeqSource::Kit, 4, "/crosspad/kits/E/kit.json"));   // nothing recorded yet

@@ -83,6 +83,14 @@ public:
     /// the clock or in real time. endPadsCapture() ends it. A platform
     /// without a tap per engine takes the pads as a bounce does.
     virtual void beginRouteCapture(uint8_t route) { (void)route; beginPadsCapture(); }
+    /// A harvest (SongEngine::harvestTrack()): while it lasts, every render
+    /// block, the platform hands SongEngine::rtHarvest() what the engine on
+    /// @p route made of it -- that engine's output at the Mixer's level and
+    /// pan for its channel, without the song's fader on it, as a freeze's
+    /// capture has it -- and keeps playing it out loud. A platform without
+    /// such a tap never harvests (the freezes wait for the song to stop).
+    virtual bool beginHarvest(uint8_t route) { (void)route; return false; }
+    virtual void endHarvest() {}
     /// A bounce's or a freeze's render off the clock, as fast as the platform can go: the
     /// outputs fall silent, the render runs the clock and the captured
     /// channels only, and holds back only for the card -- the capture's

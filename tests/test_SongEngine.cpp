@@ -2406,6 +2406,95 @@ TEST_CASE("song engine: two kits of their own play on their slots' engines, fade
     CHECK(r.platform.routeCaptured == 3);
 }
 
+TEST_CASE("song engine: a harvest freezes a kit of its own out of the song as it plays, without stopping it",
+          "[song][freeze][harvest]") {
+    Rig r;
+    REQUIRE(r.open("Demo"));
+    const uint32_t bar = r.engine->framesPerBar();
+    {
+        std::lock_guard<std::recursive_mutex> l(r.engine->songMutex());
+        auto& s = r.engine->song();
+        s.bpm = 120.0f;
+        s.length = 2;
+        REQUIRE(s.addSeqTrack(0, SeqSource::Kit, 0, "/crosspad/kits/DRUMS/kit.json"));
+        REQUIRE(s.addSeqTrack(1, SeqSource::Kit, 1, "/crosspad/kits/B/kit.json"));
+        SeqNote a; a.pad = 1; a.vel = 100;
+        SeqNote b; b.pad = 2; b.vel = 100;
+        s.putSeqTake(0, 0, makeSeqPattern(1, {a}), s.samplesPerBar(kRate));
+        s.putSeqTake(1, 0, makeSeqPattern(1, {b}), s.samplesPerBar(kRate));
+        s.armed = 0;
+    }
+    r.engine->commit();
+    CHECK_FALSE(r.engine->harvestTrack(1));                  // not playing
+    std::vector<float> out(kBlock * 2), bus(kBlock * 2, 0.25f);
+    REQUIRE(r.engine->play(0));
+    REQUIRE(waitFor([&] { r.block(out, bus); return r.engine->framesPlayed() > 0; }, 20000));
+    CHECK_FALSE(r.engine->harvestTrack(0));                  // armed: the fingers play it
+    REQUIRE(r.engine->harvestTrack(1));
+    CHECK(r.platform.harvestRoute == 1);
+    uint32_t done = 0, total = 0;
+    CHECK(r.engine->harvestingTrack(&done, &total) == 1);
+    CHECK(total == 1);
+    /* Round the two-bar loop until its one piece is in and the freeze lands
+     * -- near real time: the worker drains the harvest's ring every few ms. */
+    for (uint32_t i = 0; i < 8 * bar / kBlock && r.engine->freezeState(1) != FreezeState::Frozen; ++i) {
+        r.block(out, bus);
+        if (i % 8 == 0) std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    CHECK(r.engine->freezeState(1) == FreezeState::Frozen);
+    CHECK(r.engine->harvestingTrack() == -1);
+    CHECK(r.platform.harvestRoute == -1);
+    CHECK(r.engine->playing());                               // never stopped for it
+    CHECK(r.platform.captureBegun == 0);                     // and nothing rendered
+    {
+        std::lock_guard<std::recursive_mutex> l(r.engine->songMutex());
+        const auto& s = r.engine->song();
+        REQUIRE(s.tracks[1].freeze.size() == 1);             // the block and its tail into the gap, one render
+        CHECK(s.tracks[1].freeze[0].bars == 2);
+        const std::string path = s.clipPath(s.tracks[1].freeze[0].file);
+        FILE* f = std::fopen(path.c_str(), "rb");
+        REQUIRE(f);
+        std::fseek(f, 0, SEEK_END);
+        const long bytes = std::ftell(f);
+        std::fclose(f);
+        CHECK(bytes == (long)(44 + 2 * bar * 4));             // the block's bar and its tail, whole
+    }
+    r.engine->stop();
+    REQUIRE(waitFor([&] { return !r.engine->playing(); }));
+}
+
+TEST_CASE("song engine: a harvest is called off by ARM on its track, and keeps nothing half made",
+          "[song][freeze][harvest]") {
+    Rig r;
+    REQUIRE(r.open("Demo"));
+    {
+        std::lock_guard<std::recursive_mutex> l(r.engine->songMutex());
+        auto& s = r.engine->song();
+        s.bpm = 120.0f;
+        s.length = 2;
+        REQUIRE(s.addSeqTrack(0, SeqSource::Kit, 0, "/crosspad/kits/DRUMS/kit.json"));
+        REQUIRE(s.addSeqTrack(1, SeqSource::Kit, 1, "/crosspad/kits/B/kit.json"));
+        SeqNote b; b.pad = 2; b.vel = 100;
+        s.putSeqTake(1, 0, makeSeqPattern(1, {b}), s.samplesPerBar(kRate));
+        s.armed = 0;
+    }
+    r.engine->commit();
+    std::vector<float> out(kBlock * 2), bus(kBlock * 2, 0.25f);
+    REQUIRE(r.engine->play(0));
+    REQUIRE(waitFor([&] { r.block(out, bus); return r.engine->framesPlayed() > 0; }, 20000));
+    REQUIRE(r.engine->harvestTrack(1));
+    {
+        std::lock_guard<std::recursive_mutex> l(r.engine->songMutex());
+        r.engine->song().armed = 1;
+    }
+    r.engine->commit();
+    REQUIRE(waitFor([&] { r.block(out, bus); return r.engine->harvestingTrack() == -1; }, 20000));
+    CHECK(r.platform.harvestRoute == -1);
+    CHECK(r.engine->freezeState(1) != FreezeState::Frozen);
+    r.engine->stop();
+    REQUIRE(waitFor([&] { return !r.engine->playing(); }));
+}
+
 // ── the seq track through Arrange's mixer ─────────────────────────────────
 
 TEST_CASE("song engine: a seq track's fader is on its engine while the song plays, and off at stop", "[song][seqmix]") {

@@ -445,6 +445,23 @@ public:
     /// its own the second kit engine does not hold (AudioSong::kitSlot): its
     /// engine would render another track's kit.
     virtual bool freezeTrack(uint8_t track) { (void)track; return false; }
+    /// A freeze made while the song plays, out of what is heard: seq track
+    /// @p track -- live on a kit engine, not armed, not frozen as it is --
+    /// has each piece of its freeze recorded as the song passes through it
+    /// in one go (its run-in bar included), under the name a freeze would
+    /// give it, and once every piece is on the card it is frozen
+    /// (freezeTrack(), which then renders nothing). Its engine is free for
+    /// another track from then on, with the song still playing. Called off by
+    /// a stop, ARM on the track, an edit of it, its engine changing. False
+    /// when the song is not playing, a harvest or a bounce runs, or the
+    /// platform has no tap for it.
+    virtual bool harvestTrack(uint8_t track) { (void)track; return false; }
+    /// The track a harvest runs on, or -1; @p done / @p total its pieces.
+    virtual int harvestingTrack(uint32_t* done = nullptr, uint32_t* total = nullptr) const
+    {
+        (void)done; (void)total;
+        return -1;
+    }
     /// What @p track plays as now (FreezeState).
     virtual FreezeState freezeState(uint8_t track) { (void)track; return FreezeState::None; }
     virtual BounceStatus bounceStatus() = 0;

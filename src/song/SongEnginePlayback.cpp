@@ -54,19 +54,30 @@ void SongEngine::Impl::mix(float* out, uint32_t frames) {
     const int16_t* s = scratch_.data();
     float* o = out + skip * 2;
     for (uint32_t i = 0; i < got * 2; ++i) o[i] += (float)s[i] * (1.0f / 32768.0f);
-    uint32_t pos = pos_.load(std::memory_order_relaxed) + n;
+    const uint32_t from = pos_.load(std::memory_order_relaxed);
+    uint32_t pos = from + n;
     const uint32_t end = end_.load(std::memory_order_relaxed);
     const bool loop = loop_.load(std::memory_order_relaxed);
     const uint32_t la = loopA_.load(std::memory_order_relaxed), lb = loopB_.load(std::memory_order_relaxed);
     const uint32_t lim = loop && lb > la ? lb : end;
+    /* Where in the song this block was, for a harvest's capture (rtHarvest()):
+     * from `from`, and from hBlockWrapAt_ frames in on at hBlockWrapTo_. */
+    hBlockPos_ = from;
+    hBlockN_ = n;
+    hBlockWrapAt_ = n;
+    hBlockOk_ = skip == 0;
     if (lim && pos >= lim) {
         /* Modulo, not minus: the song can be shortened while it plays. */
-        if (loop) pos = wrap_position(pos, end, la, lb);
-        else {
+        if (loop) {
+            pos = wrap_position(pos, end, la, lb);
+            hBlockWrapAt_ = lim > from ? lim - from : 0;
+            hBlockWrapTo_ = pos >= n - hBlockWrapAt_ ? pos - (n - hBlockWrapAt_) : 0;
+        } else {
             Play expected = Play::Running;
             play_.compare_exchange_strong(expected, Play::Ended, std::memory_order_seq_cst);
         }
     }
+    hBlockGen_.fetch_add(1, std::memory_order_release);
     pos_.store(pos, std::memory_order_relaxed);
 }
 
@@ -921,6 +932,7 @@ void SongEngine::Impl::startPlayback(uint32_t fromBar) {
 
 void SongEngine::Impl::endPlayback() {
     lastFillUs_ = 0;
+    cancelHarvest("the song stopped");
     /* A take this playback ran lands before the sequencer stops: where
      * the song is when it stops is where the take ends. */
     if (takeBound_) {
