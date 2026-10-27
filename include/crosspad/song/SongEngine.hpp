@@ -129,6 +129,7 @@ public:
     double positionBars() const override;
     uint32_t framesPlayed() const override;
     uint32_t positionFrames() const override;
+    uint32_t streamAheadFrames() const override;
     uint32_t underruns() const override;
     uint32_t openFailures() const override;
     bool recordSeq(uint32_t fromBar, SyncTake take, uint8_t beats) override;

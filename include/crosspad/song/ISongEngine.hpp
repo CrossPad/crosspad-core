@@ -533,6 +533,10 @@ public:
     /// render plays, round a loop as it goes. Lock-free, for a render that
     /// lines a take up with a song already playing (its next bar line).
     virtual uint32_t positionFrames() const { return 0; }
+    /// While the song streams from the card: the frames its ring holds ahead
+    /// of playback; UINT32_MAX while it does not. Lock-free, for a reader of
+    /// the card that should give way before the ring runs dry.
+    virtual uint32_t streamAheadFrames() const { return UINT32_MAX; }
     /// Blocks of silence played because the card fell behind, since play().
     virtual uint32_t underruns() const = 0;
     /// Clip opens the card refused since play(); each is a track gone quiet.

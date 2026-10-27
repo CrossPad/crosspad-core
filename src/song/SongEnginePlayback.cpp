@@ -49,6 +49,7 @@ void SongEngine::Impl::mix(float* out, uint32_t frames) {
          * to skip, so the song comes back in time, not late. */
         debt_.fetch_add(n - got, std::memory_order_relaxed);
         underruns_.fetch_add(1, std::memory_order_relaxed);
+        underAt_[workerAt_.load(std::memory_order_relaxed)].fetch_add(1, std::memory_order_relaxed);
     }
     const int16_t* s = scratch_.data();
     float* o = out + skip * 2;
@@ -843,6 +844,10 @@ void SongEngine::Impl::startPlayback(uint32_t fromBar) {
                  (unsigned)(p.freeMemoryBytes() / 1024));
             return;
         }
+        /* Past the ring's minimum: without it the tracks read a chunk at a time. */
+        ahead_ = static_cast<uint8_t*>(p.allocRingSegment((size_t)kAheadBytes * kTracks, 0));
+        for (int t = 0; t < kTracks; ++t)
+            readers_[t].setAhead(ahead_ ? ahead_ + (size_t)t * kAheadBytes : nullptr, kAheadBytes);
         meterReset();
         writePos_ = from;
         debt_.store(0);
@@ -906,7 +911,14 @@ void SongEngine::Impl::endPlayback() {
         std::lock_guard<std::mutex> l(liveMutex_);
         for (int t = 0; t < kTracks; ++t) { liveCur_[t] = LiveSlot{}; liveReq_[t] = LiveReq{}; }
     }
-    for (auto& r : readers_) r.close();
+    for (auto& r : readers_) {
+        r.close();
+        r.setAhead(nullptr, 0);
+    }
+    if (ahead_) {
+        p.freeRingSegment(ahead_);
+        ahead_ = nullptr;
+    }
     ctxReader_.close();
     ring_.release();
     job_.store(Job::None);
@@ -1026,12 +1038,18 @@ void SongEngine::Impl::fillRings() {
             for (int i = 0; i < pieceCount[t]; ++i) {
                 const Piece& pc = pieces[t][i];
                 const int64_t r0 = p.nowUs();
-                if (readers_[t].path != pc.path &&
-                    !(p.storageReady() && readers_[t].open(std::string(pc.path)))) {
+                const int64_t tOpen = readers_[t].path != pc.path ? p.nowUs() : 0;
+                workerAt_.store(AtOpen, std::memory_order_relaxed);
+                const bool opened = readers_[t].path == pc.path ||
+                                    (p.storageReady() && readers_[t].open(std::string(pc.path)));
+                workerAt_.store(AtRead, std::memory_order_relaxed);
+                if (tOpen) dbgMax(dbgOpenMaxUs_, p.nowUs() - tOpen);
+                if (!opened) {
                     openFailures_.fetch_add(1, std::memory_order_relaxed);
                     continue;
                 }
                 readAt(readers_[t], pc.clipFrame, pc.step, chunk, pc.len);
+                workerAt_.store(AtFill, std::memory_order_relaxed);
                 /* One card access (an open included): a long one is the
                  * card held by someone else. */
                 dbgMax(dbgReadMaxUs_, p.nowUs() - r0);
@@ -1054,7 +1072,11 @@ void SongEngine::Impl::fillRings() {
                  * read with voices sounding, three tracks on a 1-bit card
                  * read slower than they played (ringmin 2848 frames,
                  * 09.10.2026). */
-                if (ring_.used() >= ring_.cap / 2) p.yieldIo();
+                if (ring_.used() >= ring_.cap / 2) {
+                    workerAt_.store(AtYield, std::memory_order_relaxed);
+                    p.yieldIo();
+                    workerAt_.store(AtFill, std::memory_order_relaxed);
+                }
             }
         }
         /* The context stem, as a track at unity with no meter: its descriptor
@@ -1071,7 +1093,11 @@ void SongEngine::Impl::fillRings() {
             dbgMax(dbgReadMaxUs_, p.nowUs() - r0);
             int32_t* d = acc + pc.at * 2;
             for (uint32_t k = 0; k < pc.len * 2; ++k) d[k] += chunk[k];
-            if (ring_.used() >= ring_.cap / 2) p.yieldIo();
+            if (ring_.used() >= ring_.cap / 2) {
+                workerAt_.store(AtYield, std::memory_order_relaxed);
+                p.yieldIo();
+                workerAt_.store(AtFill, std::memory_order_relaxed);
+            }
         }
         for (uint32_t k = 0; k < n * 2; ++k) {
             const int32_t v = acc[k];

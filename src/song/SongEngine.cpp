@@ -141,10 +141,12 @@ void SongEngine::Impl::worker() {
          * used: it runs now, not at the next one. A save due and the
          * elements' list are no such requests while the song streams: the
          * loop leaves them until the stop. */
+        workerAt_.store(AtWait, std::memory_order_relaxed);
         if (!requestWaiting(streaming))
             p.waitWake(streaming ? kStreamPollMs
                                  : background ? 0
                                  : saveReq_.load() ? kSaveDelayMs : (lastTried_ ? UINT32_MAX : kCardPollMs));
+        workerAt_.store(AtOther, std::memory_order_relaxed);
         if (quit_.load()) break;
         if (mix_ && mixMustEnd()) endMix(BakeRun::GaveWay);
 
@@ -241,11 +243,21 @@ void SongEngine::Impl::worker() {
             continue;
         }
         if (streamingNow()) {
+            workerAt_.store(AtTake, std::memory_order_relaxed);
             serviceTake();
+            workerAt_.store(AtFill, std::memory_order_relaxed);
+            const int64_t t0 = p.nowUs();
             fillRings();
+            const int64_t t1 = p.nowUs();
+            dbgMax(dbgFillMaxUs_, t1 - t0);
             /* The background reads only with half a ring in hand, as the
              * streamer does: below that the song is about to run dry. */
-            if (ring_.used() >= ring_.cap / 2 && play_.load() != Play::Ended) backgroundStep(true);
+            if (ring_.used() >= ring_.cap / 2 && play_.load() != Play::Ended) {
+                workerAt_.store(AtBackground, std::memory_order_relaxed);
+                backgroundStep(true);
+                dbgMax(dbgBgMaxUs_, p.nowUs() - t1);
+            }
+            workerAt_.store(AtOther, std::memory_order_relaxed);
         } else {
             backgroundStep(false);
         }
@@ -379,6 +391,7 @@ bool SongEngine::playing() const { return impl_->playing(); }
 double SongEngine::positionBars() const { return impl_->positionBars(); }
 uint32_t SongEngine::framesPlayed() const { return impl_->framesPlayed(); }
 uint32_t SongEngine::positionFrames() const { return impl_->positionFrames(); }
+uint32_t SongEngine::streamAheadFrames() const { return impl_->streamAheadFrames(); }
 uint32_t SongEngine::underruns() const { return impl_->underruns(); }
 uint32_t SongEngine::openFailures() const { return impl_->openFailures(); }
 bool SongEngine::recordSeq(uint32_t fromBar, SyncTake take, uint8_t beats) { return impl_->recordSeq(fromBar, take, beats); }

@@ -68,6 +68,11 @@ constexpr uint32_t kStreamPollMs     = 3;
 /// A commit is saved once nothing has been committed for this long: a fader
 /// turned is dozens of commits, and each one a card write under playback.
 constexpr uint32_t kSaveDelayMs      = 400;
+/// A playing track's read-ahead (ClipReader::setAhead()): four chunks of the
+/// card at a time, in whole sectors.
+constexpr uint32_t kAheadBytes       = 16384;
+/// After a freeze gave way (yieldFreeze()), how long no new one starts.
+constexpr int64_t  kYieldHoldUs      = 1500000;
 /// Why a freeze stopped for a player on its engine (runBounce()).
 constexpr const char* kGaveWay       = "waiting: the pads play its engine";
 /// Undo: steps kept each way, and how close changes come to be one step.
@@ -251,6 +256,22 @@ struct ClipReader {
      * pass is somewhere else in the file, and reads afresh. */
     uint32_t    heldAt = UINT32_MAX;
     int16_t     held[2 * kVarispeedGuard] = {};
+    /* readWhole()'s read-ahead (setAhead()): bytes of the file from aheadAt
+     * on, read a sector-aligned run at a time. */
+    uint8_t*    ahead = nullptr;
+    uint32_t    aheadCap = 0, aheadAt = 0, aheadLen = 0;
+
+    /// readWhole() through @p buf (@p cap bytes, a multiple of 512; the
+    /// caller's, null for none): one card read a run of it instead of one a
+    /// chunk. A 4 kB chunk at the WAV header's 44-byte offset was three card
+    /// commands -- a partial sector, the whole ones, a partial one --, and
+    /// eight tracks of them filled the card's time beside the sampler's
+    /// streamer (hil_track_transitions.py, 2026-10-27).
+    void setAhead(uint8_t* buf, uint32_t cap) {
+        ahead = buf;
+        aheadCap = buf ? cap : 0;
+        aheadLen = 0;
+    }
 
     void close() {
         if (fd >= 0) fsx::close(fd);
@@ -258,6 +279,7 @@ struct ClipReader {
         path.clear();
         cursor = UINT32_MAX;
         heldAt = UINT32_MAX;
+        aheadLen = 0;
     }
 
     bool readAll(void* dst, size_t n) { return fsx::readSome(fd, dst, n) == (long)n; }
@@ -314,18 +336,22 @@ struct ClipReader {
     bool readWhole(uint32_t frame, int16_t* dst, uint32_t n) {
         uint32_t got = 0, want = 0;
         if (fd >= 0 && frame < frames) {
-            if (cursor != frame) {
-                fsx::seek(fd, dataOffset + frame * channels * 2u);
-                cursor = frame;
-            }
             want = std::min(n, frames - frame);
             const uint32_t fb = channels * 2u;
-            const long r = fsx::readSome(fd, dst, want * fb);
-            got = r > 0 ? (uint32_t)r / fb : 0;
+            if (ahead) {
+                got = readAhead(frame, dst, want, fb);
+            } else {
+                if (cursor != frame) {
+                    fsx::seek(fd, dataOffset + frame * channels * 2u);
+                    cursor = frame;
+                }
+                const long r = fsx::readSome(fd, dst, want * fb);
+                got = r > 0 ? (uint32_t)r / fb : 0;
+                cursor = r > 0 && (uint32_t)r == got * fb ? cursor + got : UINT32_MAX;
+            }
             if (channels == 1) {
                 for (int32_t i = (int32_t)got - 1; i >= 0; --i) dst[i * 2] = dst[i * 2 + 1] = dst[i];
             }
-            cursor = r > 0 && (uint32_t)r == got * fb ? cursor + got : UINT32_MAX;
         }
         if (got < n) std::memset(dst + got * 2, 0, (n - got) * 4);
         return got == want;
@@ -363,6 +389,30 @@ struct ClipReader {
     }
 
 private:
+    /// @p want frames of @p fb bytes from @p frame on into @p dst, as they are
+    /// in the file, through the read-ahead; the frames it got.
+    uint32_t readAhead(uint32_t frame, int16_t* dst, uint32_t want, uint32_t fb) {
+        uint32_t done = 0;
+        while (done < want) {
+            const uint32_t at = dataOffset + (frame + done) * fb;
+            if (at < aheadAt || at + fb > aheadAt + aheadLen) {
+                const uint32_t from = at & ~511u;
+                cursor = UINT32_MAX;
+                aheadLen = 0;
+                if (!fsx::seek(fd, from)) break;
+                const long r = fsx::readSome(fd, ahead, aheadCap);
+                if (r <= 0) break;
+                aheadAt = from;
+                aheadLen = (uint32_t)r;
+                if (at + fb > aheadAt + aheadLen) break;   // the file ends inside this frame
+            }
+            const uint32_t k = std::min(want - done, (aheadAt + aheadLen - at) / fb);
+            std::memcpy(dst + (size_t)done * channels, ahead + (at - aheadAt), (size_t)k * fb);
+            done += k;
+        }
+        return done;
+    }
+
     /// Frames [@p first, @p first + @p count) of the file into @p s, the two held
     /// ones taken where they fall in it; at least kVarispeedGuard of them,
     /// whose last two are held after.
@@ -574,12 +624,25 @@ struct SongEngine::Impl {
     bool clipPeaks(const std::string& file, ClipPeaks& out);
     uint32_t peaksGeneration() const { return peaksGen_.load(); }
     const char* debugLine();
-    char dbg_[320] = {};
+    char dbg_[512] = {};
     /* ASONG_DBG's margins: see debugLine(). */
     std::atomic<uint32_t> dbgRingMin_{UINT32_MAX};
     std::atomic<uint32_t> dbgGapMaxUs_{0};
     std::atomic<uint32_t> dbgReadMaxUs_{0};
     std::atomic<uint32_t> dbgSaveMaxUs_{0};
+    std::atomic<uint32_t> dbgYieldMaxUs_{0};       // a caller's wait in yieldFreeze()
+    std::atomic<int64_t>  yieldHoldUs_{0};         // no freeze starts before then (kYieldHoldUs)
+    std::atomic<uint32_t> dbgFzSetupMaxUs_{0};     // runBounce() before its first piece of card
+    std::atomic<uint32_t> dbgFzTailMaxUs_{0};      // runBounce() from the take's end to its return
+    std::atomic<uint32_t> dbgFzLockMaxUs_{0};      // runFreeze()'s last pass under songMutex_
+    std::atomic<uint32_t> dbgFillMaxUs_{0};        // one fillRings()
+    std::atomic<uint32_t> dbgBgMaxUs_{0};          // one backgroundStep() while the song streams
+    std::atomic<uint32_t> dbgOpenMaxUs_{0};        // a playing track's clip opened
+    /* What the worker is doing (WorkerAt), and the song's underruns by what
+     * it was doing when RT found the ring empty: ASONG_DBG's under_at=. */
+    enum WorkerAt : uint8_t { AtWait, AtFill, AtRead, AtOpen, AtYield, AtBackground, AtTake, AtOther, kWorkerAts };
+    std::atomic<uint8_t>  workerAt_{AtOther};
+    std::atomic<uint32_t> underAt_[kWorkerAts] = {};
     int64_t lastFillUs_ = 0;                       // worker: the last top-up, 0 while not streaming
     static void dbgMax(std::atomic<uint32_t>& a, int64_t v);
     uint32_t framesPerBar();
@@ -612,6 +675,7 @@ struct SongEngine::Impl {
     double positionBars() const;
     uint32_t framesPlayed() const { return played_.load(std::memory_order_acquire); }
     uint32_t positionFrames() const { return pos_.load(std::memory_order_relaxed); }
+    uint32_t streamAheadFrames() const { return streamingNow() ? ring_.used() : UINT32_MAX; }
     uint32_t underruns() const { return underruns_.load(); }
     uint32_t openFailures() const { return openFailures_.load(); }
     bool recordSeq(uint32_t fromBar, SyncTake take, uint8_t beats);
@@ -1098,6 +1162,7 @@ private:
     // Playback.
     FrameRing   ring_;
     ClipReader  readers_[kTracks];
+    uint8_t*    ahead_ = nullptr;                 // the readers' read-ahead while the song plays, kAheadBytes each
     /// Where each track's blocks fall in the chunk being filled -- a block is
     /// at least a bar, so two at most, and a third for safety. The path is
     /// copied into the piece rather than a string: it is filled every 20 ms,

@@ -278,8 +278,11 @@ SeqPatternPtr SongEngine::Impl::scenePattern(uint8_t scene) const {
 /// sequencer, and a lap of the region that is over lands.
 void SongEngine::Impl::serviceTake() {
     if (seqTake_.load() == SyncTake::None) return;
-    std::lock_guard<std::recursive_mutex> l(songMutex_);
-    if (seqTake_.load() == SyncTake::None) return;
+    /* Not a wait for the song: a screen holding it to draw kept the worker
+     * off the ring until it ran dry (PUNCH over eight tracks, 2026-10-27).
+     * The notes wait in the sequencer for the next pass. */
+    std::unique_lock<std::recursive_mutex> l(songMutex_, std::try_to_lock);
+    if (!l.owns_lock() || seqTake_.load() == SyncTake::None) return;
     seq_.takeSongNotes(takeNotes_, false);
     const uint16_t laps = seq_.songTakeLaps();
     if (takeCycle_ && laps != takeLaps_) landLaps(laps);

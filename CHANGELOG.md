@@ -6,6 +6,28 @@ carries the same number) and consumers gate on it with
 `crosspad/RequireVersion.hpp`. This file starts at 1.45.0; earlier releases
 are described in their `chore: X.Y.Z` commits.
 
+## 2.31.0 — 2026-10-27
+
+- A playing track reads the card through a read-ahead
+  (`ClipReader::setAhead()`, `kAheadBytes` 16 kB each, from
+  `allocRingSegment()` while the song plays): a run of whole sectors instead of
+  a 4 kB chunk at the WAV header's odd offset, which was three card commands.
+  Eight tracks went from ~700 card reads a second to ~100 (SD_TRACE).
+- `ISongEngine::streamAheadFrames()` (new): what the song's ring holds while it
+  streams, for a reader of the card that gives way to it.
+- PLAY, REC or an open that cancels a freeze no longer waits for it twice: a
+  freeze is refused for `kYieldHoldUs` after one gave way (Arrange asks again),
+  and a freeze gives way between its pieces, before the next one's setup.
+  REC under a running freeze held its caller up to 6 s.
+- A take under playback does not wait for the song's lock: a screen holding it
+  to draw kept the worker off the ring until it ran dry (PUNCH over eight
+  tracks). The notes wait in the sequencer for the next pass.
+- ASONG_DBG (`debugLine()`): `yield_max_us`, `fz_setup_max_us`,
+  `fz_tail_max_us`, `fz_lock_max_us`, `fill_max_us`, `bg_max_us`,
+  `open_max_us`, and `under_at` -- the song's underruns by what its worker was
+  doing when the render found the ring empty (wait, fill, read, open, yield,
+  background, take, other).
+
 ## 2.30.0 — 2026-10-27
 
 - A bounced seq track's audio survives the song being opened again. BOUNCE

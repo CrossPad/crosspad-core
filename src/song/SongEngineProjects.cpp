@@ -105,7 +105,10 @@ const char* SongEngine::Impl::debugLine() {
     std::snprintf(dbg_, sizeof(dbg_),
                   "g=%.2f/%.2f/%.2f/%.2f seg=%d/%d/%d/%d end=%u loop=%u-%u "
                   "wp=%u ringfill=%u ringcap=%u ringmin=%u gap_max_us=%u read_max_us=%u "
-                  "save_max_us=%u play=%d job=%d live=%d ctx=%d/%d/%d",
+                  "save_max_us=%u play=%d job=%d live=%d ctx=%d/%d/%d "
+                  "yield_max_us=%u fz_setup_max_us=%u fz_tail_max_us=%u fz_lock_max_us=%u "
+                  "fill_max_us=%u bg_max_us=%u open_max_us=%u "
+                  "under_at=%u/%u/%u/%u/%u/%u/%u/%u",
                   (double)gain_[0].load(), (double)gain_[1].load(),
                   (double)gain_[2].load(), (double)gain_[3].load(),
                   seg[0], seg[1], seg[2], seg[3],
@@ -115,7 +118,15 @@ const char* SongEngine::Impl::debugLine() {
                   (unsigned)dbgGapMaxUs_.exchange(0), (unsigned)dbgReadMaxUs_.exchange(0),
                   (unsigned)dbgSaveMaxUs_.exchange(0),
                   (int)play_.load(), (int)job_.load(), (int)liveOn_.load(),
-                  ctxSeg, (int)(ctxReader_.fd >= 0), (int)ctxSolo_.load());
+                  ctxSeg, (int)(ctxReader_.fd >= 0), (int)ctxSolo_.load(),
+                  (unsigned)dbgYieldMaxUs_.exchange(0), (unsigned)dbgFzSetupMaxUs_.exchange(0),
+                  (unsigned)dbgFzTailMaxUs_.exchange(0), (unsigned)dbgFzLockMaxUs_.exchange(0),
+                  (unsigned)dbgFillMaxUs_.exchange(0), (unsigned)dbgBgMaxUs_.exchange(0),
+                  (unsigned)dbgOpenMaxUs_.exchange(0),
+                  (unsigned)underAt_[AtWait].load(), (unsigned)underAt_[AtFill].load(),
+                  (unsigned)underAt_[AtRead].load(), (unsigned)underAt_[AtOpen].load(),
+                  (unsigned)underAt_[AtYield].load(), (unsigned)underAt_[AtBackground].load(),
+                  (unsigned)underAt_[AtTake].load(), (unsigned)underAt_[AtOther].load());
     return dbg_;
 }
 

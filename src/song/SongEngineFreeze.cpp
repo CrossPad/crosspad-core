@@ -116,6 +116,11 @@ FreezeState SongEngine::Impl::freezeState(uint8_t track) {
 bool SongEngine::Impl::requestBounce(uint8_t scene, uint8_t track, uint32_t bars, uint32_t fromBar,
                                      uint32_t freezeKey, bool toAudio) {
     if (track >= kTracks || !ensureWorker()) return false;
+    /* A freeze waits out a moment after one gave way: the PLAY or take that
+     * cancelled it is still starting, and a freeze begun in between had it
+     * wait a second time (6 s of a frozen screen under REC). Arrange asks
+     * again later. */
+    if (freezeKey && !toAudio && p.nowUs() < yieldHoldUs_.load()) return false;
     /* A scene's bounce is audio for an audio track; only a seq track's own
      * bounce lands on the seq track. */
     if (!bars) {
@@ -160,7 +165,10 @@ bool SongEngine::Impl::yieldFreeze() {
     /* A piece stops at its next 4 kB, then closes its file and removes
      * it: well under this on the board, which only a card stalled in a
      * write runs out. */
+    const int64_t t0 = p.nowUs();
+    yieldHoldUs_.store(t0 + kYieldHoldUs);
     for (int i = 0; i < 600 && busy_.load(); ++i) p.sleepMs(5);
+    dbgMax(dbgYieldMaxUs_, p.nowUs() - t0);
     return !busy_.load();
 }
 
@@ -356,6 +364,12 @@ void SongEngine::Impl::runFreeze() {
     std::vector<std::string> used;
     uint32_t rendered = 0;
     for (const FreezePiece& pc : plan) {
+        /* Asked to give way between two pieces: before the next one's setup,
+         * not after it (yieldFreeze() waits for this). */
+        if (bCancel_.load()) {
+            setStatus(BounceState::Failed, "cancelled");
+            return;
+        }
         std::string file;
         {
             std::lock_guard<std::recursive_mutex> l(songMutex_);
@@ -396,6 +410,7 @@ void SongEngine::Impl::runFreeze() {
         ++status_.piecesDone;
     }
     {
+        const int64_t tLock = p.nowUs();
         std::lock_guard<std::recursive_mutex> l(songMutex_);
         SongTrack& tr = song_.tracks[bTrack_];
         if (tr.kind != TrackKind::Seq) {
@@ -437,6 +452,7 @@ void SongEngine::Impl::runFreeze() {
              (unsigned)(bTrack_ + 1), (unsigned)rendered, (unsigned)used.size(),
              (unsigned)(bToAudio_ ? tr.clips.size() : tr.freeze.size()));
         rebuild();
+        dbgMax(dbgFzLockMaxUs_, p.nowUs() - tLock);
     }
     doSave();
     setStatus(BounceState::Done, "");
@@ -476,6 +492,7 @@ void SongEngine::Impl::setStatus(BounceState st, const std::string& err) {
 }
 
 void SongEngine::Impl::runBounce() {
+    const int64_t tStart = p.nowUs();
     auto fail = [this](const char* why) {
         logf(true, "bounce failed: %s", why);
         setStatus(BounceState::Failed, why);
@@ -680,7 +697,10 @@ void SongEngine::Impl::runBounce() {
         const uint32_t n = bRing_.used() >= want || bDone_.load() ? bRing_.pop(chunk, want) : 0;
         if (n) {
             const int64_t t0 = p.nowUs();
-            if (!firstPop) firstPop = t0;
+            if (!firstPop) {
+                firstPop = t0;
+                dbgMax(dbgFzSetupMaxUs_, t0 - tStart);
+            }
             if (!p.writeIo(w.stream(), chunk, n * 4)) { error = "card write failed"; break; }
             w.advance(n);
             const int64_t now = p.nowUs();
@@ -719,6 +739,7 @@ void SongEngine::Impl::runBounce() {
     }
     if (!error && done != total) error = "take incomplete";
 
+    const int64_t tTail = p.nowUs();
     bArmed_.store(false, std::memory_order_seq_cst);
     restore();
     if (offline) p.endOffline();
@@ -728,6 +749,7 @@ void SongEngine::Impl::runBounce() {
 
     if (error || !closed) {
         std::remove(path.c_str());
+        dbgMax(dbgFzTailMaxUs_, p.nowUs() - tTail);
         bGaveWay_ = error && std::strcmp(error, kGaveWay) == 0;
         if (!bGaveWay_) fail(error ? error : "card write failed");   // runFreeze() decides
         return;
