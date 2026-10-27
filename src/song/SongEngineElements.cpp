@@ -459,7 +459,7 @@ SongOpState SongEngine::Impl::doElementFromRegion() {
     if (parts.empty()) return elementFailed("Nothing plays in those bars.", {});
     /* Names that reach outside the folders are refused before anything is written. */
     for (const RangeClip& k : parts) {
-        if (!k.clip.isElement() && src.tracks[k.track].kind == TrackKind::Audio && !is_clip_file_name(k.clip.file))
+        if (!k.clip.isElement() && src.tracks[k.track].kind == TrackKind::Audio && !is_song_clip_name(k.clip.file))
             return elementFailed("A recording's name is not a plain file name: " + k.clip.file, {});
     }
     std::string kept;   // the first component of an instrument the song keeps in its own folder
@@ -514,6 +514,8 @@ SongOpState SongEngine::Impl::doElementFromRegion() {
     for (const RangeClip& k : parts) {
         const std::string& file = k.clip.file;
         if (file.empty() || k.clip.isElement() || std::find(copied.begin(), copied.end(), file) != copied.end()) continue;
+        /* A bounced track's audio is in the freeze folder, and goes to the element's. */
+        if (file.find('/') != std::string::npos) fsx::makeDir(el.clipPath(kFreezeDir));
         if (!song_copy_file(src.clipPath(file), el.clipPath(file), yield))
             return elementFailed("The recording " + file + " could not be copied.", dir);
         copied.push_back(file);

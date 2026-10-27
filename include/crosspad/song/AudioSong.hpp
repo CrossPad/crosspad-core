@@ -485,6 +485,11 @@ private:
 /// wherever it points. load() empties a name that is not one.
 bool is_clip_file_name(const std::string& name);
 
+/// @p name is a file a track's block may play: a clip file name, or one
+/// inside clips/.freeze/ -- where a bounced seq track's audio stays, as its
+/// freeze rendered it.
+bool is_song_clip_name(const std::string& name);
+
 /// The folder name of an element made from @p seed: "E" and eight upper-case
 /// hex digits.
 std::string make_element_id(uint32_t seed);

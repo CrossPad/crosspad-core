@@ -68,6 +68,8 @@ constexpr uint32_t kStreamPollMs     = 3;
 /// A commit is saved once nothing has been committed for this long: a fader
 /// turned is dozens of commits, and each one a card write under playback.
 constexpr uint32_t kSaveDelayMs      = 400;
+/// Why a freeze stopped for a player on its engine (runBounce()).
+constexpr const char* kGaveWay       = "waiting: the pads play its engine";
 /// Undo: steps kept each way, and how close changes come to be one step.
 constexpr size_t   kUndoDepth        = 24;
 /// A take onto the seq track: notes the sequencer keeps between two worker
@@ -1157,6 +1159,7 @@ private:
     uint32_t              bWinTotal_ = 0, bWinSkip_ = 0;
     uint32_t              bSkip_ = 0;                // RT only while armed: run-in frames left
     bool                  bPieceOk_ = false;
+    bool                  bGaveWay_ = false;         // the piece stopped for a player on its engine
     std::string           bPieceFile_;
     float                 bBpm_ = 120.0f;
     std::atomic<bool>     busy_{false};

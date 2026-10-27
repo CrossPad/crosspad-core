@@ -6,6 +6,19 @@ carries the same number) and consumers gate on it with
 `crosspad/RequireVersion.hpp`. This file starts at 1.45.0; earlier releases
 are described in their `chore: X.Y.Z` commits.
 
+## 2.30.0 — 2026-10-27
+
+- A bounced seq track's audio survives the song being opened again. BOUNCE
+  leaves the track's blocks on its renders in `clips/.freeze/`, and `load()`
+  emptied every block name with a '/' in it -- the blocks went, and the next
+  save wrote the song without them. `is_song_clip_name()` (new): a clip name,
+  or one in the freeze folder; `load()` and an element made from a region
+  (which copies such a file into its own freeze folder) take both.
+- A BOUNCE asked for while the pads play the engine it renders waits for
+  them to stop instead of failing with "waiting: ..." (2.29.0); a press
+  during the render starts the piece again once they are quiet. Arrange's
+  automatic freeze still gives way and is tried again later.
+
 ## 2.29.0 — 2026-10-27
 
 - A freeze is never heard. `ISongEnginePlatform::beginRouteCapture()` now

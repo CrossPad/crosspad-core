@@ -374,9 +374,17 @@ void SongEngine::Impl::runFreeze() {
             bWinTotal_ = pc.cap * spb;
             bWinSkip_ = pc.pre * spb;
             bPieceFile_ = file;
-            bPieceOk_ = false;
-            runBounce();
-            if (!bPieceOk_) return;                  // runBounce() said why
+            /* A bounce asked for is not given up to a player on its
+             * engine: the piece again, once they are quiet. */
+            do {
+                bPieceOk_ = false;
+                bGaveWay_ = false;
+                runBounce();
+            } while (!bPieceOk_ && bGaveWay_ && bToAudio_ && !bCancel_.load());
+            if (!bPieceOk_) {
+                if (bGaveWay_) setStatus(BounceState::Failed, bCancel_.load() ? "cancelled" : kGaveWay);
+                return;                              // runBounce() said why
+            }
             ++rendered;
         }
         used.push_back(file);
@@ -549,6 +557,9 @@ void SongEngine::Impl::runBounce() {
             route = std::max(0, song_.seqRoute(bTrack_));
             fingersOnIt = std::max(0, song_.liveRoute(song_.armedSeqTrack())) == route;
         }
+        /* A bounce asked for waits for the player before it takes their
+         * engine off the outputs (a freeze is refused below instead). */
+        while (bToAudio_ && fingersOnIt && p.padsPlayedRecently() && !bCancel_.load()) p.sleepMs(20);
         p.beginRouteCapture((uint8_t)route);
     } else {
         p.beginPadsCapture();
@@ -635,7 +646,7 @@ void SongEngine::Impl::runBounce() {
      * So with someone playing it the freeze waits for quiet: refused here,
      * or given up at a press mid-take, and tried again later. */
     const bool waitQuiet = bFreeze_ && fingersOnIt;
-    if (waitQuiet && p.padsPlayedRecently()) error = "waiting: the pads play its engine";
+    if (waitQuiet && p.padsPlayedRecently()) error = kGaveWay;
     else seq.playback();
 
     const int64_t deadline = p.nowUs() +
@@ -648,7 +659,7 @@ void SongEngine::Impl::runBounce() {
     bool tooSlow = false;
     bool seqStopped = false;
     while (!error) {
-        if (waitQuiet && p.padsPlayedRecently()) { error = "waiting: the pads play its engine"; break; }
+        if (waitQuiet && p.padsPlayedRecently()) { error = kGaveWay; break; }
         /* A lost block is a failed take, whatever else is true: checked
          * first, so a ring that overflowed and then drained is never
          * reported as a finished clip. */
@@ -717,7 +728,8 @@ void SongEngine::Impl::runBounce() {
 
     if (error || !closed) {
         std::remove(path.c_str());
-        fail(error ? error : "card write failed");
+        bGaveWay_ = error && std::strcmp(error, kGaveWay) == 0;
+        if (!bGaveWay_) fail(error ? error : "card write failed");   // runFreeze() decides
         return;
     }
     logf(false, "bounced scene %u to %s (%u frames)", (unsigned)(bScene_ + 1), file.c_str(), (unsigned)done);

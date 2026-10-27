@@ -1040,6 +1040,26 @@ TEST_CASE("AudioSong: a clip name that leaves clips/ loads as a block with no fi
     for (const char* bad : {"", ".", "..", "a/b.wav", "a\\b.wav", "/abs.wav"}) CHECK_FALSE(is_clip_file_name(bad));
 }
 
+TEST_CASE("AudioSong: a bounced track's audio in the freeze folder survives a save", "[song][load]") {
+    const auto d = freshProject("cp_song_bounced");
+    AudioSong a = songAt120();
+    a.dir = d;
+    a.tracks[0].inUse = true;
+    a.addClip(0, {".freeze/FRZ0000000A.wav", 0, 2});    // what BOUNCE leaves on the track
+    a.addClip(0, {".freeze/FRZ0000000A.wav", 2, 2});    // and its DUP
+    a.addClip(0, {"take.wav", 4, 1});
+    REQUIRE(a.save());
+    AudioSong b;
+    REQUIRE(b.load(d) == SongLoad::Loaded);
+    REQUIRE(b.tracks[0].clips.size() == 3);
+    CHECK(b.tracks[0].clips[0].file == ".freeze/FRZ0000000A.wav");
+    CHECK(b.tracks[0].clips[1].file == ".freeze/FRZ0000000A.wav");
+    CHECK(is_song_clip_name("take.wav"));
+    CHECK(is_song_clip_name(".freeze/FRZ0000000A.wav"));
+    for (const char* bad : {".freeze/", ".freeze/../x.wav", ".freeze/a/b.wav", "other/x.wav", "../x.wav"})
+        CHECK_FALSE(is_song_clip_name(bad));
+}
+
 TEST_CASE("AudioSong: the song's kit and instrument survive a save, and a Pitch track is found", "[song][sounds]") {
     const auto d = freshProject("cp_song_sounds");
     AudioSong a = songAt120();
