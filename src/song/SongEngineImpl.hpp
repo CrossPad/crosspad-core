@@ -444,6 +444,7 @@ struct Arrangement {
     /// seqMapped false: a seq track with no blocks loops over everything).
     std::vector<PatternSequencer::SongSpan> seqSpans;
     bool     seqMapped = false;
+    uint32_t frozenMask = 0;      // a bit per track that plays its freeze, not its notes
     uint32_t end = 0;             // samples; 0 = empty song
     uint32_t samplesPerBar = 0;
     bool     loop = true;
@@ -1182,6 +1183,14 @@ private:
     };
     Meter                 meter_[kMeterSlots];
     std::atomic<float>    padsPeak_[2] = {};
+    /* What the sequencer was last given (pushSeqMap(), worker): which tracks
+     * played their freeze, the spans, and -- while a change between notes and
+     * freeze waits for the ring's audio to reach it -- the tracks changing
+     * over and the old notes of those that go to their freeze. */
+    uint32_t              mapFrozen_ = 0;
+    std::vector<PatternSequencer::SongSpan> mapSpans_;
+    uint32_t              transMask_ = 0;
+    std::vector<PatternSequencer::SongSpan> transOld_;
     std::atomic<int8_t>   seqRoute_[kTracks];   ///< AudioSong::seqRoute(), per track; -1 from the constructor
     std::atomic<Play>     play_{Play::Idle};
     std::atomic<bool>     syncing_{false};         // this playback runs the sequencer

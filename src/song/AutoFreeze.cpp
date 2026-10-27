@@ -42,9 +42,13 @@ bool kitSlotsNext(const AudioSong& song, const FreezeState* states, int want, in
             for (int s = 0; s < kSlots && pick < 0; ++s)
                 if (pred(slots[s])) pick = s;
         };
+        /* The track the fingers just left is the last to give its engine
+         * up: its notes play on until the song's ring reaches its freeze
+         * (SongEngine::pushSeqMap()), and another kit in its engine would
+         * play them. */
         first([&](int h) { return h < 0; });
-        first([&](int h) { return frozen(h) || !plays(h); });
-        first([&](int h) { return skipped(h); });
+        first([&](int h) { return (frozen(h) || !plays(h)) && h != prevWant; });
+        first([&](int h) { return skipped(h) && h != prevWant; });
         first([&](int h) { return h != prevWant; });
         slots[pick < 0 ? kSlots - 1 : pick] = (int8_t)want;
     }

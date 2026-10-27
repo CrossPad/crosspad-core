@@ -20,8 +20,9 @@ int autoFreezeNext(const AudioSong& song, const FreezeState* states, uint32_t sk
 ///    one) takes a slot at once when it has a kit of its own and holds none:
 ///    a free one, else one whose track is frozen as it is (it plays its
 ///    freeze) or plays nothing, else one whose freeze keeps failing
-///    (@p skip), else the one not held by @p prevWant -- the track the
-///    fingers played before, whose notes were the last to change.
+///    (@p skip), else any -- never the one @p prevWant holds while another
+///    will do: the track the fingers just left, whose notes play on until
+///    the song's ring reaches its freeze, and whose notes changed last.
 ///  - a track that is not @p want gives its slot back once it plays nothing,
 ///    or, with the song stopped (@p playing false), once it is frozen as it
 ///    is: its engine's memory and voices come back. While the song plays a

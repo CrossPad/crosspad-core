@@ -321,6 +321,7 @@ Arrangement SongEngine::Impl::flatten(const AudioSong& song) const {
         const int route = song.liveRoute(t);
         /* Frozen: its file, as an audio track's block, and no notes. */
         if (frozenPlays(song, t)) {
+            a.frozenMask |= 1u << t;
             for (const SongClip& fz : song.tracks[t].freeze) {
                 Segment s;
                 s.start = fz.bar * a.samplesPerBar;
@@ -343,12 +344,14 @@ Arrangement SongEngine::Impl::flatten(const AudioSong& song) const {
          * engine they play through. */
         if (song.tracks[t].seqBlocks) {
             auto spans = seqSpansOf(song.tracks[t], a.samplesPerBar, song.seqTicksPerBar(), cut, (uint8_t)route);
+            for (auto& sp : spans) sp.track = (uint8_t)t;
             a.seqSpans.insert(a.seqSpans.end(), std::make_move_iterator(spans.begin()),
                               std::make_move_iterator(spans.end()));
         } else {
             PatternSequencer::SongSpan all;
             all.b = cut;
             all.route = (uint8_t)route;
+            all.track = (uint8_t)t;
             /* The clock plays one scene, the pads' kit's: a Pitch track's
              * goes round as notes of its own, as it is now. */
             if (route) {
@@ -492,21 +495,55 @@ PatternSequencer::SongNotes SongEngine::Impl::songNotes(const SeqPatternPtr& p, 
 
 /// The sequencer laid on what the song plays now: the seq track's blocks,
 /// wrapping where the song does -- or, with none, its own loop. Worker.
+/* A track that goes from its notes to its freeze -- ARM left it -- or back
+ * changes over where the song's ring does: what the ring holds was mixed
+ * before the change, ~1.5 s of it, and the notes changing at once left the
+ * one track out of the song for that long and played the other twice. Its
+ * old notes play on, or its new ones wait, until the ring's audio reaches
+ * the change (PatternSequencer::setSongMapThen()); every other track's
+ * notes change at once, an edit heard as it is made. */
 void SongEngine::Impl::pushSeqMap() {
     std::vector<PatternSequencer::SongSpan> spans;
     bool mapped = false;
-    uint32_t wrapFrom = 0, wrapTo = 0;
+    uint32_t wrapFrom = 0, wrapTo = 0, frozen = 0;
     {
         std::lock_guard<std::mutex> l(snapMutex_);
         mapped = snap_.seqMapped;
         if (mapped) spans = snap_.seqSpans;
+        frozen = snap_.frozenMask;
         const bool region = snap_.loopB > snap_.loopA;
         wrapFrom = snap_.loop ? (region ? snap_.loopB : snap_.end) : 0;
         wrapTo = region ? snap_.loopA : 0;
         mapSentGen_ = snapGen_.load();
     }
-    if (mapped) seq_.setSongMap(spans, wrapFrom, wrapTo);
-    else        seq_.clearSongMap();
+    const uint32_t changed = frozen ^ mapFrozen_;
+    const bool running = play_.load() == Play::Running && !liveOn_.load();
+    uint32_t ahead = 0;
+    if (running && mapped && changed) {
+        ahead = ring_.used();
+        transMask_ = changed;
+        transOld_.clear();
+        for (const auto& s : mapSpans_)
+            if (s.track < kTracks && (changed & (1u << s.track)) && (frozen & (1u << s.track))) transOld_.push_back(s);
+    } else if (running && mapped && transMask_) {
+        ahead = seq_.songMapLaterIn();   // a change still on its way: the same point
+    }
+    if (!ahead) transMask_ = 0;
+    mapFrozen_ = frozen;
+    mapSpans_ = mapped ? spans : std::vector<PatternSequencer::SongSpan>{};
+    if (!mapped) {
+        seq_.clearSongMap();
+        return;
+    }
+    if (!ahead) {
+        seq_.setSongMap(spans, wrapFrom, wrapTo);
+        return;
+    }
+    std::vector<PatternSequencer::SongSpan> now;
+    for (const auto& s : spans)
+        if (s.track >= kTracks || !(transMask_ & (1u << s.track))) now.push_back(s);
+    now.insert(now.end(), transOld_.begin(), transOld_.end());
+    seq_.setSongMapThen(now, std::move(spans), ahead, wrapFrom, wrapTo);
 }
 
 /// Worker: track @p t's loudest frames @p m (left, right) in hop @p hop

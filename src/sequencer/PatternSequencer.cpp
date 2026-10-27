@@ -444,19 +444,55 @@ void PatternSequencer::setSongMap(const std::vector<SongSpan>& spans, uint32_t w
 {
     std::lock_guard<std::recursive_mutex> lock(editMutex_);
     map_ = spans;
+    mapLater_.clear();
+    laterLeft_ = 0;
     mapWrapFrom_ = wrapFrom;
     mapWrapTo_ = wrapTo < wrapFrom ? wrapTo : 0;
     mapOn_ = true;
+}
+
+void PatternSequencer::setSongMapThen(const std::vector<SongSpan>& now, std::vector<SongSpan> later,
+                                      uint32_t afterSamples, uint32_t wrapFrom, uint32_t wrapTo)
+{
+    std::lock_guard<std::recursive_mutex> lock(editMutex_);
+    setSongMap(afterSamples ? now : later, wrapFrom, wrapTo);
+    if (!afterSamples) return;
+    mapLater_ = std::move(later);
+    laterLeft_ = afterSamples;
+}
+
+uint32_t PatternSequencer::songMapLaterIn() const
+{
+    std::lock_guard<std::recursive_mutex> lock(editMutex_);
+    return laterLeft_;
 }
 
 void PatternSequencer::clearSongMap()
 {
     std::lock_guard<std::recursive_mutex> lock(editMutex_);
     map_.clear();
+    mapLater_.clear();
+    laterLeft_ = 0;
     mapOn_ = false;
 }
 
+/* What is due, up to where a later map takes over, then the rest on it. */
 void PatternSequencer::fireSong(uint32_t samples, uint32_t loop)
+{
+    while (laterLeft_ && samples) {
+        const uint32_t run = std::min(samples, laterLeft_);
+        fireSongRun(run, loop);
+        samples -= run;
+        laterLeft_ -= run;
+        if (!laterLeft_) {
+            map_.swap(mapLater_);
+            mapLater_.clear();
+        }
+    }
+    if (samples) fireSongRun(samples, loop);
+}
+
+void PatternSequencer::fireSongRun(uint32_t samples, uint32_t loop)
 {
     if (!loop) return;
     uint32_t pos = mapPos_;

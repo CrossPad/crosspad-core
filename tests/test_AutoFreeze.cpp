@@ -172,6 +172,19 @@ TEST_CASE("kit slots: a free slot goes to a stale track nobody plays, so it is h
     CHECK_FALSE(kitSlotsNext(s, st, 0, -1, 1u << 2, false, slots));   // its freeze keeps failing: not again
 }
 
+TEST_CASE("kit slots: the track the fingers just left keeps its engine while another will do",
+          "[song][freeze][slots]") {
+    AudioSong s = fourKits();
+    s.kitSlots[0] = 3;                                    // just left: its notes play on to the ring's change
+    s.kitSlots[1] = 2;
+    const FreezeState st[AudioSong::kTracks] = {FreezeState::Frozen, FreezeState::Frozen, FreezeState::Frozen,
+                                                FreezeState::Frozen};
+    int8_t slots[AudioSong::kKitSlots];
+    CHECK(kitSlotsNext(s, st, 1, 3, 0, true, slots));
+    CHECK(slots[0] == 3);
+    CHECK(slots[1] == 1);
+}
+
 TEST_CASE("kit slots: an empty armed kit track gets a slot for the fingers", "[song][freeze][slots]") {
     AudioSong s = fourKits();
     REQUIRE(s.addSeqTrack(4, SeqSource::Kit, 4, "/crosspad/kits/E/kit.json"));   // nothing recorded yet
