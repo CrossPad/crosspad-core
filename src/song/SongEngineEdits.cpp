@@ -596,9 +596,9 @@ void SongEngine::Impl::pack(const AudioSong& s, Snapshot& out) {
         out.side[i] = {t.input, t.freeze, t.freezeKey, t.freezeSalt, t.freezeKit};
     }
     for (const auto& t : s.tracks) {
-        const uint8_t head[5] = {
+        const uint8_t head[6] = {
             (uint8_t)((t.inUse ? 1 : 0) | (t.muted ? 2 : 0) | (t.solo ? 4 : 0) | (t.seqBlocks ? 8 : 0)),
-            (uint8_t)t.kind, (uint8_t)t.source, (uint8_t)t.stretch, t.scene};
+            (uint8_t)t.kind, (uint8_t)t.source, (uint8_t)t.stretch, t.scene, t.colour};
         put(head, sizeof head);
         put(&t.volume, sizeof t.volume);
         put(&t.pan, sizeof t.pan);
@@ -660,7 +660,7 @@ void SongEngine::Impl::unpack(const Snapshot& in, AudioSong& s) {
     get(&s.loopStart, 4);
     get(&s.loopEnd, 4);
     for (auto& t : s.tracks) {
-        uint8_t head[5] = {};
+        uint8_t head[6] = {};
         get(head, sizeof head);
         t.inUse = head[0] & 1;
         t.muted = head[0] & 2;
@@ -670,6 +670,7 @@ void SongEngine::Impl::unpack(const Snapshot& in, AudioSong& s) {
         t.source = (SeqSource)head[2];
         t.stretch = (StretchMode)head[3];
         t.scene = head[4];
+        t.colour = head[5];
         get(&t.volume, sizeof t.volume);
         get(&t.pan, sizeof t.pan);
         str(t.name);

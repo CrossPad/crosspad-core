@@ -304,6 +304,8 @@ SongLoad AudioSong::load(const std::string& projectDir, const char* file)
                           : (tr["stretch"] | false)                         ? StretchMode::KeepPitch
                                                                             : StretchMode::Off;
         tracks[t].input = tracks[t].kind == TrackKind::Audio ? rec_input_named(tr["input"] | "") : RecInput::Mic;
+        const unsigned colour = tr["colour"] | 0u;
+        tracks[t].colour = colour <= SongTrack::kTrackColours ? (uint8_t)colour : 0;
         /* A song saved before tracks had kinds has no "used" key: the clips
          * say which tracks somebody made. Written out from then on, so a
          * track emptied by hand stays a track. */
@@ -531,6 +533,7 @@ bool AudioSong::save() const
         if (t.kind == TrackKind::Audio && t.stretch == StretchMode::KeepPitch) o["stretch"] = true;
         if (t.kind == TrackKind::Audio && t.stretch == StretchMode::Repitch)   o["stretch"] = "repitch";
         if (t.kind == TrackKind::Audio && t.input != RecInput::Mic)           o["input"] = rec_input_name(t.input);
+        if (t.colour)                                                          o["colour"] = t.colour;
         JsonArray cs = o["clips"].to<JsonArray>();
         std::string ev;
         for (const auto& c : t.clips) {

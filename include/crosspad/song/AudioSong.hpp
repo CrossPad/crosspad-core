@@ -172,6 +172,10 @@ struct SongTrack {
     /// An audio track's input: what a REC in Arrange records into it while
     /// it is armed (ArrangeAudioTake).
     RecInput  input = RecInput::Mic;
+    /// The player's colour for the track, 1..kTrackColours, a swatch of the
+    /// screen's palette; 0 = the colour of its kind (audio, kit, pitch).
+    uint8_t   colour = 0;
+    static constexpr uint8_t kTrackColours = 8;
     /// A Kit seq track's own kit (a kit.json as the kit list names it), played
     /// through the second kit engine. Empty, the track plays the song's kit
     /// (AudioSong::kit) through the pads' -- which the first kit track does.

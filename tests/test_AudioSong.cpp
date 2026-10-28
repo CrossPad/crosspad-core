@@ -1224,6 +1224,32 @@ TEST_CASE("AudioSong: an audio track keeps its input and can be armed", "[song][
     fs::remove_all(d);
 }
 
+TEST_CASE("AudioSong: a track's colour survives song.json, moves with the track, and is out of range read as its kind's",
+          "[song][tracks][colour]") {
+    const auto d = freshProject("cp_song_colour");
+    AudioSong a;
+    a.dir = d;
+    REQUIRE(a.addAudioTrack(0));
+    REQUIRE(a.addSeqTrack(1, SeqSource::Kit, 0));
+    CHECK(a.tracks[0].colour == 0);
+    a.tracks[1].colour = 5;
+    REQUIRE(a.save());
+    AudioSong b;
+    REQUIRE(b.load(d) == SongLoad::Loaded);
+    CHECK(b.tracks[0].colour == 0);
+    CHECK(b.tracks[1].colour == 5);
+    REQUIRE(b.swapTracks(0, 1));
+    CHECK(b.tracks[0].colour == 5);
+    b.removeTrack(0);
+    CHECK(b.tracks[0].colour == 0);
+    b.tracks[0].colour = 200;
+    REQUIRE(b.save());
+    AudioSong c;
+    REQUIRE(c.load(d) == SongLoad::Loaded);
+    CHECK(c.tracks[0].colour == 0);
+    fs::remove_all(d);
+}
+
 namespace {
 std::string fileText(const std::string& path)
 {

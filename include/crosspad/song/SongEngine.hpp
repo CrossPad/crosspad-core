@@ -67,6 +67,7 @@ public:
     uint32_t stretchWaiting() const override;
     void trackLevels(int track, float& left, float& right) override;
     void setSongScreen(bool up) override;
+    void ringVoices(uint8_t& sounding, uint8_t& streams) override;
     uint8_t stretchProgress() const override;
     bool undo() override;
     bool redo() override;

@@ -148,6 +148,26 @@ void SongEngine::Impl::trackLevels(int t, float& left, float& right) {
     right = std::min(1.0f, std::max(pr, (float)m[1] / 32767.0f));
 }
 
+void SongEngine::Impl::ringVoices(uint8_t& sounding, uint8_t& streams) {
+    sounding = streams = 0;
+    if (play_.load(std::memory_order_relaxed) != Play::Running) return;
+    const uint32_t mask = ringMask_.load(std::memory_order_relaxed);
+    const uint32_t hop = ring_.tail.load(std::memory_order_acquire) / kMeterHop;
+    for (int t = 0; t < kTracks; ++t) {
+        if (!(mask & (1u << t))) continue;
+        ++streams;
+        /* Heard: above -60 dB in the hops RT has just played. */
+        for (uint32_t back = 0; back < kMeterRead && back <= hop; ++back) {
+            const Meter& s = meter_[(hop - back) % kMeterSlots];
+            if (s.hop.load(std::memory_order_acquire) != hop - back) continue;
+            if (std::max(s.peak[t][0].load(std::memory_order_relaxed), s.peak[t][1].load(std::memory_order_relaxed)) > 32) {
+                ++sounding;
+                break;
+            }
+        }
+    }
+}
+
 void SongEngine::Impl::setSongScreen(bool up) {
     std::lock_guard<std::recursive_mutex> l(songMutex_);
     songScreen_ = up;
@@ -643,9 +663,11 @@ void SongEngine::Impl::rebuild() {
     a.context = contextSegments();
     ctxApart_.store(contextApart());
     bool switched = false, moved = false;
+    uint32_t ring = 0;
     for (int t = 0; t < kTracks; ++t) {
         const auto& tr = song_.tracks[t];
         const float g = song_.silenced(t) ? 0.0f : tr.volume;
+        if (!a.tracks[t].empty() && g > 0.0f) ring |= 1u << t;
         /* What the ring already holds of a track's audio, at its old level:
          * mixed again from just ahead of RT (remixRing()) -- at once for a
          * mute or solo, once a fader or pan being dragged has rested: every
@@ -658,6 +680,7 @@ void SongEngine::Impl::rebuild() {
         gain_[t].store(g);
         pan_[t].store(tr.pan);
     }
+    ringMask_.store(ring, std::memory_order_relaxed);
     if (switched || moved) {
         remixAtUs_.store(switched ? 0 : p.nowUs() + kRemixRestUs, std::memory_order_relaxed);
         remixReq_.store(true, std::memory_order_release);

@@ -394,6 +394,10 @@ public:
     /// Down, the engines are as the Mixer has them while stopped. Mute and
     /// solo stay the song's: they silence its notes, never the fingers.
     virtual void setSongScreen(bool up) { (void)up; }
+    /// What a voice meter counts of the song beside the engines: @p streams
+    /// the tracks it plays from files (audio, and seq tracks on their
+    /// freeze), @p sounding those heard now. Both 0 while stopped.
+    virtual void ringVoices(uint8_t& sounding, uint8_t& streams) { sounding = streams = 0; }
     /// Write the open song as an Ableton Live 12 Set into its own folder --
     /// <name>.als beside song.json, and the "Ableton Project Info" folder
     /// that makes it a Live project, so the Set finds its clips in clips/

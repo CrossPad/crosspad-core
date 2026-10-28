@@ -1997,6 +1997,10 @@ TEST_CASE("song engine: a frozen seq track keeps its notes and plays its freeze 
     SECTION("its meter reads the freeze it plays, its engine silent") {
         std::fill(bus.begin(), bus.end(), 0.0f);
         float l = 0.0f, rr = 0.0f;
+        uint8_t sounding = 9, streams = 9;
+        r.engine->ringVoices(sounding, streams);
+        CHECK(sounding == 0);                   // stopped
+        CHECK(streams == 0);
         REQUIRE(r.engine->play(5));
         REQUIRE(waitFor([&] { return r.engine->playing(); }));
         REQUIRE(waitFor([&] {
@@ -2006,6 +2010,10 @@ TEST_CASE("song engine: a frozen seq track keeps its notes and plays its freeze 
             return l > 0.2f;
         }));
         CHECK(l < 0.3f);
+        /* What VOICES counts of it: one stream, sounding. */
+        r.engine->ringVoices(sounding, streams);
+        CHECK(sounding == 1);
+        CHECK(streams == 1);
         r.engine->stop();
         REQUIRE(waitFor([&] { return !r.engine->playing(); }));
     }
@@ -4150,6 +4158,17 @@ TEST_CASE("song engine: undoing a deleted or moved track brings back its input, 
         CHECK(look(1).input == RecInput::Line);
         CHECK(look(2).freezeKey == 77);
         CHECK(armed() == 1);
+    }
+    SECTION("a colour is a step") {
+        {
+            std::lock_guard<std::recursive_mutex> l(r.engine->songMutex());
+            r.engine->song().tracks[1].colour = 3;
+        }
+        r.engine->commit();
+        REQUIRE(r.engine->undo());
+        CHECK(look(1).colour == 0);
+        REQUIRE(r.engine->redo());
+        CHECK(look(1).colour == 3);
     }
     SECTION("an edit undone keeps an ARM made since") {
         placeClip(r, "a.wav", 1000, 0, 0, 2);

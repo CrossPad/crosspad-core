@@ -624,6 +624,7 @@ struct SongEngine::Impl {
     uint32_t redoSteps() const { return redoCount_.load(); }
     void trackLevels(int t, float& left, float& right);
     void setSongScreen(bool up);
+    void ringVoices(uint8_t& sounding, uint8_t& streams);
     bool requestExportLiveSet();
     bool requestExportWav();
     std::vector<std::string> editReport();
@@ -1260,6 +1261,7 @@ private:
     uint32_t              transMask_ = 0;
     std::vector<PatternSequencer::SongSpan> transOld_;
     bool                  songScreen_ = false;   ///< setSongScreen(); under songMutex_
+    std::atomic<uint32_t> ringMask_{0};         ///< a bit per track the ring plays (rebuild())
     std::atomic<int8_t>   seqRoute_[kTracks];   ///< AudioSong::seqRoute(), per track; -1 from the constructor
     std::atomic<Play>     play_{Play::Idle};
     std::atomic<bool>     syncing_{false};         // this playback runs the sequencer
