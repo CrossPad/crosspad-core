@@ -356,7 +356,13 @@ Arrangement SongEngine::Impl::flatten(const AudioSong& song) const {
             a.seqMapped = true;
             std::vector<std::pair<uint32_t, uint32_t>> under;   // the blocks' stretches, in samples
             if (tr.seqBlocks) {
-                for (const SongClip& c : tr.clips) under.emplace_back(c.bar * a.samplesPerBar, (c.bar + c.bars) * a.samplesPerBar);
+                /* Each block to its end or the next one's start, as its notes play (seqSpansOf()). */
+                for (size_t i = 0; i < tr.clips.size(); ++i) {
+                    const SongClip& c = tr.clips[i];
+                    uint32_t e = (c.bar + c.bars) * a.samplesPerBar;
+                    if (i + 1 < tr.clips.size()) e = std::min(e, tr.clips[i + 1].bar * a.samplesPerBar);
+                    under.emplace_back(c.bar * a.samplesPerBar, e);
+                }
             } else {
                 under.emplace_back(0, cut);
             }
@@ -619,17 +625,26 @@ void SongEngine::Impl::rebuild() {
     Arrangement a = flatten(song_);
     a.context = contextSegments();
     ctxApart_.store(contextApart());
-    bool heardChanged = false;
+    bool switched = false, moved = false;
     for (int t = 0; t < kTracks; ++t) {
         const auto& tr = song_.tracks[t];
         const float g = song_.silenced(t) ? 0.0f : tr.volume;
         /* What the ring already holds of a track's audio, at its old level:
-         * mixed again from just ahead of RT (remixRing()). */
-        if (!a.tracks[t].empty() && (gain_[t].load() != g || pan_[t].load() != tr.pan)) heardChanged = true;
+         * mixed again from just ahead of RT (remixRing()) -- at once for a
+         * mute or solo, once a fader or pan being dragged has rested: every
+         * step of a drag cut the ring back to 300 ms. */
+        if (!a.tracks[t].empty()) {
+            const float was = gain_[t].load();
+            if ((was <= 0.0f) != (g <= 0.0f)) switched = true;
+            else if (was != g || pan_[t].load() != tr.pan) moved = true;
+        }
         gain_[t].store(g);
         pan_[t].store(tr.pan);
     }
-    if (heardChanged) remixReq_.store(true, std::memory_order_release);
+    if (switched || moved) {
+        remixAtUs_.store(switched ? 0 : p.nowUs() + kRemixRestUs, std::memory_order_relaxed);
+        remixReq_.store(true, std::memory_order_release);
+    }
     for (int t = 0; t < kTracks; ++t) seqRoute_[t].store((int8_t)song_.liveRoute(t), std::memory_order_relaxed);
     /* The live transport has a grid of its own and no end; a commit
      * made while it runs (a fader, a mute) must not hand RT the
@@ -1023,6 +1038,7 @@ void SongEngine::Impl::endPlayback() {
 /// ring holds of that is timed against the ring as it was.
 void SongEngine::Impl::remixRing() {
     if (liveOn_.load() || play_.load() != Play::Running || seq_.songMapLaterIn()) return;
+    if (p.nowUs() < remixAtUs_.load(std::memory_order_relaxed)) return;   // a fader still moving
     remixReq_.store(false, std::memory_order_relaxed);
     const uint32_t lead = (uint32_t)((uint64_t)sampleRate_ * kRemixLeadMs / 1000);
     const uint32_t from = ring_.tail.load(std::memory_order_acquire) + lead;
@@ -1036,6 +1052,7 @@ void SongEngine::Impl::remixRing() {
         writePos_ = m.wp;
         markN_ = i;
         ++remixes_;
+        meterReset();     // the hops mixed again only raise a peak: a muted track kept its old one
         return;
     }
 }

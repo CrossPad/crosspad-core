@@ -292,7 +292,10 @@ SongOpState SongEngine::Impl::doExportWav() {
         lines.push_back("The song is empty.");
         return finish(SongOpState::Failed);
     }
-    const std::string path = copy.dir + "/" + copy.name + ".wav";
+    /* An element's name carries its folder (".elements/E..."): the file is
+     * named by its last part, beside its song.json. */
+    const std::string base = copy.name.substr(copy.name.find_last_of('/') + 1);
+    const std::string path = copy.dir + "/" + base + ".wav";
     const std::string tmp = path + ".tmp";
 
     endPlayback();
@@ -341,7 +344,7 @@ SongOpState SongEngine::Impl::doExportWav() {
     std::remove(path.c_str());
     if (!fsx::rename(tmp, path)) {
         std::remove(tmp.c_str());
-        lines.push_back("The mix was written but could not be named " + copy.name + ".wav.");
+        lines.push_back("The mix was written but could not be named " + base + ".wav.");
         return finish(SongOpState::Failed);
     }
     editProgress_.store(100);
@@ -350,7 +353,7 @@ SongOpState SongEngine::Impl::doExportWav() {
     root = root.substr(root.find_last_of('/') + 1);
     char buf[160];
     std::snprintf(buf, sizeof(buf), "%s/%s/%s.wav, %u:%02u, %d track%s", root.c_str(), copy.name.c_str(),
-                  copy.name.c_str(), (unsigned)(secs / 60), (unsigned)(secs % 60), heard, heard == 1 ? "" : "s");
+                  base.c_str(), (unsigned)(secs / 60), (unsigned)(secs % 60), heard, heard == 1 ? "" : "s");
     lines.push_back(buf);
     return finish(SongOpState::Ready);
 }

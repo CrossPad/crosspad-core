@@ -1194,6 +1194,8 @@ private:
     std::atomic<bool> remixReq_{false};
     void remixRing();
     static constexpr uint32_t kRemixLeadMs = 300;
+    static constexpr int64_t  kRemixRestUs = 250000;    // a fader's drag at rest this long
+    std::atomic<int64_t> remixAtUs_{0};
     uint32_t    remixes_ = 0;                     // ASONG_DBG remix=
     std::atomic<uint32_t> debt_{0};
     std::atomic<float>    gain_[kTracks] = {};

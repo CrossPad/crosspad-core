@@ -150,6 +150,12 @@ private:
     /// The InstrumentPlayState generation the open song's pad map was last
     /// compared with (keepPitchPads()). UI thread.
     uint32_t padsGen_ = UINT32_MAX;
+    /// The openGen_ whose song's sounds a step has seen through once -- a kit
+    /// changed later sets pending_ again but not this -- and that song's
+    /// folder. An open before it is not the player's (keepInstrument()); a
+    /// pad map is kept only into the song it was settled for (keepPitchPads()).
+    std::atomic<uint32_t> settledGen_{0};
+    std::string settledDir_;   // UI thread
     void keepPitchPads();
 };
 

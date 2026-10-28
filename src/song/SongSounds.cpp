@@ -295,6 +295,11 @@ void SongSounds::step()
         }
     }
     padsGen_ = ps.generation;
+    {
+        std::lock_guard<std::recursive_mutex> l(se->songMutex());
+        settledDir_ = se->song().dir;
+    }
+    settledGen_.store(openGen_.load());
     pending_.store(false);
 }
 
@@ -353,6 +358,9 @@ void SongSounds::keepPitchPads()
     {
         std::lock_guard<std::recursive_mutex> l(se->songMutex());
         AudioSong& song = se->song();
+        /* Only into the song it was settled for: a song swapped in under an
+         * open (a delete opening the next) has not had its own map put on yet. */
+        if (song.dir != settledDir_ || settledGen_.load() != openGen_.load()) return;
         if (!song.hasPitchTrack() || song.pitchPads == pads) return;
         song.pitchPads = pads;
     }
@@ -393,10 +401,10 @@ void SongSounds::keepInstrument(const KitInfo& spec, const std::function<bool(co
 {
     std::string home;
     if (!instrumentHome(home)) return;
-    /* Opened while this song's own sounds are still coming: not the player's
+    /* Opened before this song's sounds were first settled: not the player's
      * pick but someone still on the last song's instrument, or this song's
      * own being loaded -- which the song already names. */
-    if (!changed && pending()) return;
+    if (!changed && settledGen_.load() != openGen_.load()) return;
     if (changed) {
         if (ISongEngine* se = songs()) {
             {
