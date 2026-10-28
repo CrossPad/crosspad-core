@@ -127,6 +127,14 @@ void SongEngine::Impl::trackLevels(int t, float& left, float& right) {
         pr = padsPeak_[1].exchange(0.0f, std::memory_order_relaxed);
     }
     if (play_.load(std::memory_order_relaxed) != Play::Running) return;
+    /* The engine's own peak is before the track's fader and pan, which the
+     * Mixer applies after it (applySeqSound()): taken here as the ring's. */
+    if (seq) {
+        const float g = gain_[t].load(std::memory_order_relaxed);
+        const float pan = pan_[t].load(std::memory_order_relaxed);
+        pl *= g * (pan > 0.0f ? 1.0f - pan : 1.0f);
+        pr *= g * (pan < 0.0f ? 1.0f + pan : 1.0f);
+    }
     /* A seq track playing its freeze (or a stale one standing in) is in
      * the ring like an audio track, its engine silent: both are read. */
     const uint32_t hop = ring_.tail.load(std::memory_order_acquire) / kMeterHop;

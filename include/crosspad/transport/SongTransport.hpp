@@ -41,7 +41,11 @@ public:
     /// selection, so choosing a block is choosing where the song plays from.
     void setStartBar(uint32_t bar) { hold(engine(), bar); }
     /// Where the next PLAY starts, 0-based: the playhead while stopped.
-    uint32_t startBar() const { return held(engine()); }
+    uint32_t startBar() const
+    {
+        ISongEngine* se = engine();
+        return se ? startFrom(*se) : 0;
+    }
 
     /// From a stop, from the held bar -- where the last stop or a locate left
     /// it -- or from the loop region's start while looping one. In a take:
@@ -193,7 +197,7 @@ public:
         ISongEngine* se = engine();
         if (!se) return p;
         /* Stopped, where the next PLAY starts. */
-        double bars = se->playing() ? se->positionBars() : (double)held(se);
+        double bars = se->playing() ? se->positionBars() : (double)startFrom(*se);
         if (bars < 0.0) bars = 0.0;
         const uint32_t whole = (uint32_t)bars;
         const double frac = bars - (double)whole;
@@ -209,13 +213,15 @@ public:
 private:
     static ISongEngine* engine() { return getPlatformServices().songEngine; }
 
-    /// Where PLAY and REC start: the held bar, or the region's start while
-    /// looping one.
+    /// Where PLAY and REC start: the held bar; while looping a region, the
+    /// held bar inside it, else the region's start.
     uint32_t startFrom(ISongEngine& se) const
     {
         std::lock_guard<std::recursive_mutex> l(se.songMutex());
         const AudioSong& song = se.song();
-        return song.loop && song.hasRegion() ? song.loopStart : held(&se);
+        const uint32_t bar = held(&se);
+        if (!song.loop || !song.hasRegion()) return bar;
+        return bar >= song.loopStart && bar < song.loopEnd ? bar : song.loopStart;
     }
 
     /// The held bar, in the song it was held in: a song opened since starts

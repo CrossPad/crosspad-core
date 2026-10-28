@@ -932,14 +932,27 @@ private:
     /// Notes are shared and never changed in place, so a step holding the
     /// pointer holds them as they were, and costs nothing until they are
     /// replaced. Equal when the bytes and the very same notes are.
+    /* What belongs to a track but is not an edit -- ARM, its slot, its
+     * input, its freeze: carried with a step and not compared (an ARM is no
+     * step), and put back only by a step that moves the tracks themselves,
+     * where they would otherwise stay on the places the tracks left. */
+    struct TrackSide {
+        RecInput  input = RecInput::Mic;
+        std::vector<SongClip> freeze;
+        uint32_t  freezeKey = 0, freezeSalt = 0, freezeKit = 0;
+    };
     struct Snapshot {
         std::vector<uint8_t> bytes;
         std::vector<SeqPatternPtr> notes;
+        int8_t    armed = -1;
+        int8_t    kitSlots[AudioSong::kKitSlots] = {-1, -1};
+        TrackSide side[kTracks];
         bool empty() const { return bytes.empty(); }
         bool operator==(const Snapshot& o) const { return bytes == o.bytes && notes == o.notes; }
     };
     static void pack(const AudioSong& s, Snapshot& out);
     static void unpack(const Snapshot& in, AudioSong& s);
+    static std::string trackLayout(const AudioSong& s);
     void noteChange();
     bool songJobRunning();
     bool step(std::vector<Snapshot>& from, std::vector<Snapshot>& to);

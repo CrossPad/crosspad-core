@@ -426,7 +426,8 @@ void SongEngine::Impl::runFreeze() {
         }
         /* What the track played before and plays no longer: one of 2.9's
          * whole-track files, or a render no track names now -- in a freeze,
-         * or as a bounced track's audio. */
+         * or as a bounced track's audio -- nor an undo or redo step would
+         * put back (a deleted track's freeze comes back with it). */
         auto named = [&](const std::string& f) {
             for (const auto& other : song_.tracks) {
                 for (const auto& c : other.freeze)
@@ -434,6 +435,11 @@ void SongEngine::Impl::runFreeze() {
                 for (const auto& c : other.clips)
                     if (c.file == f) return true;
             }
+            for (const auto* stack : {&undo_, &redo_})
+                for (const Snapshot& st : *stack)
+                    for (const TrackSide& sd : st.side)
+                        for (const auto& c : sd.freeze)
+                            if (c.file == f) return true;
             return false;
         };
         std::vector<std::string> old;

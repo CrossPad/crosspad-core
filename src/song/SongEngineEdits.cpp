@@ -589,6 +589,12 @@ void SongEngine::Impl::pack(const AudioSong& s, Snapshot& out) {
     put(&s.length, 4);
     put(&s.loopStart, 4);
     put(&s.loopEnd, 4);
+    out.armed = s.armed;
+    std::copy(std::begin(s.kitSlots), std::end(s.kitSlots), out.kitSlots);
+    for (int i = 0; i < kTracks; ++i) {
+        const SongTrack& t = s.tracks[i];
+        out.side[i] = {t.input, t.freeze, t.freezeKey, t.freezeSalt, t.freezeKit};
+    }
     for (const auto& t : s.tracks) {
         const uint8_t head[5] = {
             (uint8_t)((t.inUse ? 1 : 0) | (t.muted ? 2 : 0) | (t.solo ? 4 : 0) | (t.seqBlocks ? 8 : 0)),
@@ -619,7 +625,22 @@ void SongEngine::Impl::pack(const AudioSong& s, Snapshot& out) {
     }
 }
 
-/// pack() undone, into @p s: its name, folder and sets are left alone.
+/// Which track is where: what a step that deletes, adds or moves tracks
+/// changes, and an edit of their blocks or levels does not.
+std::string SongEngine::Impl::trackLayout(const AudioSong& s) {
+    std::string out;
+    for (const auto& t : s.tracks) {
+        out += (char)(t.inUse ? 1 + (int)t.kind * 2 + (int)t.source * 4 : 0);
+        out += t.name;
+        out += '\x1f';
+        out += t.kit;
+        out += '\x1e';
+    }
+    return out;
+}
+
+/// pack() undone, into @p s: its name, folder and sets are left alone, and
+/// the tracks' side (ARM, slots, inputs, freezes) as it is.
 void SongEngine::Impl::unpack(const Snapshot& in, AudioSong& s) {
     size_t at = 0;
     auto get = [&](void* v, size_t n) { std::memcpy(v, in.bytes.data() + at, n); at += n; };
@@ -715,7 +736,22 @@ bool SongEngine::Impl::step(std::vector<Snapshot>& from, std::vector<Snapshot>& 
         to.push_back(std::move(cur));
         if (to.size() > kUndoDepth) to.erase(to.begin());
         was = song_.bpm;
+        const std::string layout = trackLayout(song_);
         unpack(from.back(), song_);
+        if (trackLayout(song_) != layout) {
+            const Snapshot& back = from.back();
+            song_.armed = back.armed;
+            std::copy(std::begin(back.kitSlots), std::end(back.kitSlots), song_.kitSlots);
+            for (int i = 0; i < kTracks; ++i) {
+                SongTrack& t = song_.tracks[i];
+                const TrackSide& sd = back.side[i];
+                t.input = sd.input;
+                t.freeze = sd.freeze;
+                t.freezeKey = sd.freezeKey;
+                t.freezeSalt = sd.freezeSalt;
+                t.freezeKit = sd.freezeKit;
+            }
+        }
         last_ = std::move(from.back());
         from.pop_back();
         lastChangeUs_ = 0;           // the next edit is a step of its own
