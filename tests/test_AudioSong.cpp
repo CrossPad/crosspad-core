@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include <catch2/catch_test_macros.hpp>
 #include "crosspad/song/AudioSong.hpp"
+#include "crosspad/song/SeqFreezeKey.hpp"
 
 #include <filesystem>
 #include <cstring>
@@ -826,6 +827,38 @@ TEST_CASE("AudioSong: a block's own notes survive a save, and only they make it 
     CHECK(c.notes->notes[1].vel == 90);
     CHECK(c.notes->notes[2].pad == 15);
     CHECK(c.notes->notes[2].perf == 0x21);
+    fs::remove_all(d);
+}
+
+TEST_CASE("AudioSong: the Pitch track's pad map survives a save and is in its freeze key", "[song][pitchpads]") {
+    const auto d = freshProject("cp_song_pitchpads");
+    AudioSong a = songAt120();
+    a.dir = d;
+    REQUIRE(a.addSeqTrack(0, SeqSource::Pitch, 0));
+    a.instrument = "/crosspad/pitchplay/sub/instrument.json";
+    const uint32_t keyWithout = seq_freeze_key(a, 0, 44100, SceneLookup{});
+    a.pitchPads.set = true;
+    a.pitchPads.root = 5;
+    a.pitchPads.octave = -1;
+    a.pitchPads.scale = 2;
+    a.pitchPads.transpose = -3;
+    a.pitchPads.chords = true;
+    a.pitchPads.silent = 0x8001;
+    for (int i = 0; i < 16; ++i) {
+        a.pitchPads.note[i] = (uint8_t)(30 + i);
+        a.pitchPads.count[i] = 1;
+        for (int c = 0; c < 6; ++c) a.pitchPads.chord[i][c] = c ? 0xFF : (uint8_t)(30 + i);
+    }
+    const uint32_t keyWith = seq_freeze_key(a, 0, 44100, SceneLookup{});
+    CHECK(keyWith != keyWithout);
+    REQUIRE(a.save());
+
+    AudioSong b;
+    REQUIRE(b.load(d) == SongLoad::Loaded);
+    CHECK(b.pitchPads == a.pitchPads);
+    CHECK(seq_freeze_key(b, 0, 44100, SceneLookup{}) == keyWith);
+    b.pitchPads.note[3] += 12;                           // that pad an octave up: another freeze
+    CHECK(seq_freeze_key(b, 0, 44100, SceneLookup{}) != keyWith);
     fs::remove_all(d);
 }
 

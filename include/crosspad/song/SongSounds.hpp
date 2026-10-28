@@ -147,6 +147,10 @@ private:
     uint32_t stepMs_ = 0;
     bool instAsked_ = false;
     bool instSaid_ = false;
+    /// The InstrumentPlayState generation the open song's pad map was last
+    /// compared with (keepPitchPads()). UI thread.
+    uint32_t padsGen_ = UINT32_MAX;
+    void keepPitchPads();
 };
 
 } // namespace crosspad

@@ -110,6 +110,13 @@ RecInput rec_input_named(const char* name)
 
 } // namespace
 
+bool AudioSong::PitchPads::operator==(const PitchPads& o) const
+{
+    return set == o.set && root == o.root && octave == o.octave && scale == o.scale && transpose == o.transpose &&
+           chords == o.chords && silent == o.silent && std::memcmp(note, o.note, sizeof note) == 0 &&
+           std::memcmp(chord, o.chord, sizeof chord) == 0 && std::memcmp(count, o.count, sizeof count) == 0;
+}
+
 SeqPatternPtr makeSeqPattern(uint16_t bars, std::vector<SeqNote> notes)
 {
     auto p = std::make_shared<SeqPattern>();
@@ -228,6 +235,30 @@ SongLoad AudioSong::load(const std::string& projectDir, const char* file)
     newestBake = doc["newest_bake"] | "";
     kit = doc["kit"] | "";
     instrument = doc["instrument"] | "";
+    pitchPads = PitchPads{};
+    if (JsonObjectConst pp = doc["pitch_pads"]; !pp.isNull()) {
+        auto bytes = [](const char* hex, uint8_t* out, size_t n) {
+            const size_t len = hex ? std::strlen(hex) : 0;
+            if (len != 2 * n) return false;
+            for (size_t i = 0; i < n; ++i) {
+                unsigned v = 0;
+                if (std::sscanf(hex + 2 * i, "%2x", &v) != 1) return false;
+                out[i] = (uint8_t)v;
+            }
+            return true;
+        };
+        PitchPads p;
+        p.root = (uint8_t)((pp["root"] | 0) % 12);
+        p.octave = (int8_t)(pp["oct"] | 1);
+        p.scale = pp["scale"] | 0;
+        p.transpose = (int8_t)(pp["tr"] | 0);
+        p.chords = pp["chords"] | false;
+        p.silent = pp["silent"] | 0;
+        p.set = bytes(pp["note"] | "", p.note, sizeof p.note) &&
+                bytes(pp["chord"] | "", &p.chord[0][0], sizeof p.chord) &&
+                bytes(pp["count"] | "", p.count, sizeof p.count);
+        if (p.set) pitchPads = p;
+    }
     loopStart = doc["loop_start"] | 0u;
     loopEnd = doc["loop_end"] | 0u;
     int t = 0;
@@ -446,6 +477,24 @@ bool AudioSong::save() const
     if (inElementLibrary() && !newestBake.empty()) doc["newest_bake"] = newestBake;
     if (!kit.empty()) doc["kit"] = kit;
     if (!instrument.empty()) doc["instrument"] = instrument;
+    if (pitchPads.set) {
+        auto hex = [](const uint8_t* b, size_t n) {
+            static const char* d = "0123456789abcdef";
+            std::string s(2 * n, '0');
+            for (size_t i = 0; i < n; ++i) { s[2 * i] = d[b[i] >> 4]; s[2 * i + 1] = d[b[i] & 15]; }
+            return s;
+        };
+        JsonObject pp = doc["pitch_pads"].to<JsonObject>();
+        pp["root"] = pitchPads.root;
+        pp["oct"] = pitchPads.octave;
+        pp["scale"] = pitchPads.scale;
+        pp["tr"] = pitchPads.transpose;
+        pp["chords"] = pitchPads.chords;
+        pp["silent"] = pitchPads.silent;
+        pp["note"] = hex(pitchPads.note, sizeof pitchPads.note);
+        pp["chord"] = hex(&pitchPads.chord[0][0], sizeof pitchPads.chord);
+        pp["count"] = hex(pitchPads.count, sizeof pitchPads.count);
+    }
     doc["loop_start"] = loopStart;
     doc["loop_end"] = loopEnd;
     if (armed >= 0) doc["armed"] = armed;

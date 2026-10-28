@@ -303,6 +303,13 @@ uint32_t SongEngine::Impl::pieceKey(const AudioSong& song, int track, uint32_t s
     const uint8_t src[2] = {(uint8_t)t.source, (uint8_t)std::max(0, song.seqRoute(track))};
     mix(src, sizeof src);
     text(t.source == SeqSource::Pitch ? song.instrument : t.kit.empty() ? song.kit : t.kit);
+    /* A Pitch track's pad numbers sound as the song's pad map says; left
+     * out while it has none, so an older freeze still reads as it was. */
+    if (t.source == SeqSource::Pitch && song.pitchPads.set) {
+        const auto& pp = song.pitchPads;
+        mix(pp.note, sizeof pp.note); mix(pp.chord, sizeof pp.chord); mix(pp.count, sizeof pp.count);
+        mix(&pp.silent, sizeof pp.silent);
+    }
     bool clockScene = false;
     for (const auto& sp : spans) {
         const uint32_t at = sp.loop ? sp.scene % sp.loop : sp.scene;

@@ -272,6 +272,27 @@ public:
     /// say what is loaded, not how the song is arranged.
     std::string kit;
     std::string instrument;
+    /// What the Pitch track's pads play through @c instrument: Pitch Play's
+    /// key, scale, octave, transpose and chords, and the notes they put on
+    /// each pad. The notes are what a take of pad numbers is played as, so
+    /// they belong to the song: without them a song opened after a restart
+    /// played its bass at Pitch Play's default octave (and froze it so).
+    /// Unset until Pitch Play has published a map with the song open.
+    struct PitchPads {
+        bool     set = false;
+        uint8_t  root = 0;            ///< pitch class of the tonic, 0..11
+        int8_t   octave = 1;          ///< PlaySettings::octave
+        uint8_t  scale = 0;           ///< MusicTheory scale index
+        int8_t   transpose = 0;       ///< semitones on top of all of it
+        bool     chords = false;      ///< the pads play the chord list
+        uint8_t  note[16] = {};       ///< a pad's own note
+        uint8_t  chord[16][6] = {};   ///< a pad's chord notes, 0xFF unused
+        uint8_t  count[16] = {};      ///< how many of them
+        uint16_t silent = 0;          ///< pads that play nothing, a bit each
+        bool operator==(const PitchPads& o) const;
+        bool operator!=(const PitchPads& o) const { return !(*this == o); }
+    };
+    PitchPads pitchPads;
     /// The track REC takes onto (Arrange's ARM): a seq track's pads, whose
     /// kit the pads then play in Arrange, or an audio track's input
     /// (armedAudioTrack()). For the seq takes -1, or a track that is no seq,
