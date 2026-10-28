@@ -147,10 +147,13 @@ bool valid_name(const std::string& n)
 std::string next_free(const std::string& dir, const char* stem)
 {
     constexpr int kMaxNumbered = 1000;
-    char buf[96];
+    /* Built as a string: a fixed buffer cut a long folder's path short, and
+     * the cut name was never free -- "no free name" on any take there. */
     for (int n = 1; n < kMaxNumbered; ++n) {
-        std::snprintf(buf, sizeof(buf), "%s/%s_%03d.wav", dir.c_str(), stem, n);
-        if (!fsx::exists(buf)) return buf;
+        char tail[24];
+        std::snprintf(tail, sizeof(tail), "_%03d.wav", n);
+        std::string path = dir + "/" + stem + tail;
+        if (!fsx::exists(path)) return path;
     }
     return std::string();
 }
