@@ -72,6 +72,7 @@ public:
     uint32_t undoSteps() const override;
     uint32_t redoSteps() const override;
     bool requestExportLiveSet() override;
+    bool requestExportWav() override;
     std::vector<std::string> editReport() override;
     bool requestOpenElement(const std::string& ref) override;
     bool requestElements() override;

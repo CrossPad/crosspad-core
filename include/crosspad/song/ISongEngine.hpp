@@ -396,6 +396,14 @@ public:
     /// one Live saved over say, moves to Backup/ first. Playback stops.
     /// editState() says when it is done, editReport() what it wrote.
     virtual bool requestExportLiveSet() { return false; }
+    /// Mix the open song down to <name>.wav in its own folder, beside the
+    /// .als: every track that is heard (mute and solo as they are), at its
+    /// fader and pan, from bar one to the song's end -- audio tracks' clips,
+    /// elements' bakes and seq tracks' freezes, the armed track's too. Fails,
+    /// naming them in editReport(), while a seq track that plays something
+    /// has no current freeze. The song does not change. editState() says
+    /// when it is done, editProgress() how far, editReport() what it wrote.
+    virtual bool requestExportWav() { return false; }
     /// The last export, one line each: where the Set is and how many clips
     /// went in, then what was left out; with Failed, why.
     virtual std::vector<std::string> editReport() { return {}; }

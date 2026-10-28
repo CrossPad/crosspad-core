@@ -505,6 +505,58 @@ TEST_CASE("song engine: merge mixes the tracks into one clip on the lowest", "[s
     CHECK(s.tracks[2].clips.empty());
 }
 
+TEST_CASE("song engine: export WAV mixes what is heard into <name>.wav and leaves the song be", "[song][exportwav]") {
+    Rig r;
+    REQUIRE(r.open("Demo"));
+    placeClip(r, "a.wav", 1000, 1, 0, 2);
+    placeClip(r, "b.wav", 300, 2, 1, 1);
+    placeClip(r, "m.wav", 7000, 3, 0, 2);
+    {
+        std::lock_guard<std::recursive_mutex> l(r.engine->songMutex());
+        r.engine->song().tracks[2].volume = 0.5f;
+        r.engine->song().tracks[3].muted = true;
+    }
+    r.engine->commit();
+    REQUIRE(r.engine->requestExportWav());
+    REQUIRE(editDone(r));
+    CHECK(r.engine->editProgress() == 100);
+
+    const std::vector<int16_t> pcm = readWavData((r.clipsDir("Demo").parent_path() / "Demo.wav").string());
+    REQUIRE(pcm.size() == size_t(kRate) * 2 * 2 * 2);
+    CHECK(pcm.front() == 1000);
+    CHECK(pcm.back() == 1150);
+    const auto report = r.engine->editReport();
+    REQUIRE_FALSE(report.empty());
+    CHECK(report[0].find("Demo.wav") != std::string::npos);
+
+    std::lock_guard<std::recursive_mutex> l(r.engine->songMutex());
+    const AudioSong& s = r.engine->song();
+    CHECK(s.tracks[1].clips.size() == 1);
+    CHECK(s.tracks[2].clips.size() == 1);
+    CHECK(s.tracks[2].volume == 0.5f);
+}
+
+TEST_CASE("song engine: export WAV names the seq tracks that are not frozen", "[song][exportwav]") {
+    Rig r;
+    REQUIRE(r.open("Demo"));
+    placeClip(r, "a.wav", 1000, 0, 0, 2);
+    {
+        std::lock_guard<std::recursive_mutex> l(r.engine->songMutex());
+        AudioSong& s = r.engine->song();
+        REQUIRE(s.addSeqTrack(1, SeqSource::Kit, 0));
+        REQUIRE(s.putSeqTake(1, 0, makeSeqPattern(1, {SeqNote{0, 0, 1, 100, 0}}),
+                             (uint32_t)(kRate * 2)) >= 0);
+    }
+    r.engine->commit();
+    REQUIRE(r.engine->requestExportWav());
+    REQUIRE(waitFor([&] { return r.engine->editState() != SongOpState::Busy; }, 10000));
+    CHECK(r.engine->editState() == SongOpState::Failed);
+    const auto report = r.engine->editReport();
+    REQUIRE_FALSE(report.empty());
+    CHECK(report[0] == "Not frozen yet: track 2.");
+    CHECK_FALSE(std::filesystem::exists(r.clipsDir("Demo").parent_path() / "Demo.wav"));
+}
+
 TEST_CASE("song engine: merge leaves muted tracks out and cuts a block reaching in", "[song]") {
     Rig r;
     REQUIRE(r.open("Demo"));

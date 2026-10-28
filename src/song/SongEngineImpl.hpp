@@ -622,6 +622,7 @@ struct SongEngine::Impl {
     uint32_t redoSteps() const { return redoCount_.load(); }
     void trackLevels(int t, float& left, float& right);
     bool requestExportLiveSet();
+    bool requestExportWav();
     std::vector<std::string> editReport();
     bool clipPeaks(const std::string& file, ClipPeaks& out);
     uint32_t peaksGeneration() const { return peaksGen_.load(); }
@@ -886,6 +887,7 @@ private:
     SongOpState doTempo(float bpm);
     SongOpState doMerge(uint32_t mask, uint32_t fromBar, uint32_t toBar);
     SongOpState doExport();
+    SongOpState doExportWav();
     SongOpState doImport();
     void doSave();
     /// The sequencer's scenes, as SeqFreezeKey.hpp asks for them.
@@ -1039,7 +1041,8 @@ private:
     static constexpr uint8_t kEditRename = 1, kEditTempo = 2, kEditMerge = 3, kEditImport = 4,
                              kEditDelete = 5, kEditExport = 6, kEditBake = 7, kEditElementRegion = 8, kEditElementSong = 9,
                              kEditElementDiscard = 10, kEditSnapshot = 11, kEditRestore = 12, kEditDropSnapshot = 13,
-                             kEditEditHash = 14, kEditCopyElements = 15, kEditDeleteElement = 16;
+                             kEditEditHash = 14, kEditCopyElements = 15, kEditDeleteElement = 16,
+                             kEditExportWav = 17;
     uint32_t    importA_ = 0, importB_ = 0, importBar_ = 0, importLead_ = 0;   // owned by claimEdit()'s caller until editReq_
     uint8_t     importTrack_ = 0;
     std::atomic<uint8_t>  editProgress_{0};

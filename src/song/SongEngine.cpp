@@ -205,6 +205,7 @@ void SongEngine::Impl::worker() {
                            : edit == kEditTempo  ? doTempo(editBpm_.load())
                            : edit == kEditImport ? doImport()
                            : edit == kEditExport ? doExport()
+                           : edit == kEditExportWav ? doExportWav()
                            : edit == kEditBake   ? doBakeElement()
                            : edit == kEditElementRegion ? doElementFromRegion()
                            : edit == kEditElementSong   ? doElementFromSong()
@@ -338,6 +339,7 @@ uint32_t SongEngine::undoSteps() const { return impl_->undoSteps(); }
 uint32_t SongEngine::redoSteps() const { return impl_->redoSteps(); }
 uint8_t SongEngine::stretchProgress() const { return impl_->stretchProgress(); }
 bool SongEngine::requestExportLiveSet() { return impl_->requestExportLiveSet(); }
+bool SongEngine::requestExportWav() { return impl_->requestExportWav(); }
 std::vector<std::string> SongEngine::editReport() { return impl_->editReport(); }
 bool SongEngine::requestOpenElement(const std::string& ref) { return impl_->requestOpenElement(ref); }
 bool SongEngine::requestElements() { return impl_->requestElements(); }
