@@ -77,7 +77,7 @@
 
 namespace crosspad {
 
-class SamplerEngine : public IAudioNode {
+class SamplerEngineBase : public IAudioNode {
 public:
     static constexpr uint8_t kMaxVoices = 32;
     static constexpr uint8_t kFadeSlots = 4;
@@ -236,8 +236,6 @@ public:
     /// Called when a voice starts and when it ends, with the pad and the layer.
     /// Fired from the render thread: whatever they do must be RT-safe.
     using NoteCb = void (*)(uint8_t pad, uint8_t layer, void* ctx);
-
-    SamplerEngine();
 
     // ── IAudioNode ────────────────────────────────────────────────────────
     const char* name() const override { return "Sampler"; }
@@ -706,7 +704,19 @@ private:
     std::atomic<const SamplerKit*> kit_{nullptr};
     std::atomic<bool> mutating_{false};
 
-    Voice voices_[kMaxVoices];
+    /* The voices: the derived class's own (SamplerEngineWithVoices), so an
+     * engine that never plays more than a few is not 9 kB of internal RAM
+     * in one piece -- a kit slot's engine could not be had once that much
+     * was cut up (2026-10-28). */
+    Voice* const  voices_;
+    const uint8_t voiceCap_;
+    struct Voices {
+        Voice* b;
+        Voice* e;
+        Voice* begin() const { return b; }
+        Voice* end() const { return e; }
+    };
+    Voices voices() const { return {voices_, voices_ + voiceCap_}; }
     std::atomic<uint32_t> ageCounter_{0};
     std::atomic<uint32_t> roundRobin_[kPads] = {};
     std::atomic<uint32_t> padVoices_[kPads] = {};   ///< one bit per voice slot
@@ -750,6 +760,32 @@ private:
     std::atomic<uint32_t> cStreamRefused_{0}, cUnderruns_{0}, cVoicesPeak_{0}, cSilenced_{0};
     std::atomic<uint32_t> cPitchedRun_{0}, cPitchedSlow_{0};
     std::atomic<uint8_t> ringsWaiting_{0};
+
+protected:
+    using VoiceSlot = Voice;
+    /// @p voices: @p cap voices the derived class keeps, constructed after
+    /// this, and never touched here before then.
+    SamplerEngineBase(Voice* voices, uint8_t cap);
 };
+
+/// An engine with @p N voice slots: Params::maxVoices is held kFadeSlots
+/// below it, so steals always have a slot to fade in.
+template <uint8_t N>
+class SamplerEngineWithVoices : public SamplerEngineBase {
+    static_assert(N > kFadeSlots && N <= kMaxVoices, "voices: past the fade slots, at most kMaxVoices");
+
+public:
+    SamplerEngineWithVoices() : SamplerEngineBase(storage_, N) {}
+
+private:
+    typename SamplerEngineBase::VoiceSlot storage_[N];
+};
+
+/// The pads' engine: every voice there is.
+class SamplerEngine : public SamplerEngineWithVoices<SamplerEngineBase::kMaxVoices> {};
+
+/// A kit slot's engine (a song's kit of its own): eight sounding, and the
+/// fade slots.
+using SmallSamplerEngine = SamplerEngineWithVoices<12>;
 
 } // namespace crosspad

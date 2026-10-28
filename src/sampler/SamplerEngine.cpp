@@ -31,23 +31,23 @@ float semitoneRatio(int semitones)
 }
 } // namespace
 
-SamplerEngine::SamplerEngine() { refreshSteps(); }
+SamplerEngineBase::SamplerEngineBase(Voice* voices, uint8_t cap) : voices_(voices), voiceCap_(cap) { refreshSteps(); }
 
-CROSSPAD_COLD void SamplerEngine::bind(BlockPool* pool, SampleStore* store)
+CROSSPAD_COLD void SamplerEngineBase::bind(BlockPool* pool, SampleStore* store)
 {
     pool_ = pool;
     store_ = store;
 }
 
-CROSSPAD_COLD void SamplerEngine::setParams(const Params& p)
+CROSSPAD_COLD void SamplerEngineBase::setParams(const Params& p)
 {
     params_ = p;
-    if (params_.maxVoices > kMaxSounding) params_.maxVoices = kMaxSounding;
+    if (params_.maxVoices > voiceCap_ - kFadeSlots) params_.maxVoices = (uint8_t)(voiceCap_ - kFadeSlots);
     if (params_.maxVoices == 0) params_.maxVoices = 1;
     refreshSteps();
 }
 
-CROSSPAD_COLD void SamplerEngine::refreshSteps()
+CROSSPAD_COLD void SamplerEngineBase::refreshSteps()
 {
     const float rate = static_cast<float>(sampleRate_);
     const float fadeFrames = kStealFadeMs * 0.001f * rate;
@@ -60,14 +60,14 @@ CROSSPAD_COLD void SamplerEngine::refreshSteps()
     steps_.loudLevel = params_.silenceLevel * 32768.0f;
 }
 
-CROSSPAD_COLD void SamplerEngine::setNoteCallbacks(NoteCb on, NoteCb off, void* ctx)
+CROSSPAD_COLD void SamplerEngineBase::setNoteCallbacks(NoteCb on, NoteCb off, void* ctx)
 {
     onNote_ = on;
     offNote_ = off;
     cbCtx_ = ctx;
 }
 
-CROSSPAD_COLD void SamplerEngine::onPrepare(uint32_t maxFrames, uint32_t sampleRate)
+CROSSPAD_COLD void SamplerEngineBase::onPrepare(uint32_t maxFrames, uint32_t sampleRate)
 {
     /* Called again whenever a channel is added or the engine is set up anew,
      * so it may not assume it is the first time. Voices render straight into
@@ -79,39 +79,39 @@ CROSSPAD_COLD void SamplerEngine::onPrepare(uint32_t maxFrames, uint32_t sampleR
     refreshSteps();
 }
 
-void SamplerEngine::beginMutation()
+void SamplerEngineBase::beginMutation()
 {
     mutating_.store(true, std::memory_order_release);
 }
 
-void SamplerEngine::endMutation()
+void SamplerEngineBase::endMutation()
 {
     mutating_.store(false, std::memory_order_release);
 }
 
-CROSSPAD_COLD void SamplerEngine::setKit(const SamplerKit* k)
+CROSSPAD_COLD void SamplerEngineBase::setKit(const SamplerKit* k)
 {
     kit_.store(k, std::memory_order_release);
 }
 
-CROSSPAD_COLD void SamplerEngine::setBarClock(BarClockFn fn, void* ctx)
+CROSSPAD_COLD void SamplerEngineBase::setBarClock(BarClockFn fn, void* ctx)
 {
     barClockCtx_ = ctx;
     barClock_ = fn;
 }
 
-bool SamplerEngine::barClockRunning() const
+bool SamplerEngineBase::barClockRunning() const
 {
     uint32_t toBar = 0;
     return barClock_ && barClock_(barClockCtx_, toBar);
 }
 
-void SamplerEngine::setPadMix(uint8_t pad, int volume, int pan)
+void SamplerEngineBase::setPadMix(uint8_t pad, int volume, int pan)
 {
     setPadMixGains(pad, SamplerKit::volumeToGain(volume), SamplerKit::panToBalance(pan));
 }
 
-void SamplerEngine::setPadMixGains(uint8_t pad, float gain, float balance)
+void SamplerEngineBase::setPadMixGains(uint8_t pad, float gain, float balance)
 {
     if (pad >= kPads) return;
     float l = 0, r = 0;
@@ -119,7 +119,7 @@ void SamplerEngine::setPadMixGains(uint8_t pad, float gain, float balance)
     const float g = gain;
     /* Live, on voices already sounding: the Pad Mixer's fader is turned while
      * a loop is playing and must be heard on that loop, not on the next hit. */
-    for (auto& v : voices_) {
+    for (auto& v : voices()) {
         if (v.state.load(std::memory_order_acquire) != static_cast<uint8_t>(VoiceState::Playing)) continue;
         if (v.pad != pad) continue;
         v.gainL = g * l;
@@ -127,9 +127,9 @@ void SamplerEngine::setPadMixGains(uint8_t pad, float gain, float balance)
     }
 }
 
-SamplerEngine::Voice* SamplerEngine::claimVoice()
+SamplerEngineBase::Voice* SamplerEngineBase::claimVoice()
 {
-    for (auto& v : voices_) {
+    for (auto& v : voices()) {
         uint8_t expect = static_cast<uint8_t>(VoiceState::Free);
         if (v.state.compare_exchange_strong(expect, static_cast<uint8_t>(VoiceState::Claiming),
                                             std::memory_order_acq_rel, std::memory_order_relaxed)) {
@@ -139,16 +139,16 @@ SamplerEngine::Voice* SamplerEngine::claimVoice()
     return nullptr;
 }
 
-void SamplerEngine::startFade(Voice& v)
+void SamplerEngineBase::startFade(Voice& v)
 {
     v.fading.store(true, std::memory_order_release);
 }
 
-bool SamplerEngine::stealOldest()
+bool SamplerEngineBase::stealOldest()
 {
     Voice* oldest = nullptr;
     uint32_t best = 0xFFFFFFFFu;
-    for (auto& v : voices_) {
+    for (auto& v : voices()) {
         if (v.state.load(std::memory_order_acquire) != static_cast<uint8_t>(VoiceState::Playing)) continue;
         if (v.fading.load(std::memory_order_acquire)) continue;       // already on its way out
         if (v.age < best) { best = v.age; oldest = &v; }
@@ -159,7 +159,7 @@ bool SamplerEngine::stealOldest()
     return true;
 }
 
-bool SamplerEngine::shedOne()
+bool SamplerEngineBase::shedOne()
 {
     if (!stealOldest()) return false;
     cSheds_.fetch_add(1, std::memory_order_relaxed);
@@ -178,16 +178,16 @@ bool SamplerEngine::shedOne()
  * streaming pass that serves it: still waiting (`wantStream`), or already
  * being fed (`window.isOpen()`).
  */
-bool SamplerEngine::streamsOrWillStream(const Voice& v)
+bool SamplerEngineBase::streamsOrWillStream(const Voice& v)
 {
     return v.wantStream || v.window.isOpen();
 }
 
-void SamplerEngine::stealOldestStreaming()
+void SamplerEngineBase::stealOldestStreaming()
 {
     Voice* oldest = nullptr;
     uint32_t best = 0xFFFFFFFFu;
-    for (auto& v : voices_) {
+    for (auto& v : voices()) {
         if (v.state.load(std::memory_order_acquire) != static_cast<uint8_t>(VoiceState::Playing)) continue;
         if (v.fading.load(std::memory_order_acquire)) continue;
         if (!streamsOrWillStream(v)) continue;    // a resident voice costs the card nothing
@@ -199,20 +199,20 @@ void SamplerEngine::stealOldestStreaming()
     }
 }
 
-uint8_t SamplerEngine::streamingVoices() const
+uint8_t SamplerEngineBase::streamingVoices() const
 {
     uint8_t n = 0;
-    for (const auto& v : voices_) {
+    for (const auto& v : voices()) {
         if (v.state.load(std::memory_order_acquire) != static_cast<uint8_t>(VoiceState::Playing)) continue;
         if (streamsOrWillStream(v)) ++n;
     }
     return n;
 }
 
-CROSSPAD_COLD SamplerEngine::Meter SamplerEngine::meter() const
+CROSSPAD_COLD SamplerEngineBase::Meter SamplerEngineBase::meter() const
 {
     Meter m;
-    for (const auto& v : voices_) {
+    for (const auto& v : voices()) {
         if (v.state.load(std::memory_order_acquire) != static_cast<uint8_t>(VoiceState::Playing)) continue;
         ++m.active;
         if (streamsOrWillStream(v)) ++m.streaming;
@@ -235,16 +235,16 @@ CROSSPAD_COLD SamplerEngine::Meter SamplerEngine::meter() const
     return m;
 }
 
-uint8_t SamplerEngine::voicesActive() const
+uint8_t SamplerEngineBase::voicesActive() const
 {
     uint8_t n = 0;
-    for (const auto& v : voices_) {
+    for (const auto& v : voices()) {
         if (v.state.load(std::memory_order_acquire) == static_cast<uint8_t>(VoiceState::Playing)) ++n;
     }
     return n;
 }
 
-void SamplerEngine::noteOn(uint8_t pad, uint8_t velocity, int8_t transpose, uint8_t key)
+void SamplerEngineBase::noteOn(uint8_t pad, uint8_t velocity, int8_t transpose, uint8_t key)
 {
     /* Counted before the kit is read and released after the voice is
      * published, both sequentially consistent: a loader that rewrote a pad
@@ -261,7 +261,7 @@ void SamplerEngine::noteOn(uint8_t pad, uint8_t velocity, int8_t transpose, uint
     notesInFlight_.fetch_sub(1, std::memory_order_seq_cst);
 }
 
-void SamplerEngine::noteOnBody(uint8_t pad, uint8_t velocity, int8_t transpose, uint8_t key)
+void SamplerEngineBase::noteOnBody(uint8_t pad, uint8_t velocity, int8_t transpose, uint8_t key)
 {
     if (pad >= kPads) return;
     if (mutating_.load(std::memory_order_acquire)) return;
@@ -295,9 +295,9 @@ void SamplerEngine::noteOnBody(uint8_t pad, uint8_t velocity, int8_t transpose, 
     start(*vp, kp, velocity);
 }
 
-bool SamplerEngine::loopToggle(uint8_t pad, uint8_t key)
+bool SamplerEngineBase::loopToggle(uint8_t pad, uint8_t key)
 {
-    for (auto& v : voices_) {
+    for (auto& v : voices()) {
         if (v.state.load(std::memory_order_acquire) != static_cast<uint8_t>(VoiceState::Playing)) continue;
         if (!v.loop || v.pad != pad || v.key != key) continue;
         if (v.fading.load(std::memory_order_acquire)) continue;
@@ -315,11 +315,11 @@ bool SamplerEngine::loopToggle(uint8_t pad, uint8_t key)
     return false;
 }
 
-SamplerEngine::LoopState SamplerEngine::loopState(uint8_t pad, uint8_t key) const
+SamplerEngineBase::LoopState SamplerEngineBase::loopState(uint8_t pad, uint8_t key) const
 {
     if (pad >= kPads) return LoopState::Idle;
     if (key == kOwnKey) key = pad;
-    for (const auto& v : voices_) {
+    for (const auto& v : voices()) {
         if (v.state.load(std::memory_order_acquire) != static_cast<uint8_t>(VoiceState::Playing)) continue;
         if (!v.loop || v.pad != pad || v.key != key) continue;
         if (v.fading.load(std::memory_order_acquire)) continue;
@@ -329,7 +329,7 @@ SamplerEngine::LoopState SamplerEngine::loopState(uint8_t pad, uint8_t key) cons
     return LoopState::Idle;
 }
 
-uint8_t SamplerEngine::pickLayer(const KitPad& kp, uint8_t pad, uint8_t velocity)
+uint8_t SamplerEngineBase::pickLayer(const KitPad& kp, uint8_t pad, uint8_t velocity)
 {
     /* A velocity split by default, in the order the kit lists them;
      * round-robin where the kit asks for it. */
@@ -340,7 +340,7 @@ uint8_t SamplerEngine::pickLayer(const KitPad& kp, uint8_t pad, uint8_t velocity
     return layer >= kp.layerCount ? static_cast<uint8_t>(kp.layerCount - 1) : layer;
 }
 
-bool SamplerEngine::plan(const KitPad& kp, uint8_t layer, Plan& p) const
+bool SamplerEngineBase::plan(const KitPad& kp, uint8_t layer, Plan& p) const
 {
     const KitLayer& kl = kp.layers[layer];
     const SampleStore::Slot* slot = store_->slot(kl.slot);
@@ -370,7 +370,7 @@ bool SamplerEngine::plan(const KitPad& kp, uint8_t layer, Plan& p) const
     return true;
 }
 
-void SamplerEngine::cutFor(const KitPad& kp, uint8_t key)
+void SamplerEngineBase::cutFor(const KitPad& kp, uint8_t key)
 {
     /* A pad retriggers itself, and chokes its group.
      *
@@ -386,7 +386,7 @@ void SamplerEngine::cutFor(const KitPad& kp, uint8_t key)
      * Both cuts are the fade a steal uses: a cut at an arbitrary phase is a
      * click. `monoPerPad` turns the first off for a kit that wants its pads
      * to layer. */
-    for (auto& v : voices_) {
+    for (auto& v : voices()) {
         if (v.state.load(std::memory_order_acquire) != static_cast<uint8_t>(VoiceState::Playing)) continue;
         const bool sameChoke = kp.choke != 0 && v.choke == kp.choke;
         /* By the hit, not the pad: one pad's sample struck from two pads at
@@ -396,7 +396,7 @@ void SamplerEngine::cutFor(const KitPad& kp, uint8_t key)
     }
 }
 
-void SamplerEngine::makeRoom(bool willStream)
+void SamplerEngineBase::makeRoom(bool willStream)
 {
     /* Two ceilings, and the one that binds depends on the note.
      *
@@ -419,7 +419,7 @@ void SamplerEngine::makeRoom(bool willStream)
     }
 }
 
-void SamplerEngine::fill(Voice& v, const KitPad& kp, const Plan& p, uint8_t pad, int8_t transpose, uint8_t key)
+void SamplerEngineBase::fill(Voice& v, const KitPad& kp, const Plan& p, uint8_t pad, int8_t transpose, uint8_t key)
 {
     const SampleStore::Slot* slot = p.slot;
     const uint32_t first = p.first, last = p.last;
@@ -496,7 +496,7 @@ void SamplerEngine::fill(Voice& v, const KitPad& kp, const Plan& p, uint8_t pad,
     v.playFrame.store(first, std::memory_order_relaxed);
 }
 
-void SamplerEngine::start(Voice& v, const KitPad& kp, uint8_t velocity)
+void SamplerEngineBase::start(Voice& v, const KitPad& kp, uint8_t velocity)
 {
     float pl = 0, pr = 0;
     SamplerKit::panGains(kp.pan, pl, pr);
@@ -520,9 +520,9 @@ void SamplerEngine::start(Voice& v, const KitPad& kp, uint8_t velocity)
 
 // ── A hit before its velocity ───────────────────────────────────────────────
 
-SamplerEngine::Voice* SamplerEngine::armedFor(uint8_t touch)
+SamplerEngineBase::Voice* SamplerEngineBase::armedFor(uint8_t touch)
 {
-    for (auto& v : voices_) {
+    for (auto& v : voices()) {
         if (v.state.load(std::memory_order_acquire) == static_cast<uint8_t>(VoiceState::Armed) &&
             v.touch == touch) {
             return &v;
@@ -531,7 +531,7 @@ SamplerEngine::Voice* SamplerEngine::armedFor(uint8_t touch)
     return nullptr;
 }
 
-bool SamplerEngine::dropArmed(Voice& v)
+bool SamplerEngineBase::dropArmed(Voice& v)
 {
     /* Finished, not Free: the voice's cursor and slot are the streaming
      * thread's to clear, as for any voice that has ended. It never sounded,
@@ -541,7 +541,7 @@ bool SamplerEngine::dropArmed(Voice& v)
                                            std::memory_order_acq_rel, std::memory_order_relaxed);
 }
 
-bool SamplerEngine::arm(uint8_t touch, uint8_t pad, int8_t transpose, uint8_t key)
+bool SamplerEngineBase::arm(uint8_t touch, uint8_t pad, int8_t transpose, uint8_t key)
 {
     if (touch >= kPads || pad >= kPads) return false;
     disarm(touch);
@@ -553,7 +553,7 @@ bool SamplerEngine::arm(uint8_t touch, uint8_t pad, int8_t transpose, uint8_t ke
     return ok;
 }
 
-bool SamplerEngine::armBody(uint8_t touch, uint8_t pad, int8_t transpose, uint8_t key)
+bool SamplerEngineBase::armBody(uint8_t touch, uint8_t pad, int8_t transpose, uint8_t key)
 {
     if (mutating_.load(std::memory_order_acquire)) return false;
     const SamplerKit* k = kit_.load(std::memory_order_acquire);
@@ -576,7 +576,7 @@ bool SamplerEngine::armBody(uint8_t touch, uint8_t pad, int8_t transpose, uint8_
     return true;
 }
 
-bool SamplerEngine::fire(uint8_t touch, uint8_t pad, uint8_t velocity, int8_t transpose, uint8_t key)
+bool SamplerEngineBase::fire(uint8_t touch, uint8_t pad, uint8_t velocity, int8_t transpose, uint8_t key)
 {
     if (touch >= kPads) return false;
     Voice* vp = armedFor(touch);
@@ -604,7 +604,7 @@ bool SamplerEngine::fire(uint8_t touch, uint8_t pad, uint8_t velocity, int8_t tr
     return ok;
 }
 
-bool SamplerEngine::fireBody(Voice& v, uint8_t pad, uint8_t velocity, int8_t transpose, uint8_t key)
+bool SamplerEngineBase::fireBody(Voice& v, uint8_t pad, uint8_t velocity, int8_t transpose, uint8_t key)
 {
     if (mutating_.load(std::memory_order_acquire)) return false;
     /* Not the hit that was armed: the mode moved under the finger. */
@@ -643,23 +643,23 @@ bool SamplerEngine::fireBody(Voice& v, uint8_t pad, uint8_t velocity, int8_t tra
     return true;
 }
 
-void SamplerEngine::disarm(uint8_t touch)
+void SamplerEngineBase::disarm(uint8_t touch)
 {
     if (touch >= kPads) return;
     Voice* v = armedFor(touch);
     if (v && dropArmed(*v)) cArmCancelled_.fetch_add(1, std::memory_order_relaxed);
 }
 
-uint8_t SamplerEngine::armedVoices() const
+uint8_t SamplerEngineBase::armedVoices() const
 {
     uint8_t n = 0;
-    for (const auto& v : voices_) {
+    for (const auto& v : voices()) {
         if (v.state.load(std::memory_order_acquire) == static_cast<uint8_t>(VoiceState::Armed)) ++n;
     }
     return n;
 }
 
-void SamplerEngine::noteOff(uint8_t pad, uint8_t key)
+void SamplerEngineBase::noteOff(uint8_t pad, uint8_t key)
 {
     if (pad >= kPads) return;
     if (key == kOwnKey) key = pad;
@@ -667,36 +667,36 @@ void SamplerEngine::noteOff(uint8_t pad, uint8_t key)
     /* Only Hold mode listens to a release. A one-shot plays to its end and a
      * loop keeps going -- that is what the kit's playbackMode means. */
     if (k && k->pad[pad].mode != PadMode::Hold) return;
-    for (auto& v : voices_) {
+    for (auto& v : voices()) {
         if (v.state.load(std::memory_order_acquire) != static_cast<uint8_t>(VoiceState::Playing)) continue;
         if (v.pad == pad && v.key == key) v.releasing.store(true, std::memory_order_release);
     }
 }
 
-void SamplerEngine::stopPad(uint8_t pad)
+void SamplerEngineBase::stopPad(uint8_t pad)
 {
     if (pad >= kPads) return;
-    for (auto& v : voices_) {
+    for (auto& v : voices()) {
         if (v.state.load(std::memory_order_acquire) != static_cast<uint8_t>(VoiceState::Playing)) continue;
         if (v.pad == pad) startFade(v);
     }
 }
 
-void SamplerEngine::allNotesOff()
+void SamplerEngineBase::allNotesOff()
 {
-    for (auto& v : voices_) {
+    for (auto& v : voices()) {
         if (v.state.load(std::memory_order_acquire) == static_cast<uint8_t>(VoiceState::Playing)) {
             startFade(v);
         }
     }
 }
 
-bool SamplerEngine::padSounding(uint8_t pad) const
+bool SamplerEngineBase::padSounding(uint8_t pad) const
 {
     return pad < kPads && padVoices_[pad].load(std::memory_order_acquire) != 0;
 }
 
-bool SamplerEngine::anySounding() const
+bool SamplerEngineBase::anySounding() const
 {
     for (const auto& p : padVoices_) {
         if (p.load(std::memory_order_acquire) != 0) return true;
@@ -704,7 +704,7 @@ bool SamplerEngine::anySounding() const
     return false;
 }
 
-bool SamplerEngine::slotInUse(uint16_t slot) const
+bool SamplerEngineBase::slotInUse(uint16_t slot) const
 {
     /* The caller's rewrite of the pads is ordered before the count is read,
      * against noteOn()'s increment before it reads one: either the note sees
@@ -722,7 +722,7 @@ bool SamplerEngine::slotInUse(uint16_t slot) const
     /* Finished counts: the render has let go, but until the streaming thread
      * frees the voice its window may still be in the middle of a refill that
      * reads the slot's path. */
-    for (const auto& v : voices_) {
+    for (const auto& v : voices()) {
         const uint8_t st = v.state.load(std::memory_order_acquire);
         if (st == static_cast<uint8_t>(VoiceState::Free)) continue;
         if (st == static_cast<uint8_t>(VoiceState::Claiming)) return true;
@@ -731,7 +731,7 @@ bool SamplerEngine::slotInUse(uint16_t slot) const
     return false;
 }
 
-void SamplerEngine::endVoice(Voice& v)
+void SamplerEngineBase::endVoice(Voice& v)
 {
     const size_t idx = static_cast<size_t>(&v - voices_);
     padVoices_[v.pad].fetch_and(~(1u << idx), std::memory_order_acq_rel);
@@ -743,7 +743,7 @@ void SamplerEngine::endVoice(Voice& v)
     v.state.store(static_cast<uint8_t>(VoiceState::Finished), std::memory_order_release);
 }
 
-void SamplerEngine::learnEnd(const Voice& v)
+void SamplerEngineBase::learnEnd(const Voice& v)
 {
     if (v.loudEnd == 0 || store_->audibleEnd(v.slotIdx) != 0) return;
     store_->learnAudibleEnd(v.slotIdx, v.loudEnd);
@@ -850,7 +850,7 @@ CP_OWN_REGISTERS const float* walkPitched(const int16_t* base, uint32_t first, u
 
 } // namespace
 
-bool SamplerEngine::renderVoice(Voice& v, float* out, uint32_t frames)
+bool SamplerEngineBase::renderVoice(Voice& v, float* out, uint32_t frames)
 {
     const float fadeStep = steps_.fadeStep;
     const float relStep = steps_.relStep;
@@ -1100,10 +1100,10 @@ bool SamplerEngine::renderVoice(Voice& v, float* out, uint32_t frames)
     return true;
 }
 
-uint32_t SamplerEngine::streamLead() const
+uint32_t SamplerEngineBase::streamLead() const
 {
     uint32_t lead = UINT32_MAX;
-    for (const auto& v : voices_) {
+    for (const auto& v : voices()) {
         if (v.state.load(std::memory_order_acquire) != static_cast<uint8_t>(VoiceState::Playing)) continue;
         const uint32_t at = v.playFrame.load(std::memory_order_acquire);
         uint32_t upTo = 0;
@@ -1120,14 +1120,14 @@ uint32_t SamplerEngine::streamLead() const
     return lead;
 }
 
-void SamplerEngine::mix(float* out, uint32_t frames)
+void SamplerEngineBase::mix(float* out, uint32_t frames)
 {
     uint32_t toBar = 0;
     const bool clockRunning = barClock_ && barClock_(barClockCtx_, toBar);
     /* The clock stopping ends every loop: a launched loop belongs to the
      * groove it was quantised to. */
     if (barWasRunning_ && !clockRunning) {
-        for (auto& v : voices_) {
+        for (auto& v : voices()) {
             if (v.state.load(std::memory_order_acquire) == static_cast<uint8_t>(VoiceState::Playing) && v.loop) {
                 startFade(v);
             }
@@ -1138,7 +1138,7 @@ void SamplerEngine::mix(float* out, uint32_t frames)
     float* scratch = meters_.enabled() && meterScratch_.size() >= static_cast<size_t>(frames) * 2
                          ? meterScratch_.data() : nullptr;
     bool silent = true;
-    for (auto& v : voices_) {
+    for (auto& v : voices()) {
         if (v.state.load(std::memory_order_acquire) != static_cast<uint8_t>(VoiceState::Playing)) continue;
         /* A launch waiting for the bar line: not heard, not advanced, and
          * started on the frame the line falls on. Cancelled before it was
@@ -1180,7 +1180,7 @@ void SamplerEngine::mix(float* out, uint32_t frames)
 
 // ── Audition ────────────────────────────────────────────────────────────────
 
-bool SamplerEngine::previewStart(const char* path, uint32_t first, uint32_t last,
+bool SamplerEngineBase::previewStart(const char* path, uint32_t first, uint32_t last,
                                  float gain, float balance)
 {
     if (!path || !path[0] || !pool_ || !pSrc_) return false;
@@ -1204,14 +1204,14 @@ bool SamplerEngine::previewStart(const char* path, uint32_t first, uint32_t last
     return true;
 }
 
-void SamplerEngine::previewStop()
+void SamplerEngineBase::previewStop()
 {
     /* Names the newest request: the voice of that generation fades, and if it
      * has not started yet it never will. */
     pStopGen_.store(pReqGen_.load(std::memory_order_acquire), std::memory_order_release);
 }
 
-bool SamplerEngine::previewBusy() const
+bool SamplerEngineBase::previewBusy() const
 {
     if (pState_.load(std::memory_order_acquire) != static_cast<uint8_t>(PreviewState::Idle)) return true;
     const uint32_t req = pReqGen_.load(std::memory_order_acquire);
@@ -1219,7 +1219,7 @@ bool SamplerEngine::previewBusy() const
            req != pStopGen_.load(std::memory_order_acquire);
 }
 
-void SamplerEngine::mixPreview(float* out, uint32_t frames)
+void SamplerEngineBase::mixPreview(float* out, uint32_t frames)
 {
     if (pState_.load(std::memory_order_acquire) != static_cast<uint8_t>(PreviewState::Playing)) return;
 
@@ -1271,7 +1271,7 @@ void SamplerEngine::mixPreview(float* out, uint32_t frames)
     pPlayFrame_.store(static_cast<uint32_t>(pPhase_ >> 32), std::memory_order_release);
 }
 
-void SamplerEngine::finishPreview()
+void SamplerEngineBase::finishPreview()
 {
     /* Playing -> Finished only: a voice a teardown has abandoned meanwhile is
      * not the render's to mark any more. */
@@ -1280,7 +1280,7 @@ void SamplerEngine::finishPreview()
                                     std::memory_order_acq_rel, std::memory_order_relaxed);
 }
 
-CROSSPAD_COLD bool SamplerEngine::previewAbandon()
+CROSSPAD_COLD bool SamplerEngineBase::previewAbandon()
 {
     /* Not while a streaming pass is in the audition: the caller tries again
      * after letting it run, rather than spinning here against a thread that
@@ -1294,14 +1294,14 @@ CROSSPAD_COLD bool SamplerEngine::previewAbandon()
     return true;
 }
 
-void SamplerEngine::closePreview()
+void SamplerEngineBase::closePreview()
 {
     pWindow_.close(*pool_);
     pCursor_.clear();
     pState_.store(static_cast<uint8_t>(PreviewState::Idle), std::memory_order_release);
 }
 
-CROSSPAD_COLD void SamplerEngine::startPreview(uint32_t gen)
+CROSSPAD_COLD void SamplerEngineBase::startPreview(uint32_t gen)
 {
     /* The record, if it can be had whole; a torn copy is tried again on the
      * next pass, with the generation still not taken. */
@@ -1354,7 +1354,7 @@ CROSSPAD_COLD void SamplerEngine::startPreview(uint32_t gen)
     pState_.store(static_cast<uint8_t>(PreviewState::Priming), std::memory_order_release);
 }
 
-void SamplerEngine::servicePreview()
+void SamplerEngineBase::servicePreview()
 {
     if (!pool_ || !pSrc_) return;
     /* serviceIo() has more than one caller -- the streaming task, and a
@@ -1413,7 +1413,7 @@ void SamplerEngine::servicePreview()
     pSvc_.store(false, std::memory_order_release);
 }
 
-bool SamplerEngine::serviceIo()
+bool SamplerEngineBase::serviceIo()
 {
     servicePreview();
     if (!pool_ || !store_) return true;
@@ -1425,7 +1425,7 @@ bool SamplerEngine::serviceIo()
     if (vSvc_.exchange(true, std::memory_order_acquire)) return false;
     ISampleSource* src = store_->source();
     uint8_t waiting = 0;
-    for (auto& v : voices_) {
+    for (auto& v : voices()) {
         const uint8_t st = v.state.load(std::memory_order_acquire);
         if (st == static_cast<uint8_t>(VoiceState::Finished)) {
             /* The render thread has let this one go. Its blocks come back here
@@ -1476,18 +1476,18 @@ bool SamplerEngine::serviceIo()
     return true;
 }
 
-bool SamplerEngine::ioIdle() const
+bool SamplerEngineBase::ioIdle() const
 {
     return !vSvc_.load(std::memory_order_acquire) && !pSvc_.load(std::memory_order_acquire);
 }
 
-CROSSPAD_COLD bool SamplerEngine::abandonVoices()
+CROSSPAD_COLD bool SamplerEngineBase::abandonVoices()
 {
     /* The voices' pass is ours for the length of this, so no streaming pass
      * fills a window this closes; one that holds it now is waited for by the
      * caller, not here -- it may be below us on the same core. */
     if (vSvc_.exchange(true, std::memory_order_acquire)) return false;
-    for (auto& v : voices_) {
+    for (auto& v : voices()) {
         if (v.state.load(std::memory_order_acquire) == static_cast<uint8_t>(VoiceState::Free)) continue;
         /* Playing (the render never ended it) or Finished (ended, ring not
          * yet back): either way its blocks go back here, once -- Free is what
@@ -1507,7 +1507,7 @@ CROSSPAD_COLD bool SamplerEngine::abandonVoices()
     return true;
 }
 
-CROSSPAD_COLD SamplerEngine::Counters SamplerEngine::counters() const
+CROSSPAD_COLD SamplerEngineBase::Counters SamplerEngineBase::counters() const
 {
     Counters c;
     c.notesStarted  = cNotes_.load(std::memory_order_relaxed);
@@ -1530,7 +1530,7 @@ CROSSPAD_COLD SamplerEngine::Counters SamplerEngine::counters() const
     return c;
 }
 
-CROSSPAD_COLD void SamplerEngine::resetCounters()
+CROSSPAD_COLD void SamplerEngineBase::resetCounters()
 {
     cNotes_ = 0; cDropped_ = 0; cSteals_ = 0; cSheds_ = 0;
     cStreamRefused_ = 0; cUnderruns_ = 0; cVoicesPeak_ = 0; cSilenced_ = 0;
