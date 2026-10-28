@@ -32,9 +32,10 @@ int autoFreezeNext(const AudioSong& song, const FreezeState* states, uint32_t sk
 ///    frozen as it is (not one in @p skip) takes a free slot, else one a
 ///    frozen track only keeps cached: heard live instead of silent, and an
 ///    engine there for the freeze -- or the harvest -- that ends it.
-/// @p states is freezeState() of each of the song's kTracks tracks. Writes
-/// @p slots; returns whether they differ from the song's.
+/// @p states is freezeState() of each of the song's kTracks tracks; @p usable
+/// the slots the platform has an engine for (a platform with only the second
+/// kit: 1). Writes @p slots; returns whether they differ from the song's.
 bool kitSlotsNext(const AudioSong& song, const FreezeState* states, int want, int prevWant, uint32_t skip,
-                  bool playing, int8_t (&slots)[AudioSong::kKitSlots]);
+                  bool playing, int8_t (&slots)[AudioSong::kKitSlots], int usable = AudioSong::kKitSlots);
 
 } // namespace crosspad

@@ -212,6 +212,16 @@ TEST_CASE("kit slots: an empty armed kit track gets a slot for the fingers", "[s
     CHECK((slots[0] == -1 || slots[1] == -1));            // the other frozen one gave its slot back
 }
 
+TEST_CASE("kit slots: a platform with one kit engine only ever fills slot 0", "[song][freeze][slots]") {
+    AudioSong s = fourKits();                             // slot 1 given to track 2 when it was made
+    const FreezeState st[AudioSong::kTracks] = {FreezeState::Frozen, FreezeState::Stale, FreezeState::Frozen,
+                                                FreezeState::Frozen};
+    int8_t slots[AudioSong::kKitSlots];
+    CHECK(kitSlotsNext(s, st, 3, 1, 0, true, slots, 1));
+    CHECK(slots[0] == 3);
+    CHECK(slots[1] == -1);
+}
+
 TEST_CASE("kit slots: nothing to change says so", "[song][freeze][slots]") {
     AudioSong s = fourKits();
     s.kitSlots[0] = 1;

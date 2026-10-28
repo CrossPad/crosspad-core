@@ -2,6 +2,8 @@
 
 #include "crosspad/song/AutoFreeze.hpp"
 
+#include <algorithm>
+
 namespace crosspad {
 
 int autoFreezeNext(const AudioSong& song, const FreezeState* states, uint32_t skip) {
@@ -18,8 +20,8 @@ int autoFreezeNext(const AudioSong& song, const FreezeState* states, uint32_t sk
 }
 
 bool kitSlotsNext(const AudioSong& song, const FreezeState* states, int want, int prevWant, uint32_t skip,
-                  bool playing, int8_t (&slots)[AudioSong::kKitSlots]) {
-    constexpr int kSlots = AudioSong::kKitSlots;
+                  bool playing, int8_t (&slots)[AudioSong::kKitSlots], int usable) {
+    const int kSlots = std::max(0, std::min<int>(usable, AudioSong::kKitSlots));
     auto own = [&](int t) { return t >= 0 && t < AudioSong::kTracks && song.seqRoute(t) == 1; };
     auto plays = [&](int t) { return own(t) && !song.seqPlaysNothing(t); };
     auto frozen = [&](int t) { return t >= 0 && states[t] == FreezeState::Frozen; };
@@ -30,9 +32,9 @@ bool kitSlotsNext(const AudioSong& song, const FreezeState* states, int want, in
         return -1;
     };
 
-    for (int s = 0; s < kSlots; ++s) {
+    for (int s = 0; s < AudioSong::kKitSlots; ++s) {
         slots[s] = song.kitSlots[s];
-        if (!own(slots[s])) slots[s] = -1;
+        if (!own(slots[s]) || s >= kSlots) slots[s] = -1;
     }
     if (!own(want)) want = -1;
 
@@ -50,7 +52,7 @@ bool kitSlotsNext(const AudioSong& song, const FreezeState* states, int want, in
         first([&](int h) { return (frozen(h) || !plays(h)) && h != prevWant; });
         first([&](int h) { return skipped(h) && h != prevWant; });
         first([&](int h) { return h != prevWant; });
-        slots[pick < 0 ? kSlots - 1 : pick] = (int8_t)want;
+        if (kSlots) slots[pick < 0 ? kSlots - 1 : pick] = (int8_t)want;
     }
 
     for (int s = 0; s < kSlots; ++s) {
@@ -72,7 +74,7 @@ bool kitSlotsNext(const AudioSong& song, const FreezeState* states, int want, in
         slots[pick] = (int8_t)t;
     }
 
-    for (int s = 0; s < kSlots; ++s)
+    for (int s = 0; s < AudioSong::kKitSlots; ++s)
         if (slots[s] != song.kitSlots[s]) return true;
     return false;
 }
