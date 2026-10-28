@@ -699,6 +699,32 @@ TEST_CASE("AudioSong: inserting bars cuts what crosses and moves the rest", "[so
     REQUIRE(s.length == 12);
 }
 
+TEST_CASE("AudioSong: two tracks change places, and what names them follows", "[song][tracks]") {
+    AudioSong s = songAt120();
+    s.addClip(0, {"a.wav", 0, 4});
+    s.tracks[0].inUse = true;
+    REQUIRE(s.addSeqTrack(1, SeqSource::Kit, 0, "/crosspad/kits/B/kit.json"));
+    s.tracks[1].name = "B";
+    s.tracks[0].name = "A";
+    s.armed = 1;
+    s.kitSlots[0] = 1;
+    ClipSet set;
+    set.setRows(1);
+    set.put(0, 0, "a.wav");
+    set.put(0, 1, "b.wav");
+    s.sets.push_back(set);
+
+    REQUIRE(s.swapTracks(0, 1));
+    CHECK(s.tracks[0].name == "B");
+    CHECK(s.tracks[1].name == "A");
+    CHECK(s.tracks[1].clips.size() == 1);
+    CHECK(s.armed == 0);
+    CHECK(s.kitSlots[0] == 0);
+    CHECK(s.sets[0].at(0, 0) == "b.wav");
+    CHECK(s.sets[0].at(0, 1) == "a.wav");
+    CHECK_FALSE(s.swapTracks(1, 2));        // track 3 is not in use
+}
+
 TEST_CASE("AudioSong: deleting bars takes them out and closes the gap", "[song][cut]") {
     AudioSong s = songAt120();
     s.length = 12;

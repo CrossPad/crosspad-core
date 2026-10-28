@@ -449,6 +449,10 @@ public:
     bool bounceSeqTrack(int track, const SongClip* clip = nullptr);
     /// Give @p track back: its clips go, and Arrange stops counting it.
     void removeTrack(int track);
+    /// Tracks @p a and @p b change places, both in use: everything that names
+    /// a track by its number (ARM, the kit slots, the launcher's columns)
+    /// follows. False when either is out of range or not in use.
+    bool swapTracks(int a, int b);
 
     // ── editing by bars ────────────────────────────────────────────────────
     //

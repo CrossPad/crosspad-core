@@ -1100,6 +1100,28 @@ bool AudioSong::dubSeqNotes(int track, const std::vector<SeqNote>& notes)
     return true;
 }
 
+bool AudioSong::swapTracks(int a, int b)
+{
+    if (a < 0 || b < 0 || a >= kTracks || b >= kTracks || a == b) return false;
+    if (!tracks[a].inUse || !tracks[b].inUse) return false;
+    std::swap(tracks[a], tracks[b]);
+    auto other = [&](int8_t& t) {
+        if (t == a) t = (int8_t)b;
+        else if (t == b) t = (int8_t)a;
+    };
+    for (int8_t& slot : kitSlots) other(slot);
+    other(armed);
+    if (a < ClipSet::kCols && b < ClipSet::kCols) {
+        for (ClipSet& s : sets)
+            for (uint32_t r = 0; r < s.rows(); ++r) {
+                std::string x = s.at(r, a);
+                s.put(r, a, s.at(r, b));
+                s.put(r, b, x);
+            }
+    }
+    return true;
+}
+
 void AudioSong::removeTrack(int track)
 {
     if (track < 0 || track >= kTracks || !tracks[track].inUse) return;
