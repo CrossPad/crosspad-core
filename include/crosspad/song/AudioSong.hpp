@@ -467,6 +467,10 @@ public:
     /// every block from it on moves @p by bars later, as does the set length.
     /// Nothing after the point is written over.
     void insertBars(uint32_t at, uint32_t by, uint32_t spBar);
+    /// Take [@p from, @p to) out of the song and close the gap: what sounds
+    /// in it goes (clearRange()), every block after it moves that many bars
+    /// earlier, as do the set length and a loop region after or around it.
+    void deleteBars(uint32_t from, uint32_t to, uint32_t spBar);
     /// What sounds in [@p from, @p to) on every track, by bars: a block
     /// reaching in from before is copied from @p from, one reaching past is
     /// copied up to @p to. Seq blocks as much as audio ones.

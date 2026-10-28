@@ -111,6 +111,17 @@ bool seek(int fd, uint32_t at) { return fs().seek(fd, at); }
 void close(int fd) { fs().close(fd); }
 bool exists(const std::string& p) { return fs().exists(p.c_str()); }
 bool makeDir(const std::string& p) { return fs().makeDir(p.c_str()); }
+/// @p p and every folder above it that is not there yet, as `mkdir -p`: a
+/// file written into a new folder two deep failed with "cannot make".
+bool makeDirs(const std::string& p)
+{
+    if (p.empty() || exists(p)) return true;
+    /* A parent that will not be made may be a mount point a stat cannot see
+     * ("/sdcard"): only the folder asked for has to be there in the end. */
+    const size_t slash = p.find_last_of('/');
+    if (slash != std::string::npos && slash > 0) makeDirs(p.substr(0, slash));
+    return makeDir(p) || exists(p);
+}
 bool remove(const std::string& p) { return fs().remove(p.c_str()); }
 bool rename(const std::string& from, const std::string& to) { return fs().rename(from.c_str(), to.c_str()); }
 /// ASCII without case, as strcasecmp() in the C locale.
@@ -1451,7 +1462,7 @@ struct SampleToolsEngine::Impl {
         ClipReader r;
         if (!r.open(file, p.storageReady())) { finish(false, "cannot read " + base_of(file)); return; }
         const size_t slash = out.find_last_of('/');
-        if (slash == std::string::npos || !fsx::makeDir(out.substr(0, slash))) {
+        if (slash == std::string::npos || !fsx::makeDirs(out.substr(0, slash))) {
             r.close();
             finish(false, "cannot make " + out.substr(0, slash));
             return;

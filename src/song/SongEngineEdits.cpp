@@ -700,7 +700,9 @@ bool SongEngine::Impl::songJobRunning() {
 /// stack. Only the arrangement moves -- the audio on the card is never
 /// touched, so a block undone back in finds its file where it was.
 bool SongEngine::Impl::step(std::vector<Snapshot>& from, std::vector<Snapshot>& to) {
-    if (songJobRunning()) return false;
+    /* A freeze gives way, as it does to PLAY: the edit just made started
+     * it, and undoing that edit is the one thing it must not refuse. */
+    if (!yieldFreeze() || songJobRunning()) return false;
     float was = 0.0f, now = 0.0f;
     {
         std::lock_guard<std::recursive_mutex> l(songMutex_);

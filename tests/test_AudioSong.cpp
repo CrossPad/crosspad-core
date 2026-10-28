@@ -699,6 +699,35 @@ TEST_CASE("AudioSong: inserting bars cuts what crosses and moves the rest", "[so
     REQUIRE(s.length == 12);
 }
 
+TEST_CASE("AudioSong: deleting bars takes them out and closes the gap", "[song][cut]") {
+    AudioSong s = songAt120();
+    s.length = 12;
+    s.addClip(0, {"a.wav", 0, 4});
+    s.addClip(0, {"b.wav", 4, 4});
+    s.addClip(0, {"c.wav", 8, 4});
+    s.loopStart = 8;
+    s.loopEnd = 12;
+    s.deleteBars(2, 6, kSpb);
+    const auto& cs = s.tracks[0].clips;
+    REQUIRE(cs.size() == 3);
+    CHECK(cs[0].file == "a.wav");                 // bars 0..2 of it stay
+    CHECK(cs[0].bar == 0);
+    CHECK(cs[0].bars == 2);
+    CHECK(cs[1].file == "b.wav");                 // what of b was past bar 6, from bar 2
+    CHECK(cs[1].bar == 2);
+    CHECK(cs[1].bars == 2);
+    CHECK(cs[1].offset == 2 * kSpb);
+    CHECK(cs[2].file == "c.wav");
+    CHECK(cs[2].bar == 4);
+    CHECK(s.length == 8);
+    CHECK(s.loopStart == 4);
+    CHECK(s.loopEnd == 8);
+
+    s.deleteBars(3, 9, kSpb);                     // the region taken with it
+    CHECK_FALSE(s.hasRegion());
+    CHECK(s.length == 3);
+}
+
 TEST_CASE("AudioSong: a region doubled doubles the seq by bars as well", "[song][cut][seq]") {
     AudioSong s = songAt120();
     s.addClip(0, {"a.wav", 0, 8});

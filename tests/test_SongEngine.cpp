@@ -2215,6 +2215,34 @@ TEST_CASE("song engine: a freeze renders a block once however often it recurs, a
     }
 }
 
+TEST_CASE("song engine: UNDO during a freeze cancels the freeze and undoes", "[song][freeze][undo]") {
+    Rig r;
+    REQUIRE(r.open("Demo"));
+    {
+        std::lock_guard<std::recursive_mutex> l(r.engine->songMutex());
+        auto& s = r.engine->song();
+        s.bpm = 120.0f;
+        s.length = 16;
+        REQUIRE(s.addSeqTrack(0, SeqSource::Kit, 0));
+        SeqNote n;
+        n.pad = 1; n.vel = 100;
+        s.putSeqTake(0, 0, makeSeqPattern(4, {n}), s.samplesPerBar(kRate));
+        s.armed = -1;
+    }
+    r.engine->commit();
+    REQUIRE(r.engine->undoSteps() > 0);
+    std::vector<float> out(kBlock * 2), bus(kBlock * 2, 0.25f);
+    REQUIRE(r.engine->freezeTrack(0));
+    for (int i = 0; i < 20; ++i) {
+        r.block(out, bus);
+        std::this_thread::sleep_for(std::chrono::milliseconds(2));
+    }
+    REQUIRE(r.engine->bounceStatus().state == BounceState::Running);
+    REQUIRE(r.engine->undo());
+    CHECK(r.engine->bounceStatus().state == BounceState::Failed);   // the freeze let go
+    CHECK(r.engine->redoSteps() == 1);
+}
+
 TEST_CASE("song engine: PLAY or REC during a freeze cancels it and plays", "[song][freeze]") {
     Rig r;
     REQUIRE(r.open("Demo"));

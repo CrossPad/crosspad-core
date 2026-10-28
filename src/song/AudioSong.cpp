@@ -874,6 +874,23 @@ void AudioSong::insertBars(uint32_t at, uint32_t by, uint32_t spBar)
     if (length && length > at) length += by;
 }
 
+void AudioSong::deleteBars(uint32_t from, uint32_t to, uint32_t spBar)
+{
+    if (to <= from) return;
+    const uint32_t by = to - from;
+    clearRange(from, to, spBar);
+    for (int t = 0; t < kTracks; ++t)
+        for (auto& c : tracks[t].clips) if (c.bar >= to) c.bar -= by;
+    if (length > to) length -= by;
+    else if (length > from) length = from;
+    auto pull = [&](uint32_t b) { return b >= to ? b - by : (b > from ? from : b); };
+    if (hasRegion()) {
+        loopStart = pull(loopStart);
+        loopEnd = pull(loopEnd);
+        if (loopEnd <= loopStart) loopStart = loopEnd = 0;
+    }
+}
+
 std::vector<RangeClip> AudioSong::copyRange(uint32_t from, uint32_t to, uint32_t spBar) const
 {
     std::vector<RangeClip> out;

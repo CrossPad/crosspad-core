@@ -367,6 +367,18 @@ TEST_CASE("SampleToolsEngine renders a pad's copy once", "[sampletools]") {
     CHECK(readWavData(out).size() == 2000 * 2);
 }
 
+TEST_CASE("SampleToolsEngine renders into a folder two deep that is not there yet", "[sampletools][fs]") {
+    Rig r;
+    const std::string src = (r.dir / "ramp.wav").string();
+    const std::string out = (r.dir / "hil" / "torture" / "fx_001.wav").string();
+    writeRamp(src, 500);
+    SampleFx rev;
+    rev.reverse = true;
+    REQUIRE(r.tools->requestRendered(src, out, rev));
+    REQUIRE(r.finished() == ToolJob::Ready);
+    CHECK(fs::exists(out));
+}
+
 TEST_CASE("SampleToolsEngine transposes a clip and keeps its length", "[sampletools]") {
     Rig r;
     const std::string src = (r.dir / "tone.wav").string();
