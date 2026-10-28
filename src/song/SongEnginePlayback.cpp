@@ -344,9 +344,39 @@ Arrangement SongEngine::Impl::flatten(const AudioSong& song) const {
             a.seqMapped = true;   // an empty map: the sequencer plays none of it
             continue;
         }
-        /* A kit of its own neither kit engine holds now: nothing to play its
-         * notes, until it is frozen or given an engine. */
-        if (route < 0) continue;
+        /* A kit of its own neither kit engine holds now: nothing plays its
+         * notes. Its last freeze stands in -- the song as it was before the
+         * last take or edit on it, rather than a hole in the set -- under
+         * the blocks it has now only, until it is frozen again or given an
+         * engine. With none at all it is silent. */
+        if (route < 0) {
+            const SongTrack& tr = song.tracks[t];
+            if (tr.freeze.empty() || song.armed == t) continue;
+            a.frozenMask |= 1u << t;
+            a.seqMapped = true;
+            std::vector<std::pair<uint32_t, uint32_t>> under;   // the blocks' stretches, in samples
+            if (tr.seqBlocks) {
+                for (const SongClip& c : tr.clips) under.emplace_back(c.bar * a.samplesPerBar, (c.bar + c.bars) * a.samplesPerBar);
+            } else {
+                under.emplace_back(0, cut);
+            }
+            for (const SongClip& fz : tr.freeze) {
+                const uint32_t fa = fz.bar * a.samplesPerBar;
+                const uint32_t fb = std::min<uint32_t>((fz.bar + fz.bars) * a.samplesPerBar, cut);
+                for (const auto& [ua, ub] : under) {
+                    Segment s;
+                    s.start = std::max(fa, ua);
+                    s.end = std::min(fb, std::min(ub, cut));
+                    if (s.end <= s.start) continue;
+                    s.offset = fz.offset + (s.start - fa);
+                    s.path = song.clipPath(fz.file);
+                    a.tracks[t].push_back(s);
+                }
+            }
+            std::sort(a.tracks[t].begin(), a.tracks[t].end(),
+                      [](const Segment& x, const Segment& y) { return x.start < y.start; });
+            continue;
+        }
         /* On the song's grid: the song sets the clock's tempo when it
          * starts the sequencer with it. A track that plays its scene
          * everywhere is one span of it over the whole song -- laid on the
@@ -589,11 +619,17 @@ void SongEngine::Impl::rebuild() {
     Arrangement a = flatten(song_);
     a.context = contextSegments();
     ctxApart_.store(contextApart());
+    bool heardChanged = false;
     for (int t = 0; t < kTracks; ++t) {
         const auto& tr = song_.tracks[t];
-        gain_[t].store(song_.silenced(t) ? 0.0f : tr.volume);
+        const float g = song_.silenced(t) ? 0.0f : tr.volume;
+        /* What the ring already holds of a track's audio, at its old level:
+         * mixed again from just ahead of RT (remixRing()). */
+        if (!a.tracks[t].empty() && (gain_[t].load() != g || pan_[t].load() != tr.pan)) heardChanged = true;
+        gain_[t].store(g);
         pan_[t].store(tr.pan);
     }
+    if (heardChanged) remixReq_.store(true, std::memory_order_release);
     for (int t = 0; t < kTracks; ++t) seqRoute_[t].store((int8_t)song_.liveRoute(t), std::memory_order_relaxed);
     /* The live transport has a grid of its own and no end; a commit
      * made while it runs (a fader, a mute) must not hand RT the
@@ -809,6 +845,7 @@ void SongEngine::Impl::startLive() {
     liveSpb_.store(spb);
     liveCycle_.store((0xFFFF0000u / spb) * spb);
     writePos_ = 0;
+    markN_ = 0;
     debt_.store(0);
     pos_.store(0);
     startPos_ = 0;
@@ -900,6 +937,8 @@ void SongEngine::Impl::startPlayback(uint32_t fromBar) {
             readers_[t].setAhead(ahead_ ? ahead_ + (size_t)t * kAheadBytes : nullptr, kAheadBytes);
         meterReset();
         writePos_ = from;
+        markN_ = 0;
+        remixReq_.store(false);
         debt_.store(0);
         pos_.store(from);
         startPos_ = from;
@@ -975,6 +1014,32 @@ void SongEngine::Impl::endPlayback() {
     job_.store(Job::None);
 }
 
+/// A level the ring holds the old one of (rebuild()): the ring is cut back
+/// to the first chunk that starts kRemixLeadMs after what RT is about to
+/// play, and the fill mixes it again from there at the levels as they are
+/// now -- a mute heard in a third of a second, not after the ring's 1.5.
+/// Left as it is in the launcher, whose grid has no going back, and while a
+/// track's notes change over to its freeze or back (pushSeqMap()): what the
+/// ring holds of that is timed against the ring as it was.
+void SongEngine::Impl::remixRing() {
+    if (liveOn_.load() || play_.load() != Play::Running || seq_.songMapLaterIn()) return;
+    remixReq_.store(false, std::memory_order_relaxed);
+    const uint32_t lead = (uint32_t)((uint64_t)sampleRate_ * kRemixLeadMs / 1000);
+    const uint32_t from = ring_.tail.load(std::memory_order_acquire) + lead;
+    const uint32_t head = ring_.head.load(std::memory_order_relaxed);
+    if ((int32_t)(head - from) <= 0) return;           // the ring holds no more than the lead
+    const uint32_t first = markN_ > kChunkMarks ? markN_ - kChunkMarks : 0;
+    for (uint32_t i = first; i < markN_; ++i) {
+        const ChunkMark& m = marks_[i % kChunkMarks];
+        if ((int32_t)(m.head - from) < 0) continue;
+        ring_.head.store(m.head, std::memory_order_release);
+        writePos_ = m.wp;
+        markN_ = i;
+        ++remixes_;
+        return;
+    }
+}
+
 /// Keep the song ring full: each chunk of song time is every unmuted
 /// track's blocks read from the card and summed at its gain, and the context
 /// stem under them at unity unless SOLO is on. What is not under a block is
@@ -991,6 +1056,7 @@ void SongEngine::Impl::fillRings() {
     }
     /* An edit while it plays moves the seq blocks with the audio. */
     if (syncing_ && play_.load() != Play::Priming && snapGen_.load() != mapSentGen_) pushSeqMap();
+    if (remixReq_.load(std::memory_order_acquire)) remixRing();
     while (ring_.space() >= sz.chunkFrames) {
         if (stopReq_.load()) return;
         uint32_t wp = writePos_;
@@ -1154,6 +1220,7 @@ void SongEngine::Impl::fillRings() {
             const int32_t v = acc[k];
             chunk[k] = (int16_t)(v > 32767 ? 32767 : (v < -32768 ? -32768 : v));
         }
+        marks_[markN_++ % kChunkMarks] = {at0, wp};
         ring_.push(chunk, n);
         writePos_ = wp + n;
     }

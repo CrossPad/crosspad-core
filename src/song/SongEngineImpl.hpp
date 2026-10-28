@@ -1183,6 +1183,18 @@ private:
     Piece       pieces_[kTracks][3];
     ClipReader  ctxReader_;                       // the context stem's: one descriptor beside the tracks'
     uint32_t    writePos_ = 0;
+    /* Where each chunk in the ring began, and the song frame it holds: a
+     * mute, solo, fader or pan changed while playing re-mixes the ring from
+     * a little after what RT is playing (remixRing()) instead of being heard
+     * a ring later. Worker only. */
+    struct ChunkMark { uint32_t head, wp; };
+    static constexpr uint32_t kChunkMarks = 64;
+    ChunkMark   marks_[kChunkMarks] = {};
+    uint32_t    markN_ = 0;
+    std::atomic<bool> remixReq_{false};
+    void remixRing();
+    static constexpr uint32_t kRemixLeadMs = 300;
+    uint32_t    remixes_ = 0;                     // ASONG_DBG remix=
     std::atomic<uint32_t> debt_{0};
     std::atomic<float>    gain_[kTracks] = {};
     std::atomic<float>    pan_[kTracks] = {};     // -1..+1, with gain_: an audio track's balance

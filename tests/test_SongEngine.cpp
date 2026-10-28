@@ -148,6 +148,54 @@ TEST_CASE("song engine: the meters read what plays, and solo silences the others
     CHECK(level(1) == 0.0f);
 }
 
+TEST_CASE("song engine: a mute while playing is heard a third of a second on, not a ring later", "[song][remix]") {
+    SongEngineSizes sizes;
+    sizes.songRingFrames = 65536;                    // the board's: 1.5 s ahead
+    Rig r(sizes);
+    REQUIRE(r.open("Demo"));
+    writeClip((r.clipsDir("Demo") / "a.wav").string(), kRate * 8, 16384);
+    writeClip((r.clipsDir("Demo") / "b.wav").string(), kRate * 8, 8192);
+    {
+        std::lock_guard<std::recursive_mutex> l(r.engine->songMutex());
+        AudioSong& s = r.engine->song();
+        s.bpm = 120.0f;
+        s.addClip(0, {"a.wav", 0, 4});
+        s.addClip(1, {"b.wav", 0, 4});
+    }
+    r.engine->commit();
+    std::vector<float> out(kBlock * 2), bus(kBlock * 2, 0.0f);
+    REQUIRE(r.engine->play(0));
+    REQUIRE(waitFor([&] { return r.engine->playing(); }));
+    auto peak = [&] {
+        float p = 0.0f;
+        for (float v : out) p = std::max(p, v);
+        return p;
+    };
+    /* Played until the ring is full: the worker is a ring ahead. */
+    for (int i = 0; i < 60; ++i) {
+        r.block(out, bus);
+        std::this_thread::sleep_for(std::chrono::milliseconds(2));
+    }
+    REQUIRE(r.engine->streamAheadFrames() > kRate);
+    CHECK_THAT(peak(), Catch::Matchers::WithinAbs(0.75, 0.01));
+
+    {
+        std::lock_guard<std::recursive_mutex> l(r.engine->songMutex());
+        r.engine->song().tracks[0].muted = true;
+    }
+    r.engine->commit();
+    uint32_t frames = 0;
+    while (frames < kRate && peak() > 0.3f) {
+        r.block(out, bus);
+        frames += kBlock;
+        std::this_thread::sleep_for(std::chrono::milliseconds(2));
+    }
+    CHECK(frames < kRate / 2);                       // 300 ms and a chunk
+    CHECK_THAT(peak(), Catch::Matchers::WithinAbs(0.25, 0.01));
+    CHECK(r.engine->underruns() == 0);
+    r.engine->stop();
+}
+
 TEST_CASE("song engine: a missing clip plays silence and is counted", "[song]") {
     Rig r;
     REQUIRE(r.open("Demo"));
@@ -2406,6 +2454,60 @@ TEST_CASE("song engine: the seq view of the second kit's block plays its scene o
     REQUIRE(r.engine->openSeqEdit(0, 0, 0));
     CHECK(r.seq.sceneRoute() == 0);
     r.engine->closeSeqEdit();
+}
+
+TEST_CASE("song engine: a kit track with no engine plays its stale freeze under its blocks, not silence",
+          "[song][route][slots][standin]") {
+    Rig r;
+    REQUIRE(r.open("Demo"));
+    {
+        std::lock_guard<std::recursive_mutex> l(r.engine->songMutex());
+        auto& s = r.engine->song();
+        s.bpm = 120.0f;
+        s.length = 8;
+        REQUIRE(s.addSeqTrack(0, SeqSource::Kit, 0, "/crosspad/kits/DRUMS/kit.json"));
+        REQUIRE(s.addSeqTrack(1, SeqSource::Kit, 1, "/crosspad/kits/B/kit.json"));
+        SeqNote n; n.pad = 1; n.vel = 100;
+        s.putSeqTake(1, 0, makeSeqPattern(2, {n}), s.samplesPerBar(kRate));
+        s.putSeqTake(1, 4, makeSeqPattern(2, {n}), s.samplesPerBar(kRate));
+        /* A freeze of how it was: one file over bars 0..6, a key that no longer fits. */
+        SongClip fz;
+        fz.file = ".freeze/FRZ00000001.wav";
+        fz.bar = 0;
+        fz.bars = 6;
+        s.tracks[1].freeze = {fz};
+        s.tracks[1].freezeKey = 1;
+        s.kitSlots[0] = s.kitSlots[1] = -1;   // neither kit engine holds it
+        s.armed = 0;
+    }
+    r.engine->commit();
+    CHECK(r.engine->freezeState(1) == FreezeState::Stale);
+    CHECK(segmentsOf(*r.engine, 1) == 2);    // the freeze under each of its two blocks
+
+    SECTION("a block deleted: nothing of the freeze plays there") {
+        {
+            std::lock_guard<std::recursive_mutex> l(r.engine->songMutex());
+            r.engine->song().tracks[1].clips.pop_back();
+        }
+        r.engine->commit();
+        CHECK(segmentsOf(*r.engine, 1) == 1);
+    }
+    SECTION("given an engine, it plays its notes") {
+        {
+            std::lock_guard<std::recursive_mutex> l(r.engine->songMutex());
+            r.engine->song().kitSlots[0] = 1;
+        }
+        r.engine->commit();
+        CHECK(segmentsOf(*r.engine, 1) == 0);
+    }
+    SECTION("armed, it is not stood in for") {
+        {
+            std::lock_guard<std::recursive_mutex> l(r.engine->songMutex());
+            r.engine->song().armed = 1;
+        }
+        r.engine->commit();
+        CHECK(segmentsOf(*r.engine, 1) == 0);
+    }
 }
 
 TEST_CASE("song engine: two kits of their own play on their slots' engines, faders and renders too",
