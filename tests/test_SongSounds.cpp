@@ -333,6 +333,25 @@ TEST_CASE("song sounds: an unsaved instrument is saved into the song first", "[s
     REQUIRE(r.engine.song().instrument == named.path);
 }
 
+TEST_CASE("song sounds: an instrument opened while the song's sounds are still coming is not kept", "[song][sounds]") {
+    /* Opening a song, a sound keeper still on the last song's instrument asked
+     * for it before this step asked for the song's own -- and its open,
+     * kept, wrote the last song's instrument over this one's (28.10.2026). */
+    Rig r;
+    r.engine.addSeqTrack(SeqSource::Pitch);
+    r.engine.song().instrument = "/crosspad/pitchplay/sub_bass/instrument.json";
+    r.sounds.songOpened();
+    REQUIRE(r.sounds.pending());
+    KitInfo stale;
+    stale.path = "/crosspad/pitchplay/BASS_Moog/instrument.json";
+    r.sounds.keepInstrument(stale, nullptr);
+    REQUIRE(r.engine.song().instrument == "/crosspad/pitchplay/sub_bass/instrument.json");
+
+    /* Built from edits, it is the player's sound whenever it comes. */
+    r.sounds.keepInstrument(stale, nullptr, true);
+    REQUIRE(r.engine.song().instrument == stale.path);
+}
+
 TEST_CASE("song sounds: a save that fails keeps nothing", "[song][sounds]") {
     Rig r;
     r.engine.addSeqTrack(SeqSource::Pitch);

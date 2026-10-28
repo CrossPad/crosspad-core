@@ -334,6 +334,10 @@ void SongSounds::keepInstrument(const KitInfo& spec, const std::function<bool(co
 {
     std::string home;
     if (!instrumentHome(home)) return;
+    /* Opened while this song's own sounds are still coming: not the player's
+     * pick but someone still on the last song's instrument, or this song's
+     * own being loaded -- which the song already names. */
+    if (!changed && pending()) return;
     if (changed) {
         if (ISongEngine* se = songs()) {
             {
