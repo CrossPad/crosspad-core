@@ -6,6 +6,16 @@ carries the same number) and consumers gate on it with
 `crosspad/RequireVersion.hpp`. This file starts at 1.45.0; earlier releases
 are described in their `chore: X.Y.Z` commits.
 
+## 2.41.1 — 2026-10-28
+
+- `PadLedController`: `setPadColor()`, `setPadPressedColor()`,
+  `setPadPlayingColor()` and `clearPadColor()` repaint the pad whatever it is
+  doing. They repainted only while they guessed the colour was on show, and
+  the guess was wrong for a sounding pad (it shows its resting colour unless
+  `lightsOnNoteOn`/`Off` are set), a muted Loop pad and a held one losing its
+  own pressed colour: the new colour waited for the next repaint of the pad,
+  usually the finger's release.
+
 ## 2.31.0 — 2026-10-27
 
 - A playing track reads the card through a read-ahead

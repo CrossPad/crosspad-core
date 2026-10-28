@@ -197,10 +197,11 @@ void PadLedController::setPadColor(uint8_t padIdx, RgbColor color) {
     if (padIdx < 16) {
         padStates_[padIdx].defaultColor = color;
         padStates_[padIdx].hasCustomColor = true;
-
-        if (!padStates_[padIdx].isPressed && !padStates_[padIdx].isPlaying) {
-            updateLEDs();
-        }
+        // Repainted whatever the pad is doing: calculatePadColor() alone
+        // decides what shows. A sounding pad shows this colour unless
+        // lightsOnNoteOn/Off are set, and a guard here left it stale until the
+        // next repaint of the pad -- usually the finger's release.
+        updateSingleLED(padIdx);
     }
 }
 
@@ -214,9 +215,7 @@ void PadLedController::clearPadColor(uint8_t padIdx) {
     padStates_[padIdx].defaultColor   = defaultColor_;
     padStates_[padIdx].pressedColor   = pressedColor_;
     padStates_[padIdx].playingColor   = playingColor_;
-    if (!padStates_[padIdx].isPressed && !padStates_[padIdx].isPlaying) {
-        updateSingleLED(padIdx);
-    }
+    updateSingleLED(padIdx);
 }
 
 void PadLedController::setPadColor(uint8_t padIdx, uint8_t r, uint8_t g, uint8_t b) {
@@ -226,9 +225,7 @@ void PadLedController::setPadColor(uint8_t padIdx, uint8_t r, uint8_t g, uint8_t
 void PadLedController::setPadPressedColor(uint8_t padIdx, RgbColor color) {
     if (padIdx < 16) {
         padStates_[padIdx].pressedColor = color;
-        if (padStates_[padIdx].isPressed) {
-            updateLEDs();
-        }
+        updateSingleLED(padIdx);
     }
 }
 
@@ -239,9 +236,7 @@ void PadLedController::setPadPressedColor(uint8_t padIdx, uint8_t r, uint8_t g, 
 void PadLedController::setPadPlayingColor(uint8_t padIdx, RgbColor color) {
     if (padIdx < 16) {
         padStates_[padIdx].playingColor = color;
-        if (padStates_[padIdx].isPlaying && !padStates_[padIdx].isPressed) {
-            updateLEDs();
-        }
+        updateSingleLED(padIdx);
     }
 }
 
