@@ -277,6 +277,9 @@ SongLoad AudioSong::load(const std::string& projectDir, const char* file)
          * say which tracks somebody made. Written out from then on, so a
          * track emptied by hand stays a track. */
         tracks[t].inUse  = tr["used"] | false;
+        /* Blocks with the same notes share them again, as the DUPs they were
+         * made by did: song.json writes every block's notes out whole. */
+        std::vector<SeqPatternPtr> parts;
         for (JsonObjectConst c : tr["clips"].as<JsonArrayConst>()) {
             SongClip clip;
             clip.file = c["file"] | "";
@@ -297,8 +300,24 @@ SongLoad AudioSong::load(const std::string& projectDir, const char* file)
              * or the track's scene. */
             const bool seq = tracks[t].kind == TrackKind::Seq;
             JsonObjectConst notes = c["notes"];
-            if (seq && !notes.isNull())
-                clip.notes = makeSeqPattern((uint16_t)(notes["bars"] | 1u), readNotes(notes["ev"] | ""));
+            if (seq && !notes.isNull()) {
+                SeqPatternPtr p = makeSeqPattern((uint16_t)(notes["bars"] | 1u), readNotes(notes["ev"] | ""));
+                auto same = [&](const SeqPatternPtr& q) {
+                    return q->bars == p->bars && q->notes.size() == p->notes.size() &&
+                           std::equal(q->notes.begin(), q->notes.end(), p->notes.begin(),
+                                      [](const SeqNote& a, const SeqNote& b) {
+                                          return a.tick == b.tick && a.len == b.len && a.pad == b.pad &&
+                                                 a.vel == b.vel && a.perf == b.perf;
+                                      });
+                };
+                auto it = std::find_if(parts.begin(), parts.end(), same);
+                if (it != parts.end()) {
+                    p = *it;
+                } else {
+                    parts.push_back(p);
+                }
+                clip.notes = std::move(p);
+            }
             if ((seq || clip.isElement() || !clip.file.empty()) && clip.bars) tracks[t].clips.push_back(clip);
         }
         sortTrack(t);

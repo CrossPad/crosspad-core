@@ -208,5 +208,9 @@ void    transportSetClickDivision(uint8_t div);
 /// Off keeps the length, so the Sequencer's PRE turns the same one back on.
 uint8_t transportCountInBars();
 void    transportSetCountInBars(uint8_t bars);
+/// The metronome as the player last left it (on, level, division, count-in),
+/// from PlatformServices::kvStore; the platform calls it once the sequencer is
+/// published. Each transportSetClick*() above writes its own value back.
+void    transportRestoreClick();
 
 } // namespace crosspad

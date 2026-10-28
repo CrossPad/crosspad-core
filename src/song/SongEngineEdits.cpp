@@ -303,8 +303,12 @@ SongOpState SongEngine::Impl::doExport() {
 
     std::string skeleton = p.liveSetTemplate();
     if (skeleton.empty()) {
-        lines.push_back("Not enough memory to build the Set (" +
-                        std::to_string(p.freeMemoryBytes() / 1024) + " kB free).");
+        /* A platform with no memory count says it has all there is: then it
+         * is the template it cannot give, not the memory. */
+        const size_t freeBytes = p.freeMemoryBytes();
+        lines.push_back((uint64_t)freeBytes < ((uint64_t)1 << 40)
+                            ? "Not enough memory to build the Set (" + std::to_string(freeBytes / 1024) + " kB free)."
+                            : std::string("This build cannot make a Live Set."));
         return finish(SongOpState::Failed);
     }
     /* An empty Project12.cfg makes the folder a Live project, and that is

@@ -829,6 +829,26 @@ TEST_CASE("AudioSong: a block's own notes survive a save, and only they make it 
     fs::remove_all(d);
 }
 
+TEST_CASE("AudioSong: blocks with the same notes share them again after a load", "[song][tracks]") {
+    const auto d = freshProject("cp_song_parts");
+    AudioSong a = songAt120();
+    a.dir = d;
+    REQUIRE(a.addSeqTrack(0, SeqSource::Kit, 0));
+    const auto partA = makeSeqPattern(1, {note(0, 1), note(96, 2)});
+    REQUIRE(a.putSeqTake(0, 0, partA, kSpb) >= 0);
+    REQUIRE(a.putSeqTake(0, 1, makeSeqPattern(1, {note(0, 3)}), kSpb) >= 0);
+    REQUIRE(a.putSeqTake(0, 2, makeSeqPattern(1, {note(0, 1), note(96, 2)}), kSpb) >= 0);   // A again, a copy of its own
+    REQUIRE(a.save());
+
+    AudioSong b;
+    REQUIRE(b.load(d) == SongLoad::Loaded);
+    const auto& cs = b.tracks[0].clips;
+    REQUIRE(cs.size() == 3);
+    CHECK(cs[0].notes == cs[2].notes);
+    CHECK(cs[0].notes != cs[1].notes);
+    fs::remove_all(d);
+}
+
 TEST_CASE("AudioSong: a REC take replaces the seq blocks under it", "[song][seq][notes]") {
     AudioSong s = songAt120();
     REQUIRE(s.addSeqTrack(0, SeqSource::Kit, 0));
