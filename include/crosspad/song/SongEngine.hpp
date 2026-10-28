@@ -66,6 +66,7 @@ public:
     uint8_t editProgress() const override;
     uint32_t stretchWaiting() const override;
     void trackLevels(int track, float& left, float& right) override;
+    void setSongScreen(bool up) override;
     uint8_t stretchProgress() const override;
     bool undo() override;
     bool redo() override;

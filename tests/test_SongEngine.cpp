@@ -2513,6 +2513,21 @@ TEST_CASE("song engine: each kit track's fader is on its own engine", "[song][se
     REQUIRE(waitFor([&] { return !r.engine->playing(); }));
     CHECK(r.platform.kitGain[0] == 1.0f);
     CHECK(r.platform.kitGain[1] == 1.0f);
+
+    SECTION("with the song's screen up, stopped too: the fingers hear the track as MIX shows it") {
+        r.engine->setSongScreen(true);
+        CHECK(r.platform.kitGain[0] == 0.5f);
+        CHECK(r.platform.kitGain[1] == 0.25f);
+        {
+            std::lock_guard<std::recursive_mutex> l(r.engine->songMutex());
+            r.engine->song().tracks[0].volume = 0.75f;
+        }
+        r.engine->commit();
+        CHECK(r.platform.kitGain[0] == 0.75f);
+        r.engine->setSongScreen(false);
+        CHECK(r.platform.kitGain[0] == 1.0f);   // the screen gone, the engines as the Mixer has them
+        CHECK(r.platform.kitGain[1] == 1.0f);
+    }
 }
 
 TEST_CASE("song engine: the seq view of the second kit's block plays its scene on that kit's route", "[song][seqedit][route]") {

@@ -148,6 +148,12 @@ void SongEngine::Impl::trackLevels(int t, float& left, float& right) {
     right = std::min(1.0f, std::max(pr, (float)m[1] / 32767.0f));
 }
 
+void SongEngine::Impl::setSongScreen(bool up) {
+    std::lock_guard<std::recursive_mutex> l(songMutex_);
+    songScreen_ = up;
+    applySeqSound();
+}
+
 uint32_t SongEngine::Impl::framesPerBar() {
     std::lock_guard<std::recursive_mutex> l(songMutex_);
     return song_.samplesPerBar(sampleRate_);
@@ -683,9 +689,12 @@ void SongEngine::Impl::rebuild() {
 /// (setSeqGain / setKitGain, setSeqPan / setKitPan), and its notes silent while it is muted or another track
 /// is soloed -- the pads a player hits stay theirs -- or under a REC,
 /// which replaces them. A route at a time: the other kit track plays on.
-/// Stopped, the engines as the Mixer has them. Caller holds songMutex_.
+/// Stopped, the engines as the Mixer has them -- unless the song's screen
+/// is up (setSongScreen()), where the fingers hear the tracks' levels. Caller
+/// holds songMutex_.
 void SongEngine::Impl::applySeqSound() {
     const bool on = playing();
+    const bool levels = on || songScreen_;
     uint8_t muted = 0;
     float gain[4] = {1.0f, 1.0f, 1.0f, 1.0f};   // the pads' kit, the instrument, the kit slots' engines
     float pan[4] = {0.0f, 0.0f, 0.0f, 0.0f};
@@ -694,7 +703,7 @@ void SongEngine::Impl::applySeqSound() {
         if (route < 0) continue;
         const SongTrack& tr = song_.tracks[t];
         if ((takeRecMute_ && t == takeTrack_) || (on && song_.silenced(t))) muted |= (uint8_t)(1u << route);
-        if (on) {
+        if (levels) {
             const int e = tr.source == SeqSource::Pitch ? 1 : route == 3 ? 3 : route ? 2 : 0;
             gain[e] = tr.volume;
             pan[e] = tr.pan;

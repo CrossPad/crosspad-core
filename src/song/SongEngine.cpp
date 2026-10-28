@@ -333,6 +333,7 @@ bool SongEngine::requestMerge(uint32_t mask, uint32_t fromBar, uint32_t toBar) {
 uint8_t SongEngine::editProgress() const { return impl_->editProgress(); }
 uint32_t SongEngine::stretchWaiting() const { return impl_->stretchWaiting(); }
 void SongEngine::trackLevels(int track, float& left, float& right) { impl_->trackLevels(track, left, right); }
+void SongEngine::setSongScreen(bool up) { impl_->setSongScreen(up); }
 bool SongEngine::undo() { return impl_->undo(); }
 bool SongEngine::redo() { return impl_->redo(); }
 uint32_t SongEngine::undoSteps() const { return impl_->undoSteps(); }

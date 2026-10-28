@@ -389,6 +389,11 @@ public:
     /// tens of ms the song has played, a seq track's the pads' since the last
     /// ask. 0 while stopped. Polled by a screen; nothing is computed for it.
     virtual void trackLevels(int track, float& left, float& right) { (void)track; left = right = 0.0f; }
+    /// The song's own screen (Arrange) is up: a seq track's fader and pan are
+    /// on its engine stopped too, so the pads sound as MIX shows the track.
+    /// Down, the engines are as the Mixer has them while stopped. Mute and
+    /// solo stay the song's: they silence its notes, never the fingers.
+    virtual void setSongScreen(bool up) { (void)up; }
     /// Write the open song as an Ableton Live 12 Set into its own folder --
     /// <name>.als beside song.json, and the "Ableton Project Info" folder
     /// that makes it a Live project, so the Set finds its clips in clips/
