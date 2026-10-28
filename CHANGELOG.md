@@ -6,6 +6,13 @@ carries the same number) and consumers gate on it with
 `crosspad/RequireVersion.hpp`. This file starts at 1.45.0; earlier releases
 are described in their `chore: X.Y.Z` commits.
 
+## 2.32.0 — 2026-10-28
+
+- `KitInfo::own` ("own" in kit.json, written only when true): a kit made on
+  the board whatever its category. `isUser()` is true for it, so a drum kit
+  made from scratch keeps category "drums" (`isDrums()`, its 12 voices) and
+  is still the user's to rename and delete.
+
 ## 2.31.0 — 2026-10-27
 
 - A playing track reads the card through a read-ahead
