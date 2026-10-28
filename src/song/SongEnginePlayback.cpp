@@ -110,9 +110,10 @@ uint32_t SongEngine::Impl::countIn(float* out, uint32_t frames) {
     return i;
 }
 
-/// Track @p t's level now, 0..1 a side: an audio track's loudest frame
-/// in the last few hops RT has played (its gain applied), the seq
-/// track's the pads' since the last ask. 0 while stopped.
+/// Track @p t's level now, 0..1 a side: the loudest frame of what the
+/// ring holds for it in the last few hops RT has played (its gain
+/// applied), and a seq track's engine (or the pads') since the last ask
+/// besides. 0 while stopped.
 void SongEngine::Impl::trackLevels(int t, float& left, float& right) {
     left = right = 0.0f;
     if (t < 0 || t >= kTracks) return;
@@ -126,11 +127,8 @@ void SongEngine::Impl::trackLevels(int t, float& left, float& right) {
         pr = padsPeak_[1].exchange(0.0f, std::memory_order_relaxed);
     }
     if (play_.load(std::memory_order_relaxed) != Play::Running) return;
-    if (seq) {
-        left = std::min(1.0f, pl);
-        right = std::min(1.0f, pr);
-        return;
-    }
+    /* A seq track playing its freeze (or a stale one standing in) is in
+     * the ring like an audio track, its engine silent: both are read. */
     const uint32_t hop = ring_.tail.load(std::memory_order_acquire) / kMeterHop;
     uint32_t m[2] = {0, 0};
     for (uint32_t back = 0; back < kMeterRead && back <= hop; ++back) {
@@ -138,8 +136,8 @@ void SongEngine::Impl::trackLevels(int t, float& left, float& right) {
         if (s.hop.load(std::memory_order_acquire) != hop - back) continue;
         for (int c = 0; c < 2; ++c) m[c] = std::max<uint32_t>(m[c], s.peak[t][c].load(std::memory_order_relaxed));
     }
-    left = (float)m[0] / 32767.0f;
-    right = (float)m[1] / 32767.0f;
+    left = std::min(1.0f, std::max(pl, (float)m[0] / 32767.0f));
+    right = std::min(1.0f, std::max(pr, (float)m[1] / 32767.0f));
 }
 
 uint32_t SongEngine::Impl::framesPerBar() {
@@ -607,9 +605,14 @@ void SongEngine::Impl::meterPut(int t, uint32_t hop, const int32_t m[2]) {
     }
 }
 
-/// A ring that starts again from frame 0 has no meters yet.
-void SongEngine::Impl::meterReset() {
-    for (auto& s : meter_) s.hop.store(UINT32_MAX, std::memory_order_relaxed);
+/// A ring that starts again from frame 0 has no meters yet; one mixed again
+/// from @p from has none from that hop on, and keeps those RT still plays.
+void SongEngine::Impl::meterReset(uint32_t from) {
+    const uint32_t hop0 = from / kMeterHop;
+    for (auto& s : meter_) {
+        const uint32_t h = s.hop.load(std::memory_order_relaxed);
+        if (h != UINT32_MAX && (int32_t)(h - hop0) >= 0) s.hop.store(UINT32_MAX, std::memory_order_relaxed);
+    }
 }
 
 /// The song for the worker, and the per-track gains and loop for RT --
@@ -1052,7 +1055,7 @@ void SongEngine::Impl::remixRing() {
         writePos_ = m.wp;
         markN_ = i;
         ++remixes_;
-        meterReset();     // the hops mixed again only raise a peak: a muted track kept its old one
+        meterReset(m.head);   // the hops mixed again only raise a peak: a muted track kept its old one
         return;
     }
 }

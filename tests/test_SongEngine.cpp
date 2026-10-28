@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include <catch2/catch_test_macros.hpp>
+#include <catch2/generators/catch_generators.hpp>
 #include <catch2/matchers/catch_matchers_floating_point.hpp>
 
 #include <fstream>
@@ -95,7 +96,9 @@ TEST_CASE("song engine: play mixes the clip in, stop and play again is safe", "[
 }
 
 TEST_CASE("song engine: the meters read what plays, and solo silences the others", "[song][meter]") {
-    Rig r;
+    SongEngineSizes sizes;
+    sizes.songRingFrames = GENERATE(16384u, 65536u, 262144u);   // the default, the board's, the largest
+    Rig r(sizes);
     REQUIRE(r.open("Demo"));
     writeClip((r.clipsDir("Demo") / "a.wav").string(), kRate * 8, 16384);   // half scale
     writeClip((r.clipsDir("Demo") / "b.wav").string(), kRate * 8, 8192);    // a quarter
@@ -137,8 +140,17 @@ TEST_CASE("song engine: the meters read what plays, and solo silences the others
         CHECK_FALSE(r.engine->song().silenced(1));
     }
     r.engine->commit();
-    render(200);   // past what the ring already held, mixed before the solo
+    /* The ring is mixed again a third of a second on; what plays till then
+     * keeps its meters, the solo track's never dropping out. */
+    float low1 = 1.0f;
+    REQUIRE(waitFor([&] {
+        render(1);
+        low1 = std::min(low1, level(1));
+        return level(0) == 0.0f;
+    }));
+    render(20);
     CHECK(level(0) == 0.0f);
+    CHECK(low1 > 0.2f);
     CHECK_THAT(level(1), Catch::Matchers::WithinAbs(0.25, 0.01));
     float peak = 0.0f;
     for (float v : out) peak = std::max(peak, v);
@@ -1958,6 +1970,21 @@ TEST_CASE("song engine: a frozen seq track keeps its notes and plays its freeze 
         r.engine->commit();
         CHECK(segmentsOf(*r.engine, 0) == 0);
         CHECK(r.engine->freezeState(0) == FreezeState::Frozen);
+    }
+    SECTION("its meter reads the freeze it plays, its engine silent") {
+        std::fill(bus.begin(), bus.end(), 0.0f);
+        float l = 0.0f, rr = 0.0f;
+        REQUIRE(r.engine->play(5));
+        REQUIRE(waitFor([&] { return r.engine->playing(); }));
+        REQUIRE(waitFor([&] {
+            r.block(out, bus);
+            std::this_thread::sleep_for(std::chrono::microseconds(200));
+            r.engine->trackLevels(0, l, rr);
+            return l > 0.2f;
+        }));
+        CHECK(l < 0.3f);
+        r.engine->stop();
+        REQUIRE(waitFor([&] { return !r.engine->playing(); }));
     }
     SECTION("its notes or the tempo moved: stale, live, and frozen again once back") {
         {

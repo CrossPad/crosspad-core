@@ -55,7 +55,7 @@ constexpr uint32_t kVarispeedGuard   = 2;
 /// The tracks' meters: the loudest frame of each track in every hop of the
 /// ring, kept for long enough that what RT is playing is still there.
 constexpr uint32_t kMeterHop         = 1024;   // ~23 ms
-constexpr uint32_t kMeterSlots       = 32;     // twice the ring
+constexpr uint32_t kMeterSlots       = 512;    // twice the largest ring (FrameRing): the worker writes a ring ahead of what RT reads
 constexpr uint32_t kMeterRead        = 3;      // hops a read looks back: a UI tick's worth
 /// A project name, as a folder on the card and a row in a list.
 constexpr size_t   kMaxNameLen       = 32;
@@ -227,6 +227,8 @@ struct FrameRing {
         return n;
     }
 };
+static_assert(kMeterSlots * kMeterHop >= 2 * FrameRing::kMaxSegs * FrameRing::kSegFrames,
+              "a meter slot must outlive the ring: the worker writes a whole ring ahead of RT");
 
 /// A clip being read: where its samples start and how it is laid out. 16-bit
 /// PCM, mono or stereo; mono is played to both sides. A plain descriptor, not
@@ -942,7 +944,7 @@ private:
     bool songJobRunning();
     bool step(std::vector<Snapshot>& from, std::vector<Snapshot>& to);
     void meterPut(int t, uint32_t hop, const int32_t m[2]);
-    void meterReset();
+    void meterReset(uint32_t from = 0);
     void rebuild();
     void applySeqSound();
     bool openTake(SyncTake take, uint32_t fromBar);
