@@ -5,6 +5,8 @@
 
 #include <algorithm>
 #include <cstdio>
+#include <memory>
+#include <new>
 
 namespace crosspad {
 
@@ -52,13 +54,22 @@ bool song_copy_file(const std::string& src, const std::string& dst, const std::f
         fs.close(in);
         return false;
     }
-    uint8_t piece[kPieceBytes];
+    /* On the heap: the worker's stack is 8 kB, and with a folder's
+     * recursion and FATFS's path buffers under an open a 4 kB piece on it
+     * overflowed (stack canary in song_io, an element made from a song). */
+    std::unique_ptr<uint8_t[]> piece(new (std::nothrow) uint8_t[kPieceBytes]);
+    if (!piece) {
+        fs.close(in);
+        std::fclose(out);
+        fs.remove(part.c_str());
+        return false;
+    }
     bool ok = true;
     for (;;) {
-        const long n = fs.read(in, piece, sizeof piece);
+        const long n = fs.read(in, piece.get(), kPieceBytes);
         if (n < 0) ok = false;
         if (n <= 0) break;
-        if (std::fwrite(piece, 1, (size_t)n, out) != (size_t)n) {
+        if (std::fwrite(piece.get(), 1, (size_t)n, out) != (size_t)n) {
             ok = false;
             break;
         }
