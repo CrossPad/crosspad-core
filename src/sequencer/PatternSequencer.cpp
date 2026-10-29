@@ -186,7 +186,7 @@ void PatternSequencer::drainInput(uint32_t loop)
              * including the swing, so the heard position comes back to the
              * straight grid before it is snapped to it. The length is what the
              * finger held, from where it went down, quantised or not. */
-            const uint32_t at = quantise(unswung(h.pos), loop);
+            const uint32_t at = quantise(unswung(h.pos, activeSeq_), loop);
             addEvent(activeSeq_, at, h.pad, h.vel, h.perf);
             open(h.pad, at, h.pos, h.elapsed);
         }
@@ -197,31 +197,40 @@ void PatternSequencer::drainInput(uint32_t loop)
 
 // ── Playback ───────────────────────────────────────────────────────────────
 
-uint32_t PatternSequencer::swingSamples() const
+void PatternSequencer::setSceneSwing(uint8_t seq, uint8_t percent, uint8_t perBeat)
 {
-    if (!clock_ || !swing_.load(std::memory_order_relaxed)) return 0;
-    const uint8_t per = swingPerBeat_.load(std::memory_order_relaxed);
-    const uint32_t spb = clock_->samplesPerBeat();
-    return per ? spb / per : 0;
+    if (seq >= kNumSequences) return;
+    if (percent > kMaxSwing) percent = kMaxSwing;
+    const bool sixteenths = perBeat == 4 || (perBeat != 2 && swingSixteenths_[seq].load(std::memory_order_relaxed));
+    if (percent == sceneSwing(seq) && sixteenths == swingSixteenths_[seq].load(std::memory_order_relaxed)) return;
+    swing_[seq].store(percent, std::memory_order_relaxed);
+    swingSixteenths_[seq].store(sixteenths, std::memory_order_relaxed);
+    markDirty();
 }
 
-uint32_t PatternSequencer::swingLate(uint32_t unit) const
+uint32_t PatternSequencer::swingSamples(uint8_t seq) const
+{
+    if (!clock_ || !sceneSwing(seq)) return 0;
+    return clock_->samplesPerBeat() / sceneSwingPerBeat(seq);
+}
+
+uint32_t PatternSequencer::swingLate(uint32_t unit, uint8_t seq) const
 {
     /* Intensity 0..100 over half a subdivision: 100 puts the off-beat three
      * quarters of the way through the pair, which is where a sampler's swing
      * knob stops at 75 %. The triplet feel is two thirds of the way, which
      * falls at 67. */
-    return (uint32_t)((uint64_t)unit * swing_.load(std::memory_order_relaxed) / 200u);
+    return (uint32_t)((uint64_t)unit * sceneSwing(seq) / 200u);
 }
 
-uint32_t PatternSequencer::swung(uint32_t pos, uint32_t loop) const
+uint32_t PatternSequencer::swung(uint32_t pos, uint32_t loop, uint8_t seq) const
 {
-    const uint32_t unit = swingSamples();
+    const uint32_t unit = swingSamples(seq);
     if (unit < 2) return pos;
     /* Only every second subdivision moves: the pairs keep their first half
      * where it was, which is what makes it a feel and not a shift. */
     if (!((pos / unit) & 1u)) return pos;
-    const uint32_t late = swingLate(unit);
+    const uint32_t late = swingLate(unit, seq);
     uint32_t at = pos + late;
     /* A hit at the very end pushed past it comes round, where the next pass's
      * window picks it up -- it does not vanish for one lap. */
@@ -229,11 +238,11 @@ uint32_t PatternSequencer::swung(uint32_t pos, uint32_t loop) const
     return at;
 }
 
-uint32_t PatternSequencer::unswung(uint32_t pos) const
+uint32_t PatternSequencer::unswung(uint32_t pos, uint8_t seq) const
 {
-    const uint32_t unit = swingSamples();
+    const uint32_t unit = swingSamples(seq);
     if (unit < 2) return pos;
-    const uint32_t late = swingLate(unit);
+    const uint32_t late = swingLate(unit, seq);
     /* Inside an odd subdivision and past where its hits were pushed to: that is
      * a hit aimed at the swung off-beat, so it goes back to the straight one. */
     if (((pos / unit) & 1u) && (pos % unit) >= late) return pos - late;
@@ -248,7 +257,7 @@ void PatternSequencer::fireWindow(uint32_t from, uint32_t to, uint8_t route)
         if (e.fresh) continue;
         /* Where it sounds, not where it is stored: the pattern stays straight
          * and the swing is applied on the way out. */
-        const uint32_t at = swung(e.pos);
+        const uint32_t at = swung(e.pos, activeSeq_);
         if (at < from || at >= to) continue;
         strike(route, e.pad, e.vel, e.perf, e.len, to - at);
     }
@@ -281,11 +290,12 @@ void PatternSequencer::strike(uint8_t route, uint8_t pad, uint8_t vel, uint8_t p
 }
 
 void PatternSequencer::fireNotes(const std::vector<SongNote>& notes, uint32_t loop,
-                                 uint32_t from, uint32_t to, uint8_t route)
+                                 uint32_t from, uint32_t to, uint8_t route, uint8_t swingScene)
 {
     if (!hasSink() || from >= to) return;
+    const uint8_t feel = swingScene < kNumSequences ? swingScene : activeSeq_;
     for (const SongNote& n : notes) {
-        const uint32_t at = swung(n.pos, loop);
+        const uint32_t at = swung(n.pos, loop, feel);
         if (at < from || at >= to) continue;
         strike(route, n.pad, n.vel, n.perf, n.len, to - at);
     }
@@ -312,7 +322,7 @@ void PatternSequencer::eraseWindow(uint32_t from, uint32_t to)
     uint16_t kept = 0;
     for (uint16_t i = 0; i < counts_[activeSeq_]; ++i) {
         const Event& e = events_[activeSeq_][i];
-        const uint32_t at = swung(e.pos);
+        const uint32_t at = swung(e.pos, activeSeq_);
         if (!e.fresh && at >= from && at < to) continue;
         events_[activeSeq_][kept++] = e;
     }
@@ -520,7 +530,7 @@ void PatternSequencer::fireSongRun(uint32_t samples, uint32_t loop)
             uint32_t left = y - x;
             while (left) {
                 const uint32_t run = std::min(left, len - at);
-                if (s.notes) fireNotes(*s.notes, len, at, at + run, s.route);
+                if (s.notes) fireNotes(*s.notes, len, at, at + run, s.route, s.swingScene);
                 else         fireWindow(at, at + run, s.route);
                 left -= run;
                 at = 0;
@@ -548,7 +558,7 @@ uint32_t PatternSequencer::songMapPosition() const
 
 // ── A take onto the song ───────────────────────────────────────────────────
 
-bool PatternSequencer::beginSongTake(size_t capacity)
+bool PatternSequencer::beginSongTake(size_t capacity, uint8_t scene)
 {
     std::vector<SongTakeNote> room;
     room.reserve(capacity);
@@ -557,6 +567,7 @@ bool PatternSequencer::beginSongTake(size_t capacity)
     take_.swap(room);
     take_.clear();
     takeCap_ = capacity;
+    takeScene_ = scene < kNumSequences ? scene : activeSeq_;
     for (auto& o : takeOpen_) o.on = false;
     takeLap_.store(0, std::memory_order_relaxed);
     songTaking_.store(true, std::memory_order_release);
@@ -611,7 +622,7 @@ void PatternSequencer::takeSongHit(const Hit& h, uint32_t loop)
     const uint32_t raw = h.early ? mapPos_.load(std::memory_order_relaxed) : songPosOf(h, loop, lap);
     if (h.early) lap = takeLap_.load(std::memory_order_relaxed);
     /* The song's grid, not the scene's loop: nothing wraps a take. */
-    const uint32_t at = quantise(h.early ? raw : unswung(raw), 0);
+    const uint32_t at = quantise(h.early ? raw : unswung(raw, takeScene_), 0);
     TakeOpen& o = takeOpen_[h.pad];
     /* Struck again before its release came through: the first is a hit. */
     if (o.on && take_.size() < takeCap_) take_.push_back({o.pos, 0, h.pad, o.vel, o.perf, o.lap});
@@ -880,6 +891,8 @@ bool PatternSequencer::addScene()
     counts_[idx] = 0;
     bars_[idx]   = kDefaultBars;
     sceneEnabled_[idx] = true;
+    swing_[idx].store(0, std::memory_order_relaxed);
+    swingSixteenths_[idx].store(false, std::memory_order_relaxed);
     markDirty();
     select(idx);
     return true;
@@ -900,6 +913,8 @@ bool PatternSequencer::removeScene(uint8_t seq)
         counts_[s] = counts_[s + 1];
         bars_[s]   = bars_[s + 1];
         sceneEnabled_[s] = sceneEnabled_[s + 1];
+        swing_[s].store(swing_[s + 1].load(std::memory_order_relaxed), std::memory_order_relaxed);
+        swingSixteenths_[s].store(swingSixteenths_[s + 1].load(std::memory_order_relaxed), std::memory_order_relaxed);
         for (uint16_t i = 0; i < counts_[s]; ++i) events_[s][i] = events_[s + 1][i];
     }
     /* The song follows: blocks of the scene that went are dropped, and the
@@ -914,6 +929,8 @@ bool PatternSequencer::removeScene(uint8_t seq)
     counts_[last] = 0;
     bars_[last]   = kDefaultBars;
     sceneEnabled_[last] = true;
+    swing_[last].store(0, std::memory_order_relaxed);
+    swingSixteenths_[last].store(false, std::memory_order_relaxed);
     markDirty();
 
     uint8_t sel = activeSeq_;
@@ -1076,6 +1093,8 @@ void PatternSequencer::resetScenes()
         counts_[s]       = 0;
         bars_[s]         = kDefaultBars;
         sceneEnabled_[s] = true;
+        swing_[s].store(0, std::memory_order_relaxed);
+        swingSixteenths_[s].store(false, std::memory_order_relaxed);
     }
     songLen_.store(0, std::memory_order_release);
     songMode_.store(false);

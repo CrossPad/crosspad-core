@@ -420,6 +420,7 @@ Arrangement SongEngine::Impl::flatten(const AudioSong& song) const {
             all.b = cut;
             all.route = (uint8_t)route;
             all.track = (uint8_t)t;
+            all.swingScene = song.tracks[t].scene;
             /* The clock plays one scene, the pads' kit's: a Pitch track's
              * goes round as notes of its own, as it is now. */
             if (route) {
@@ -522,6 +523,7 @@ std::vector<PatternSequencer::SongSpan> SongEngine::Impl::seqSpansOf(const SongT
         s.a = a;
         s.b = b;
         s.route = route;
+        s.swingScene = tr.scene;
         if (!cs[i].notes && route && !own) own = scenePattern(tr.scene);
         const SeqPatternPtr& notes = cs[i].notes || !route ? cs[i].notes : own;
         if (notes) {

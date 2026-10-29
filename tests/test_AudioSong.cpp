@@ -926,6 +926,25 @@ TEST_CASE("AudioSong: the Pitch track's pad map survives a save and is in its fr
     fs::remove_all(d);
 }
 
+TEST_CASE("AudioSong: a track's swing -- its scene's -- is in its freeze key, straight left out", "[song][swing]") {
+    AudioSong a = songAt120();
+    REQUIRE(a.addSeqTrack(0, SeqSource::Kit, 2, "/crosspad/kits/A/kit.json"));
+    SeqNote n;
+    n.pad = 1;
+    n.vel = 100;
+    a.putSeqTake(0, 0, makeSeqPattern(1, {n}), a.samplesPerBar(44100), 1);
+    uint16_t feel = 0;
+    SceneLookup scenes;
+    scenes.swing = [&](uint8_t scene) { return scene == 2 ? feel : (uint16_t)0; };
+    const uint32_t straight = seq_freeze_key(a, 0, 44100, scenes);
+    CHECK(straight == seq_freeze_key(a, 0, 44100, SceneLookup{}));   // a freeze from before swing still fits
+    feel = 48 | (2 << 8);
+    const uint32_t swung = seq_freeze_key(a, 0, 44100, scenes);
+    CHECK(swung != straight);
+    feel = 48 | (4 << 8);                                // the sixteenths swung instead
+    CHECK(seq_freeze_key(a, 0, 44100, scenes) != swung);
+}
+
 TEST_CASE("AudioSong: blocks with the same notes share them again after a load", "[song][tracks]") {
     const auto d = freshProject("cp_song_parts");
     AudioSong a = songAt120();

@@ -92,6 +92,12 @@ uint32_t seq_freeze_key(const AudioSong& song, int track, uint32_t sampleRate, c
         mix(pp.note, sizeof pp.note); mix(pp.chord, sizeof pp.chord); mix(pp.count, sizeof pp.count);
         mix(&pp.silent, sizeof pp.silent);
     }
+    /* The scene's swing, left out straight: a freeze from before swing was
+     * the track's own reads as it was. */
+    if (scenes.swing) {
+        const uint16_t feel = scenes.swing(t.scene);
+        if (feel & 0xFF) mix(&feel, sizeof feel);
+    }
     /* Left out at 0, so a freeze stamped before the salt moved still reads as it was. */
     if (t.freezeSalt) mix(&t.freezeSalt, sizeof t.freezeSalt);
     SeqPatternPtr scene;

@@ -6,6 +6,18 @@ carries the same number) and consumers gate on it with
 `crosspad/RequireVersion.hpp`. This file starts at 1.45.0; earlier releases
 are described in their `chore: X.Y.Z` commits.
 
+## 2.43.0 — 2026-10-29
+
+- Swing is a scene's own, and so a song's seq track's: `PatternSequencer::
+  setSceneSwing()` / `sceneSwing()` / `sceneSwingPerBeat()`; `setSwing()` and
+  `swing()` (and the per-beat pair) are the scene on show's. A song's block
+  plays with its track's scene's swing (`SongSpan::swingScene`, set by
+  SongEngine), a take onto the song comes back off it (`beginSongTake(capacity,
+  scene)`), and it is in the freeze key (`SceneLookup::swing`,
+  `pieceKey()`) -- left out straight, so a freeze from before still fits.
+  `sequences.json` keeps it per scene (`swing`, `swing_per_beat`, only where
+  it is not straight). It was one setting for every scene, and never saved.
+
 ## 2.42.0 — 2026-10-29
 
 - One kits' engine for every kit track, in place of the kit slots (2.32-2.41).

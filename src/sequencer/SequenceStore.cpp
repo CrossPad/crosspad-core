@@ -35,6 +35,11 @@ bool SequenceStore::save(const PatternSequencer& seq, const std::string& path)
     for (uint8_t s = 0; s < seq.sceneCount(); ++s) {
         JsonObject o = scenes.add<JsonObject>();
         o["bars"] = seq.sceneBars(s);
+        /* Its swing, only where it has one: a file from before reads straight. */
+        if (seq.sceneSwing(s)) {
+            o["swing"] = seq.sceneSwing(s);
+            o["swing_per_beat"] = seq.sceneSwingPerBeat(s);
+        }
         JsonArray evs = o["events"].to<JsonArray>();
         for (uint16_t i = 0; i < seq.eventCount(s); ++i) {
             uint32_t ticks = 0; uint8_t pad = 0, vel = 0;
@@ -149,6 +154,7 @@ SequenceLoad SequenceStore::open(PatternSequencer& seq, const std::string& path)
          * end, and the end is not known until the length is. */
         const uint8_t bars = o["bars"] | 4;
         seq.setSceneBars(s, bars);
+        seq.setSceneSwing(s, o["swing"] | 0, o["swing_per_beat"] | 2);
 
         for (JsonArrayConst e : o["events"].as<JsonArrayConst>()) {
             if (e.size() < 3) continue;

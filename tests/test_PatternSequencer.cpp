@@ -1092,7 +1092,7 @@ TEST_CASE("sequencer: a take onto the song keeps a hit where the song is", "[seq
     const uint32_t bar = r.loop(1);
     r.seq.playbackAt(5 * bar);                            // the song's bar six; the scene loops four
     r.seq.setSongMap({}, 0, 0);
-    REQUIRE(r.seq.beginSongTake(16));
+    REQUIRE(r.seq.beginSongTake(16, r.seq.activeScene()));
     r.run(kBeat + 100);                                   // a hair after beat two
     r.seq.noteIn(3, 100);
     r.run(kBeat / 2);
@@ -1119,7 +1119,7 @@ TEST_CASE("sequencer: a take round a region counts its laps and ends a held note
     const uint32_t bar = r.loop(1);
     r.seq.playbackAt(0);
     r.seq.setSongMap({}, bar, 0);                         // the song goes round its bar one
-    REQUIRE(r.seq.beginSongTake(16));
+    REQUIRE(r.seq.beginSongTake(16, r.seq.activeScene()));
     r.run(bar - kBeat);
     r.seq.noteIn(2, 90);                                  // beat four, held over the wrap
     r.run(kBeat * 2);
@@ -1335,4 +1335,71 @@ TEST_CASE("PadPerformance packs into one byte and back", "[seq][levels]") {
     REQUIRE(PadPerformance::unpack(p.pack()).levels == PadLevels::Pitch);
     REQUIRE(PadPerformance::unpack(p.pack()).source == 15);
     REQUIRE(PadPerformance::unpack(0x70).plain());     // a mode it does not know
+}
+
+TEST_CASE("sequencer: swing is a scene's own", "[seq][swing]") {
+    Rig r;
+    r.seq.setSceneCount(2);
+    r.seq.selectScene(0);
+    r.seq.setSwing(67);
+    r.seq.setSwingPerBeat(4);
+    CHECK(r.seq.sceneSwing(0) == 67);
+    CHECK(r.seq.sceneSwingPerBeat(0) == 4);
+    CHECK(r.seq.sceneSwing(1) == 0);                     // the other scene stays straight
+    CHECK(r.seq.sceneSwingPerBeat(1) == 2);
+    r.seq.setSceneSwing(1, 200, 3);                      // clamped; 3 keeps the subdivision it had
+    CHECK(r.seq.sceneSwing(1) == PatternSequencer::kMaxSwing);
+    CHECK(r.seq.sceneSwingPerBeat(1) == 2);
+    r.seq.selectScene(1);
+    CHECK(r.seq.swing() == PatternSequencer::kMaxSwing);
+
+    /* A scene removed takes its swing with it; the one after moves down. */
+    r.seq.removeScene(0);
+    CHECK(r.seq.sceneSwing(0) == PatternSequencer::kMaxSwing);
+    CHECK(r.seq.sceneSwing(1) == 0);
+}
+
+TEST_CASE("sequence file: each scene's swing travels, a file without it loads straight", "[seq][swing][store]") {
+    const std::string path = "cp_seq_swing.json";
+    removeAll(path);
+    Rig a;
+    a.seq.setSceneCount(2);
+    a.seq.setSceneSwing(1, 48, 4);
+    REQUIRE(SequenceStore::save(a.seq, path));
+    Rig b;
+    b.seq.setSceneSwing(0, 30, 2);                       // what it held is replaced
+    REQUIRE(SequenceStore::load(b.seq, path));
+    CHECK(b.seq.sceneSwing(0) == 0);
+    CHECK(b.seq.sceneSwing(1) == 48);
+    CHECK(b.seq.sceneSwingPerBeat(1) == 4);
+
+    writeText(path, "{\"version\":1,\"ppq\":96,\"bpm\":120,\"scenes\":[{\"bars\":1,\"events\":[[0,3,90]]}]}");
+    Rig c;
+    REQUIRE(SequenceStore::load(c.seq, path));
+    CHECK(c.seq.sceneSwing(0) == 0);
+    removeAll(path);
+}
+
+TEST_CASE("sequencer: a song's blocks play with their own track's swing", "[seq][swing][songmap]") {
+    Rig r;
+    r.seq.setSceneCount(2);
+    r.seq.setSceneSwing(0, 100, 2);                      // eighths, the off-beat a quarter beat late
+    r.seq.setSceneSwing(1, 0, 2);
+    const uint32_t bar = r.loop(1);
+    auto offBeat = [](uint8_t pad) {
+        auto n = std::make_shared<std::vector<PatternSequencer::SongNote>>();
+        n->push_back({kBeat / 2, 0, pad, 100, 0});       // the first off-beat eighth
+        return n;
+    };
+    PatternSequencer::SongSpan swung;
+    swung.b = bar; swung.notes = offBeat(1); swung.loop = bar; swung.swingScene = 0;
+    PatternSequencer::SongSpan straight = swung;
+    straight.notes = offBeat(2);
+    straight.swingScene = 1;
+    r.seq.playbackAt(0);
+    r.seq.setSongMap({swung, straight}, 0, 0);
+    r.run(kBeat / 2 + kBlock);
+    CHECK(r.fired == std::vector<uint8_t>{2});           // the straight one on time, the swung one not yet
+    r.run(kBeat / 4);
+    CHECK(r.fired == std::vector<uint8_t>{2, 1});
 }
