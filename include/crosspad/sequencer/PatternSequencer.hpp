@@ -55,13 +55,14 @@ public:
     /// mode the pads are in by then. A release carries a plain one.
     using PerformedSink = void (*)(void* ctx, uint8_t pad, uint8_t velocity, bool on,
                                    PadPerformance performance);
-    /// The same, with the route it plays through: a song's two kit tracks
-    /// each play their own kit (SongSpan::route), so the note has to say
-    /// which. Route 0 is the pads' kit; a sink without routes plays only it.
+    /// The same, with the route it plays through: a song's kit tracks and
+    /// its Pitch track play through different engines (SongSpan::route), so
+    /// the note has to say which. Route 0 is the kits'; a sink without
+    /// routes plays only it.
     using RoutedSink = void (*)(void* ctx, uint8_t route, uint8_t pad, uint8_t velocity, bool on,
                                 PadPerformance performance);
-    /// Routes a note can play through: the pads' kit (0), a second kit track's
-    /// (1), a Pitch track's instrument (2).
+    /// Routes a note can play through: the kits' engine (0), a Pitch track's
+    /// instrument (2). 1 was a second kit's until core 2.33 and plays nothing.
     static constexpr uint8_t kRoutes = 3;
     /// What a hit coming in would sound as (PadManager::performanceFor());
     /// @p velocity becomes the one that would sound.
@@ -92,7 +93,7 @@ public:
     void setSink(PerformedSink fn, void* ctx) { performedSink_ = fn; sink_ = nullptr; routedSink_ = nullptr; sinkCtx_ = ctx; }
     void setSink(RoutedSink fn, void* ctx) { routedSink_ = fn; sink_ = nullptr; performedSink_ = nullptr; sinkCtx_ = ctx; }
     /// The route the scene plays through on the clock's loop (no song map):
-    /// the seq view of a block on a second kit track plays that track's kit.
+    /// the seq view of a Pitch block plays the instrument.
     void setSceneRoute(uint8_t route) { sceneRoute_.store(route < kRoutes ? route : 0, std::memory_order_relaxed); }
     uint8_t sceneRoute() const { return sceneRoute_.load(std::memory_order_relaxed); }
     /// Asked at every hit: a take keeps what the hit sounded as, not only

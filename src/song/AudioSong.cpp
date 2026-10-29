@@ -197,7 +197,7 @@ SongLoad AudioSong::load(const std::string& projectDir, const char* file)
     kit.clear();
     instrument.clear();
     armed = -1;
-    kitSlot = -1;
+    liveKit = -1;
     loopStart = loopEnd = 0;
     for (auto& t : tracks) t = SongTrack{};
     sets.clear();
@@ -307,25 +307,25 @@ SongLoad AudioSong::load(const std::string& projectDir, const char* file)
         ++t;
     }
     armed = (int8_t)(doc["armed"] | -1);
-    /* One seq track on the pads' kit and one Pitch track; any number with a
-     * kit of their own, which take turns on the second kit engine (kitSlot).
-     * A file that claims more of the first two (hand-edited) keeps the first
-     * of each, and the rest become plain audio tracks -- their clips, if
-     * any, still play. */
-    bool route[3] = {false, false, false};
+    /* Any number of kit tracks, which take turns on the kits' engine
+     * (liveKit), and one Pitch track. A file that claims more Pitch tracks
+     * (hand-edited) keeps the first, and the rest become plain audio tracks
+     * -- their clips, if any, still play. A kit track with no kit of its own
+     * is from before every kit track had one: it played the song's. */
+    bool pitchSeen = false;
     for (int i = 0; i < kTracks; ++i) {
         SongTrack& tr = tracks[i];
         if (tr.kind != TrackKind::Seq) continue;
-        const int r = tr.source == SeqSource::Pitch ? 2 : !tr.kit.empty() ? 1 : 0;
-        if (r == 1) {
-            /* A second kit's track never plays the scene over the whole
-             * song: the scene that sounds is the first one's. */
-            tr.seqBlocks = true;
-            if (kitSlot < 0 || i == armed) kitSlot = (int8_t)i;
+        if (tr.source == SeqSource::Kit) {
+            if (tr.kit.empty()) tr.kit = kit;
+            /* A track that had a kit of its own (the second kit's) never
+             * played the scene over the whole song: the first one did. */
+            else tr.seqBlocks = true;
+            if (liveKit < 0 || i == armed) liveKit = (int8_t)i;
             continue;
         }
-        if (!route[r]) {
-            route[r] = true;
+        if (!pitchSeen) {
+            pitchSeen = true;
             continue;
         }
         tr.kind = TrackKind::Audio;
@@ -334,6 +334,7 @@ SongLoad AudioSong::load(const std::string& projectDir, const char* file)
         tr.freeze.clear();
         dropSeqBlocks(i);
     }
+    if (liveKit >= 0) kit = tracks[liveKit].kit;
     /* A row shorter or longer than the grid is padded or cut rather than
      * refused: a set edited by hand should not cost somebody their song. */
     for (JsonObjectConst so : doc["sets"].as<JsonArrayConst>()) {
@@ -416,7 +417,7 @@ bool AudioSong::save() const
      * open what it cannot hold. */
     const bool pitchBeside = hasPitchTrack() && seqTracks() > 1;
     int ownKits = 0;   // more than one is version 6 too: firmware before it keeps one
-    for (int t = 0; t < kTracks; ++t) ownKits += seqRoute(t) == 1 ? 1 : 0;
+    for (int t = 0; t < kTracks; ++t) ownKits += seqRoute(t) == 0 && !tracks[t].kit.empty() ? 1 : 0;
     doc["version"] = usedTracks() > kTracksV5 || ownKits > 1 ? 6 : elements ? 5 : pitchBeside ? 4 : seqTracks() > 1 || ownKit ? 3 : notes ? 2 : 1;
     doc["bpm"]  = bpm;
     doc["bpb"]  = beatsPerBar;
@@ -594,14 +595,13 @@ int AudioSong::seqRoute(int track) const
     if (track < 0 || track >= kTracks) return -1;
     const SongTrack& t = tracks[track];
     if (!t.inUse || t.kind != TrackKind::Seq) return -1;
-    if (t.source == SeqSource::Pitch) return 2;
-    return !t.kit.empty() ? 1 : 0;
+    return t.source == SeqSource::Pitch ? 2 : 0;
 }
 
 int AudioSong::liveRoute(int track) const
 {
     const int route = seqRoute(track);
-    return route == 1 && track != kitSlot ? -1 : route;
+    return route == 0 && track != liveKit ? -1 : route;
 }
 
 int AudioSong::seqTrackOnRoute(int route) const
@@ -614,7 +614,28 @@ int AudioSong::seqTrackOnRoute(int route) const
 int AudioSong::freeSeqRoute(SeqSource source) const
 {
     if (source == SeqSource::Pitch) return seqTrackOnRoute(2) < 0 ? 2 : -1;
-    return seqTrackOnRoute(0) < 0 ? 0 : 1;
+    return 0;
+}
+
+bool AudioSong::setLiveKit(int track)
+{
+    if (seqRoute(track) != 0) return false;
+    liveKit = (int8_t)track;
+    kit = tracks[track].kit;
+    return true;
+}
+
+void AudioSong::setTrackKit(int track, const std::string& path)
+{
+    if (seqRoute(track) != 0) return;
+    tracks[track].kit = path;
+    if (track == liveKit) kit = path;
+}
+
+void AudioSong::kitHeld(const std::string& path)
+{
+    kit = path;
+    if (seqRoute(liveKit) == 0) tracks[liveKit].kit = path;
 }
 
 int AudioSong::armedAudioTrack() const
@@ -690,8 +711,7 @@ bool AudioSong::addSeqTrack(int track, SeqSource source, uint8_t scene, const st
 {
     if (track < 0 || track >= kTracks || tracks[track].inUse) return false;
     if (sceneUsed(scene)) return false;
-    const int route = freeSeqRoute(source);
-    if (route < 0 || (route == 1 && ownKit.empty())) return false;
+    if (freeSeqRoute(source) < 0) return false;
     tracks[track] = SongTrack{};
     tracks[track].inUse  = true;
     tracks[track].kind   = TrackKind::Seq;
@@ -701,11 +721,9 @@ bool AudioSong::addSeqTrack(int track, SeqSource source, uint8_t scene, const st
      * gives it, never its scene over the whole song -- that is a track from
      * before blocks had notes of their own, which only load() makes. */
     tracks[track].seqBlocks = true;
-    if (route == 1) {
-        tracks[track].kit = ownKit;
-        if (seqRoute(kitSlot) != 1) kitSlot = (int8_t)track;
-    } else if (source == SeqSource::Kit && !ownKit.empty()) {
-        kit = ownKit;
+    if (source == SeqSource::Kit) {
+        tracks[track].kit = ownKit.empty() ? kit : ownKit;
+        if (seqRoute(liveKit) != 0) setLiveKit(track);
     }
     return true;
 }
@@ -721,6 +739,7 @@ bool AudioSong::bounceSeqTrack(int track, const SongClip* clip)
     tracks[track].kind = TrackKind::Audio;
     tracks[track].kit.clear();
     tracks[track].freeze.clear();
+    if (liveKit == track) liveKit = -1;
     if (clip) {
         tracks[track].clips.clear();
         if (!clip->file.empty() && clip->bars) tracks[track].clips.push_back(*clip);
@@ -1018,8 +1037,8 @@ void AudioSong::removeTrack(int track)
      * as a track that lost its audio. */
     for (int t = track; t + 1 < kTracks; ++t) tracks[t] = std::move(tracks[t + 1]);
     tracks[kTracks - 1] = SongTrack{};
-    if (kitSlot == track) kitSlot = -1;
-    else if (kitSlot > track) --kitSlot;
+    if (liveKit == track) liveKit = -1;
+    else if (liveKit > track) --liveKit;
     if (armed == track) armed = -1;
     else if (armed > track) --armed;
 }

@@ -143,8 +143,6 @@ struct FakePlatform final : ISongEnginePlatform {
         openedKits.push_back(s.name + ":" + s.kit);
     }
     void setSeqGain(SeqSource s, float g) override { seqGain[s == SeqSource::Pitch ? 1 : 0] = g; }
-    std::atomic<float> kitGain[2] = {{1.0f}, {1.0f}};   // by route
-    void setKitGain(uint8_t route, float g) override { kitGain[route & 1] = g; }
     void log(bool, const char*) override {}
 };
 

@@ -331,8 +331,8 @@ Arrangement SongEngine::Impl::flatten(const AudioSong& song) const {
             a.seqMapped = true;   // an empty map: the sequencer plays none of it
             continue;
         }
-        /* A kit of its own the second kit engine does not hold now: nothing
-         * to play its notes, until it is frozen or given the engine. */
+        /* A kit track the kits' engine does not play now: nothing to play
+         * its notes, until it is frozen or given the engine. */
         if (song.liveRoute(t) < 0) continue;
         /* On the song's grid: the song sets the clock's tempo when it
          * starts the sequencer with it. A track that plays its scene
@@ -569,37 +569,36 @@ void SongEngine::Impl::rebuild() {
 
 /// The seq tracks as the arrangement has them while the song plays:
 /// each one's fader and pan on the engine its notes play through
-/// (setSeqGain / setKitGain, setSeqPan / setKitPan), and its notes silent while it is muted or another track
+/// (setSeqGain, setSeqPan), and its notes silent while it is muted or another track
 /// is soloed -- the pads a player hits stay theirs -- or under a REC,
-/// which replaces them. A route at a time: the other kit track plays on.
+/// which replaces them. A route at a time: the Pitch track plays on.
 /// Stopped, the engines as the Mixer has them. Caller holds songMutex_.
 void SongEngine::Impl::applySeqSound() {
     const bool on = playing();
     uint8_t muted = 0;
-    float gain[3] = {1.0f, 1.0f, 1.0f};   // the pads' kit, the instrument, the second kit
-    float pan[3] = {0.0f, 0.0f, 0.0f};
+    float gain[2] = {1.0f, 1.0f};   // the kits' engine, the instrument
+    float pan[2] = {0.0f, 0.0f};
     for (int t = 0; t < kTracks; ++t) {
         const int route = song_.liveRoute(t);
         if (route < 0) continue;
         const SongTrack& tr = song_.tracks[t];
         if ((takeRecMute_ && t == takeTrack_) || (on && song_.silenced(t))) muted |= (uint8_t)(1u << route);
         if (on) {
-            const int e = tr.source == SeqSource::Pitch ? 1 : route ? 2 : 0;
+            const int e = tr.source == SeqSource::Pitch ? 1 : 0;
             gain[e] = tr.volume;
             pan[e] = tr.pan;
         }
     }
     seq_.setSongRoutesMuted(muted);
-    for (int i = 0; i < 3; ++i) {
+    for (int i = 0; i < 2; ++i) {
+        const SeqSource src = i == 1 ? SeqSource::Pitch : SeqSource::Kit;
         if (gain[i] != seqGain_[i]) {
             seqGain_[i] = gain[i];
-            if (i == 1) p.setSeqGain(SeqSource::Pitch, gain[i]);
-            else        p.setKitGain(i == 2 ? 1 : 0, gain[i]);
+            p.setSeqGain(src, gain[i]);
         }
         if (pan[i] != seqPan_[i]) {
             seqPan_[i] = pan[i];
-            if (i == 1) p.setSeqPan(SeqSource::Pitch, pan[i]);
-            else        p.setKitPan(i == 2 ? 1 : 0, pan[i]);
+            p.setSeqPan(src, pan[i]);
         }
     }
 }

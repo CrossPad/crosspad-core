@@ -302,7 +302,7 @@ uint32_t SongEngine::Impl::pieceKey(const AudioSong& song, int track, uint32_t s
     mix(head, sizeof head);
     const uint8_t src[2] = {(uint8_t)t.source, (uint8_t)std::max(0, song.seqRoute(track))};
     mix(src, sizeof src);
-    text(t.source == SeqSource::Pitch ? song.instrument : t.kit.empty() ? song.kit : t.kit);
+    text(t.source == SeqSource::Pitch ? song.instrument : t.kit);
     bool clockScene = false;
     for (const auto& sp : spans) {
         const uint32_t at = sp.loop ? sp.scene % sp.loop : sp.scene;

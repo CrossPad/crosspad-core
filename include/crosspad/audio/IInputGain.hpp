@@ -14,10 +14,15 @@ public:
     /// The mixer channel input @p i feeds (as AudioMixerEngine names it).
     virtual const char* channelName(int i) const = 0;
     virtual float       gainDb(int i) const = 0;
-    /// Rounded to stepDb() and clamped to 0..maxDb(); kept across boots.
+    /// Rounded to stepDb() and clamped to minDbOf()..maxDbOf(); kept across boots.
     virtual bool        setGainDb(int i, float db) = 0;
+    /// The top of every input's range.
     virtual float       maxDb() const = 0;
     virtual float       stepDb() const = 0;
+    /// Input @p i's own range: a line input can go below 0 dB and stop short
+    /// of a mic's top. Default 0..maxDb(), the same for every input.
+    virtual float       minDbOf(int i) const { (void)i; return 0.0f; }
+    virtual float       maxDbOf(int i) const { (void)i; return maxDb(); }
 
     /* Where an input listens, when the board gives it a choice.
      *

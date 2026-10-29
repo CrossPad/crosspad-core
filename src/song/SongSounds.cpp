@@ -6,7 +6,6 @@
 #include "crosspad/kit/IKitManager.hpp"
 #include "crosspad/kit/KitSaved.hpp"
 #include "crosspad/platform/PlatformServices.hpp"
-#include "crosspad/sampler/ISecondKit.hpp"
 #include "crosspad/song/ISongEngine.hpp"
 
 #include <cstdio>
@@ -73,29 +72,6 @@ void SongSounds::songOpened()
     pending_.store(true, std::memory_order_release);
 }
 
-/// The song's second kit track's kit in the second kit engine, or none.
-void SongSounds::keepSecondKit()
-{
-    ISecondKit* k = getPlatformServices().secondKit;
-    ISongEngine* se = songs();
-    if (!k || !se || se->openState() != SongOpState::Ready) return;
-    std::string want;
-    {
-        std::lock_guard<std::recursive_mutex> l(se->songMutex());
-        const AudioSong& song = se->song();
-        const int t = song.seqTrackOnRoute(1);
-        if (t >= 0) want = song.tracks[t].kit;
-    }
-    k->hold(want);
-    if (k->state() == ISecondKit::State::Failed && want != secondKitSaid_) {
-        secondKitSaid_ = want;
-        host_.log(true, ("the second kit would not load: " + want).c_str());
-        char msg[kWarnChars];
-        std::snprintf(msg, sizeof(msg), "The second kit would not load: %s", want.c_str());
-        host_.warn(msg);
-    }
-}
-
 /// The saves as of now are the ones the open song's freezes were made after:
 /// a song just opened takes its baseline here, not at the first look at a kit,
 /// so a save between the two is heard.
@@ -108,14 +84,12 @@ void SongSounds::seedSavesHeard()
     const AudioSong& song = se->song();
     for (const auto& t : song.tracks) {
         if (t.kind != TrackKind::Seq || t.source == SeqSource::Pitch) continue;
-        const std::string& kit = t.kit.empty() ? song.kit : t.kit;
-        if (!kit.empty()) savesHeard_[kit] = kit_saved_generation(kit);
+        if (!t.kit.empty()) savesHeard_[t.kit] = kit_saved_generation(t.kit);
     }
 }
 
 /// A kit saved under its own name sounds other than the path in the freeze's
-/// key says: the freeze of every seq track that plays it (its own kit, or the
-/// song's for the pads' track) is of the old sound, as a Pitch track's is of
+/// key says: the freeze of every kit track that plays it is of the old sound, as a Pitch track's is of
 /// an instrument edited in place (keepInstrument()).
 void SongSounds::freezesHearKitSaves()
 {
@@ -132,7 +106,7 @@ void SongSounds::freezesHearKitSaves()
         AudioSong& song = se->song();
         for (auto& t : song.tracks) {
             if (t.kind != TrackKind::Seq || t.source == SeqSource::Pitch) continue;
-            const std::string& kit = t.kit.empty() ? song.kit : t.kit;
+            const std::string& kit = t.kit;
             if (kit.empty()) continue;
             const uint32_t now = kit_saved_generation(kit);
             const auto heard = savesHeard_.emplace(kit, now).first;
@@ -152,7 +126,6 @@ void SongSounds::freezesHearKitSaves()
 void SongSounds::step()
 {
     stepMs_ += kStepMs;
-    keepSecondKit();
     freezesHearKitSaves();
     if (!pending_.load(std::memory_order_acquire)) {
         /* A kit given to the song since it settled -- a kit track's kit set in
@@ -265,9 +238,7 @@ void SongSounds::step()
 
 bool SongSounds::settled() const
 {
-    if (pending() || !host_.kitsSettled()) return false;
-    const ISecondKit* k = getPlatformServices().secondKit;
-    return !k || k->state() != ISecondKit::State::Loading;
+    return !pending() && host_.kitsSettled();
 }
 
 void SongSounds::kitLoaded()
@@ -287,7 +258,7 @@ void SongSounds::kitLoaded()
         if (song.kit != lastKit_) return;
         lastKit_ = cur->path;
         if (song.kit == cur->path) return;
-        song.kit = cur->path;
+        song.kitHeld(cur->path);
         host_.log(false, (song.name + ": kit " + cur->path).c_str());
     }
     se->commit();

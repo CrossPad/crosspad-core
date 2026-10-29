@@ -10,9 +10,9 @@ namespace crosspad {
 ///
 /// The browser comes up over the running app, which is back when it closes,
 /// picked or not. A kit chosen there is handed to @p picked and **not**
-/// loaded: whoever asked decides what plays it -- a song's first kit track
-/// makes it the song's kit, the second loads it in an engine of its own
-/// (ISecondKit). The running app is torn down while the browser is up, so
+/// loaded: whoever asked decides what plays it -- a song's kit track keeps
+/// it, and the kits' engine loads it while that track is the live one
+/// (AudioSong::liveKit). The running app is torn down while the browser is up, so
 /// @p picked must not touch its widgets; it runs before the app comes back.
 /// The list the browser opens on: Any is the one holding the loaded kit.
 enum class KitList : uint8_t { Any = 0, Perf, Drums, Slice };

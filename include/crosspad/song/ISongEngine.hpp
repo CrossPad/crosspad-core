@@ -441,9 +441,9 @@ public:
     /// (SongTrack::freeze). The track keeps its notes and stays a seq track.
     /// A bounce, but one that gives way: PLAY, REC, DUB, opening a song, an
     /// edit or a bounce cancel it (the track plays live) and go ahead. Poll
-    /// bounceStatus() and freezeState(). False for a track with a kit of
-    /// its own the second kit engine does not hold (AudioSong::kitSlot): its
-    /// engine would render another track's kit.
+    /// bounceStatus() and freezeState(). False for a kit track that is not
+    /// the live one (AudioSong::liveKit): the kits' engine would render
+    /// another track's kit.
     virtual bool freezeTrack(uint8_t track) { (void)track; return false; }
     /// What @p track plays as now (FreezeState).
     virtual FreezeState freezeState(uint8_t track) { (void)track; return FreezeState::None; }
@@ -505,6 +505,7 @@ public:
         return song().playEnd();
     }
     virtual bool   play(uint32_t fromBar) = 0;
+
     /// play(), and with the song's syncSeq on the sequencer starts with it
     /// doing @p take. A platform without it plays the song alone.
     virtual bool   playWithTake(uint32_t fromBar, SyncTake take) { (void)take; return play(fromBar); }

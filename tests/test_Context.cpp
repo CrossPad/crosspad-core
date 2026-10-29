@@ -196,7 +196,7 @@ TEST_CASE("context: the same pass asked for again is found in the cache", "[song
     enter(1, 4);
     REQUIRE(contextIs(r, ContextState::Ready));
     CHECK(stems(r) == first);
-    CHECK(fs::last_write_time(bakeDir(r) / *first.begin()) == written);
+    CHECK((fs::last_write_time(bakeDir(r) / *first.begin()) == written));
 }
 
 TEST_CASE("context: another pass of the element chosen bakes its own window", "[song][element][context]") {

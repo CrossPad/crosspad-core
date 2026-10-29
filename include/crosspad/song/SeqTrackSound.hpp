@@ -3,7 +3,6 @@
 
 #include "crosspad/instrument/InstrumentPadLogic.hpp"
 #include "crosspad/pad/PadManager.hpp"
-#include "crosspad/song/SecondKitPadLogic.hpp"
 
 #include <atomic>
 #include <cstdint>
@@ -16,7 +15,7 @@ namespace crosspad {
 /// by pressing pads -- which reach whatever pad logic the screen on top has.
 /// A Pitch track's notes come on a route of their own (AudioSong::seqRoute()
 /// 2) and go straight to the instrument whatever the screen, beside the kit
-/// tracks on routes 0 and 1: the platform's sequencer sink calls playPitch().
+/// tracks on route 0: the platform's sequencer sink calls playPitch().
 /// Arrange keeps the instrument loaded (it owns the seq tracks).
 struct SeqTrackSound {
     /// The instrument's pads; ready() once the host's bank is playing.
@@ -26,10 +25,6 @@ struct SeqTrackSound {
     /// built against that (crosspad-pc's Arrange); this firmware's Arrange
     /// never sets it, its Pitch notes come on route 2.
     std::atomic<bool> routePitch{false};
-    /// The fingers on the second kit track's kit, while that track is armed
-    /// in Arrange (AudioSong::seqRoute() 1; its notes reach the kit through
-    /// the sequencer's routed sink).
-    SecondKitPadLogic kit2;
 
     /// The sequencer's note on the Pitch route.
     void playPitch(PadManager& pm, uint8_t pad, uint8_t velocity, bool on)

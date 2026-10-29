@@ -40,10 +40,12 @@ TEST_CASE("auto-freeze: one at a time, and a track skipped waits", "[song][freez
     FreezeState st[AudioSong::kTracks] = {FreezeState::None, FreezeState::Freezing};
     CHECK(autoFreezeNext(s, st, 0) == -1);
     st[1] = FreezeState::None;
-    CHECK(autoFreezeNext(s, st, 1u << 0) == 1);           // track 0's last try failed
+    CHECK(autoFreezeNext(s, st, 1u << 0) == -1);          // track 0's last try failed; 1 is not live
+    REQUIRE(s.setLiveKit(1));
+    CHECK(autoFreezeNext(s, st, 0) == 1);
 }
 
-TEST_CASE("auto-freeze: a kit of its own waits for the second kit engine", "[song][freeze]") {
+TEST_CASE("auto-freeze: a kit track waits for the kits' engine", "[song][freeze]") {
     AudioSong s = twoKits();
     REQUIRE(s.addSeqTrack(2, SeqSource::Kit, 2, "/crosspad/kits/C/kit.json"));
     SeqNote n;
@@ -51,10 +53,10 @@ TEST_CASE("auto-freeze: a kit of its own waits for the second kit engine", "[son
     n.vel = 100;
     s.putSeqTake(2, 0, makeSeqPattern(1, {n}), s.samplesPerBar(44100), 1);
     s.armed = -1;
-    REQUIRE(s.kitSlot == 1);                              // the first kit of its own holds it
-    FreezeState st[AudioSong::kTracks] = {FreezeState::Frozen, FreezeState::Frozen};
-    CHECK(autoFreezeNext(s, st, 0) == -1);                // track 2 has no engine to render it
-    s.kitSlot = 2;
+    REQUIRE(s.liveKit == 0);                              // the first kit track holds it
+    FreezeState st[AudioSong::kTracks] = {FreezeState::Frozen, FreezeState::None};
+    CHECK(autoFreezeNext(s, st, 0) == -1);                // 1 and 2 have no engine to render them
+    REQUIRE(s.setLiveKit(2));
     CHECK(autoFreezeNext(s, st, 0) == 2);
 }
 
