@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include <catch2/catch_test_macros.hpp>
 #include "crosspad/song/AudioSong.hpp"
+#include "crosspad/song/SeqFreezeKey.hpp"
 
 #include <filesystem>
 #include <cstring>
@@ -707,6 +708,61 @@ TEST_CASE("AudioSong: inserting bars cuts what crosses and moves the rest", "[so
     REQUIRE(s.length == 12);
 }
 
+TEST_CASE("AudioSong: two tracks change places, and what names them follows", "[song][tracks]") {
+    AudioSong s = songAt120();
+    s.addClip(0, {"a.wav", 0, 4});
+    s.tracks[0].inUse = true;
+    REQUIRE(s.addSeqTrack(1, SeqSource::Kit, 0, "/crosspad/kits/B/kit.json"));
+    s.tracks[1].name = "B";
+    s.tracks[0].name = "A";
+    s.armed = 1;
+    s.liveKit = 1;
+    ClipSet set;
+    set.setRows(1);
+    set.put(0, 0, "a.wav");
+    set.put(0, 1, "b.wav");
+    s.sets.push_back(set);
+
+    REQUIRE(s.swapTracks(0, 1));
+    CHECK(s.tracks[0].name == "B");
+    CHECK(s.tracks[1].name == "A");
+    CHECK(s.tracks[1].clips.size() == 1);
+    CHECK(s.armed == 0);
+    CHECK(s.liveKit == 0);
+    CHECK(s.sets[0].at(0, 0) == "b.wav");
+    CHECK(s.sets[0].at(0, 1) == "a.wav");
+    CHECK_FALSE(s.swapTracks(1, 2));        // track 3 is not in use
+}
+
+TEST_CASE("AudioSong: deleting bars takes them out and closes the gap", "[song][cut]") {
+    AudioSong s = songAt120();
+    s.length = 12;
+    s.addClip(0, {"a.wav", 0, 4});
+    s.addClip(0, {"b.wav", 4, 4});
+    s.addClip(0, {"c.wav", 8, 4});
+    s.loopStart = 8;
+    s.loopEnd = 12;
+    s.deleteBars(2, 6, kSpb);
+    const auto& cs = s.tracks[0].clips;
+    REQUIRE(cs.size() == 3);
+    CHECK(cs[0].file == "a.wav");                 // bars 0..2 of it stay
+    CHECK(cs[0].bar == 0);
+    CHECK(cs[0].bars == 2);
+    CHECK(cs[1].file == "b.wav");                 // what of b was past bar 6, from bar 2
+    CHECK(cs[1].bar == 2);
+    CHECK(cs[1].bars == 2);
+    CHECK(cs[1].offset == 2 * kSpb);
+    CHECK(cs[2].file == "c.wav");
+    CHECK(cs[2].bar == 4);
+    CHECK(s.length == 8);
+    CHECK(s.loopStart == 4);
+    CHECK(s.loopEnd == 8);
+
+    s.deleteBars(3, 9, kSpb);                     // the region taken with it
+    CHECK_FALSE(s.hasRegion());
+    CHECK(s.length == 3);
+}
+
 TEST_CASE("AudioSong: a region doubled doubles the seq by bars as well", "[song][cut][seq]") {
     AudioSong s = songAt120();
     s.addClip(0, {"a.wav", 0, 8});
@@ -835,6 +891,58 @@ TEST_CASE("AudioSong: a block's own notes survive a save, and only they make it 
     CHECK(c.notes->notes[1].vel == 90);
     CHECK(c.notes->notes[2].pad == 15);
     CHECK(c.notes->notes[2].perf == 0x21);
+    fs::remove_all(d);
+}
+
+TEST_CASE("AudioSong: the Pitch track's pad map survives a save and is in its freeze key", "[song][pitchpads]") {
+    const auto d = freshProject("cp_song_pitchpads");
+    AudioSong a = songAt120();
+    a.dir = d;
+    REQUIRE(a.addSeqTrack(0, SeqSource::Pitch, 0));
+    a.instrument = "/crosspad/pitchplay/sub/instrument.json";
+    const uint32_t keyWithout = seq_freeze_key(a, 0, 44100, SceneLookup{});
+    a.pitchPads.set = true;
+    a.pitchPads.root = 5;
+    a.pitchPads.octave = -1;
+    a.pitchPads.scale = 2;
+    a.pitchPads.transpose = -3;
+    a.pitchPads.chords = true;
+    a.pitchPads.silent = 0x8001;
+    for (int i = 0; i < 16; ++i) {
+        a.pitchPads.note[i] = (uint8_t)(30 + i);
+        a.pitchPads.count[i] = 1;
+        for (int c = 0; c < 6; ++c) a.pitchPads.chord[i][c] = c ? 0xFF : (uint8_t)(30 + i);
+    }
+    const uint32_t keyWith = seq_freeze_key(a, 0, 44100, SceneLookup{});
+    CHECK(keyWith != keyWithout);
+    REQUIRE(a.save());
+
+    AudioSong b;
+    REQUIRE(b.load(d) == SongLoad::Loaded);
+    CHECK(b.pitchPads == a.pitchPads);
+    CHECK(seq_freeze_key(b, 0, 44100, SceneLookup{}) == keyWith);
+    b.pitchPads.note[3] += 12;                           // that pad an octave up: another freeze
+    CHECK(seq_freeze_key(b, 0, 44100, SceneLookup{}) != keyWith);
+    fs::remove_all(d);
+}
+
+TEST_CASE("AudioSong: blocks with the same notes share them again after a load", "[song][tracks]") {
+    const auto d = freshProject("cp_song_parts");
+    AudioSong a = songAt120();
+    a.dir = d;
+    REQUIRE(a.addSeqTrack(0, SeqSource::Kit, 0));
+    const auto partA = makeSeqPattern(1, {note(0, 1), note(96, 2)});
+    REQUIRE(a.putSeqTake(0, 0, partA, kSpb) >= 0);
+    REQUIRE(a.putSeqTake(0, 1, makeSeqPattern(1, {note(0, 3)}), kSpb) >= 0);
+    REQUIRE(a.putSeqTake(0, 2, makeSeqPattern(1, {note(0, 1), note(96, 2)}), kSpb) >= 0);   // A again, a copy of its own
+    REQUIRE(a.save());
+
+    AudioSong b;
+    REQUIRE(b.load(d) == SongLoad::Loaded);
+    const auto& cs = b.tracks[0].clips;
+    REQUIRE(cs.size() == 3);
+    CHECK(cs[0].notes == cs[2].notes);
+    CHECK(cs[0].notes != cs[1].notes);
     fs::remove_all(d);
 }
 
@@ -1122,6 +1230,32 @@ TEST_CASE("AudioSong: an audio track keeps its input and can be armed", "[song][
     CHECK(b.armedAudioTrack() == -1);                       // a seq track is no audio track
     b.armed = 3;
     CHECK(b.armedAudioTrack() == -1);                       // nor is one nobody made
+    fs::remove_all(d);
+}
+
+TEST_CASE("AudioSong: a track's colour survives song.json, moves with the track, and is out of range read as its kind's",
+          "[song][tracks][colour]") {
+    const auto d = freshProject("cp_song_colour");
+    AudioSong a;
+    a.dir = d;
+    REQUIRE(a.addAudioTrack(0));
+    REQUIRE(a.addSeqTrack(1, SeqSource::Kit, 0));
+    CHECK(a.tracks[0].colour == 0);
+    a.tracks[1].colour = 5;
+    REQUIRE(a.save());
+    AudioSong b;
+    REQUIRE(b.load(d) == SongLoad::Loaded);
+    CHECK(b.tracks[0].colour == 0);
+    CHECK(b.tracks[1].colour == 5);
+    REQUIRE(b.swapTracks(0, 1));
+    CHECK(b.tracks[0].colour == 5);
+    b.removeTrack(0);
+    CHECK(b.tracks[0].colour == 0);
+    b.tracks[0].colour = 200;
+    REQUIRE(b.save());
+    AudioSong c;
+    REQUIRE(c.load(d) == SongLoad::Loaded);
+    CHECK(c.tracks[0].colour == 0);
     fs::remove_all(d);
 }
 

@@ -110,6 +110,13 @@ RecInput rec_input_named(const char* name)
 
 } // namespace
 
+bool AudioSong::PitchPads::operator==(const PitchPads& o) const
+{
+    return set == o.set && root == o.root && octave == o.octave && scale == o.scale && transpose == o.transpose &&
+           chords == o.chords && silent == o.silent && std::memcmp(note, o.note, sizeof note) == 0 &&
+           std::memcmp(chord, o.chord, sizeof chord) == 0 && std::memcmp(count, o.count, sizeof count) == 0;
+}
+
 SeqPatternPtr makeSeqPattern(uint16_t bars, std::vector<SeqNote> notes)
 {
     auto p = std::make_shared<SeqPattern>();
@@ -228,6 +235,30 @@ SongLoad AudioSong::load(const std::string& projectDir, const char* file)
     newestBake = doc["newest_bake"] | "";
     kit = doc["kit"] | "";
     instrument = doc["instrument"] | "";
+    pitchPads = PitchPads{};
+    if (JsonObjectConst pp = doc["pitch_pads"]; !pp.isNull()) {
+        auto bytes = [](const char* hex, uint8_t* out, size_t n) {
+            const size_t len = hex ? std::strlen(hex) : 0;
+            if (len != 2 * n) return false;
+            for (size_t i = 0; i < n; ++i) {
+                unsigned v = 0;
+                if (std::sscanf(hex + 2 * i, "%2x", &v) != 1) return false;
+                out[i] = (uint8_t)v;
+            }
+            return true;
+        };
+        PitchPads p;
+        p.root = (uint8_t)((pp["root"] | 0) % 12);
+        p.octave = (int8_t)(pp["oct"] | 1);
+        p.scale = pp["scale"] | 0;
+        p.transpose = (int8_t)(pp["tr"] | 0);
+        p.chords = pp["chords"] | false;
+        p.silent = pp["silent"] | 0;
+        p.set = bytes(pp["note"] | "", p.note, sizeof p.note) &&
+                bytes(pp["chord"] | "", &p.chord[0][0], sizeof p.chord) &&
+                bytes(pp["count"] | "", p.count, sizeof p.count);
+        if (p.set) pitchPads = p;
+    }
     loopStart = doc["loop_start"] | 0u;
     loopEnd = doc["loop_end"] | 0u;
     int t = 0;
@@ -273,10 +304,15 @@ SongLoad AudioSong::load(const std::string& projectDir, const char* file)
                           : (tr["stretch"] | false)                         ? StretchMode::KeepPitch
                                                                             : StretchMode::Off;
         tracks[t].input = tracks[t].kind == TrackKind::Audio ? rec_input_named(tr["input"] | "") : RecInput::Mic;
+        const unsigned colour = tr["colour"] | 0u;
+        tracks[t].colour = colour <= SongTrack::kTrackColours ? (uint8_t)colour : 0;
         /* A song saved before tracks had kinds has no "used" key: the clips
          * say which tracks somebody made. Written out from then on, so a
          * track emptied by hand stays a track. */
         tracks[t].inUse  = tr["used"] | false;
+        /* Blocks with the same notes share them again, as the DUPs they were
+         * made by did: song.json writes every block's notes out whole. */
+        std::vector<SeqPatternPtr> parts;
         for (JsonObjectConst c : tr["clips"].as<JsonArrayConst>()) {
             SongClip clip;
             clip.file = c["file"] | "";
@@ -297,8 +333,24 @@ SongLoad AudioSong::load(const std::string& projectDir, const char* file)
              * or the track's scene. */
             const bool seq = tracks[t].kind == TrackKind::Seq;
             JsonObjectConst notes = c["notes"];
-            if (seq && !notes.isNull())
-                clip.notes = makeSeqPattern((uint16_t)(notes["bars"] | 1u), readNotes(notes["ev"] | ""));
+            if (seq && !notes.isNull()) {
+                SeqPatternPtr p = makeSeqPattern((uint16_t)(notes["bars"] | 1u), readNotes(notes["ev"] | ""));
+                auto same = [&](const SeqPatternPtr& q) {
+                    return q->bars == p->bars && q->notes.size() == p->notes.size() &&
+                           std::equal(q->notes.begin(), q->notes.end(), p->notes.begin(),
+                                      [](const SeqNote& a, const SeqNote& b) {
+                                          return a.tick == b.tick && a.len == b.len && a.pad == b.pad &&
+                                                 a.vel == b.vel && a.perf == b.perf;
+                                      });
+                };
+                auto it = std::find_if(parts.begin(), parts.end(), same);
+                if (it != parts.end()) {
+                    p = *it;
+                } else {
+                    parts.push_back(p);
+                }
+                clip.notes = std::move(p);
+            }
             if ((seq || clip.isElement() || !clip.file.empty()) && clip.bars) tracks[t].clips.push_back(clip);
         }
         sortTrack(t);
@@ -428,6 +480,24 @@ bool AudioSong::save() const
     if (inElementLibrary() && !newestBake.empty()) doc["newest_bake"] = newestBake;
     if (!kit.empty()) doc["kit"] = kit;
     if (!instrument.empty()) doc["instrument"] = instrument;
+    if (pitchPads.set) {
+        auto hex = [](const uint8_t* b, size_t n) {
+            static const char* d = "0123456789abcdef";
+            std::string s(2 * n, '0');
+            for (size_t i = 0; i < n; ++i) { s[2 * i] = d[b[i] >> 4]; s[2 * i + 1] = d[b[i] & 15]; }
+            return s;
+        };
+        JsonObject pp = doc["pitch_pads"].to<JsonObject>();
+        pp["root"] = pitchPads.root;
+        pp["oct"] = pitchPads.octave;
+        pp["scale"] = pitchPads.scale;
+        pp["tr"] = pitchPads.transpose;
+        pp["chords"] = pitchPads.chords;
+        pp["silent"] = pitchPads.silent;
+        pp["note"] = hex(pitchPads.note, sizeof pitchPads.note);
+        pp["chord"] = hex(&pitchPads.chord[0][0], sizeof pitchPads.chord);
+        pp["count"] = hex(pitchPads.count, sizeof pitchPads.count);
+    }
     doc["loop_start"] = loopStart;
     doc["loop_end"] = loopEnd;
     if (armed >= 0) doc["armed"] = armed;
@@ -464,6 +534,7 @@ bool AudioSong::save() const
         if (t.kind == TrackKind::Audio && t.stretch == StretchMode::KeepPitch) o["stretch"] = true;
         if (t.kind == TrackKind::Audio && t.stretch == StretchMode::Repitch)   o["stretch"] = "repitch";
         if (t.kind == TrackKind::Audio && t.input != RecInput::Mic)           o["input"] = rec_input_name(t.input);
+        if (t.colour)                                                          o["colour"] = t.colour;
         JsonArray cs = o["clips"].to<JsonArray>();
         std::string ev;
         for (const auto& c : t.clips) {
@@ -819,6 +890,23 @@ void AudioSong::insertBars(uint32_t at, uint32_t by, uint32_t spBar)
     if (length && length > at) length += by;
 }
 
+void AudioSong::deleteBars(uint32_t from, uint32_t to, uint32_t spBar)
+{
+    if (to <= from) return;
+    const uint32_t by = to - from;
+    clearRange(from, to, spBar);
+    for (int t = 0; t < kTracks; ++t)
+        for (auto& c : tracks[t].clips) if (c.bar >= to) c.bar -= by;
+    if (length > to) length -= by;
+    else if (length > from) length = from;
+    auto pull = [&](uint32_t b) { return b >= to ? b - by : (b > from ? from : b); };
+    if (hasRegion()) {
+        loopStart = pull(loopStart);
+        loopEnd = pull(loopEnd);
+        if (loopEnd <= loopStart) loopStart = loopEnd = 0;
+    }
+}
+
 std::vector<RangeClip> AudioSong::copyRange(uint32_t from, uint32_t to, uint32_t spBar) const
 {
     std::vector<RangeClip> out;
@@ -1024,6 +1112,28 @@ bool AudioSong::dubSeqNotes(int track, const std::vector<SeqNote>& notes)
             addClip(track, c);
         }
         i = j;
+    }
+    return true;
+}
+
+bool AudioSong::swapTracks(int a, int b)
+{
+    if (a < 0 || b < 0 || a >= kTracks || b >= kTracks || a == b) return false;
+    if (!tracks[a].inUse || !tracks[b].inUse) return false;
+    std::swap(tracks[a], tracks[b]);
+    auto other = [&](int8_t& t) {
+        if (t == a) t = (int8_t)b;
+        else if (t == b) t = (int8_t)a;
+    };
+    other(liveKit);
+    other(armed);
+    if (a < ClipSet::kCols && b < ClipSet::kCols) {
+        for (ClipSet& s : sets)
+            for (uint32_t r = 0; r < s.rows(); ++r) {
+                std::string x = s.at(r, a);
+                s.put(r, a, s.at(r, b));
+                s.put(r, b, x);
+            }
     }
     return true;
 }

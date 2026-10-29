@@ -25,10 +25,15 @@ ISampleTools* tools()  { return getPlatformServices().sampleTools; }
 bool ArrangeAudioTake::start(uint32_t fromBar, uint8_t countInBeats)
 {
     error_.clear();
+    auto refuse = [this](const char* why) {
+        error_ = why;
+        ++refusals_;
+        return false;
+    };
     ISongEngine* se = engine();
     ISampleTools* st = tools();
-    if (!se || !st) { error_ = "no recorder in this firmware"; return false; }
-    if (phase_ != Phase::Idle || st->recStatus().recording) { error_ = "a take is running"; return false; }
+    if (!se || !st) return refuse("no recorder in this firmware");
+    if (phase_ != Phase::Idle || st->recStatus().recording) return refuse("a take is running");
     int track = -1;
     RecInput input = RecInput::Mic;
     uint32_t loopA = 0, loopB = 0;
@@ -42,21 +47,19 @@ bool ArrangeAudioTake::start(uint32_t fromBar, uint8_t countInBeats)
             loopB = song.hasRegion() ? song.loopEnd : se->playEndBars();
         }
     }
-    if (track < 0) { error_ = "no audio track is armed"; return false; }
+    if (track < 0) return refuse("no audio track is armed");
     if (!st->inputAvailable(input)) {
-        error_ = input == RecInput::Usb ? "USB records what the computer plays: switch Settings > USB to audio"
-                                        : "this input cannot record now";
-        return false;
+        return refuse(input == RecInput::Usb ? "USB records what the computer plays: switch Settings > USB to audio"
+                                             : "this input cannot record now");
     }
-    if (!st->selectInput(input)) { error_ = "the input cannot be switched now"; return false; }
+    if (!st->selectInput(input)) return refuse("the input cannot be switched now");
     /* An empty song has nothing to line the take up with: it runs on its own
      * and lands on the bar it was started from. */
     const bool withSong = se->playing() || se->playEndBars() > 0;
     const bool ok = withSong ? st->startRecordingWithSong(fromBar, countInBeats) : st->startRecording();
     if (!ok) {
         st->releaseInput();
-        error_ = "cannot record now";
-        return false;
+        return refuse("cannot record now");
     }
     track_ = track;
     fromBar_ = fromBar;

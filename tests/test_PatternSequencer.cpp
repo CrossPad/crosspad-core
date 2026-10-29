@@ -902,6 +902,25 @@ TEST_CASE("sequencer: a block plays the scene from its own bar of it", "[seq][so
     REQUIRE(r.fired == std::vector<uint8_t>{2, 1});
 }
 
+TEST_CASE("sequencer: a later map takes over after the samples it was given, the earlier one up to there",
+          "[seq][songmap]") {
+    Rig r;
+    r.seq.setSceneBars(0, 1);
+    REQUIRE(r.seq.addEventTicks(0, 0, 1, 100));
+    REQUIRE(r.seq.addEventTicks(0, 2 * kTicksPerBeat, 2, 100));
+    const uint32_t bar = r.loop(1);
+    r.seq.playbackAt(0);
+    /* Now: the scene under bar zero only. Later, a beat and a half in: no
+     * blocks at all -- the second hit, at beat two, is the later map's. */
+    r.seq.setSongMapThen({{0, bar, 0}}, {}, bar * 3 / 8, 0, 0);
+    CHECK(r.seq.songMapLaterIn() == bar * 3 / 8);
+    r.run(bar);
+    CHECK(r.seq.songMapLaterIn() == 0);
+    REQUIRE(r.fired == std::vector<uint8_t>{1});
+    r.seq.clearSongMap();
+    r.seq.stop();
+}
+
 TEST_CASE("sequencer: a song map wraps where the song does", "[seq][songmap]") {
     Rig r;
     r.seq.setSceneBars(0, 1);

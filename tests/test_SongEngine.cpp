@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include <catch2/catch_test_macros.hpp>
+#include <catch2/generators/catch_generators.hpp>
 #include <catch2/matchers/catch_matchers_floating_point.hpp>
 
 #include <fstream>
@@ -95,7 +96,9 @@ TEST_CASE("song engine: play mixes the clip in, stop and play again is safe", "[
 }
 
 TEST_CASE("song engine: the meters read what plays, and solo silences the others", "[song][meter]") {
-    Rig r;
+    SongEngineSizes sizes;
+    sizes.songRingFrames = GENERATE(16384u, 65536u, 262144u);   // the default, the board's, the largest
+    Rig r(sizes);
     REQUIRE(r.open("Demo"));
     writeClip((r.clipsDir("Demo") / "a.wav").string(), kRate * 8, 16384);   // half scale
     writeClip((r.clipsDir("Demo") / "b.wav").string(), kRate * 8, 8192);    // a quarter
@@ -137,8 +140,17 @@ TEST_CASE("song engine: the meters read what plays, and solo silences the others
         CHECK_FALSE(r.engine->song().silenced(1));
     }
     r.engine->commit();
-    render(200);   // past what the ring already held, mixed before the solo
+    /* The ring is mixed again a third of a second on; what plays till then
+     * keeps its meters, the solo track's never dropping out. */
+    float low1 = 1.0f;
+    REQUIRE(waitFor([&] {
+        render(1);
+        low1 = std::min(low1, level(1));
+        return level(0) == 0.0f;
+    }));
+    render(20);
     CHECK(level(0) == 0.0f);
+    CHECK(low1 > 0.2f);
     CHECK_THAT(level(1), Catch::Matchers::WithinAbs(0.25, 0.01));
     float peak = 0.0f;
     for (float v : out) peak = std::max(peak, v);
@@ -146,6 +158,54 @@ TEST_CASE("song engine: the meters read what plays, and solo silences the others
     r.engine->stop();
     REQUIRE(waitFor([&] { return !r.engine->playing(); }));
     CHECK(level(1) == 0.0f);
+}
+
+TEST_CASE("song engine: a mute while playing is heard a third of a second on, not a ring later", "[song][remix]") {
+    SongEngineSizes sizes;
+    sizes.songRingFrames = 65536;                    // the board's: 1.5 s ahead
+    Rig r(sizes);
+    REQUIRE(r.open("Demo"));
+    writeClip((r.clipsDir("Demo") / "a.wav").string(), kRate * 8, 16384);
+    writeClip((r.clipsDir("Demo") / "b.wav").string(), kRate * 8, 8192);
+    {
+        std::lock_guard<std::recursive_mutex> l(r.engine->songMutex());
+        AudioSong& s = r.engine->song();
+        s.bpm = 120.0f;
+        s.addClip(0, {"a.wav", 0, 4});
+        s.addClip(1, {"b.wav", 0, 4});
+    }
+    r.engine->commit();
+    std::vector<float> out(kBlock * 2), bus(kBlock * 2, 0.0f);
+    REQUIRE(r.engine->play(0));
+    REQUIRE(waitFor([&] { return r.engine->playing(); }));
+    auto peak = [&] {
+        float p = 0.0f;
+        for (float v : out) p = std::max(p, v);
+        return p;
+    };
+    /* Played until the ring is full: the worker is a ring ahead. */
+    for (int i = 0; i < 60; ++i) {
+        r.block(out, bus);
+        std::this_thread::sleep_for(std::chrono::milliseconds(2));
+    }
+    REQUIRE(r.engine->streamAheadFrames() > kRate);
+    CHECK_THAT(peak(), Catch::Matchers::WithinAbs(0.75, 0.01));
+
+    {
+        std::lock_guard<std::recursive_mutex> l(r.engine->songMutex());
+        r.engine->song().tracks[0].muted = true;
+    }
+    r.engine->commit();
+    uint32_t frames = 0;
+    while (frames < kRate && peak() > 0.3f) {
+        r.block(out, bus);
+        frames += kBlock;
+        std::this_thread::sleep_for(std::chrono::milliseconds(2));
+    }
+    CHECK(frames < kRate / 2);                       // 300 ms and a chunk
+    CHECK_THAT(peak(), Catch::Matchers::WithinAbs(0.25, 0.01));
+    CHECK(r.engine->underruns() == 0);
+    r.engine->stop();
 }
 
 TEST_CASE("song engine: a missing clip plays silence and is counted", "[song]") {
@@ -503,6 +563,58 @@ TEST_CASE("song engine: merge mixes the tracks into one clip on the lowest", "[s
     CHECK(s.tracks[1].clips[0].bars == 2);
     CHECK(s.tracks[1].volume == 1.0f);
     CHECK(s.tracks[2].clips.empty());
+}
+
+TEST_CASE("song engine: export WAV mixes what is heard into <name>.wav and leaves the song be", "[song][exportwav]") {
+    Rig r;
+    REQUIRE(r.open("Demo"));
+    placeClip(r, "a.wav", 1000, 1, 0, 2);
+    placeClip(r, "b.wav", 300, 2, 1, 1);
+    placeClip(r, "m.wav", 7000, 3, 0, 2);
+    {
+        std::lock_guard<std::recursive_mutex> l(r.engine->songMutex());
+        r.engine->song().tracks[2].volume = 0.5f;
+        r.engine->song().tracks[3].muted = true;
+    }
+    r.engine->commit();
+    REQUIRE(r.engine->requestExportWav());
+    REQUIRE(editDone(r));
+    CHECK(r.engine->editProgress() == 100);
+
+    const std::vector<int16_t> pcm = readWavData((r.clipsDir("Demo").parent_path() / "Demo.wav").string());
+    REQUIRE(pcm.size() == size_t(kRate) * 2 * 2 * 2);
+    CHECK(pcm.front() == 1000);
+    CHECK(pcm.back() == 1150);
+    const auto report = r.engine->editReport();
+    REQUIRE_FALSE(report.empty());
+    CHECK(report[0].find("Demo.wav") != std::string::npos);
+
+    std::lock_guard<std::recursive_mutex> l(r.engine->songMutex());
+    const AudioSong& s = r.engine->song();
+    CHECK(s.tracks[1].clips.size() == 1);
+    CHECK(s.tracks[2].clips.size() == 1);
+    CHECK(s.tracks[2].volume == 0.5f);
+}
+
+TEST_CASE("song engine: export WAV names the seq tracks that are not frozen", "[song][exportwav]") {
+    Rig r;
+    REQUIRE(r.open("Demo"));
+    placeClip(r, "a.wav", 1000, 0, 0, 2);
+    {
+        std::lock_guard<std::recursive_mutex> l(r.engine->songMutex());
+        AudioSong& s = r.engine->song();
+        REQUIRE(s.addSeqTrack(1, SeqSource::Kit, 0));
+        REQUIRE(s.putSeqTake(1, 0, makeSeqPattern(1, {SeqNote{0, 0, 1, 100, 0}}),
+                             (uint32_t)(kRate * 2)) >= 0);
+    }
+    r.engine->commit();
+    REQUIRE(r.engine->requestExportWav());
+    REQUIRE(waitFor([&] { return r.engine->editState() != SongOpState::Busy; }, 10000));
+    CHECK(r.engine->editState() == SongOpState::Failed);
+    const auto report = r.engine->editReport();
+    REQUIRE_FALSE(report.empty());
+    CHECK(report[0] == "Not frozen yet: track 2.");
+    CHECK_FALSE(std::filesystem::exists(r.clipsDir("Demo").parent_path() / "Demo.wav"));
 }
 
 TEST_CASE("song engine: merge leaves muted tracks out and cuts a block reaching in", "[song]") {
@@ -1859,6 +1971,52 @@ TEST_CASE("song engine: a frozen seq track keeps its notes and plays its freeze 
         CHECK(segmentsOf(*r.engine, 0) == 0);
         CHECK(r.engine->freezeState(0) == FreezeState::Frozen);
     }
+    SECTION("armed, its meter is after its fader and pan, as an audio track's") {
+        {
+            std::lock_guard<std::recursive_mutex> l(r.engine->songMutex());
+            auto& s = r.engine->song();
+            s.armed = 0;
+            s.tracks[0].volume = 0.5f;
+            s.tracks[0].pan = 1.0f;     // hard right
+        }
+        r.engine->commit();
+        float l = 0.0f, rr = 0.0f;
+        REQUIRE(r.engine->play(0));
+        REQUIRE(waitFor([&] { return r.engine->playing(); }));
+        REQUIRE(waitFor([&] {
+            r.block(out, bus);          // the pads' engine at 0.25
+            std::this_thread::sleep_for(std::chrono::microseconds(200));
+            r.engine->trackLevels(0, l, rr);
+            return rr > 0.0f;
+        }));
+        CHECK(l == 0.0f);
+        CHECK_THAT(rr, Catch::Matchers::WithinAbs(0.125, 0.01));
+        r.engine->stop();
+        REQUIRE(waitFor([&] { return !r.engine->playing(); }));
+    }
+    SECTION("its meter reads the freeze it plays, its engine silent") {
+        std::fill(bus.begin(), bus.end(), 0.0f);
+        float l = 0.0f, rr = 0.0f;
+        uint8_t sounding = 9, streams = 9;
+        r.engine->ringVoices(sounding, streams);
+        CHECK(sounding == 0);                   // stopped
+        CHECK(streams == 0);
+        REQUIRE(r.engine->play(5));
+        REQUIRE(waitFor([&] { return r.engine->playing(); }));
+        REQUIRE(waitFor([&] {
+            r.block(out, bus);
+            std::this_thread::sleep_for(std::chrono::microseconds(200));
+            r.engine->trackLevels(0, l, rr);
+            return l > 0.2f;
+        }));
+        CHECK(l < 0.3f);
+        /* What VOICES counts of it: one stream, sounding. */
+        r.engine->ringVoices(sounding, streams);
+        CHECK(sounding == 1);
+        CHECK(streams == 1);
+        r.engine->stop();
+        REQUIRE(waitFor([&] { return !r.engine->playing(); }));
+    }
     SECTION("its notes or the tempo moved: stale, live, and frozen again once back") {
         {
             std::lock_guard<std::recursive_mutex> l(r.engine->songMutex());
@@ -2115,6 +2273,34 @@ TEST_CASE("song engine: a freeze renders a block once however often it recurs, a
     }
 }
 
+TEST_CASE("song engine: UNDO during a freeze cancels the freeze and undoes", "[song][freeze][undo]") {
+    Rig r;
+    REQUIRE(r.open("Demo"));
+    {
+        std::lock_guard<std::recursive_mutex> l(r.engine->songMutex());
+        auto& s = r.engine->song();
+        s.bpm = 120.0f;
+        s.length = 16;
+        REQUIRE(s.addSeqTrack(0, SeqSource::Kit, 0));
+        SeqNote n;
+        n.pad = 1; n.vel = 100;
+        s.putSeqTake(0, 0, makeSeqPattern(4, {n}), s.samplesPerBar(kRate));
+        s.armed = -1;
+    }
+    r.engine->commit();
+    REQUIRE(r.engine->undoSteps() > 0);
+    std::vector<float> out(kBlock * 2), bus(kBlock * 2, 0.25f);
+    REQUIRE(r.engine->freezeTrack(0));
+    for (int i = 0; i < 20; ++i) {
+        r.block(out, bus);
+        std::this_thread::sleep_for(std::chrono::milliseconds(2));
+    }
+    REQUIRE(r.engine->bounceStatus().state == BounceState::Running);
+    REQUIRE(r.engine->undo());
+    CHECK(r.engine->bounceStatus().state == BounceState::Failed);   // the freeze let go
+    CHECK(r.engine->redoSteps() == 1);
+}
+
 TEST_CASE("song engine: PLAY or REC during a freeze cancels it and plays", "[song][freeze]") {
     Rig r;
     REQUIRE(r.open("Demo"));
@@ -2342,6 +2528,19 @@ TEST_CASE("song engine: the live kit track's fader is on the kits' engine", "[so
     r.engine->stop();
     REQUIRE(waitFor([&] { return !r.engine->playing(); }));
     CHECK(r.platform.seqGain[0] == 1.0f);
+
+    SECTION("with the song's screen up, stopped too: the fingers hear the live track as MIX shows it") {
+        r.engine->setSongScreen(true);
+        CHECK(r.platform.seqGain[0] == 0.25f);
+        {
+            std::lock_guard<std::recursive_mutex> l(r.engine->songMutex());
+            r.engine->song().tracks[1].volume = 0.75f;
+        }
+        r.engine->commit();
+        CHECK(r.platform.seqGain[0] == 0.75f);
+        r.engine->setSongScreen(false);
+        CHECK(r.platform.seqGain[0] == 1.0f);   // the screen gone, the engine as the Mixer has it
+    }
 }
 
 TEST_CASE("song engine: the seq view of a block plays its scene on its track's route", "[song][seqedit][route]") {
@@ -2361,6 +2560,60 @@ TEST_CASE("song engine: the seq view of a block plays its scene on its track's r
     REQUIRE(r.engine->openSeqEdit(0, 0, 0));
     CHECK(r.seq.sceneRoute() == 0);
     r.engine->closeSeqEdit();
+}
+
+TEST_CASE("song engine: a kit track the kits' engine does not play plays its stale freeze under its blocks, not silence",
+          "[song][route][livekit][standin]") {
+    Rig r;
+    REQUIRE(r.open("Demo"));
+    {
+        std::lock_guard<std::recursive_mutex> l(r.engine->songMutex());
+        auto& s = r.engine->song();
+        s.bpm = 120.0f;
+        s.length = 8;
+        REQUIRE(s.addSeqTrack(0, SeqSource::Kit, 0, "/crosspad/kits/DRUMS/kit.json"));
+        REQUIRE(s.addSeqTrack(1, SeqSource::Kit, 1, "/crosspad/kits/B/kit.json"));
+        SeqNote n; n.pad = 1; n.vel = 100;
+        s.putSeqTake(1, 0, makeSeqPattern(2, {n}), s.samplesPerBar(kRate));
+        s.putSeqTake(1, 4, makeSeqPattern(2, {n}), s.samplesPerBar(kRate));
+        /* A freeze of how it was: one file over bars 0..6, a key that no longer fits. */
+        SongClip fz;
+        fz.file = ".freeze/FRZ00000001.wav";
+        fz.bar = 0;
+        fz.bars = 6;
+        s.tracks[1].freeze = {fz};
+        s.tracks[1].freezeKey = 1;
+        REQUIRE(s.liveKit == 0);              // the kits' engine plays track 0, not it
+        s.armed = 0;
+    }
+    r.engine->commit();
+    CHECK(r.engine->freezeState(1) == FreezeState::Stale);
+    CHECK(segmentsOf(*r.engine, 1) == 2);    // the freeze under each of its two blocks
+
+    SECTION("a block deleted: nothing of the freeze plays there") {
+        {
+            std::lock_guard<std::recursive_mutex> l(r.engine->songMutex());
+            r.engine->song().tracks[1].clips.pop_back();
+        }
+        r.engine->commit();
+        CHECK(segmentsOf(*r.engine, 1) == 1);
+    }
+    SECTION("given the engine, it plays its notes") {
+        {
+            std::lock_guard<std::recursive_mutex> l(r.engine->songMutex());
+            REQUIRE(r.engine->song().setLiveKit(1));
+        }
+        r.engine->commit();
+        CHECK(segmentsOf(*r.engine, 1) == 0);
+    }
+    SECTION("armed, it is not stood in for") {
+        {
+            std::lock_guard<std::recursive_mutex> l(r.engine->songMutex());
+            r.engine->song().armed = 1;
+        }
+        r.engine->commit();
+        CHECK(segmentsOf(*r.engine, 1) == 0);
+    }
 }
 
 // ── the seq track through Arrange's mixer ─────────────────────────────────
@@ -3675,4 +3928,123 @@ TEST_CASE("song engine: with LOOP off, a REC across the song's end makes the son
     REQUIRE(cs.size() == 1);
     CHECK(cs[0].bar == 3);
     CHECK(cs[0].bars == 2);
+}
+
+TEST_CASE("song transport: stopped, the playhead is where PLAY starts, a looped region's held bar or its start",
+          "[song][transport]") {
+    Rig r;
+    REQUIRE(r.open("Demo"));
+    placeClip(r, "c.wav", 100, 0, 0, 16);
+    Services svc(r.engine.get(), nullptr);
+    SongTransport& tr = songTransport();
+    tr.setStartBar(11);
+    CHECK(tr.startBar() == 11);
+    CHECK(tr.position().bar == 12);
+    {
+        std::lock_guard<std::recursive_mutex> l(r.engine->songMutex());
+        auto& s = r.engine->song();
+        s.loopStart = 0;
+        s.loopEnd = 4;
+        s.loop = true;
+    }
+    r.engine->commit();
+    CHECK(tr.startBar() == 0);           // outside the region: PLAY starts at its start, and says so
+    CHECK(tr.position().bar == 1);
+    tr.setStartBar(2);
+    CHECK(tr.startBar() == 2);           // inside it: from there, round the region
+    CHECK(tr.position().bar == 3);
+    tr.play();
+    REQUIRE(waitFor([&] { return r.engine->playing(); }));
+    CHECK(r.engine->positionBars() >= 2.0);
+    tr.stop();
+    REQUIRE(waitFor([&] { return !r.engine->playing(); }));
+}
+
+TEST_CASE("song engine: undoing a deleted or moved track brings back its input, ARM and freeze with it",
+          "[song][undo]") {
+    Rig r;
+    REQUIRE(r.open("Demo"));
+    {
+        std::lock_guard<std::recursive_mutex> l(r.engine->songMutex());
+        AudioSong& s = r.engine->song();
+        REQUIRE(s.addAudioTrack(0));
+        REQUIRE(s.addAudioTrack(1));
+        REQUIRE(s.addAudioTrack(2));
+        s.tracks[0].input = RecInput::Mic;
+        s.tracks[1].input = RecInput::Line;
+        s.tracks[2].input = RecInput::Usb;
+        s.tracks[1].name = "two";
+        s.tracks[2].freeze.push_back({"f.wav", 0, 1});
+        s.tracks[2].freezeKey = 77;
+        s.armed = 1;
+    }
+    r.engine->commit();
+    std::this_thread::sleep_for(std::chrono::milliseconds(800));
+    auto look = [&](int t) {
+        std::lock_guard<std::recursive_mutex> l(r.engine->songMutex());
+        return r.engine->song().tracks[t];
+    };
+    auto armed = [&] {
+        std::lock_guard<std::recursive_mutex> l(r.engine->songMutex());
+        return (int)r.engine->song().armed;
+    };
+    SECTION("ARM alone is not a step") {
+        const uint32_t steps = r.engine->undoSteps();
+        {
+            std::lock_guard<std::recursive_mutex> l(r.engine->songMutex());
+            r.engine->song().armed = 2;
+        }
+        r.engine->commit();
+        CHECK(r.engine->undoSteps() == steps);
+    }
+    SECTION("deleted") {
+        {
+            std::lock_guard<std::recursive_mutex> l(r.engine->songMutex());
+            r.engine->song().removeTrack(1);
+        }
+        r.engine->commit();
+        CHECK(look(1).input == RecInput::Usb);
+        REQUIRE(r.engine->undo());
+        CHECK(look(1).name == "two");
+        CHECK(look(1).input == RecInput::Line);
+        CHECK(look(2).input == RecInput::Usb);
+        CHECK(look(2).freeze.size() == 1);
+        CHECK(look(2).freezeKey == 77);
+        CHECK(look(1).freeze.empty());
+        CHECK(armed() == 1);
+    }
+    SECTION("moved") {
+        {
+            std::lock_guard<std::recursive_mutex> l(r.engine->songMutex());
+            REQUIRE(r.engine->song().swapTracks(1, 2));
+        }
+        r.engine->commit();
+        CHECK(armed() == 2);
+        REQUIRE(r.engine->undo());
+        CHECK(look(1).input == RecInput::Line);
+        CHECK(look(2).freezeKey == 77);
+        CHECK(armed() == 1);
+    }
+    SECTION("a colour is a step") {
+        {
+            std::lock_guard<std::recursive_mutex> l(r.engine->songMutex());
+            r.engine->song().tracks[1].colour = 3;
+        }
+        r.engine->commit();
+        REQUIRE(r.engine->undo());
+        CHECK(look(1).colour == 0);
+        REQUIRE(r.engine->redo());
+        CHECK(look(1).colour == 3);
+    }
+    SECTION("an edit undone keeps an ARM made since") {
+        placeClip(r, "a.wav", 1000, 0, 0, 2);
+        r.engine->commit();
+        {
+            std::lock_guard<std::recursive_mutex> l(r.engine->songMutex());
+            r.engine->song().armed = 2;
+        }
+        r.engine->commit();
+        REQUIRE(r.engine->undo());
+        CHECK(armed() == 2);
+    }
 }

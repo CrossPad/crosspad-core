@@ -389,6 +389,15 @@ public:
     /// tens of ms the song has played, a seq track's the pads' since the last
     /// ask. 0 while stopped. Polled by a screen; nothing is computed for it.
     virtual void trackLevels(int track, float& left, float& right) { (void)track; left = right = 0.0f; }
+    /// The song's own screen (Arrange) is up: a seq track's fader and pan are
+    /// on its engine stopped too, so the pads sound as MIX shows the track.
+    /// Down, the engines are as the Mixer has them while stopped. Mute and
+    /// solo stay the song's: they silence its notes, never the fingers.
+    virtual void setSongScreen(bool up) { (void)up; }
+    /// What a voice meter counts of the song beside the engines: @p streams
+    /// the tracks it plays from files (audio, and seq tracks on their
+    /// freeze), @p sounding those heard now. Both 0 while stopped.
+    virtual void ringVoices(uint8_t& sounding, uint8_t& streams) { sounding = streams = 0; }
     /// Write the open song as an Ableton Live 12 Set into its own folder --
     /// <name>.als beside song.json, and the "Ableton Project Info" folder
     /// that makes it a Live project, so the Set finds its clips in clips/
@@ -396,6 +405,14 @@ public:
     /// one Live saved over say, moves to Backup/ first. Playback stops.
     /// editState() says when it is done, editReport() what it wrote.
     virtual bool requestExportLiveSet() { return false; }
+    /// Mix the open song down to <name>.wav in its own folder, beside the
+    /// .als: every track that is heard (mute and solo as they are), at its
+    /// fader and pan, from bar one to the song's end -- audio tracks' clips,
+    /// elements' bakes and seq tracks' freezes, the armed track's too. Fails,
+    /// naming them in editReport(), while a seq track that plays something
+    /// has no current freeze. The song does not change. editState() says
+    /// when it is done, editProgress() how far, editReport() what it wrote.
+    virtual bool requestExportWav() { return false; }
     /// The last export, one line each: where the Set is and how many clips
     /// went in, then what was left out; with Failed, why.
     virtual std::vector<std::string> editReport() { return {}; }

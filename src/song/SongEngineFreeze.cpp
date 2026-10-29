@@ -256,7 +256,7 @@ std::vector<SongEngine::Impl::FreezePiece> SongEngine::Impl::freezePlan(const Au
 std::vector<PatternSequencer::SongSpan> SongEngine::Impl::windowSpans(const AudioSong& song, int track, uint32_t spb,
                                                                       uint32_t w0, uint32_t w1) const {
     const SongTrack& t = song.tracks[track];
-    const int route = std::max(0, song.seqRoute(track));
+    const int route = std::max(0, song.engineRoute(track));
     std::vector<PatternSequencer::SongSpan> all;
     if (t.seqBlocks) {
         all = seqSpansOf(t, spb, song.seqTicksPerBar(), w1, (uint8_t)route);
@@ -303,6 +303,13 @@ uint32_t SongEngine::Impl::pieceKey(const AudioSong& song, int track, uint32_t s
     const uint8_t src[2] = {(uint8_t)t.source, (uint8_t)std::max(0, song.seqRoute(track))};
     mix(src, sizeof src);
     text(t.source == SeqSource::Pitch ? song.instrument : t.kit);
+    /* A Pitch track's pad numbers sound as the song's pad map says; left
+     * out while it has none, so an older freeze still reads as it was. */
+    if (t.source == SeqSource::Pitch && song.pitchPads.set) {
+        const auto& pp = song.pitchPads;
+        mix(pp.note, sizeof pp.note); mix(pp.chord, sizeof pp.chord); mix(pp.count, sizeof pp.count);
+        mix(&pp.silent, sizeof pp.silent);
+    }
     bool clockScene = false;
     for (const auto& sp : spans) {
         const uint32_t at = sp.loop ? sp.scene % sp.loop : sp.scene;
@@ -419,7 +426,8 @@ void SongEngine::Impl::runFreeze() {
         }
         /* What the track played before and plays no longer: one of 2.9's
          * whole-track files, or a render no track names now -- in a freeze,
-         * or as a bounced track's audio. */
+         * or as a bounced track's audio -- nor an undo or redo step would
+         * put back (a deleted track's freeze comes back with it). */
         auto named = [&](const std::string& f) {
             for (const auto& other : song_.tracks) {
                 for (const auto& c : other.freeze)
@@ -427,6 +435,11 @@ void SongEngine::Impl::runFreeze() {
                 for (const auto& c : other.clips)
                     if (c.file == f) return true;
             }
+            for (const auto* stack : {&undo_, &redo_})
+                for (const Snapshot& st : *stack)
+                    for (const TrackSide& sd : st.side)
+                        for (const auto& c : sd.freeze)
+                            if (c.file == f) return true;
             return false;
         };
         std::vector<std::string> old;
@@ -571,7 +584,7 @@ void SongEngine::Impl::runBounce() {
         int route = 0;
         {
             std::lock_guard<std::recursive_mutex> l(songMutex_);
-            route = std::max(0, song_.seqRoute(bTrack_));
+            route = std::max(0, song_.engineRoute(bTrack_));
             fingersOnIt = std::max(0, song_.liveRoute(song_.armedSeqTrack())) == route;
         }
         /* A bounce asked for waits for the player before it takes their
@@ -610,7 +623,7 @@ void SongEngine::Impl::runBounce() {
             /* A track off the pads' route never plays the clock's scene:
              * its notes are mapped whether it has blocks or not. */
             if (tr.kind == TrackKind::Seq && (tr.seqBlocks || song_.seqRoute(bTrack_) > 0)) {
-                const int route = song_.seqRoute(bTrack_);
+                const int route = song_.engineRoute(bTrack_);
                 const uint32_t spb = clk.samplesPerBeat() * clk.beatsPerBar();
                 const uint32_t off = bFrom_ * spb;
                 std::vector<PatternSequencer::SongSpan> all;

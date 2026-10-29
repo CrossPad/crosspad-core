@@ -76,7 +76,7 @@ bool SongEngine::Impl::openSeqEdit(uint8_t track, uint32_t bar, uint8_t scene) {
     editBound_ = i >= 0;
     editGen_ = seq_.editGeneration();
     /* The view plays the scene on its own clock: through the track's kit. */
-    seq_.setSceneRoute((uint8_t)std::max(0, song_.seqRoute(track)));
+    seq_.setSceneRoute((uint8_t)std::max(0, song_.engineRoute(track)));
     logf(false, "seq view: T%u bar %u, %s: %u notes into scene %u", (unsigned)track + 1,
          (unsigned)editBar_ + 1, i >= 0 ? "a block" : "no block", notes ? (unsigned)notes->notes.size() : 0u,
          (unsigned)scene);

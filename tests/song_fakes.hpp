@@ -30,7 +30,7 @@ public:
     void cancelBounce() override {}
     bool play(uint32_t) override { return false; }
     void stop() override {}
-    bool playing() const override { return false; }
+    bool playing() const override { return isPlaying; }
     double positionBars() const override { return 0.0; }
     uint32_t underruns() const override { return 0; }
     uint32_t openFailures() const override { return 0; }
@@ -44,6 +44,7 @@ public:
 
     crosspad::SongOpState state = crosspad::SongOpState::Ready;
     crosspad::BounceStatus bounce;
+    bool isPlaying = false;
     int commits = 0;
 
 private:

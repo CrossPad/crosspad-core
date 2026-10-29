@@ -172,6 +172,10 @@ struct SongTrack {
     /// An audio track's input: what a REC in Arrange records into it while
     /// it is armed (ArrangeAudioTake).
     RecInput  input = RecInput::Mic;
+    /// The player's colour for the track, 1..kTrackColours, a swatch of the
+    /// screen's palette; 0 = the colour of its kind (audio, kit, pitch).
+    uint8_t   colour = 0;
+    static constexpr uint8_t kTrackColours = 8;
     /// A Kit seq track's kit (a kit.json as the kit list names it): what the
     /// kits' engine holds -- AudioSong::kit -- while the track is the live
     /// one (AudioSong::liveKit), and what its freeze is rendered through.
@@ -273,6 +277,27 @@ public:
     /// say what is loaded, not how the song is arranged.
     std::string kit;
     std::string instrument;
+    /// What the Pitch track's pads play through @c instrument: Pitch Play's
+    /// key, scale, octave, transpose and chords, and the notes they put on
+    /// each pad. The notes are what a take of pad numbers is played as, so
+    /// they belong to the song: without them a song opened after a restart
+    /// played its bass at Pitch Play's default octave (and froze it so).
+    /// Unset until Pitch Play has published a map with the song open.
+    struct PitchPads {
+        bool     set = false;
+        uint8_t  root = 0;            ///< pitch class of the tonic, 0..11
+        int8_t   octave = 1;          ///< PlaySettings::octave
+        uint8_t  scale = 0;           ///< MusicTheory scale index
+        int8_t   transpose = 0;       ///< semitones on top of all of it
+        bool     chords = false;      ///< the pads play the chord list
+        uint8_t  note[16] = {};       ///< a pad's own note
+        uint8_t  chord[16][6] = {};   ///< a pad's chord notes, 0xFF unused
+        uint8_t  count[16] = {};      ///< how many of them
+        uint16_t silent = 0;          ///< pads that play nothing, a bit each
+        bool operator==(const PitchPads& o) const;
+        bool operator!=(const PitchPads& o) const { return !(*this == o); }
+    };
+    PitchPads pitchPads;
     /// The track REC takes onto (Arrange's ARM): a seq track's pads, whose
     /// kit the pads then play in Arrange, or an audio track's input
     /// (armedAudioTrack()). For the seq takes -1, or a track that is no seq,
@@ -353,6 +378,14 @@ public:
     /// seqRoute(), but -1 for a kit track that is not the live one (liveKit):
     /// its notes go nowhere, it plays its freeze or nothing.
     int liveRoute(int track) const;
+    /// The engine a render or edit of track @p track plays through: liveRoute(),
+    /// else seqRoute() for a kit track that is not the live one (the kits'
+    /// engine then holds another kit -- Arrange makes the track live first).
+    int engineRoute(int track) const
+    {
+        const int live = liveRoute(track);
+        return live >= 0 ? live : seqRoute(track);
+    }
     /// The route a new seq track on @p source would take, or -1 when there is
     /// no room for it: route 2 for a Pitch track while no other has it; 0 for
     /// a kit track, always.
@@ -415,6 +448,10 @@ public:
     bool bounceSeqTrack(int track, const SongClip* clip = nullptr);
     /// Give @p track back: its clips go, and Arrange stops counting it.
     void removeTrack(int track);
+    /// Tracks @p a and @p b change places, both in use: everything that names
+    /// a track by its number (ARM, the live kit track, the launcher's columns)
+    /// follows. False when either is out of range or not in use.
+    bool swapTracks(int a, int b);
 
     // ── editing by bars ────────────────────────────────────────────────────
     //
@@ -433,6 +470,10 @@ public:
     /// every block from it on moves @p by bars later, as does the set length.
     /// Nothing after the point is written over.
     void insertBars(uint32_t at, uint32_t by, uint32_t spBar);
+    /// Take [@p from, @p to) out of the song and close the gap: what sounds
+    /// in it goes (clearRange()), every block after it moves that many bars
+    /// earlier, as do the set length and a loop region after or around it.
+    void deleteBars(uint32_t from, uint32_t to, uint32_t spBar);
     /// What sounds in [@p from, @p to) on every track, by bars: a block
     /// reaching in from before is copied from @p from, one reaching past is
     /// copied up to @p to. Seq blocks as much as audio ones.

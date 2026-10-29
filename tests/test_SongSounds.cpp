@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
+#include <cstring>
 #include <catch2/catch_test_macros.hpp>
 
 #include "fake_file_system.hpp"
@@ -309,6 +310,60 @@ TEST_CASE("song sounds: an unsaved instrument is saved into the song first", "[s
     r.sounds.keepInstrument(named, save);
     REQUIRE(saves == 1);
     REQUIRE(r.engine.song().instrument == named.path);
+}
+
+TEST_CASE("song sounds: an instrument opened while the song's sounds are still coming is not kept", "[song][sounds]") {
+    /* Opening a song, a sound keeper still on the last song's instrument asked
+     * for it before this step asked for the song's own -- and its open,
+     * kept, wrote the last song's instrument over this one's (28.10.2026). */
+    Rig r;
+    r.engine.addSeqTrack(SeqSource::Pitch);
+    r.engine.song().instrument = "/crosspad/pitchplay/sub_bass/instrument.json";
+    r.sounds.songOpened();
+    REQUIRE(r.sounds.pending());
+    KitInfo stale;
+    stale.path = "/crosspad/pitchplay/BASS_Moog/instrument.json";
+    r.sounds.keepInstrument(stale, nullptr);
+    REQUIRE(r.engine.song().instrument == "/crosspad/pitchplay/sub_bass/instrument.json");
+
+    /* Built from edits, it is the player's sound whenever it comes. */
+    r.sounds.keepInstrument(stale, nullptr, true);
+    REQUIRE(r.engine.song().instrument == stale.path);
+}
+
+TEST_CASE("song sounds: the song's pad map goes onto the pads, and a new one Pitch Play publishes into the song", "[song][sounds][pitchpads]") {
+    Rig r;
+    r.engine.addSeqTrack(SeqSource::Pitch);
+    r.engine.song().instrument = "/crosspad/pitchplay/sub/instrument.json";
+    AudioSong::PitchPads pads;
+    pads.set = true;
+    pads.octave = -1;
+    pads.transpose = 3;
+    for (int i = 0; i < 16; ++i) pads.note[i] = (uint8_t)(24 + i);
+    std::memset(pads.chord, 0xFF, sizeof pads.chord);
+    r.engine.song().pitchPads = pads;
+    r.sounds.songOpened();
+    r.sounds.step();
+    r.inst.st = IInstrumentHost::State::Ready;
+    r.inst.inst.path = "/crosspad/pitchplay/sub/instrument.json";
+    r.sounds.step();
+    REQUIRE_FALSE(r.sounds.pending());
+    InstrumentPlayState& ps = instrumentPlayState();
+    CHECK(ps.play.padMidiMap[0] == 24);
+    CHECK(ps.play.octave == -1);
+    CHECK(ps.transpose == 3);
+
+    const int commits = r.engine.commits;
+    r.sounds.step();                                   // nothing new published: nothing written
+    CHECK(r.engine.commits == commits);
+
+    ps.play.padMidiMap[0] = 36;                        // Pitch Play, an octave up
+    ps.play.octave = 0;
+    instrumentPlayStatePublished();
+    r.sounds.step();
+    CHECK(r.engine.song().pitchPads.note[0] == 36);
+    CHECK(r.engine.song().pitchPads.octave == 0);
+    CHECK(r.engine.commits == commits + 1);
 }
 
 TEST_CASE("song sounds: a save that fails keeps nothing", "[song][sounds]") {

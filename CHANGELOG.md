@@ -6,34 +6,43 @@ carries the same number) and consumers gate on it with
 `crosspad/RequireVersion.hpp`. This file starts at 1.45.0; earlier releases
 are described in their `chore: X.Y.Z` commits.
 
-## 2.34.0 — 2026-10-29
+## 2.42.0 — 2026-10-29
 
-- `IInputGain::minDbOf()` / `maxDbOf()`: an input's own gain range, within
-  which `setGainDb()` clamps. Default 0..`maxDb()` for every input, as before;
-  the board's line inputs go -24..+24 dB.
-
-## 2.33.0 — 2026-10-28
-
-- One kits' engine for every kit track. Each kit track keeps its own kit
-  (`SongTrack::kit`, a song from before gets the song's on the track that
-  played it); `AudioSong::liveKit` (was `kitSlot`) is the one the engine plays
-  now, and its kit is `AudioSong::kit` -- what the pads play and the Sampler
-  edits. The others play their freeze (`liveRoute()` -1). `setLiveKit()`,
-  `setTrackKit()` and `kitHeld()` keep the two in step; `SongSounds::kitLoaded()`
-  gives a kit loaded while a song is open to its live kit track.
-- Kit tracks are route 0 (`seqRoute()`), Pitch stays 2; route 1 plays nothing.
-- Removed, with the second kit engine: `ISecondKit`, `SecondKitPadLogic`,
-  `PlatformServices::secondKit`, `SeqTrackSound::kit2`,
-  `ISongEnginePlatform::setKitGain()`/`setKitPan()` (a kit track's fader is
-  `setSeqGain(Kit)` again). Only this firmware's Arrange and platform used
-  them, so this is a minor version despite the removals.
-
-## 2.32.0 — 2026-10-28
-
+- One kits' engine for every kit track, in place of the kit slots (2.32-2.41).
+  Each kit track keeps its own kit (`SongTrack::kit`; a song from before gets
+  the song's on the track that played it); `AudioSong::liveKit` (was
+  `kitSlots`) is the one the engine plays now, and its kit is
+  `AudioSong::kit` -- what the pads play and the Sampler edits. The others
+  play their freeze, a stale one standing in (`liveRoute()` -1).
+  `setLiveKit()`, `setTrackKit()` and `kitHeld()` keep the two in step;
+  `SongSounds::kitLoaded()` gives a kit loaded while a song is open to its
+  live kit track. Kit tracks are route 0 (`seqRoute()`), Pitch stays 2.
+- Removed with the kit slots' engines: `ISecondKit`, `SecondKitPadLogic`,
+  `PlatformServices::secondKit`/`thirdKit`, `SeqTrackSound::kit2`,
+  `AudioSong::kitSlots`/`kitSlotOf()`/`slotRoute()`, `kitSlotsNext()`,
+  `SmallSamplerEngine`, `ISongEnginePlatform::setKitGain()`/`setKitPan()` (a
+  kit track's fader is `setSeqGain(Kit)`), and the harvest
+  (`ISongEngine::harvestTrack()`, `ISongEnginePlatform::beginHarvest()`,
+  `SongEngine::rtHarvest()`), which only ever ran on a slot's engine. Only
+  this firmware's Arrange and platform used them, so this is a minor version
+  despite the removals.
 - `KitInfo::own` ("own" in kit.json, written only when true): a kit made on
   the board whatever its category. `isUser()` is true for it, so a drum kit
   made from scratch keeps category "drums" (`isDrums()`, its 12 voices) and
   is still the user's to rename and delete.
+- `IInputGain::minDbOf()` / `maxDbOf()`: an input's own gain range, within
+  which `setGainDb()` clamps. Default 0..`maxDb()` for every input, as before;
+  the board's line inputs go -24..+24 dB.
+
+## 2.41.1 — 2026-10-28
+
+- `PadLedController`: `setPadColor()`, `setPadPressedColor()`,
+  `setPadPlayingColor()` and `clearPadColor()` repaint the pad whatever it is
+  doing. They repainted only while they guessed the colour was on show, and
+  the guess was wrong for a sounding pad (it shows its resting colour unless
+  `lightsOnNoteOn`/`Off` are set), a muted Loop pad and a held one losing its
+  own pressed colour: the new colour waited for the next repaint of the pad,
+  usually the finger's release.
 
 ## 2.31.0 — 2026-10-27
 

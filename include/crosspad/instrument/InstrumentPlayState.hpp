@@ -30,6 +30,12 @@ struct InstrumentPlayState {
     /// rebuildPadMap() has run on this already; read padMidiMap /
     /// padChordNotes / padChordCount straight out of it.
     PlaySettings play;
+    /// Semitones on top of @c play, which it is already in (-12..+12), and
+    /// whether the pads play Pitch Play's chord list: the two settings
+    /// PlaySettings has no field for, which a song keeps with the map
+    /// (AudioSong::PitchPads) and Pitch Play takes back from here.
+    int8_t transpose = 0;
+    bool   chordsOn = false;
 
     /// Logical path of the instrument file, the way IInstrumentHost::requestOpen
     /// wants it ("/crosspad/pitchplay/<name>/instrument.json"). Empty means

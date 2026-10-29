@@ -204,6 +204,7 @@ void SongEngine::Impl::worker() {
                            : edit == kEditTempo  ? doTempo(editBpm_.load())
                            : edit == kEditImport ? doImport()
                            : edit == kEditExport ? doExport()
+                           : edit == kEditExportWav ? doExportWav()
                            : edit == kEditBake   ? doBakeElement()
                            : edit == kEditElementRegion ? doElementFromRegion()
                            : edit == kEditElementSong   ? doElementFromSong()
@@ -327,12 +328,15 @@ bool SongEngine::requestMerge(uint32_t mask, uint32_t fromBar, uint32_t toBar) {
 uint8_t SongEngine::editProgress() const { return impl_->editProgress(); }
 uint32_t SongEngine::stretchWaiting() const { return impl_->stretchWaiting(); }
 void SongEngine::trackLevels(int track, float& left, float& right) { impl_->trackLevels(track, left, right); }
+void SongEngine::setSongScreen(bool up) { impl_->setSongScreen(up); }
+void SongEngine::ringVoices(uint8_t& sounding, uint8_t& streams) { impl_->ringVoices(sounding, streams); }
 bool SongEngine::undo() { return impl_->undo(); }
 bool SongEngine::redo() { return impl_->redo(); }
 uint32_t SongEngine::undoSteps() const { return impl_->undoSteps(); }
 uint32_t SongEngine::redoSteps() const { return impl_->redoSteps(); }
 uint8_t SongEngine::stretchProgress() const { return impl_->stretchProgress(); }
 bool SongEngine::requestExportLiveSet() { return impl_->requestExportLiveSet(); }
+bool SongEngine::requestExportWav() { return impl_->requestExportWav(); }
 std::vector<std::string> SongEngine::editReport() { return impl_->editReport(); }
 bool SongEngine::requestOpenElement(const std::string& ref) { return impl_->requestOpenElement(ref); }
 bool SongEngine::requestElements() { return impl_->requestElements(); }

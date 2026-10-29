@@ -128,6 +128,7 @@ void SongSounds::step()
     stepMs_ += kStepMs;
     freezesHearKitSaves();
     if (!pending_.load(std::memory_order_acquire)) {
+        keepPitchPads();
         /* A kit given to the song since it settled -- a kit track's kit set in
          * Arrange -- is brought in as an opening song's is, from the next step. */
         ISongEngine* se = songs();
@@ -233,6 +234,39 @@ void SongSounds::step()
             instrumentPlayStatePublished();
         }
     }
+    /* The pads as the song plays them: its map onto the shared state, which
+     * the pads, the song's Pitch track and Pitch Play all read. */
+    AudioSong::PitchPads pads;
+    {
+        std::lock_guard<std::recursive_mutex> l(se->songMutex());
+        if (se->song().hasPitchTrack()) pads = se->song().pitchPads;
+    }
+    InstrumentPlayState& ps = instrumentPlayState();
+    if (pads.set) {
+        PlaySettings& p = ps.play;
+        if (p.rootNote != pads.root || p.octave != pads.octave || p.scaleIndex != pads.scale ||
+            ps.transpose != pads.transpose || ps.chordsOn != pads.chords || p.padSilent != pads.silent ||
+            std::memcmp(p.padMidiMap, pads.note, sizeof pads.note) != 0 ||
+            std::memcmp(p.padChordNotes, pads.chord, sizeof pads.chord) != 0 ||
+            std::memcmp(p.padChordCount, pads.count, sizeof pads.count) != 0) {
+            p.rootNote = pads.root;
+            p.octave = pads.octave;
+            p.scaleIndex = pads.scale;
+            ps.transpose = pads.transpose;
+            ps.chordsOn = pads.chords;
+            p.padSilent = pads.silent;
+            std::memcpy(p.padMidiMap, pads.note, sizeof pads.note);
+            std::memcpy(p.padChordNotes, pads.chord, sizeof pads.chord);
+            std::memcpy(p.padChordCount, pads.count, sizeof pads.count);
+            instrumentPlayStatePublished();
+        }
+    }
+    padsGen_ = ps.generation;
+    {
+        std::lock_guard<std::recursive_mutex> l(se->songMutex());
+        settledDir_ = se->song().dir;
+    }
+    settledGen_.store(openGen_.load());
     pending_.store(false);
 }
 
@@ -260,6 +294,39 @@ void SongSounds::kitLoaded()
         if (song.kit == cur->path) return;
         song.kitHeld(cur->path);
         host_.log(false, (song.name + ": kit " + cur->path).c_str());
+    }
+    se->commit();
+}
+
+/// UI thread, the song settled: a pad map Pitch Play published since is the
+/// one the song's Pitch track plays from now on -- kept in the song, whose
+/// freeze key it is part of.
+void SongSounds::keepPitchPads()
+{
+    ISongEngine* se = songs();
+    const InstrumentPlayState& ps = instrumentPlayState();
+    if (!se || se->openState() != SongOpState::Ready || ps.generation == padsGen_) return;
+    padsGen_ = ps.generation;
+    if (ps.instrumentPath.empty()) return;          // nothing published yet this boot
+    AudioSong::PitchPads pads;
+    pads.set = true;
+    pads.root = ps.play.rootNote;
+    pads.octave = ps.play.octave;
+    pads.scale = ps.play.scaleIndex;
+    pads.transpose = ps.transpose;
+    pads.chords = ps.chordsOn;
+    pads.silent = ps.play.padSilent;
+    std::memcpy(pads.note, ps.play.padMidiMap, sizeof pads.note);
+    std::memcpy(pads.chord, ps.play.padChordNotes, sizeof pads.chord);
+    std::memcpy(pads.count, ps.play.padChordCount, sizeof pads.count);
+    {
+        std::lock_guard<std::recursive_mutex> l(se->songMutex());
+        AudioSong& song = se->song();
+        /* Only into the song it was settled for: a song swapped in under an
+         * open (a delete opening the next) has not had its own map put on yet. */
+        if (song.dir != settledDir_ || settledGen_.load() != openGen_.load()) return;
+        if (!song.hasPitchTrack() || song.pitchPads == pads) return;
+        song.pitchPads = pads;
     }
     se->commit();
 }
@@ -298,6 +365,10 @@ void SongSounds::keepInstrument(const KitInfo& spec, const std::function<bool(co
 {
     std::string home;
     if (!instrumentHome(home)) return;
+    /* Opened before this song's sounds were first settled: not the player's
+     * pick but someone still on the last song's instrument, or this song's
+     * own being loaded -- which the song already names. */
+    if (!changed && settledGen_.load() != openGen_.load()) return;
     if (changed) {
         if (ISongEngine* se = songs()) {
             {

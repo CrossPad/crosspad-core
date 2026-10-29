@@ -28,6 +28,12 @@ bool SongEngine::Impl::requestExportLiveSet() {
     return requestEdit(kEditExport);
 }
 
+bool SongEngine::Impl::requestExportWav() {
+    if (!ensureWorker() || !claimEdit()) return false;
+    editProgress_.store(0);
+    return requestEdit(kEditExportWav);
+}
+
 std::vector<std::string> SongEngine::Impl::editReport() {
     std::lock_guard<std::mutex> l(reportMutex_);
     return report_;
@@ -247,6 +253,111 @@ SongOpState SongEngine::Impl::doMerge(uint32_t mask, uint32_t fromBar, uint32_t 
     return SongOpState::Ready;
 }
 
+/// Worker: the open song mixed down to <name>.wav in its folder -- see
+/// ISongEngine::requestExportWav. Read from a copy, as a merge is; written
+/// to a .tmp that only replaces the WAV once it is whole.
+SongOpState SongEngine::Impl::doExportWav() {
+    AudioSong copy;
+    {
+        std::lock_guard<std::recursive_mutex> l(songMutex_);
+        copy = song_;
+    }
+    std::vector<std::string> lines;
+    auto finish = [&](SongOpState st) {
+        for (const auto& ln : lines) logf(st == SongOpState::Failed, "export wav: %s", ln.c_str());
+        std::lock_guard<std::mutex> l(reportMutex_);
+        report_ = std::move(lines);
+        return st;
+    };
+    if (!opened_ || copy.dir.empty() || !p.storageReady() || !io_ || !acc_) {
+        lines.push_back("No song open, or no card.");
+        return finish(SongOpState::Failed);
+    }
+    /* The armed track's freeze is what it sounds like too, when it is
+     * current: the pads are not playing into a file. */
+    copy.armed = -1;
+    std::string missing;
+    for (int t = 0; t < kTracks; ++t) {
+        const SongTrack& tr = copy.tracks[t];
+        if (!tr.inUse || tr.kind != TrackKind::Seq || copy.silenced(t) || copy.seqPlaysNothing(t)) continue;
+        if (!frozenPlays(copy, t)) missing += (missing.empty() ? "" : ", ") + std::to_string(t + 1);
+    }
+    if (!missing.empty()) {
+        lines.push_back("Not frozen yet: track " + missing + ".");
+        return finish(SongOpState::Failed);
+    }
+    const Arrangement arr = flatten(copy);
+    const uint32_t b = endBars(copy) * arr.samplesPerBar;
+    if (!b) {
+        lines.push_back("The song is empty.");
+        return finish(SongOpState::Failed);
+    }
+    /* An element's name carries its folder (".elements/E..."): the file is
+     * named by its last part, beside its song.json. */
+    const std::string base = copy.name.substr(copy.name.find_last_of('/') + 1);
+    const std::string path = copy.dir + "/" + base + ".wav";
+    const std::string tmp = path + ".tmp";
+
+    endPlayback();
+    WavWriter w;
+    if (!w.open(tmp.c_str(), sampleRate_, 2)) {
+        lines.push_back("The card would not take the file.");
+        return finish(SongOpState::Failed);
+    }
+    w.reserve(b);
+    ClipReader rd[kTracks];
+    bool ok = true;
+    int heard = 0;
+    for (int t = 0; t < kTracks; ++t) heard += !arr.tracks[t].empty() && !copy.silenced(t);
+    for (uint32_t f = 0; f < b && ok;) {
+        const uint32_t n = std::min(sz.chunkFrames, b - f);
+        std::memset(acc_, 0, n * 8);
+        for (int t = 0; t < kTracks; ++t) {
+            if (copy.silenced(t)) continue;
+            const float g = copy.tracks[t].volume, pan = copy.tracks[t].pan;
+            const float gs[2] = {g * (pan > 0.0f ? 1.0f - pan : 1.0f), g * (pan < 0.0f ? 1.0f + pan : 1.0f)};
+            for (const auto& sg : arr.tracks[t]) {
+                if (sg.end <= f) continue;
+                if (sg.start >= f + n) break;
+                const uint32_t x = std::max(sg.start, f), y = std::min(sg.end, f + n);
+                if (rd[t].path != sg.path && !(p.storageReady() && rd[t].open(sg.path))) continue;
+                readAt(rd[t], x - sg.start + sg.offset, sg.step, io_, y - x);
+                int32_t* d = acc_ + (x - f) * 2;
+                for (uint32_t k = 0; k < (y - x) * 2; ++k) d[k] += (int32_t)((float)io_[k] * gs[k & 1]);
+            }
+        }
+        for (uint32_t k = 0; k < n * 2; ++k) {
+            const int32_t v = acc_[k];
+            io_[k] = (int16_t)(v > 32767 ? 32767 : (v < -32768 ? -32768 : v));
+        }
+        ok = w.write(io_, n);
+        f += n;
+        editProgress_.store((uint8_t)((uint64_t)f * 99 / b));
+        p.yieldIo();
+    }
+    for (auto& r : rd) r.close();
+    if (!w.close() || !ok) {
+        std::remove(tmp.c_str());
+        lines.push_back("The card filled up, or would not take the file.");
+        return finish(SongOpState::Failed);
+    }
+    std::remove(path.c_str());
+    if (!fsx::rename(tmp, path)) {
+        std::remove(tmp.c_str());
+        lines.push_back("The mix was written but could not be named " + base + ".wav.");
+        return finish(SongOpState::Failed);
+    }
+    editProgress_.store(100);
+    const uint32_t secs = sampleRate_ ? b / sampleRate_ : 0;
+    std::string root = p.songsRoot();
+    root = root.substr(root.find_last_of('/') + 1);
+    char buf[160];
+    std::snprintf(buf, sizeof(buf), "%s/%s/%s.wav, %u:%02u, %d track%s", root.c_str(), copy.name.c_str(),
+                  base.c_str(), (unsigned)(secs / 60), (unsigned)(secs % 60), heard, heard == 1 ? "" : "s");
+    lines.push_back(buf);
+    return finish(SongOpState::Ready);
+}
+
 /// Worker: the open song as a Live Set in its own folder -- see
 /// ISongEngine::requestExportLiveSet. The song is copied, the clips'
 /// headers read, and the Set written to a .tmp that only replaces the
@@ -303,8 +414,12 @@ SongOpState SongEngine::Impl::doExport() {
 
     std::string skeleton = p.liveSetTemplate();
     if (skeleton.empty()) {
-        lines.push_back("Not enough memory to build the Set (" +
-                        std::to_string(p.freeMemoryBytes() / 1024) + " kB free).");
+        /* A platform with no memory count says it has all there is: then it
+         * is the template it cannot give, not the memory. */
+        const size_t freeBytes = p.freeMemoryBytes();
+        lines.push_back((uint64_t)freeBytes < ((uint64_t)1 << 40)
+                            ? "Not enough memory to build the Set (" + std::to_string(freeBytes / 1024) + " kB free)."
+                            : std::string("This build cannot make a Live Set."));
         return finish(SongOpState::Failed);
     }
     /* An empty Project12.cfg makes the folder a Live project, and that is
@@ -474,10 +589,16 @@ void SongEngine::Impl::pack(const AudioSong& s, Snapshot& out) {
     put(&s.length, 4);
     put(&s.loopStart, 4);
     put(&s.loopEnd, 4);
+    out.armed = s.armed;
+    out.liveKit = s.liveKit;
+    for (int i = 0; i < kTracks; ++i) {
+        const SongTrack& t = s.tracks[i];
+        out.side[i] = {t.input, t.freeze, t.freezeKey, t.freezeSalt, t.freezeKit};
+    }
     for (const auto& t : s.tracks) {
-        const uint8_t head[5] = {
+        const uint8_t head[6] = {
             (uint8_t)((t.inUse ? 1 : 0) | (t.muted ? 2 : 0) | (t.solo ? 4 : 0) | (t.seqBlocks ? 8 : 0)),
-            (uint8_t)t.kind, (uint8_t)t.source, (uint8_t)t.stretch, t.scene};
+            (uint8_t)t.kind, (uint8_t)t.source, (uint8_t)t.stretch, t.scene, t.colour};
         put(head, sizeof head);
         put(&t.volume, sizeof t.volume);
         put(&t.pan, sizeof t.pan);
@@ -504,7 +625,22 @@ void SongEngine::Impl::pack(const AudioSong& s, Snapshot& out) {
     }
 }
 
-/// pack() undone, into @p s: its name, folder and sets are left alone.
+/// Which track is where: what a step that deletes, adds or moves tracks
+/// changes, and an edit of their blocks or levels does not.
+std::string SongEngine::Impl::trackLayout(const AudioSong& s) {
+    std::string out;
+    for (const auto& t : s.tracks) {
+        out += (char)(t.inUse ? 1 + (int)t.kind * 2 + (int)t.source * 4 : 0);
+        out += t.name;
+        out += '\x1f';
+        out += t.kit;
+        out += '\x1e';
+    }
+    return out;
+}
+
+/// pack() undone, into @p s: its name, folder and sets are left alone, and
+/// the tracks' side (ARM, slots, inputs, freezes) as it is.
 void SongEngine::Impl::unpack(const Snapshot& in, AudioSong& s) {
     size_t at = 0;
     auto get = [&](void* v, size_t n) { std::memcpy(v, in.bytes.data() + at, n); at += n; };
@@ -524,7 +660,7 @@ void SongEngine::Impl::unpack(const Snapshot& in, AudioSong& s) {
     get(&s.loopStart, 4);
     get(&s.loopEnd, 4);
     for (auto& t : s.tracks) {
-        uint8_t head[5] = {};
+        uint8_t head[6] = {};
         get(head, sizeof head);
         t.inUse = head[0] & 1;
         t.muted = head[0] & 2;
@@ -534,6 +670,7 @@ void SongEngine::Impl::unpack(const Snapshot& in, AudioSong& s) {
         t.source = (SeqSource)head[2];
         t.stretch = (StretchMode)head[3];
         t.scene = head[4];
+        t.colour = head[5];
         get(&t.volume, sizeof t.volume);
         get(&t.pan, sizeof t.pan);
         str(t.name);
@@ -588,7 +725,9 @@ bool SongEngine::Impl::songJobRunning() {
 /// stack. Only the arrangement moves -- the audio on the card is never
 /// touched, so a block undone back in finds its file where it was.
 bool SongEngine::Impl::step(std::vector<Snapshot>& from, std::vector<Snapshot>& to) {
-    if (songJobRunning()) return false;
+    /* A freeze gives way, as it does to PLAY: the edit just made started
+     * it, and undoing that edit is the one thing it must not refuse. */
+    if (!yieldFreeze() || songJobRunning()) return false;
     float was = 0.0f, now = 0.0f;
     {
         std::lock_guard<std::recursive_mutex> l(songMutex_);
@@ -598,7 +737,22 @@ bool SongEngine::Impl::step(std::vector<Snapshot>& from, std::vector<Snapshot>& 
         to.push_back(std::move(cur));
         if (to.size() > kUndoDepth) to.erase(to.begin());
         was = song_.bpm;
+        const std::string layout = trackLayout(song_);
         unpack(from.back(), song_);
+        if (trackLayout(song_) != layout) {
+            const Snapshot& back = from.back();
+            song_.armed = back.armed;
+            song_.liveKit = back.liveKit;
+            for (int i = 0; i < kTracks; ++i) {
+                SongTrack& t = song_.tracks[i];
+                const TrackSide& sd = back.side[i];
+                t.input = sd.input;
+                t.freeze = sd.freeze;
+                t.freezeKey = sd.freezeKey;
+                t.freezeSalt = sd.freezeSalt;
+                t.freezeKit = sd.freezeKit;
+            }
+        }
         last_ = std::move(from.back());
         from.pop_back();
         lastChangeUs_ = 0;           // the next edit is a step of its own

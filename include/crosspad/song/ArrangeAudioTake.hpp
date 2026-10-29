@@ -60,6 +60,9 @@ public:
     /// Lands a take that has ended. Cheap while nothing has.
     Result poll();
     const std::string& lastError() const { return error_; }
+    /// Counts the starts refused: a REC pressed anywhere (the top bar, the
+    /// MODE map) that a screen should say something about.
+    uint32_t refusals() const { return refusals_; }
 
 private:
     enum class Phase : uint8_t { Idle, Recording, Landing, Importing };
@@ -86,6 +89,7 @@ private:
     std::vector<Piece> pieces_;
     size_t      next_ = 0;
     std::string error_;
+    uint32_t    refusals_ = 0;
 };
 
 /// The board's one audio take in Arrange.

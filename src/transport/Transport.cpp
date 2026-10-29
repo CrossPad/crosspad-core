@@ -2,9 +2,11 @@
 #include "crosspad/transport/Transport.hpp"
 
 #include "crosspad/platform/PlatformServices.hpp"
+#include "crosspad/settings/IKeyValueStore.hpp"
 #include "crosspad/sequencer/SequencerController.hpp"
 #include "crosspad/song/ISongEngine.hpp"
 
+#include <algorithm>
 #include <atomic>
 #include <cmath>
 #include <mutex>
@@ -165,9 +167,20 @@ bool transportClick()
     return seq && seq->getClickActive();
 }
 
+/* The metronome is the player's, kept across a restart: every change is
+ * written to the platform's store (when it has one) and read back once the
+ * sequencer is published (transportRestoreClick()). */
+namespace {
+constexpr const char* kClickNs = "cfg_click";
+IKeyValueStore* clickStore() { return getPlatformServices().kvStore; }
+}
+
 void transportSetClick(bool on)
 {
-    if (SequencerController* seq = getPlatformServices().sequencer) seq->setClickActive(on);
+    SequencerController* seq = getPlatformServices().sequencer;
+    if (!seq || seq->getClickActive() == on) return;
+    seq->setClickActive(on);
+    if (IKeyValueStore* kv = clickStore()) kv->saveBool(kClickNs, "on", on);
 }
 
 float transportClickLevel()
@@ -178,7 +191,11 @@ float transportClickLevel()
 
 void transportSetClickLevel(float level)
 {
-    if (SequencerController* seq = getPlatformServices().sequencer) seq->setClickLevel(level);
+    SequencerController* seq = getPlatformServices().sequencer;
+    if (!seq) return;
+    seq->setClickLevel(level);
+    const uint8_t pct = (uint8_t)std::lround(std::clamp(level, 0.0f, 1.0f) * 100.0f);
+    if (IKeyValueStore* kv = clickStore()) kv->saveU8(kClickNs, "level", pct);
 }
 
 uint8_t transportClickDivision()
@@ -189,7 +206,10 @@ uint8_t transportClickDivision()
 
 void transportSetClickDivision(uint8_t div)
 {
-    if (SequencerController* seq = getPlatformServices().sequencer) seq->setClickDivision(div);
+    SequencerController* seq = getPlatformServices().sequencer;
+    if (!seq) return;
+    seq->setClickDivision(div);
+    if (IKeyValueStore* kv = clickStore()) kv->saveU8(kClickNs, "div", div);
 }
 
 uint8_t transportCountInBars()
@@ -204,6 +224,24 @@ void transportSetCountInBars(uint8_t bars)
     if (!seq) return;
     if (bars) seq->setCountInBars(bars);
     seq->setCountIn(bars != 0);
+    if (IKeyValueStore* kv = clickStore()) kv->saveU8(kClickNs, "countin", bars);
+}
+
+void transportRestoreClick()
+{
+    SequencerController* seq = getPlatformServices().sequencer;
+    IKeyValueStore* kv = clickStore();
+    if (!seq || !kv) return;
+    seq->setClickActive(kv->readBool(kClickNs, "on", seq->getClickActive()));
+    const uint8_t pct = kv->readU8(kClickNs, "level", 255);
+    if (pct <= 100) seq->setClickLevel((float)pct / 100.0f);
+    const uint8_t div = kv->readU8(kClickNs, "div", 0);
+    if (div == 1 || div == 2 || div == 4) seq->setClickDivision(div);
+    const uint8_t bars = kv->readU8(kClickNs, "countin", 255);
+    if (bars <= 2) {
+        if (bars) seq->setCountInBars(bars);
+        seq->setCountIn(bars != 0);
+    }
 }
 
 const char* transportName()

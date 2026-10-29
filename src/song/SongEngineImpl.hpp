@@ -55,7 +55,7 @@ constexpr uint32_t kVarispeedGuard   = 2;
 /// The tracks' meters: the loudest frame of each track in every hop of the
 /// ring, kept for long enough that what RT is playing is still there.
 constexpr uint32_t kMeterHop         = 1024;   // ~23 ms
-constexpr uint32_t kMeterSlots       = 32;     // twice the ring
+constexpr uint32_t kMeterSlots       = 512;    // twice the largest ring (FrameRing): the worker writes a ring ahead of what RT reads
 constexpr uint32_t kMeterRead        = 3;      // hops a read looks back: a UI tick's worth
 /// A project name, as a folder on the card and a row in a list.
 constexpr size_t   kMaxNameLen       = 32;
@@ -227,6 +227,8 @@ struct FrameRing {
         return n;
     }
 };
+static_assert(kMeterSlots * kMeterHop >= 2 * FrameRing::kMaxSegs * FrameRing::kSegFrames,
+              "a meter slot must outlive the ring: the worker writes a whole ring ahead of RT");
 
 /// A clip being read: where its samples start and how it is laid out. 16-bit
 /// PCM, mono or stereo; mono is played to both sides. A plain descriptor, not
@@ -444,6 +446,7 @@ struct Arrangement {
     /// seqMapped false: a seq track with no blocks loops over everything).
     std::vector<PatternSequencer::SongSpan> seqSpans;
     bool     seqMapped = false;
+    uint32_t frozenMask = 0;      // a bit per track that plays its freeze, not its notes
     uint32_t end = 0;             // samples; 0 = empty song
     uint32_t samplesPerBar = 0;
     bool     loop = true;
@@ -619,7 +622,10 @@ struct SongEngine::Impl {
     uint32_t undoSteps() const { return undoCount_.load(); }
     uint32_t redoSteps() const { return redoCount_.load(); }
     void trackLevels(int t, float& left, float& right);
+    void setSongScreen(bool up);
+    void ringVoices(uint8_t& sounding, uint8_t& streams);
     bool requestExportLiveSet();
+    bool requestExportWav();
     std::vector<std::string> editReport();
     bool clipPeaks(const std::string& file, ClipPeaks& out);
     uint32_t peaksGeneration() const { return peaksGen_.load(); }
@@ -878,6 +884,7 @@ private:
     SongOpState doTempo(float bpm);
     SongOpState doMerge(uint32_t mask, uint32_t fromBar, uint32_t toBar);
     SongOpState doExport();
+    SongOpState doExportWav();
     SongOpState doImport();
     void doSave();
     /// The sequencer's scenes, as SeqFreezeKey.hpp asks for them.
@@ -920,19 +927,32 @@ private:
     /// Notes are shared and never changed in place, so a step holding the
     /// pointer holds them as they were, and costs nothing until they are
     /// replaced. Equal when the bytes and the very same notes are.
+    /* What belongs to a track but is not an edit -- ARM, its slot, its
+     * input, its freeze: carried with a step and not compared (an ARM is no
+     * step), and put back only by a step that moves the tracks themselves,
+     * where they would otherwise stay on the places the tracks left. */
+    struct TrackSide {
+        RecInput  input = RecInput::Mic;
+        std::vector<SongClip> freeze;
+        uint32_t  freezeKey = 0, freezeSalt = 0, freezeKit = 0;
+    };
     struct Snapshot {
         std::vector<uint8_t> bytes;
         std::vector<SeqPatternPtr> notes;
+        int8_t    armed = -1;
+        int8_t    liveKit = -1;
+        TrackSide side[kTracks];
         bool empty() const { return bytes.empty(); }
         bool operator==(const Snapshot& o) const { return bytes == o.bytes && notes == o.notes; }
     };
     static void pack(const AudioSong& s, Snapshot& out);
     static void unpack(const Snapshot& in, AudioSong& s);
+    static std::string trackLayout(const AudioSong& s);
     void noteChange();
     bool songJobRunning();
     bool step(std::vector<Snapshot>& from, std::vector<Snapshot>& to);
     void meterPut(int t, uint32_t hop, const int32_t m[2]);
-    void meterReset();
+    void meterReset(uint32_t from = 0);
     void rebuild();
     void applySeqSound();
     bool openTake(SyncTake take, uint32_t fromBar);
@@ -1031,7 +1051,8 @@ private:
     static constexpr uint8_t kEditRename = 1, kEditTempo = 2, kEditMerge = 3, kEditImport = 4,
                              kEditDelete = 5, kEditExport = 6, kEditBake = 7, kEditElementRegion = 8, kEditElementSong = 9,
                              kEditElementDiscard = 10, kEditSnapshot = 11, kEditRestore = 12, kEditDropSnapshot = 13,
-                             kEditEditHash = 14, kEditCopyElements = 15, kEditDeleteElement = 16;
+                             kEditEditHash = 14, kEditCopyElements = 15, kEditDeleteElement = 16,
+                             kEditExportWav = 17;
     uint32_t    importA_ = 0, importB_ = 0, importBar_ = 0, importLead_ = 0;   // owned by claimEdit()'s caller until editReq_
     uint8_t     importTrack_ = 0;
     std::atomic<uint8_t>  editProgress_{0};
@@ -1172,6 +1193,20 @@ private:
     Piece       pieces_[kTracks][3];
     ClipReader  ctxReader_;                       // the context stem's: one descriptor beside the tracks'
     uint32_t    writePos_ = 0;
+    /* Where each chunk in the ring began, and the song frame it holds: a
+     * mute, solo, fader or pan changed while playing re-mixes the ring from
+     * a little after what RT is playing (remixRing()) instead of being heard
+     * a ring later. Worker only. */
+    struct ChunkMark { uint32_t head, wp; };
+    static constexpr uint32_t kChunkMarks = 64;
+    ChunkMark   marks_[kChunkMarks] = {};
+    uint32_t    markN_ = 0;
+    std::atomic<bool> remixReq_{false};
+    void remixRing();
+    static constexpr uint32_t kRemixLeadMs = 300;
+    static constexpr int64_t  kRemixRestUs = 250000;    // a fader's drag at rest this long
+    std::atomic<int64_t> remixAtUs_{0};
+    uint32_t    remixes_ = 0;                     // ASONG_DBG remix=
     std::atomic<uint32_t> debt_{0};
     std::atomic<float>    gain_[kTracks] = {};
     std::atomic<float>    pan_[kTracks] = {};     // -1..+1, with gain_: an audio track's balance
@@ -1182,6 +1217,16 @@ private:
     };
     Meter                 meter_[kMeterSlots];
     std::atomic<float>    padsPeak_[2] = {};
+    /* What the sequencer was last given (pushSeqMap(), worker): which tracks
+     * played their freeze, the spans, and -- while a change between notes and
+     * freeze waits for the ring's audio to reach it -- the tracks changing
+     * over and the old notes of those that go to their freeze. */
+    uint32_t              mapFrozen_ = 0;
+    std::vector<PatternSequencer::SongSpan> mapSpans_;
+    uint32_t              transMask_ = 0;
+    std::vector<PatternSequencer::SongSpan> transOld_;
+    bool                  songScreen_ = false;   ///< setSongScreen(); under songMutex_
+    std::atomic<uint32_t> ringMask_{0};         ///< a bit per track the ring plays (rebuild())
     std::atomic<int8_t>   seqRoute_[kTracks];   ///< AudioSong::seqRoute(), per track; -1 from the constructor
     std::atomic<Play>     play_{Play::Idle};
     std::atomic<bool>     syncing_{false};         // this playback runs the sequencer

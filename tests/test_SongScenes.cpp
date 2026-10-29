@@ -259,6 +259,27 @@ TEST_CASE("song scenes: changed scenes land, a requested write lands clean ones"
     REQUIRE(firstPad(a + "/sequences.json") == 4);
 }
 
+TEST_CASE("song scenes: nothing is written while the song plays, it lands at the stop", "[song][scenes]") {
+    Card card("cp_scenes_playing");
+    const std::string a = card.song("a");
+    { std::FILE* f = std::fopen(card.mark().c_str(), "w"); REQUIRE(f); std::fclose(f); }
+    Rig r;
+    r.open(a);
+    r.scenes.sweep(card.str());
+    REQUIRE(r.seq.addEventTicks(0, 0, 4, 100));
+    r.seq.markDirty();
+    r.scenes.saveSoon();
+    r.engine.isPlaying = true;           // a write here stalled the card under the song's stream
+    r.scenes.sweep(card.str());
+    r.scenes.sweep(card.str());
+    REQUIRE(r.seq.dirty());
+    REQUIRE_FALSE(fs::exists(a + "/sequences.json"));
+    r.engine.isPlaying = false;
+    r.scenes.sweep(card.str());
+    REQUIRE_FALSE(r.seq.dirty());
+    REQUIRE(firstPad(a + "/sequences.json") == 4);
+}
+
 TEST_CASE("song scenes: a card that never had shared scenes adopts the kit's", "[song][scenes]") {
     Card card("cp_scenes_kit");
     fs::create_directories(card.root / "kits" / "K");

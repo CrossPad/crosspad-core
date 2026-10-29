@@ -170,6 +170,15 @@ void SongScenes::sweep(const std::string& cardRoot)
      * dirties the scenes itself (selectScene). It lands after. */
     ISongEngine* song = getPlatformServices().songEngine;
     if (song && song->bounceStatus().state == BounceState::Running) { seq_.markDirty(); return; }
+    /* Nor while the song streams: a write there was followed by reads of the
+     * song's own ring of 0.7 s, the card busy after it (SD_TRACE slow_wr=
+     * seq_store, hil_track_transitions edit, 2026-10-28). It lands at the
+     * stop, as the song's own save does. */
+    if (song && song->playing()) {
+        seq_.markDirty();
+        if (forced) saveNow_.store(true, std::memory_order_release);
+        return;
+    }
 
     save(forced ? "requested" : "dirty");
 }

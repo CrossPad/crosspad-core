@@ -198,6 +198,7 @@ public:
         SongNotes notes;
         uint32_t loop = 0;
         uint8_t  route = 0;   ///< the kit it plays (RoutedSink): its track's
+        uint8_t  track = 0xFF;   ///< the song track it is of (SongEngine), 0xFF none
     };
     /// Play only what is under @p spans of the song it is laid on, instead
     /// of looping the scene on the click: a seq track cut into blocks
@@ -209,6 +210,16 @@ public:
     /// clock is, as without; a take onto the song (beginSongTake()) records
     /// where the song is.
     void setSongMap(const std::vector<SongSpan>& spans, uint32_t wrapFrom, uint32_t wrapTo);
+    /// setSongMap() with @p now, and @p later in its place once @p afterSamples
+    /// more of the song have played: what the song's ring has mixed ahead
+    /// (SongEngine), so a track that goes from its notes to its freeze -- or
+    /// back -- changes over where its audio does, not 1.5 s before it. A
+    /// setSongMap(), clearSongMap() or another call drops a later map still
+    /// waiting.
+    void setSongMapThen(const std::vector<SongSpan>& now, std::vector<SongSpan> later, uint32_t afterSamples,
+                        uint32_t wrapFrom, uint32_t wrapTo);
+    /// Samples until a later map (setSongMapThen()) takes over; 0 none waits.
+    uint32_t songMapLaterIn() const;
     void clearSongMap();
     /// The map plays nothing while muted, and keeps counting: Arrange's REC
     /// replaces what is under the take, so it is not heard under it either.
@@ -436,6 +447,7 @@ private:
     void     fireWindow(uint32_t from, uint32_t to, uint8_t route);
     /// The song map's turn: @p samples more of the song, fired through it.
     void     fireSong(uint32_t samples, uint32_t loop);
+    void     fireSongRun(uint32_t samples, uint32_t loop);
     /// Strike @p pad as a note recorded at @p len samples is struck: let go
     /// first if a note still holds it, then held for what is left of @p len
     /// after the @p gone samples of this poll it sounds in, or a hit.
@@ -543,6 +555,8 @@ private:
 
     /* setSongMap(): the spans, where the song is, and where it wraps. */
     std::vector<SongSpan> map_;
+    std::vector<SongSpan> mapLater_;   ///< setSongMapThen()'s, while laterLeft_
+    uint32_t laterLeft_ = 0;
     bool     mapOn_ = false;
     std::atomic<uint32_t> mapPos_{0};
     uint32_t mapWrapFrom_ = 0;
