@@ -3,6 +3,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdlib>
 
 namespace crosspad {
 namespace SliceMath {
@@ -202,6 +203,30 @@ std::vector<uint32_t> equal(uint32_t start, uint32_t end, uint8_t count)
     const uint64_t len = end - start;
     for (uint8_t i = 0; i < count; ++i) out.push_back(start + (uint32_t)(len * i / count));
     return out;
+}
+
+uint32_t zeroCrossing(const int16_t* stereo, uint32_t n, uint32_t at)
+{
+    if (!stereo || at >= n) return at;
+    auto mono = [stereo](uint32_t i) { return (int32_t)stereo[i * 2] + (int32_t)stereo[i * 2 + 1]; };
+    /* Frame i is a crossing when it and i-1 lie on different sides of zero,
+     * or it is zero; the one of the pair nearer zero is the cut. */
+    auto pick = [&](uint32_t i) {
+        const int32_t a = mono(i - 1), b = mono(i);
+        return std::abs(a) < std::abs(b) ? i - 1 : i;
+    };
+    if (mono(at) == 0) return at;
+    /* From the pair after @p at: a cut already on a crossing finds the same
+     * one again, so snapping twice moves nothing. */
+    for (uint32_t i = std::min(at + 1, n - 1); i >= 1; --i) {
+        if (mono(i) == 0) return i;
+        if ((mono(i - 1) < 0) != (mono(i) < 0)) return pick(i);
+    }
+    for (uint32_t i = at + 2; i < n; ++i) {
+        if (mono(i) == 0) return i;
+        if ((mono(i - 1) < 0) != (mono(i) < 0)) return pick(i);
+    }
+    return at;
 }
 
 float bpmOf(uint32_t frames, uint32_t sampleRate, uint8_t bars)

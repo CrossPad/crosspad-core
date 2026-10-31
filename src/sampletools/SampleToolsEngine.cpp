@@ -200,7 +200,7 @@ bool is_wav(const char* n)
 }
 
 enum class Prev : uint8_t { Idle, Priming, Running, Ended };
-enum class JobKind : uint8_t { None, List, Folder, Overview, SaveRegion, Export, Rendered, Normalize };
+enum class JobKind : uint8_t { None, List, Folder, Overview, SaveRegion, Export, Rendered, Normalize, Snap };
 
 /// Stereo int16 frames, one writer and one reader, counters that only grow
 /// (so used() is right across the uint32 wrap). In 16 kB segments rather than
@@ -664,6 +664,20 @@ struct SampleToolsEngine::Impl {
             pFile_ = file; pDst_ = out; pPeak_ = peak;
         }
         return request(JobKind::Normalize);
+    }
+
+    bool requestSnapped(const std::string& file, const std::vector<uint32_t>& starts) {
+        if (file.empty() || starts.empty() || starts.size() > SliceMath::kMaxSlices) return false;
+        {
+            std::lock_guard<std::mutex> l(paramMutex_);
+            if (job_.load() == ToolJob::Busy) return false;
+            pFile_ = file; pStarts_ = starts;
+        }
+        return request(JobKind::Snap);
+    }
+    std::vector<uint32_t> snapped() {
+        std::lock_guard<std::mutex> l(resultMutex_);
+        return snapped_;
     }
 
     bool requestExportKit(const SliceKit& kit) {
@@ -1234,6 +1248,7 @@ struct SampleToolsEngine::Impl {
             case JobKind::Export:     doExport();     break;
             case JobKind::Rendered:   doRendered();   break;
             case JobKind::Normalize:  doNormalize();  break;
+            case JobKind::Snap:       doSnap();       break;
             default: finish(false, "nothing asked"); break;
         }
     }
@@ -1624,13 +1639,94 @@ struct SampleToolsEngine::Impl {
         finish(true, out);
     }
 
+    /// A window of kSnapBackMs before each cut and kSnapAheadMs after it, read
+    /// from the card -- one chunk a cut -- and the cut moved onto its crossing.
+    void doSnap() {
+        std::string file;
+        std::vector<uint32_t> starts;
+        {
+            std::lock_guard<std::mutex> l(paramMutex_);
+            file = pFile_; starts = pStarts_;
+        }
+        ClipReader r;
+        if (!r.open(file, p.storageReady())) { finish(false, "cannot read " + base_of(file)); return; }
+        const uint32_t rate = r.rate ? r.rate : sampleRate_;
+        const uint32_t ahead = std::max<uint32_t>(1, rate * SliceMath::kSnapAheadMs / 1000);
+        const uint32_t back = std::min<uint32_t>(rate * SliceMath::kSnapBackMs / 1000, kChunk - ahead);
+        uint32_t after = 0;                  // past the cut before, snapped: never reached back over
+        for (size_t i = 0; i < starts.size(); ++i) {
+            const uint32_t s = starts[i];
+            if (s >= r.frames) continue;
+            const uint32_t from = std::min(s, std::max(after, s > back ? s - back : 0u));
+            const uint32_t n = std::min(r.frames - from, s - from + ahead);
+            r.read(from, io_, n);
+            starts[i] = from + SliceMath::zeroCrossing(io_, n, s - from);
+            after = starts[i] + 1;
+            progress_.store((uint8_t)((i + 1) * 100 / starts.size()));
+            giveWay();
+        }
+        r.close();
+        {
+            std::lock_guard<std::mutex> l(resultMutex_);
+            snapped_ = std::move(starts);
+        }
+        finish(true, file);
+    }
+
+    /// The PERF half of doExport(): a WAV per slice, "01.wav".., each played
+    /// at the kit's pitch and rising over its attack, with the slice's fades
+    /// -- what the Slice kit's engine does live, written down, so a plain
+    /// sampler kit of the user's own plays the same. @p r is open; closed here.
+    void exportPerf(const SliceKit& kit, ClipReader& r, const std::vector<uint32_t>& starts, uint32_t end,
+                    const char* folder) {
+        const std::string dir = p.cardRoot() + folder + "/" + kit.name;
+        const uint32_t rate = r.rate ? r.rate : sampleRate_;
+        const double ratio = SliceMath::pitchRatio(kit.semitones);
+        const uint32_t attack = SliceMath::attackFrames(kit.attackMs, rate);
+        const uint32_t total = end - starts.front();
+        KitInfo info;
+        info.name = kit.name;
+        info.author = "CrossPad Slicer";
+        info.category = "user";
+        info.own = true;
+        info.description = "Sliced from " + base_of(kit.source);
+        info.version = "1.0";
+        info.bpm = (uint16_t)std::lround((double)kit.bpm * ratio);
+        info.path = std::string(folder) + "/" + kit.name + "/kit.json";
+        for (int pad = 0; pad < KIT_PADS; ++pad) {
+            Pad& kp = info.pads[pad];
+            kp.color = kp.color_pressed = slice_color(pad);
+            if (pad >= (int)starts.size()) continue;
+            const uint32_t a = starts[pad];
+            const uint32_t b = pad + 1 < (int)starts.size() ? starts[pad + 1] : end;
+            char name[8];
+            std::snprintf(name, sizeof(name), "%02d.wav", pad + 1);
+            if (!copyRegion(r, a, b, dir + "/SAMPLES/" + name, attack, ratio, a - starts.front(), total, rate)) {
+                r.close();
+                finish(false, "card write failed");
+                return;
+            }
+            kp.AddSample(name, false);
+        }
+        r.close();
+        IKitManager* kits = getKitManager();
+        if (!kits || !kits->saveKit(info)) {
+            finish(false, "kit.json not written");
+            return;
+        }
+        const int id = kits->addKit(info.path);
+        logf(false, "PERF kit %s: %u slices, list id %d", kit.name.c_str(), (unsigned)starts.size(), id);
+        finish(true, id >= 0 ? kit.name : kit.name + " (in the kit list after a restart)");
+    }
+
     void doExport() {
         SliceKit kit;
         {
             std::lock_guard<std::mutex> l(paramMutex_);
             kit = pKit_;
         }
-        const std::string kitsDir = p.cardRoot() + kSlicerKits;
+        const char* folder = kit.perf ? KitFolders::kKits : kSlicerKits;
+        const std::string kitsDir = p.cardRoot() + folder;
         const std::string dir = kitsDir + "/" + kit.name;
         if (!p.storageReady()) { finish(false, "no card"); return; }
         if (fsx::exists(dir)) { finish(false, "a kit called " + kit.name + " is already on the card"); return; }
@@ -1646,6 +1742,7 @@ struct SampleToolsEngine::Impl {
             finish(false, "cannot make the kit's folder");
             return;
         }
+        if (kit.perf) { exportPerf(kit, r, starts, end, folder); return; }
         /* A Slice kit: the loop once, as it is, and each pad a region of it.
          * Pitch and attack are the kit's, played by the engine in real time;
          * it used to be a file per slice with both written into it. */
@@ -1767,6 +1864,7 @@ struct SampleToolsEngine::Impl {
     std::string           pFile_;
     std::string           pDst_;                              // Rendered: where the copy goes
     SampleFx              pFx_;
+    std::vector<uint32_t> pStarts_;                           // Snap: the cuts, sorted
     float                 pPeak_ = 1.0f;                      // Normalize: the loudest sample, of full scale
     uint32_t              pA_ = 0, pB_ = 0;
     uint16_t              pCols_ = 1;
@@ -1777,6 +1875,7 @@ struct SampleToolsEngine::Impl {
     std::vector<std::string> recordings_;
     CardFolder            folder_;
     WaveOverview          overview_;
+    std::vector<uint32_t> snapped_;
 
     uint32_t              sampleRate_ = 44100;
     int16_t*              io_ = nullptr;
@@ -1845,6 +1944,11 @@ bool SampleToolsEngine::requestNormalized(const std::string& file, const std::st
 {
     return impl_->requestNormalized(file, out, peak);
 }
+bool SampleToolsEngine::requestSnapped(const std::string& file, const std::vector<uint32_t>& starts)
+{
+    return impl_->requestSnapped(file, starts);
+}
+std::vector<uint32_t> SampleToolsEngine::snapped() { return impl_->snapped(); }
 ToolJob SampleToolsEngine::job() const { return impl_->job_.load(); }
 std::string SampleToolsEngine::jobResult() { return impl_->jobResult(); }
 uint8_t SampleToolsEngine::jobProgress() const { return impl_->progress_.load(); }

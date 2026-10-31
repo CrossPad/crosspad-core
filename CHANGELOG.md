@@ -6,6 +6,24 @@ carries the same number) and consumers gate on it with
 `crosspad/RequireVersion.hpp`. This file starts at 1.45.0; earlier releases
 are described in their `chore: X.Y.Z` commits.
 
+## 2.44.0 — 2026-10-31
+
+- `IInputPairs::inputOn(codec)`: the input a converter hears in the current
+  pair ("Mic", "Line 1/2", "Line 3/4"), so a take names what it records; a
+  default of null keeps every implementation building. `RecInput::Mic` and
+  `Line` are the first and second converter, whatever the pair puts there.
+- SNAP: `ISampleTools::requestSnapped(file, starts)` / `snapped()` move each
+  cut onto the zero crossing of L+R nearest before it (up to 20 ms back,
+  1 ms ahead when there is none, never back over the cut before), so a slice
+  does not start mid-wave and click while the hit keeps its attack
+  (`SliceMath::zeroCrossing()`, `SampleToolsEngine` job `Snap`). Defaults
+  refuse, so other implementations build.
+- `SliceKit::perf`: the slices exported as a PERF kit of the user's own
+  (`/crosspad/kits/<name>`, category `user`, `own`) -- a WAV per slice,
+  `SAMPLES/01.wav`.., with the attack (and its fades) and the pitch written
+  into each, so a plain sampler kit plays what the Slice kit plays live. Off,
+  the export is the Slice kit as before.
+
 ## 2.43.0 — 2026-10-29
 
 - Swing is a scene's own, and so a song's seq track's: `PatternSequencer::
