@@ -23,7 +23,7 @@ namespace crosspad {
 
 class InfoRowTable {
 public:
-    static constexpr int kMaxRows = 24;
+    static constexpr int kMaxRows = 32;
     /// A value with its NUL: about what fits beside a label on the 320 px row.
     static constexpr std::size_t kValueMax = 40;
 

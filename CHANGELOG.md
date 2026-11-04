@@ -6,6 +6,12 @@ carries the same number) and consumers gate on it with
 `crosspad/RequireVersion.hpp`. This file starts at 1.45.0; earlier releases
 are described in their `chore: X.Y.Z` commits.
 
+## 2.44.1 — 2026-11-04
+
+- `InfoRowTable` holds 32 rows, not 24. A firmware with 14 apps already
+  needed 25 (firmware, libraries, the apps, MAC and the STM32 identity), so
+  the last STM32 row was silently dropped from Settings → Info.
+
 ## 2.44.0 — 2026-10-31
 
 - `IInputPairs::inputOn(codec)`: the input a converter hears in the current
