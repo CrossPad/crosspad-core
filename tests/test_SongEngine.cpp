@@ -2362,7 +2362,7 @@ struct RoutedHits {
 };
 } // namespace
 
-TEST_CASE("song engine: REC takes onto the armed kit track, and each track plays on its own route", "[song][songtake][route]") {
+TEST_CASE("song engine: REC takes onto the armed kit track, and the live one plays through the kits' engine", "[song][songtake][route]") {
     Rig r;
     REQUIRE(r.open("Demo"));
     const uint32_t bar = r.engine->framesPerBar();
@@ -2378,6 +2378,7 @@ TEST_CASE("song engine: REC takes onto the armed kit track, and each track plays
         auto& s = r.engine->song();
         REQUIRE(s.addSeqTrack(1, SeqSource::Kit, 2, "/crosspad/kits/B/kit.json"));   // its own scene
         s.armed = 1;
+        REQUIRE(s.setLiveKit(1));                          // what Arrange does for the armed one
     }
     r.engine->commit();
     {
@@ -2409,10 +2410,11 @@ TEST_CASE("song engine: REC takes onto the armed kit track, and each track plays
     r.engine->stop();
     REQUIRE(waitFor([&] { return !r.engine->playing(); }));
     std::lock_guard<std::mutex> l(heard.m);
-    CHECK(heard.ons == std::vector<std::pair<uint8_t, uint8_t>>{{0, 1}, {1, 2}});
+    /* Track 0 has no engine now and no freeze: silent until it is frozen. */
+    CHECK(heard.ons == std::vector<std::pair<uint8_t, uint8_t>>{{0, 2}});
 }
 
-TEST_CASE("song engine: Drums, Slice and Pitch tracks play at once, each on its own route", "[song][route][routes]") {
+TEST_CASE("song engine: the live kit track and the Pitch track play at once, each on its own route", "[song][route][routes]") {
     Rig r;
     REQUIRE(r.open("Demo"));
     const uint32_t bar = r.engine->framesPerBar();
@@ -2445,10 +2447,11 @@ TEST_CASE("song engine: Drums, Slice and Pitch tracks play at once, each on its 
     r.engine->stop();
     REQUIRE(waitFor([&] { return !r.engine->playing(); }));
     std::lock_guard<std::mutex> l(heard.m);
-    CHECK(heard.ons == std::vector<std::pair<uint8_t, uint8_t>>{{0, 1}, {1, 2}, {2, 7}});
+    /* The Slice track waits for the kits' engine (not frozen here). */
+    CHECK(heard.ons == std::vector<std::pair<uint8_t, uint8_t>>{{0, 1}, {2, 7}});
 }
 
-TEST_CASE("song engine: a REC on one kit track is not heard under itself, the other plays on", "[song][songtake][route]") {
+TEST_CASE("song engine: a REC on the live kit track is not heard under itself", "[song][songtake][route]") {
     Rig r;
     REQUIRE(r.open("Demo"));
     {
@@ -2458,11 +2461,12 @@ TEST_CASE("song engine: a REC on one kit track is not heard under itself, the ot
         REQUIRE(s.addSeqTrack(0, SeqSource::Kit, 0));
         REQUIRE(s.addSeqTrack(1, SeqSource::Kit, 2, "/crosspad/kits/B/kit.json"));   // its own scene
         s.armed = 1;
+        REQUIRE(s.setLiveKit(1));
     }
     r.engine->commit();
     Take t(r);
     REQUIRE(t.start(0, SyncTake::Record));
-    CHECK(r.seq.songRoutesMuted() == (1u << 1));
+    CHECK(r.seq.songRoutesMuted() == (1u << 0));
     REQUIRE(t.stop());
     CHECK(r.seq.songRoutesMuted() == 0);
 }
@@ -2480,7 +2484,7 @@ TEST_CASE("song engine: playing with the seq view open runs the scene it edits",
         REQUIRE(s.addSeqTrack(1, SeqSource::Kit, 1, "/crosspad/kits/B/kit.json"));
     }
     r.engine->commit();
-    /* The second kit's block in the seq view: a part recorded with the song
+    /* The second track's block in the seq view: a part recorded with the song
      * goes into its scene, not the first track's. */
     REQUIRE(r.engine->openSeqEdit(1, 0, 1));
     std::vector<float> out(kBlock * 2), bus(kBlock * 2, 0.0f);
@@ -2497,7 +2501,7 @@ TEST_CASE("song engine: playing with the seq view open runs the scene it edits",
     REQUIRE(waitFor([&] { return !r.engine->playing(); }));
 }
 
-TEST_CASE("song engine: each kit track's fader is on its own engine", "[song][seqmix][route]") {
+TEST_CASE("song engine: the live kit track's fader is on the kits' engine", "[song][seqmix][route]") {
     Rig r;
     REQUIRE(r.open("Demo"));
     {
@@ -2514,42 +2518,43 @@ TEST_CASE("song engine: each kit track's fader is on its own engine", "[song][se
     std::vector<float> out(kBlock * 2), bus(kBlock * 2, 0.0f);
     REQUIRE(r.engine->play(0));
     REQUIRE(waitFor([&] { r.block(out, bus); return r.engine->framesPlayed() > 0; }, 20000));
-    CHECK(r.platform.kitGain[0] == 0.5f);
-    CHECK(r.platform.kitGain[1] == 0.25f);
-    CHECK(r.platform.seqGain[0] == 1.0f);                  // the old one-kit call is not made
+    CHECK(r.platform.seqGain[0] == 0.5f);
+    {
+        std::lock_guard<std::recursive_mutex> l(r.engine->songMutex());
+        REQUIRE(r.engine->song().setLiveKit(1));
+    }
+    r.engine->commit();
+    CHECK(r.platform.seqGain[0] == 0.25f);
     r.engine->stop();
     REQUIRE(waitFor([&] { return !r.engine->playing(); }));
-    CHECK(r.platform.kitGain[0] == 1.0f);
-    CHECK(r.platform.kitGain[1] == 1.0f);
+    CHECK(r.platform.seqGain[0] == 1.0f);
 
-    SECTION("with the song's screen up, stopped too: the fingers hear the track as MIX shows it") {
+    SECTION("with the song's screen up, stopped too: the fingers hear the live track as MIX shows it") {
         r.engine->setSongScreen(true);
-        CHECK(r.platform.kitGain[0] == 0.5f);
-        CHECK(r.platform.kitGain[1] == 0.25f);
+        CHECK(r.platform.seqGain[0] == 0.25f);
         {
             std::lock_guard<std::recursive_mutex> l(r.engine->songMutex());
-            r.engine->song().tracks[0].volume = 0.75f;
+            r.engine->song().tracks[1].volume = 0.75f;
         }
         r.engine->commit();
-        CHECK(r.platform.kitGain[0] == 0.75f);
+        CHECK(r.platform.seqGain[0] == 0.75f);
         r.engine->setSongScreen(false);
-        CHECK(r.platform.kitGain[0] == 1.0f);   // the screen gone, the engines as the Mixer has them
-        CHECK(r.platform.kitGain[1] == 1.0f);
+        CHECK(r.platform.seqGain[0] == 1.0f);   // the screen gone, the engine as the Mixer has it
     }
 }
 
-TEST_CASE("song engine: the seq view of the second kit's block plays its scene on that kit's route", "[song][seqedit][route]") {
+TEST_CASE("song engine: the seq view of a block plays its scene on its track's route", "[song][seqedit][route]") {
     Rig r;
     REQUIRE(r.open("Demo"));
     {
         std::lock_guard<std::recursive_mutex> l(r.engine->songMutex());
         auto& s = r.engine->song();
         REQUIRE(s.addSeqTrack(0, SeqSource::Kit, 0));
-        REQUIRE(s.addSeqTrack(1, SeqSource::Kit, 1, "/crosspad/kits/B/kit.json"));
+        REQUIRE(s.addSeqTrack(1, SeqSource::Pitch, 1));
     }
     r.engine->commit();
     REQUIRE(r.engine->openSeqEdit(1, 0, 1));
-    CHECK(r.seq.sceneRoute() == 1);
+    CHECK(r.seq.sceneRoute() == 2);
     r.engine->closeSeqEdit();
     CHECK(r.seq.sceneRoute() == 0);
     REQUIRE(r.engine->openSeqEdit(0, 0, 0));
@@ -2557,8 +2562,8 @@ TEST_CASE("song engine: the seq view of the second kit's block plays its scene o
     r.engine->closeSeqEdit();
 }
 
-TEST_CASE("song engine: a kit track with no engine plays its stale freeze under its blocks, not silence",
-          "[song][route][slots][standin]") {
+TEST_CASE("song engine: a kit track the kits' engine does not play plays its stale freeze under its blocks, not silence",
+          "[song][route][livekit][standin]") {
     Rig r;
     REQUIRE(r.open("Demo"));
     {
@@ -2578,7 +2583,7 @@ TEST_CASE("song engine: a kit track with no engine plays its stale freeze under 
         fz.bars = 6;
         s.tracks[1].freeze = {fz};
         s.tracks[1].freezeKey = 1;
-        s.kitSlots[0] = s.kitSlots[1] = -1;   // neither kit engine holds it
+        REQUIRE(s.liveKit == 0);              // the kits' engine plays track 0, not it
         s.armed = 0;
     }
     r.engine->commit();
@@ -2593,10 +2598,10 @@ TEST_CASE("song engine: a kit track with no engine plays its stale freeze under 
         r.engine->commit();
         CHECK(segmentsOf(*r.engine, 1) == 1);
     }
-    SECTION("given an engine, it plays its notes") {
+    SECTION("given the engine, it plays its notes") {
         {
             std::lock_guard<std::recursive_mutex> l(r.engine->songMutex());
-            r.engine->song().kitSlots[0] = 1;
+            REQUIRE(r.engine->song().setLiveKit(1));
         }
         r.engine->commit();
         CHECK(segmentsOf(*r.engine, 1) == 0);
@@ -2609,145 +2614,6 @@ TEST_CASE("song engine: a kit track with no engine plays its stale freeze under 
         r.engine->commit();
         CHECK(segmentsOf(*r.engine, 1) == 0);
     }
-}
-
-TEST_CASE("song engine: two kits of their own play on their slots' engines, faders and renders too",
-          "[song][route][slots]") {
-    Rig r;
-    REQUIRE(r.open("Demo"));
-    const uint32_t bar = r.engine->framesPerBar();
-    {
-        std::lock_guard<std::recursive_mutex> l(r.engine->songMutex());
-        auto& s = r.engine->song();
-        s.bpm = 120.0f;
-        REQUIRE(s.addSeqTrack(0, SeqSource::Kit, 0, "/crosspad/kits/DRUMS/kit.json"));
-        REQUIRE(s.addSeqTrack(1, SeqSource::Kit, 1, "/crosspad/kits/B/kit.json"));
-        REQUIRE(s.addSeqTrack(2, SeqSource::Kit, 2, "/crosspad/kits/C/kit.json"));
-        REQUIRE(s.kitSlots[0] == 1);
-        REQUIRE(s.kitSlots[1] == 2);
-        SeqNote a; a.pad = 1; a.vel = 100;
-        SeqNote b; b.pad = 2; b.vel = 100; b.tick = AudioSong::kSeqPpq;
-        SeqNote c; c.pad = 3; c.vel = 100; c.tick = 2 * AudioSong::kSeqPpq;
-        s.putSeqTake(0, 0, makeSeqPattern(1, {a}), s.samplesPerBar(kRate));
-        s.putSeqTake(1, 0, makeSeqPattern(1, {b}), s.samplesPerBar(kRate));
-        s.putSeqTake(2, 0, makeSeqPattern(1, {c}), s.samplesPerBar(kRate));
-        s.tracks[1].volume = 0.5f;
-        s.tracks[2].volume = 0.25f;
-    }
-    r.engine->commit();
-
-    RoutedHits heard;
-    r.seq.setSink(&RoutedHits::sink, &heard);
-    std::vector<float> out(kBlock * 2), bus(kBlock * 2, 0.0f);
-    REQUIRE(r.engine->play(0));
-    REQUIRE(waitFor([&] { r.block(out, bus); return r.engine->framesPlayed() > 0; }, 20000));
-    while (r.engine->framesPlayed() < bar - bar / 8) r.block(out, bus);
-    CHECK(r.platform.kitGain[1] == 0.5f);
-    CHECK(r.platform.kitGain[3] == 0.25f);
-    r.engine->stop();
-    REQUIRE(waitFor([&] { return !r.engine->playing(); }));
-    {
-        std::lock_guard<std::mutex> l(heard.m);
-        CHECK(heard.ons == std::vector<std::pair<uint8_t, uint8_t>>{{0, 1}, {1, 2}, {3, 3}});
-    }
-    /* The seq view of the second slot's track plays its scene on its engine. */
-    REQUIRE(r.engine->openSeqEdit(2, 0, 2));
-    CHECK(r.seq.sceneRoute() == 3);
-    r.engine->closeSeqEdit();
-    /* Its freeze renders through that engine too. */
-    REQUIRE(r.engine->freezeTrack(2));
-    REQUIRE(waitFor([&] { r.block(out, bus); return r.engine->freezeState(2) != FreezeState::Freezing &&
-                                                    r.platform.captureBegun > 0; }, 20000));
-    CHECK(r.platform.routeCaptured == 3);
-}
-
-TEST_CASE("song engine: a harvest freezes a kit of its own out of the song as it plays, without stopping it",
-          "[song][freeze][harvest]") {
-    Rig r;
-    REQUIRE(r.open("Demo"));
-    const uint32_t bar = r.engine->framesPerBar();
-    {
-        std::lock_guard<std::recursive_mutex> l(r.engine->songMutex());
-        auto& s = r.engine->song();
-        s.bpm = 120.0f;
-        s.length = 2;
-        REQUIRE(s.addSeqTrack(0, SeqSource::Kit, 0, "/crosspad/kits/DRUMS/kit.json"));
-        REQUIRE(s.addSeqTrack(1, SeqSource::Kit, 1, "/crosspad/kits/B/kit.json"));
-        SeqNote a; a.pad = 1; a.vel = 100;
-        SeqNote b; b.pad = 2; b.vel = 100;
-        s.putSeqTake(0, 0, makeSeqPattern(1, {a}), s.samplesPerBar(kRate));
-        s.putSeqTake(1, 0, makeSeqPattern(1, {b}), s.samplesPerBar(kRate));
-        s.armed = 0;
-    }
-    r.engine->commit();
-    CHECK_FALSE(r.engine->harvestTrack(1));                  // not playing
-    std::vector<float> out(kBlock * 2), bus(kBlock * 2, 0.25f);
-    REQUIRE(r.engine->play(0));
-    REQUIRE(waitFor([&] { r.block(out, bus); return r.engine->framesPlayed() > 0; }, 20000));
-    CHECK_FALSE(r.engine->harvestTrack(0));                  // armed: the fingers play it
-    REQUIRE(r.engine->harvestTrack(1));
-    CHECK(r.platform.harvestRoute == 1);
-    uint32_t done = 0, total = 0;
-    CHECK(r.engine->harvestingTrack(&done, &total) == 1);
-    CHECK(total == 1);
-    /* Round the two-bar loop until its one piece is in and the freeze lands
-     * -- near real time: the worker drains the harvest's ring every few ms. */
-    for (uint32_t i = 0; i < 8 * bar / kBlock && r.engine->freezeState(1) != FreezeState::Frozen; ++i) {
-        r.block(out, bus);
-        if (i % 8 == 0) std::this_thread::sleep_for(std::chrono::milliseconds(1));
-    }
-    CHECK(r.engine->freezeState(1) == FreezeState::Frozen);
-    CHECK(r.engine->harvestingTrack() == -1);
-    CHECK(r.platform.harvestRoute == -1);
-    CHECK(r.engine->playing());                               // never stopped for it
-    CHECK(r.platform.captureBegun == 0);                     // and nothing rendered
-    {
-        std::lock_guard<std::recursive_mutex> l(r.engine->songMutex());
-        const auto& s = r.engine->song();
-        REQUIRE(s.tracks[1].freeze.size() == 1);             // the block and its tail into the gap, one render
-        CHECK(s.tracks[1].freeze[0].bars == 2);
-        const std::string path = s.clipPath(s.tracks[1].freeze[0].file);
-        FILE* f = std::fopen(path.c_str(), "rb");
-        REQUIRE(f);
-        std::fseek(f, 0, SEEK_END);
-        const long bytes = std::ftell(f);
-        std::fclose(f);
-        CHECK(bytes == (long)(44 + 2 * bar * 4));             // the block's bar and its tail, whole
-    }
-    r.engine->stop();
-    REQUIRE(waitFor([&] { return !r.engine->playing(); }));
-}
-
-TEST_CASE("song engine: a harvest is called off by ARM on its track, and keeps nothing half made",
-          "[song][freeze][harvest]") {
-    Rig r;
-    REQUIRE(r.open("Demo"));
-    {
-        std::lock_guard<std::recursive_mutex> l(r.engine->songMutex());
-        auto& s = r.engine->song();
-        s.bpm = 120.0f;
-        s.length = 2;
-        REQUIRE(s.addSeqTrack(0, SeqSource::Kit, 0, "/crosspad/kits/DRUMS/kit.json"));
-        REQUIRE(s.addSeqTrack(1, SeqSource::Kit, 1, "/crosspad/kits/B/kit.json"));
-        SeqNote b; b.pad = 2; b.vel = 100;
-        s.putSeqTake(1, 0, makeSeqPattern(1, {b}), s.samplesPerBar(kRate));
-        s.armed = 0;
-    }
-    r.engine->commit();
-    std::vector<float> out(kBlock * 2), bus(kBlock * 2, 0.25f);
-    REQUIRE(r.engine->play(0));
-    REQUIRE(waitFor([&] { r.block(out, bus); return r.engine->framesPlayed() > 0; }, 20000));
-    REQUIRE(r.engine->harvestTrack(1));
-    {
-        std::lock_guard<std::recursive_mutex> l(r.engine->songMutex());
-        r.engine->song().armed = 1;
-    }
-    r.engine->commit();
-    REQUIRE(waitFor([&] { r.block(out, bus); return r.engine->harvestingTrack() == -1; }, 20000));
-    CHECK(r.platform.harvestRoute == -1);
-    CHECK(r.engine->freezeState(1) != FreezeState::Frozen);
-    r.engine->stop();
-    REQUIRE(waitFor([&] { return !r.engine->playing(); }));
 }
 
 // ── the seq track through Arrange's mixer ─────────────────────────────────
@@ -3369,7 +3235,7 @@ TEST_CASE("song engine: the same element baked again is found in the cache", "[s
     CHECK(again.file == first.file);
     CHECK(again.frames == first.frames);
     CHECK(again.bars == first.bars);
-    CHECK(fs::last_write_time(bakeFile(r)) == written);
+    CHECK((fs::last_write_time(bakeFile(r)) == written));
 
     {
         std::lock_guard<std::recursive_mutex> l(r.engine->songMutex());
@@ -3615,7 +3481,7 @@ void regionSong(Rig& r) {
         s.tracks[0].stretch = StretchMode::KeepPitch;
         s.addClip(0, {"a.wav", 0, 4});
         REQUIRE(s.addSeqTrack(1, SeqSource::Kit, 0));
-        s.tracks[1].kit = "/crosspad/kits/y/kit.json";
+        s.setTrackKit(1, "/crosspad/kits/y/kit.json");     // the live kit track's: the song's too
         s.tracks[1].solo = true;
         SeqNote n;
         n.pad = 3; n.vel = 99; n.tick = AudioSong::kSeqPpq;
@@ -3640,7 +3506,7 @@ TEST_CASE("song engine: an element from a region carries the tracks, the sounds 
     const AudioSong e = elementOnCard(r, ref);
     CHECK(e.length == 2);
     CHECK(e.bpm == 120.0f);
-    CHECK(e.kit == "/crosspad/kits/x/kit.json");
+    CHECK(e.kit == "/crosspad/kits/y/kit.json");
     CHECK(e.instrument == "pitch/instrument.json");
     CHECK(fs::exists(fs::path(r.platform.root) / ref / "pitch" / "root.wav"));
     CHECK(fs::exists(fs::path(r.platform.root) / ref / "clips" / "a.wav"));

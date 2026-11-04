@@ -20,6 +20,10 @@ public:
     /// Whether the mixer channel named @p channelName (as AudioMixerEngine
     /// names it) is connected in the current pair.
     virtual bool        isConnected(const char* channelName) const = 0;
+    /// The input converter @p codec hears in the current pair ("Mic",
+    /// "Line 1/2", "Line 3/4"), what a take of that converter records; null
+    /// where the board does not say.
+    virtual const char* inputOn(int codec) const { (void)codec; return nullptr; }
 };
 
 } // namespace crosspad

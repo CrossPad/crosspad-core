@@ -55,15 +55,15 @@ public:
     /// mode the pads are in by then. A release carries a plain one.
     using PerformedSink = void (*)(void* ctx, uint8_t pad, uint8_t velocity, bool on,
                                    PadPerformance performance);
-    /// The same, with the route it plays through: a song's two kit tracks
-    /// each play their own kit (SongSpan::route), so the note has to say
-    /// which. Route 0 is the pads' kit; a sink without routes plays only it.
+    /// The same, with the route it plays through: a song's kit tracks and
+    /// its Pitch track play through different engines (SongSpan::route), so
+    /// the note has to say which. Route 0 is the kits'; a sink without
+    /// routes plays only it.
     using RoutedSink = void (*)(void* ctx, uint8_t route, uint8_t pad, uint8_t velocity, bool on,
                                 PadPerformance performance);
-    /// Routes a note can play through: the pads' kit (0), the two engines of
-    /// kit tracks with a kit of their own (1, 3), a Pitch track's instrument
-    /// (2). Four of sixteen pads is the 64 bits of held_.
-    static constexpr uint8_t kRoutes = 4;
+    /// Routes a note can play through: the kits' engine (0), a Pitch track's
+    /// instrument (2). 1 was a second kit's until core 2.33 and plays nothing.
+    static constexpr uint8_t kRoutes = 3;
     /// What a hit coming in would sound as (PadManager::performanceFor());
     /// @p velocity becomes the one that would sound.
     using PerformanceSource = PadPerformance (*)(void* ctx, uint8_t pad, uint8_t& velocity);
@@ -93,7 +93,7 @@ public:
     void setSink(PerformedSink fn, void* ctx) { performedSink_ = fn; sink_ = nullptr; routedSink_ = nullptr; sinkCtx_ = ctx; }
     void setSink(RoutedSink fn, void* ctx) { routedSink_ = fn; sink_ = nullptr; performedSink_ = nullptr; sinkCtx_ = ctx; }
     /// The route the scene plays through on the clock's loop (no song map):
-    /// the seq view of a block on a second kit track plays that track's kit.
+    /// the seq view of a Pitch block plays the instrument.
     void setSceneRoute(uint8_t route) { sceneRoute_.store(route < kRoutes ? route : 0, std::memory_order_relaxed); }
     uint8_t sceneRoute() const { return sceneRoute_.load(std::memory_order_relaxed); }
     /// Asked at every hit: a take keeps what the hit sounded as, not only
@@ -142,14 +142,23 @@ public:
     }
     static constexpr uint8_t kMaxCountInBars = 2;
 
-    void setSwing(uint8_t percent) override {
-        swing_.store(percent > kMaxSwing ? kMaxSwing : percent, std::memory_order_relaxed);
+    /// Swing is a scene's own -- a song's seq track plays a scene of its own,
+    /// so each track has its feel: these four are the scene on show's
+    /// (activeScene()), sceneSwing() / setSceneSwing() any one's.
+    void setSwing(uint8_t percent) override { setSceneSwing(activeSeq_, percent, sceneSwingPerBeat(activeSeq_)); }
+    uint8_t swing() const override { return sceneSwing(activeSeq_); }
+    void setSwingPerBeat(uint8_t perBeat) override { setSceneSwing(activeSeq_, sceneSwing(activeSeq_), perBeat); }
+    uint8_t swingPerBeat() const override { return sceneSwingPerBeat(activeSeq_); }
+    /// Scene @p seq's swing: @p percent of the scale (clamped to kMaxSwing),
+    /// on the subdivision @p perBeat names (2 eighths, 4 sixteenths; any
+    /// other keeps the one it had). Saved with the scene (SequenceStore).
+    void setSceneSwing(uint8_t seq, uint8_t percent, uint8_t perBeat);
+    uint8_t sceneSwing(uint8_t seq) const {
+        return seq < kNumSequences ? swing_[seq].load(std::memory_order_relaxed) : 0;
     }
-    uint8_t swing() const override { return swing_.load(std::memory_order_relaxed); }
-    void setSwingPerBeat(uint8_t perBeat) override {
-        if (perBeat == 2 || perBeat == 4) swingPerBeat_.store(perBeat, std::memory_order_relaxed);
+    uint8_t sceneSwingPerBeat(uint8_t seq) const {
+        return seq < kNumSequences && swingSixteenths_[seq].load(std::memory_order_relaxed) ? 4 : 2;
     }
-    uint8_t swingPerBeat() const override { return swingPerBeat_.load(std::memory_order_relaxed); }
     /// The scale is 0..100 and 100 is as far as a sampler's swing knob goes:
     /// the off-beat three quarters of the way through the pair. Past that it
     /// would land on the next subdivision, which is not a feel any more -- it
@@ -199,6 +208,7 @@ public:
         uint32_t loop = 0;
         uint8_t  route = 0;   ///< the kit it plays (RoutedSink): its track's
         uint8_t  track = 0xFF;   ///< the song track it is of (SongEngine), 0xFF none
+        uint8_t  swingScene = 0xFF;   ///< whose swing its notes play with: its track's scene, 0xFF the one on show
     };
     /// Play only what is under @p spans of the song it is laid on, instead
     /// of looping the scene on the click: a seq track cut into blocks
@@ -240,8 +250,10 @@ public:
     /// laid on the song map, which must be set -- instead of in a scene. Room
     /// for @p capacity notes is made here, on the caller's thread, because the
     /// poll that drains the hits never allocates; past it a hit is dropped.
-    /// False when the room cannot be had.
-    bool beginSongTake(size_t capacity);
+    /// A hit is taken back off the swing of scene @p scene -- the track's it
+    /// records onto -- as a scene's take is off its own. False when the room
+    /// cannot be had.
+    bool beginSongTake(size_t capacity, uint8_t scene);
     /// Hand over every note taken and released since the last call, oldest
     /// first. @p closeHeld ends the notes still held where the song is now,
     /// and hands them over as well: the take is over.
@@ -411,20 +423,20 @@ private:
     /// loop end back to zero -- a hit a hair early on beat one belongs at the
     /// start of the loop, not the end of it.
     uint32_t quantise(uint32_t pos, uint32_t loop) const;
-    /// Samples of the subdivision swing is applied to, 0 when swing is off.
-    uint32_t swingSamples() const;
+    /// Samples of the subdivision scene @p seq swings, 0 when it is straight.
+    uint32_t swingSamples(uint8_t seq) const;
     /// How far the off-beat of a @p unit-long subdivision is pushed, in samples.
-    uint32_t swingLate(uint32_t unit) const;
-    /// Where @p pos sounds with the swing on: every second subdivision later by
-    /// the swing's share of one, wrapping at the loop end.
-    uint32_t swung(uint32_t pos) const { return swung(pos, clock_ ? clock_->loopSamples() : 0); }
+    uint32_t swingLate(uint32_t unit, uint8_t seq) const;
+    /// Where @p pos of scene @p seq sounds with its swing: every second
+    /// subdivision later by the swing's share of one, wrapping at the loop end.
+    uint32_t swung(uint32_t pos, uint8_t seq) const { return swung(pos, clock_ ? clock_->loopSamples() : 0, seq); }
     /// The same, wrapping at @p loop: a song block's notes go round their own.
-    uint32_t swung(uint32_t pos, uint32_t loop) const;
-    /// The inverse, for a hit recorded while swing was on: the player aimed at
-    /// what they heard, so the heard position comes back to the straight grid
-    /// before it is quantised. Without this, recording a swung eighth lands it
-    /// on the next sixteenth.
-    uint32_t unswung(uint32_t pos) const;
+    uint32_t swung(uint32_t pos, uint32_t loop, uint8_t seq) const;
+    /// The inverse, for a hit recorded while scene @p seq swings: the player
+    /// aimed at what they heard, so the heard position comes back to the
+    /// straight grid before it is quantised. Without this, recording a swung
+    /// eighth lands it on the next sixteenth.
+    uint32_t unswung(uint32_t pos, uint8_t seq) const;
     /// Grid lines to the beat: 1, 2, 3, 4, 6 or 8, and 0 with quantisation
     /// off. The triplets are what make it a count rather than a divisor.
     uint8_t  gridPerBeat() const;
@@ -454,7 +466,7 @@ private:
     void     strike(uint8_t route, uint8_t pad, uint8_t vel, uint8_t perf, uint32_t len, uint32_t gone);
     /// A block's own notes due in [@p from, @p to) of their @p loop.
     void     fireNotes(const std::vector<SongNote>& notes, uint32_t loop, uint32_t from, uint32_t to,
-                       uint8_t route);
+                       uint8_t route, uint8_t swingScene);
     /// Where the song was when @p h was struck, and the lap it was in.
     uint32_t songPosOf(const Hit& h, uint32_t loop, uint16_t& lap) const;
     /// A hit of a take onto the song: kept open until its release.
@@ -527,8 +539,8 @@ private:
     uint8_t  pendingSeq_ = 0;
     std::atomic<bool> countIn_{false};
     std::atomic<uint8_t> countInBars_{1};
-    std::atomic<uint8_t> swing_{0};          ///< percent of a subdivision, 0 = straight
-    std::atomic<uint8_t> swingPerBeat_{2};   ///< 2 = eighths, 4 = sixteenths
+    std::atomic<uint8_t> swing_[kNumSequences] = {};            ///< a scene's percent, 0 = straight
+    std::atomic<bool>    swingSixteenths_[kNumSequences] = {};  ///< a scene's swung subdivision: false eighths
     bool     loop_       = true;
     std::atomic<bool> dirty_{false};
     std::atomic<uint32_t> editGen_{0};
@@ -567,6 +579,7 @@ private:
     struct TakeOpen { uint32_t pos; uint32_t start; uint8_t vel; uint8_t perf; uint16_t lap; bool on; };
     std::vector<SongTakeNote> take_;
     size_t   takeCap_ = 0;
+    uint8_t  takeScene_ = 0;
     TakeOpen takeOpen_[16] = {};
     std::atomic<bool>     songTaking_{false};
     std::atomic<uint16_t> takeLap_{0};

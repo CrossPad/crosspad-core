@@ -62,6 +62,10 @@ struct SliceKit {
     uint16_t              bpm = 0;         ///< 0 = not known
     uint16_t              attackMs = 0;    ///< every slice's rise (SliceMath::attackFrames)
     int8_t                semitones = 0;   ///< every slice transposed, varispeed (SliceMath::pitchRatio)
+    /// A PERF kit of the user's own (KitFolders::kKits, "own"): a WAV per
+    /// slice with the attack and the pitch written into it. Otherwise a Slice
+    /// kit (KitFolders::kSlicer): the loop once, a region a pad, both played.
+    bool                  perf = false;
 };
 
 /// How a preview sounds: transposed, filtered, and/or as a kit's slice.
@@ -164,6 +168,15 @@ public:
         (void)file; (void)out; (void)peak;
         return false;
     }
+    /// SNAP: each cut of @p starts (sorted) moved onto the zero crossing
+    /// nearest before it in @p file (SliceMath::zeroCrossing), never back onto
+    /// the cut before it; snapped() is the result, in the same order.
+    virtual bool requestSnapped(const std::string& file, const std::vector<uint32_t>& starts)
+    {
+        (void)file; (void)starts;
+        return false;
+    }
+    virtual std::vector<uint32_t> snapped() { return {}; }
     /// Where the current file job is.
     virtual ToolJob     job() const = 0;
     /// What the last job came to: a path, a name, or why it failed.

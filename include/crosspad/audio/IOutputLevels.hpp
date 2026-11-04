@@ -14,7 +14,7 @@ public:
 
     /// How many outputs the board has; they are numbered 0 .. outputs()-1.
     virtual int         outputs() const = 0;
-    /// What the board calls output @p o ("Speakers", "Out 1/2").
+    /// What the board calls output @p o ("Speakers", "Phones").
     virtual const char* name(int o) const = 0;
     /// The mixer output whose signal it carries, as AudioMixerEngine names it.
     virtual const char* mixerOutput(int o) const = 0;

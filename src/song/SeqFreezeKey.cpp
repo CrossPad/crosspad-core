@@ -52,7 +52,7 @@ void seq_freeze_range(const AudioSong& song, int track, const SceneLookup& scene
 
 const std::string& seq_track_sound(const AudioSong& song, int track) {
     const SongTrack& t = song.tracks[track];
-    return t.source == SeqSource::Pitch ? song.instrument : t.kit.empty() ? song.kit : t.kit;
+    return t.source == SeqSource::Pitch ? song.instrument : t.kit;
 }
 
 uint32_t seq_freeze_key(const AudioSong& song, int track, uint32_t sampleRate, const SceneLookup& scenes) {
@@ -84,13 +84,19 @@ uint32_t seq_freeze_key(const AudioSong& song, int track, uint32_t sampleRate, c
     mix(&sampleRate, sizeof sampleRate);
     const uint8_t head[3] = {(uint8_t)t.source, t.scene, (uint8_t)(t.seqBlocks ? 1 : 0)};
     mix(head, sizeof head);
-    text(t.source == SeqSource::Pitch ? song.instrument : t.kit.empty() ? song.kit : t.kit);
+    text(t.source == SeqSource::Pitch ? song.instrument : t.kit);
     /* A Pitch track's pad numbers sound as the song's pad map says; left
      * out while it has none, so an older freeze still reads as it was. */
     if (t.source == SeqSource::Pitch && song.pitchPads.set) {
         const auto& pp = song.pitchPads;
         mix(pp.note, sizeof pp.note); mix(pp.chord, sizeof pp.chord); mix(pp.count, sizeof pp.count);
         mix(&pp.silent, sizeof pp.silent);
+    }
+    /* The scene's swing, left out straight: a freeze from before swing was
+     * the track's own reads as it was. */
+    if (scenes.swing) {
+        const uint16_t feel = scenes.swing(t.scene);
+        if (feel & 0xFF) mix(&feel, sizeof feel);
     }
     /* Left out at 0, so a freeze stamped before the salt moved still reads as it was. */
     if (t.freezeSalt) mix(&t.freezeSalt, sizeof t.freezeSalt);

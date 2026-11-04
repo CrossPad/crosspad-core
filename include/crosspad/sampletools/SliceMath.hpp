@@ -89,6 +89,18 @@ constexpr uint16_t kTrimTailMs = 20;
 /// @p count slices of equal length between @p start and @p end.
 std::vector<uint32_t> equal(uint32_t start, uint32_t end, uint8_t count);
 
+/// SNAP: how far before a cut a zero crossing is looked for -- half a period
+/// of 25 Hz -- and how far after, when there is none before. Before, so the
+/// hit the cut was made for keeps its attack.
+constexpr uint16_t kSnapBackMs  = 20;
+constexpr uint16_t kSnapAheadMs = 1;
+
+/// The frame of @p n interleaved stereo frames a cut at @p at snaps to: the
+/// zero crossing of L+R nearest before it (the frame of the two nearer
+/// zero), else the first after it, else @p at. A cut on silence, or on a
+/// crossing already, stays: snapping twice is snapping once.
+uint32_t zeroCrossing(const int16_t* stereo, uint32_t n, uint32_t at);
+
 /// Tempo of @p frames as @p bars bars of 4/4 at @p sampleRate; 0 when unknown.
 float bpmOf(uint32_t frames, uint32_t sampleRate, uint8_t bars);
 

@@ -265,6 +265,7 @@ std::vector<PatternSequencer::SongSpan> SongEngine::Impl::windowSpans(const Audi
         const SeqPatternPtr own = scenePattern(t.scene);
         whole.b = w1;
         whole.route = (uint8_t)route;
+        whole.swingScene = t.scene;
         whole.notes = songNotes(own, spb, song.seqTicksPerBar());
         whole.loop = (own->bars ? own->bars : 1) * spb;
         all.push_back(std::move(whole));
@@ -302,7 +303,7 @@ uint32_t SongEngine::Impl::pieceKey(const AudioSong& song, int track, uint32_t s
     mix(head, sizeof head);
     const uint8_t src[2] = {(uint8_t)t.source, (uint8_t)std::max(0, song.seqRoute(track))};
     mix(src, sizeof src);
-    text(t.source == SeqSource::Pitch ? song.instrument : t.kit.empty() ? song.kit : t.kit);
+    text(t.source == SeqSource::Pitch ? song.instrument : t.kit);
     /* A Pitch track's pad numbers sound as the song's pad map says; left
      * out while it has none, so an older freeze still reads as it was. */
     if (t.source == SeqSource::Pitch && song.pitchPads.set) {
@@ -310,6 +311,9 @@ uint32_t SongEngine::Impl::pieceKey(const AudioSong& song, int track, uint32_t s
         mix(pp.note, sizeof pp.note); mix(pp.chord, sizeof pp.chord); mix(pp.count, sizeof pp.count);
         mix(&pp.silent, sizeof pp.silent);
     }
+    /* Its swing, the scene's: left out straight, as the pad map is. */
+    const uint8_t feel[2] = {seq_.sceneSwing(t.scene), seq_.sceneSwingPerBeat(t.scene)};
+    if (feel[0]) mix(feel, sizeof feel);
     bool clockScene = false;
     for (const auto& sp : spans) {
         const uint32_t at = sp.loop ? sp.scene % sp.loop : sp.scene;
@@ -636,6 +640,7 @@ void SongEngine::Impl::runBounce() {
                     const SeqPatternPtr own = scenePattern(tr.scene);
                     whole.b = off + total;
                     whole.route = (uint8_t)route;
+                    whole.swingScene = tr.scene;
                     whole.notes = songNotes(own, spb, song_.seqTicksPerBar());
                     whole.loop = (own->bars ? own->bars : 1) * spb;
                     all.push_back(std::move(whole));

@@ -54,7 +54,6 @@ class IPadMix;
 class IPadPerformance;
 class PitchedInstrument;
 class IInstrumentHost;
-class ISecondKit;
 class IKitPicker;
 class Stm32MessageHandler;
 
@@ -122,12 +121,6 @@ struct PlatformServices {
     /// Lends that engine to an app with an instrument of its own, and keeps
     /// the app's instrument library. Null where the platform has none.
     IInstrumentHost*  instrumentHost  = nullptr;
-
-    /// The kits a song's kit tracks with a kit of their own play, two
-    /// engines beside the pads' one (AudioSong::kitSlots 0 and 1). Null where
-    /// the platform has fewer; thirdKit only where it has secondKit.
-    ISecondKit*       secondKit       = nullptr;
-    ISecondKit*       thirdKit        = nullptr;
 
     /// The kit browser, for an app that picks a kit of its own (a song's
     /// kit tracks). Null where the platform has none.

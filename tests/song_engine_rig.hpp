@@ -133,9 +133,6 @@ struct FakePlatform final : ISongEnginePlatform {
     std::atomic<int> routeCaptured{-1};
     void beginRouteCapture(uint8_t route) override { ++captureBegun; routeCaptured = route; }
     void endPadsCapture() override { ++captureEnded; }
-    std::atomic<int> harvestRoute{-1};   // the engine a harvest taps, -1 none
-    bool beginHarvest(uint8_t route) override { harvestRoute = route; return true; }
-    void endHarvest() override { harvestRoute = -1; }
     std::atomic<bool> padsPlayed{false};
     bool padsPlayedRecently() override { return padsPlayed.load(); }
     std::atomic<float> seqGain[2] = {{1.0f}, {1.0f}};   // kit, pitch
@@ -146,8 +143,6 @@ struct FakePlatform final : ISongEnginePlatform {
         openedKits.push_back(s.name + ":" + s.kit);
     }
     void setSeqGain(SeqSource s, float g) override { seqGain[s == SeqSource::Pitch ? 1 : 0] = g; }
-    std::atomic<float> kitGain[4] = {{1.0f}, {1.0f}, {1.0f}, {1.0f}};   // by route
-    void setKitGain(uint8_t route, float g) override { kitGain[route & 3] = g; }
     void log(bool, const char*) override {}
 };
 
@@ -193,7 +188,6 @@ struct Rig {
         std::fill(out.begin(), out.end(), 0.0f);   // the click is not what is checked
         engine->mix(out.data(), kBlock);
         engine->rtCapture(padsBus.data(), kBlock);
-        if (platform.harvestRoute.load() >= 0) engine->rtHarvest(padsBus.data(), kBlock);   // the engine's output: the pads bus here
     }
 
     bool open(const std::string& name) {

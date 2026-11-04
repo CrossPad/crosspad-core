@@ -590,7 +590,7 @@ void SongEngine::Impl::pack(const AudioSong& s, Snapshot& out) {
     put(&s.loopStart, 4);
     put(&s.loopEnd, 4);
     out.armed = s.armed;
-    std::copy(std::begin(s.kitSlots), std::end(s.kitSlots), out.kitSlots);
+    out.liveKit = s.liveKit;
     for (int i = 0; i < kTracks; ++i) {
         const SongTrack& t = s.tracks[i];
         out.side[i] = {t.input, t.freeze, t.freezeKey, t.freezeSalt, t.freezeKit};
@@ -742,7 +742,7 @@ bool SongEngine::Impl::step(std::vector<Snapshot>& from, std::vector<Snapshot>& 
         if (trackLayout(song_) != layout) {
             const Snapshot& back = from.back();
             song_.armed = back.armed;
-            std::copy(std::begin(back.kitSlots), std::end(back.kitSlots), song_.kitSlots);
+            song_.liveKit = back.liveKit;
             for (int i = 0; i < kTracks; ++i) {
                 SongTrack& t = song_.tracks[i];
                 const TrackSide& sd = back.side[i];

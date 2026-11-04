@@ -6,6 +6,64 @@ carries the same number) and consumers gate on it with
 `crosspad/RequireVersion.hpp`. This file starts at 1.45.0; earlier releases
 are described in their `chore: X.Y.Z` commits.
 
+## 2.44.0 — 2026-10-31
+
+- `IInputPairs::inputOn(codec)`: the input a converter hears in the current
+  pair ("Mic", "Line 1/2", "Line 3/4"), so a take names what it records; a
+  default of null keeps every implementation building. `RecInput::Mic` and
+  `Line` are the first and second converter, whatever the pair puts there.
+- SNAP: `ISampleTools::requestSnapped(file, starts)` / `snapped()` move each
+  cut onto the zero crossing of L+R nearest before it (up to 20 ms back,
+  1 ms ahead when there is none, never back over the cut before), so a slice
+  does not start mid-wave and click while the hit keeps its attack
+  (`SliceMath::zeroCrossing()`, `SampleToolsEngine` job `Snap`). Defaults
+  refuse, so other implementations build.
+- `SliceKit::perf`: the slices exported as a PERF kit of the user's own
+  (`/crosspad/kits/<name>`, category `user`, `own`) -- a WAV per slice,
+  `SAMPLES/01.wav`.., with the attack (and its fades) and the pitch written
+  into each, so a plain sampler kit plays what the Slice kit plays live. Off,
+  the export is the Slice kit as before.
+
+## 2.43.0 — 2026-10-29
+
+- Swing is a scene's own, and so a song's seq track's: `PatternSequencer::
+  setSceneSwing()` / `sceneSwing()` / `sceneSwingPerBeat()`; `setSwing()` and
+  `swing()` (and the per-beat pair) are the scene on show's. A song's block
+  plays with its track's scene's swing (`SongSpan::swingScene`, set by
+  SongEngine), a take onto the song comes back off it (`beginSongTake(capacity,
+  scene)`), and it is in the freeze key (`SceneLookup::swing`,
+  `pieceKey()`) -- left out straight, so a freeze from before still fits.
+  `sequences.json` keeps it per scene (`swing`, `swing_per_beat`, only where
+  it is not straight). It was one setting for every scene, and never saved.
+
+## 2.42.0 — 2026-10-29
+
+- One kits' engine for every kit track, in place of the kit slots (2.32-2.41).
+  Each kit track keeps its own kit (`SongTrack::kit`; a song from before gets
+  the song's on the track that played it); `AudioSong::liveKit` (was
+  `kitSlots`) is the one the engine plays now, and its kit is
+  `AudioSong::kit` -- what the pads play and the Sampler edits. The others
+  play their freeze, a stale one standing in (`liveRoute()` -1).
+  `setLiveKit()`, `setTrackKit()` and `kitHeld()` keep the two in step;
+  `SongSounds::kitLoaded()` gives a kit loaded while a song is open to its
+  live kit track. Kit tracks are route 0 (`seqRoute()`), Pitch stays 2.
+- Removed with the kit slots' engines: `ISecondKit`, `SecondKitPadLogic`,
+  `PlatformServices::secondKit`/`thirdKit`, `SeqTrackSound::kit2`,
+  `AudioSong::kitSlots`/`kitSlotOf()`/`slotRoute()`, `kitSlotsNext()`,
+  `SmallSamplerEngine`, `ISongEnginePlatform::setKitGain()`/`setKitPan()` (a
+  kit track's fader is `setSeqGain(Kit)`), and the harvest
+  (`ISongEngine::harvestTrack()`, `ISongEnginePlatform::beginHarvest()`,
+  `SongEngine::rtHarvest()`), which only ever ran on a slot's engine. Only
+  this firmware's Arrange and platform used them, so this is a minor version
+  despite the removals.
+- `KitInfo::own` ("own" in kit.json, written only when true): a kit made on
+  the board whatever its category. `isUser()` is true for it, so a drum kit
+  made from scratch keeps category "drums" (`isDrums()`, its 12 voices) and
+  is still the user's to rename and delete.
+- `IInputGain::minDbOf()` / `maxDbOf()`: an input's own gain range, within
+  which `setGainDb()` clamps. Default 0..`maxDb()` for every input, as before;
+  the board's line inputs go -24..+24 dB.
+
 ## 2.41.1 — 2026-10-28
 
 - `PadLedController`: `setPadColor()`, `setPadPressedColor()`,

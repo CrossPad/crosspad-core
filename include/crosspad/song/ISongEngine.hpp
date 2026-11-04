@@ -458,27 +458,10 @@ public:
     /// (SongTrack::freeze). The track keeps its notes and stays a seq track.
     /// A bounce, but one that gives way: PLAY, REC, DUB, opening a song, an
     /// edit or a bounce cancel it (the track plays live) and go ahead. Poll
-    /// bounceStatus() and freezeState(). False for a track with a kit of
-    /// its own the second kit engine does not hold (AudioSong::kitSlot): its
-    /// engine would render another track's kit.
+    /// bounceStatus() and freezeState(). False for a kit track that is not
+    /// the live one (AudioSong::liveKit): the kits' engine would render
+    /// another track's kit.
     virtual bool freezeTrack(uint8_t track) { (void)track; return false; }
-    /// A freeze made while the song plays, out of what is heard: seq track
-    /// @p track -- live on a kit engine, not armed, not frozen as it is --
-    /// has each piece of its freeze recorded as the song passes through it
-    /// in one go (its run-in bar included), under the name a freeze would
-    /// give it, and once every piece is on the card it is frozen
-    /// (freezeTrack(), which then renders nothing). Its engine is free for
-    /// another track from then on, with the song still playing. Called off by
-    /// a stop, ARM on the track, an edit of it, its engine changing. False
-    /// when the song is not playing, a harvest or a bounce runs, or the
-    /// platform has no tap for it.
-    virtual bool harvestTrack(uint8_t track) { (void)track; return false; }
-    /// The track a harvest runs on, or -1; @p done / @p total its pieces.
-    virtual int harvestingTrack(uint32_t* done = nullptr, uint32_t* total = nullptr) const
-    {
-        (void)done; (void)total;
-        return -1;
-    }
     /// What @p track plays as now (FreezeState).
     virtual FreezeState freezeState(uint8_t track) { (void)track; return FreezeState::None; }
     virtual BounceStatus bounceStatus() = 0;
@@ -539,6 +522,7 @@ public:
         return song().playEnd();
     }
     virtual bool   play(uint32_t fromBar) = 0;
+
     /// play(), and with the song's syncSeq on the sequencer starts with it
     /// doing @p take. A platform without it plays the song alone.
     virtual bool   playWithTake(uint32_t fromBar, SyncTake take) { (void)take; return play(fromBar); }

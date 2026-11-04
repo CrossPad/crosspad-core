@@ -148,9 +148,13 @@ struct KitInfo {
     /// a board ships with (their artwork beside them), "user" for one made on
     /// it -- the Slicer writes that into every kit it saves.
     std::string category;
+    /// Made on the board whatever its category says ("own" in kit.json): a
+    /// drum kit made from scratch is "drums", for its voices, and still the
+    /// user's to rename and delete.
+    bool own = false;
     /// A kit of the user's own: said so, or written by the Slicer before it
     /// said so.
-    bool isUser() const { return category == "user" || author == "CrossPad Slicer"; }
+    bool isUser() const { return category == "user" || own || author == "CrossPad Slicer"; }
     /// A drum kit (category "drums"/"drum", any case): short hits, which the
     /// sampler plays at most kDrumVoices at once.
     bool isDrums() const {

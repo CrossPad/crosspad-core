@@ -262,6 +262,23 @@ TEST_CASE("kit json: category files a kit as the user's, the Slicer's without it
     JsonDocument out2;
     kit_serialize(c, out2);
     CHECK_FALSE(out2["category"].is<const char*>());   // absent, not "", for a stock kit
+    CHECK_FALSE(out2["own"].is<bool>());
+}
+
+TEST_CASE("kit json: a drum kit made on the board is drums and the user's", "[kit]") {
+    using namespace crosspad;
+    JsonDocument doc;
+    deserializeJson(doc, R"({"name":"NEW DRUMS","category":"drums","own":true})");
+    KitInfo k;
+    kit_parse_metadata(k, doc);
+    CHECK(k.isDrums());
+    CHECK(k.isUser());
+    CHECK(k.voiceCap() == KitInfo::kDrumVoices);
+
+    JsonDocument out;
+    kit_serialize(k, out);
+    CHECK((out["own"] | false));
+    CHECK(std::string(out["category"] | "") == "drums");
 }
 
 TEST_CASE("kit json: a pad's pitch and filters survive a round trip, and 0 is not written", "[kit]") {

@@ -19,6 +19,9 @@ namespace crosspad {
 struct SceneLookup {
     std::function<SeqPatternPtr(uint8_t scene)> pattern;
     std::function<uint8_t(uint8_t scene)>       bars;
+    /// A scene's swing, percent in the low byte and the subdivision (2 or 4)
+    /// in the high one; 0 straight. Unset: every scene straight.
+    std::function<uint16_t(uint8_t scene)>      swing;
 };
 
 /// The bars @p song plays: AudioSong::playEnd(), and with no length set at

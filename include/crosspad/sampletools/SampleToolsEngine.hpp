@@ -82,6 +82,8 @@ public:
     bool requestExportKit(const SliceKit& kit) override;
     bool requestRendered(const std::string& file, const std::string& out, const SampleFx& fx) override;
     bool requestNormalized(const std::string& file, const std::string& out, float peak) override;
+    bool requestSnapped(const std::string& file, const std::vector<uint32_t>& starts) override;
+    std::vector<uint32_t> snapped() override;
     ToolJob     job() const override;
     std::string jobResult() override;
     uint8_t     jobProgress() const override;

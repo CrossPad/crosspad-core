@@ -56,12 +56,12 @@ public:
  * The song's kit is followed after it settles too: a kit given to the song
  * later (Arrange's kit track) is loaded as an opening song's is, and a kit
  * load that finishes after the song was given a newer one is not written
- * over it -- the newer pick wins. A song's kit tracks with a kit of their own
- * play it in the kit slot they hold (AudioSong::kitSlots), held every step in
- * PlatformServices::secondKit and ::thirdKit.
+ * over it -- the newer pick wins. The song's kit is its live kit track's
+ * (AudioSong::liveKit): Arrange handing the engine to another kit track
+ * changes it, and a kit loaded meanwhile becomes that track's.
  *
- * Reads the song engine, the kit manager, the instrument host and the second
- * kit from PlatformServices.
+ * Reads the song engine, the kit manager and the instrument host from
+ * PlatformServices.
  */
 class SongSounds {
 public:
@@ -78,15 +78,15 @@ public:
     /// The song engine's worker, as a song opens.
     void songOpened();
 
-    /// UI thread: one step towards the open song's sounds. Once there: the
-    /// second kit asked for again (nothing while it holds it), a look at
-    /// whether the song was given another kit since, and one at whether a kit
+    /// UI thread: one step towards the open song's sounds. Once there: a look
+    /// at whether the song was given another kit since, and one at whether a kit
     /// a seq track plays was saved under its own name -- its freeze is then
     /// stale (kit_saved_notify()).
     void step();
 
-    /// UI thread, from a kit load that finished: the open song takes the kit,
-    /// unless it was given another one since the last step read it.
+    /// UI thread, from a kit load that finished: the open song takes the kit
+    /// -- and its live kit track with it --, unless it was given another one
+    /// since the last step read it.
     void kitLoaded();
 
     /// The open song's folder from the card's root ("/SONGS/<name>") when its
@@ -112,7 +112,7 @@ public:
     bool pending() const { return pending_.load(std::memory_order_acquire); }
 
     /// What is loaded is the open song's: no step to come, no kit load
-    /// running, the second kit not loading. A render of the song (a freeze)
+    /// running. A render of the song (a freeze)
     /// made before would play the sounds of the song open before it.
     bool settled() const;
 
@@ -120,7 +120,6 @@ private:
     std::string logical(const std::string& dir);
     bool foregroundIs(const char* a, const char* b = nullptr);
     void unloadKit();
-    void keepSecondKit();
     void freezesHearKitSaves();
     void seedSavesHeard();
 
@@ -138,8 +137,6 @@ private:
     std::unordered_map<std::string, uint32_t> savesHeard_;
     /// The openGen_ savesHeard_ was seeded for. UI thread.
     uint32_t seededGen_ = UINT32_MAX;
-    /// A second kit that would not load, said once. UI thread.
-    std::string secondKitSaid_[AudioSong::kKitSlots];
     /// The song's instrument when it would not load: asked for again on instRetry_'s
     /// clock (stepMs_, kStepMs a step), said once. UI thread.
     std::string instWanted_;

@@ -199,7 +199,7 @@ TEST_CASE("disk bake: an element changed on the card is baked from it and its bl
     REQUIRE(r.open("Parent"));
     REQUIRE(idle(r));
     std::this_thread::sleep_for(std::chrono::milliseconds(600));
-    CHECK(fs::last_write_time(parentJson) == written);
+    CHECK((fs::last_write_time(parentJson) == written));
     CHECK(block(r).file == first.file);
 
     /* The child's recording replaced on the card: another bake, linked on the next open. */
@@ -891,7 +891,7 @@ TEST_CASE("bake cache: relink passes while the song plays do not write the usage
             return block(r, 0, 1 + i).file == baked;
         }, kBakeWaitMs));
         CHECK(slurp(usage) == before);
-        CHECK(fs::last_write_time(usage) == written);
+        CHECK((fs::last_write_time(usage) == written));
     }
     r.engine->stop();
     REQUIRE(waitFor([&] { return !r.engine->playing(); }));

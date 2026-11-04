@@ -563,7 +563,6 @@ struct SongEngine::Impl {
     bool capturing() const { return bArmed_.load(std::memory_order_seq_cst); }
     bool captureBacklogged() const { return bRing_.cap && bRing_.used() * 2 > bRing_.cap; }
     void rtCapture(const float* bus, uint32_t frames);
-    void rtHarvest(const float* bus, uint32_t frames);
     bool ensureWorker();
     // ── Projects ──────────────────────────────────────────────────────────
     bool requestProjects() { return request(kListProjects); }
@@ -666,12 +665,6 @@ struct SongEngine::Impl {
     uint32_t playEndBars();
     bool bounceSeqTrack(uint8_t track);
     bool freezeTrack(uint8_t track);
-    bool harvestTrack(uint8_t track);
-    int harvestingTrack(uint32_t* done, uint32_t* total) const;
-    void serviceHarvest();
-    void cancelHarvest(const char* why);
-    void harvestAbortRt();
-    bool harvestRun(const float* bus, uint32_t at, uint32_t n);
     uint8_t renderScene(const SongTrack& t) const;
     FreezeState freezeState(uint8_t track);
     bool bounceScene(uint8_t scene, uint8_t track) { return requestBounce(scene, track, 0); }
@@ -947,7 +940,7 @@ private:
         std::vector<uint8_t> bytes;
         std::vector<SeqPatternPtr> notes;
         int8_t    armed = -1;
-        int8_t    kitSlots[AudioSong::kKitSlots] = {-1, -1};
+        int8_t    liveKit = -1;
         TrackSide side[kTracks];
         bool empty() const { return bytes.empty(); }
         bool operator==(const Snapshot& o) const { return bytes == o.bytes && notes == o.notes; }
@@ -1041,8 +1034,8 @@ private:
     bool        takeRecMute_ = false;            // a REC's pass not landed yet: not heard under it
     /* What applySeqSound() last gave setSeqGain(), kit and pitch; under
      * songMutex_. */
-    float       seqGain_[4] = {1.0f, 1.0f, 1.0f, 1.0f};
-    float       seqPan_[4] = {0.0f, 0.0f, 0.0f, 0.0f};
+    float       seqGain_[2] = {1.0f, 1.0f};
+    float       seqPan_[2] = {0.0f, 0.0f};
     /* The seq view's block (openSeqEdit), under songMutex_: its track (-1
      * none), the bar it starts on, the scene it is edited in, whether it is
      * on the track yet, and the sequencer's edit count last handed over. */
@@ -1228,34 +1221,6 @@ private:
      * played their freeze, the spans, and -- while a change between notes and
      * freeze waits for the ring's audio to reach it -- the tracks changing
      * over and the old notes of those that go to their freeze. */
-    /* A harvest (SongEngineHarvest.cpp). The worker owns the plan and the
-     * file; RT records one piece at a time into hRing_ and hands it over
-     * (hRecording_ / hDone_ / hAbort_), and starts the next only once the
-     * worker has let go of the last. */
-    static constexpr uint32_t kHarvestMax = 32;
-    struct HarvestPiece {
-        uint32_t    w0 = 0, skip = 0, total = 0;   // song samples: the window, its run-in, what is kept
-        std::string file;
-    };
-    std::vector<HarvestPiece> hPlan_;
-    std::atomic<int8_t>   hTrack_{-1};
-    uint8_t               hRoute_ = 0;
-    uint32_t              hKey_ = 0;
-    uint32_t              hW0_[kHarvestMax] = {}, hSkip_[kHarvestMax] = {}, hTotal_[kHarvestMax] = {};
-    std::atomic<uint32_t> hCount_{0}, hPending_{0}, hDoneCount_{0};
-    std::atomic<int32_t>  hRecording_{-1}, hDone_{-1};
-    std::atomic<bool>     hAbort_{false};
-    FrameRing             hRing_;
-    WavWriter             hWriter_;
-    uint32_t              hWritten_ = 0;
-    int32_t               hWriterFor_ = -1;
-    // RT: the block the song's mix() just played, and the piece being recorded.
-    std::atomic<uint32_t> hBlockGen_{0};
-    uint32_t              hBlockPos_ = 0, hBlockN_ = 0, hBlockWrapAt_ = 0, hBlockWrapTo_ = 0;
-    bool                  hBlockOk_ = false;
-    uint32_t              hSeenGen_ = 0, hNext_ = 0;
-    int32_t               hCur_ = -1;
-    std::vector<int16_t>  hScratch_;
     uint32_t              mapFrozen_ = 0;
     std::vector<PatternSequencer::SongSpan> mapSpans_;
     uint32_t              transMask_ = 0;

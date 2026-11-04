@@ -7,7 +7,6 @@
 
 #include "crosspad/instrument/InstrumentPlayState.hpp"
 #include "crosspad/kit/KitSaved.hpp"
-#include "crosspad/sampler/ISecondKit.hpp"
 #include "crosspad/song/SongSounds.hpp"
 #include "crosspad/util/RetryBackoff.hpp"
 
@@ -46,27 +45,6 @@ public:
     std::vector<int> loads;
     int unloads = 0;
     std::vector<std::string> warnings;
-};
-
-/// The second kit engine, as a list of what it was asked to hold.
-class FakeSecondKit final : public ISecondKit {
-public:
-    void hold(const std::string& kitPath) override { holds.push_back(kitPath); }
-    State state() const override { return st; }
-    std::string kit() const override { return holds.empty() ? std::string() : holds.back(); }
-    void noteOn(uint8_t, uint8_t) override {}
-    void noteOff(uint8_t) override {}
-    void takeLevel(float& left, float& right) override { left = right = 0.0f; }
-
-    std::vector<std::string> holds;
-    State st = State::Idle;
-};
-
-/// PlatformServices::secondKit for one test.
-struct SecondKitScope {
-    ISecondKit* was;
-    explicit SecondKitScope(ISecondKit* k) : was(getPlatformServices().secondKit) { getPlatformServices().secondKit = k; }
-    ~SecondKitScope() { getPlatformServices().secondKit = was; }
 };
 
 struct Rig {
@@ -461,39 +439,34 @@ TEST_CASE("song sounds: a kit loaded from the browser is still the song's", "[so
     REQUIRE(r.host.loads.empty());         // and not taken back to A
 }
 
-TEST_CASE("song sounds: a second kit track's kit is held by the second kit engine", "[song][sounds]") {
+TEST_CASE("song sounds: the live kit track's kit is loaded, and a kit loaded is that track's", "[song][sounds]") {
     Rig r;
-    FakeSecondKit k2;
-    SecondKitScope scope2{&k2};
-    r.sounds.step();                       // a song with no second kit track
-    REQUIRE(k2.holds == std::vector<std::string>{""});
+    test::setKits(r.kits, {kKitA, kKitB, kKitC});
+    r.kits.setCurrentKitId(0);
+    auto& song = r.engine.song();
+    song.kit = kKitA;
+    REQUIRE(song.addSeqTrack(0, SeqSource::Kit, 0));       // the song's kit, A
+    REQUIRE(song.addSeqTrack(1, SeqSource::Kit, 1, kKitB));
+    r.sounds.songOpened();
+    r.sounds.step();
+    REQUIRE(r.host.loads.empty());                         // A is in
 
-    REQUIRE(r.engine.song().addSeqTrack(0, SeqSource::Kit, 0));
-    REQUIRE(r.engine.song().addSeqTrack(1, SeqSource::Kit, 1, kKitB));
+    REQUIRE(song.setLiveKit(1));                           // Arrange hands the engine over
     r.sounds.step();
-    REQUIRE(k2.holds.back() == kKitB);
+    r.sounds.step();
+    REQUIRE(r.host.loads == std::vector<int>{1});
+    r.kits.setCurrentKitId(1);
+    r.sounds.kitLoaded();
+    r.sounds.step();
+    REQUIRE(r.host.loads.size() == 1);
 
-    r.engine.state = SongOpState::Busy;    // a song opening: left as it is
-    const size_t asked = k2.holds.size();
-    r.sounds.step();
-    REQUIRE(k2.holds.size() == asked);
-
-    r.engine.state = SongOpState::Ready;
-    r.engine.song().removeTrack(1);
-    r.sounds.step();
-    REQUIRE(k2.holds.back().empty());      // no second kit track: none held
-}
-
-TEST_CASE("song sounds: a second kit that would not load is said once", "[song][sounds]") {
-    Rig r;
-    FakeSecondKit k2;
-    SecondKitScope scope2{&k2};
-    REQUIRE(r.engine.song().addSeqTrack(0, SeqSource::Kit, 0));
-    REQUIRE(r.engine.song().addSeqTrack(1, SeqSource::Kit, 1, kKitB));
-    k2.st = ISecondKit::State::Failed;
-    r.sounds.step();
-    r.sounds.step();
-    REQUIRE(r.host.warnings == std::vector<std::string>{std::string("The second kit would not load: ") + kKitB});
+    /* Another kit loaded (the Sampler's browser, from the track's seq view):
+     * the live track's, not the other one's. */
+    r.kits.setCurrentKitId(2);
+    r.sounds.kitLoaded();
+    CHECK(song.tracks[1].kit == kKitC);
+    CHECK(song.tracks[0].kit == kKitA);
+    CHECK(song.kit == kKitC);
 }
 
 TEST_CASE("kit saved: a kit written by the loader is announced under its logical path", "[kit][sounds]") {

@@ -7,8 +7,11 @@ namespace crosspad {
 
 /// What a take records.
 enum class RecInput : uint8_t {
-    Mic,    ///< the built-in microphones
-    Line,   ///< the line-in jack
+    /** The first converter: the built-in microphones, or on a board with an
+     *  input pair (IInputPairs::inputOn(0)) whichever input it connects there. */
+    Mic,
+    /// The second converter: the line-in jack, or what the pair connects there.
+    Line,
     Pads,   ///< what the pads play: a resample, digital, no codec in the way
     Usb,    ///< what the computer plays into the board over USB audio, before the mixer's fader
     /** A Pitch Play instrument on the pads.

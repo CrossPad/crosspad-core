@@ -706,8 +706,7 @@ private:
 
     /* The voices: the derived class's own (SamplerEngineWithVoices), so an
      * engine that never plays more than a few is not 9 kB of internal RAM
-     * in one piece -- a kit slot's engine could not be had once that much
-     * was cut up (2026-10-28). */
+     * in one piece. */
     Voice* const  voices_;
     const uint8_t voiceCap_;
     struct Voices {
@@ -783,9 +782,5 @@ private:
 
 /// The pads' engine: every voice there is.
 class SamplerEngine : public SamplerEngineWithVoices<SamplerEngineBase::kMaxVoices> {};
-
-/// A kit slot's engine (a song's kit of its own): eight sounding, and the
-/// fade slots.
-using SmallSamplerEngine = SamplerEngineWithVoices<12>;
 
 } // namespace crosspad

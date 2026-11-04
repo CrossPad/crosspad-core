@@ -66,3 +66,26 @@ TEST_CASE("slice math: a pitched read", "[slicemath]") {
     CHECK(out[4] == 6300);
     CHECK(out[6] == 6300);
 }
+
+TEST_CASE("slice math: a cut snaps to the zero crossing before it", "[slicemath]") {
+    /* L+R: +400 +300 +100 -50 -200 -400 -600 -800; a cut at frame 6. */
+    const int16_t mono[] = {200, 150, 50, -25, -100, -200, -300, -400};
+    std::vector<int16_t> st;
+    for (int16_t v : mono) { st.push_back(v); st.push_back(v); }
+    CHECK(SliceMath::zeroCrossing(st.data(), 8, 6) == 3);      // -50 nearer zero than +100
+    CHECK(SliceMath::zeroCrossing(st.data(), 8, 3) == 3);      // snapped again, it stays
+    CHECK(SliceMath::zeroCrossing(st.data(), 8, 2) == 3);      // the pair right after counts
+
+    /* Nothing before it crosses: the first crossing after it. */
+    const int16_t up[] = {-300, -200, -100, -10, 40, 90};
+    st.clear();
+    for (int16_t v : up) { st.push_back(v); st.push_back(v); }
+    CHECK(SliceMath::zeroCrossing(st.data(), 6, 1) == 3);
+    CHECK(SliceMath::zeroCrossing(st.data(), 6, 3) == 3);
+
+    /* A zero is a crossing; silence never moves; no crossing at all keeps it. */
+    std::vector<int16_t> z(16, 0);
+    CHECK(SliceMath::zeroCrossing(z.data(), 8, 5) == 5);
+    std::vector<int16_t> flat(16, 500);
+    CHECK(SliceMath::zeroCrossing(flat.data(), 8, 5) == 5);
+}

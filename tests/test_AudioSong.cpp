@@ -165,44 +165,58 @@ TEST_CASE("AudioSong: a new seq track is empty, whatever it plays through", "[so
     CHECK(s.playEnd() == 0);
 }
 
-TEST_CASE("AudioSong: two kit tracks, the second on a kit of its own; a bounce frees a slot", "[song][tracks]") {
+TEST_CASE("AudioSong: kit tracks each keep a kit and take turns on the kits' engine; a bounce frees a slot", "[song][tracks]") {
     AudioSong s;
+    s.kit = "/crosspad/kits/A/kit.json";
     REQUIRE(s.addSeqTrack(0, SeqSource::Kit, 2));
     REQUIRE(s.seqTracks() == 1);
     REQUIRE(s.tracks[0].kind == TrackKind::Seq);
     REQUIRE(s.tracks[0].source == SeqSource::Kit);
     REQUIRE(s.tracks[0].scene == 2);
-    REQUIRE(s.seqRoute(0) == 0);                           // the song's kit, through the pads
+    REQUIRE(s.seqRoute(0) == 0);
+    REQUIRE(s.tracks[0].kit == "/crosspad/kits/A/kit.json");  // none given: the song's
+    REQUIRE(s.liveKit == 0);                               // the first kit track has the engine
     REQUIRE(s.seqSlotFree());
 
-    /* A second kit track only with a kit. */
-    REQUIRE_FALSE(s.addSeqTrack(1, SeqSource::Kit, 3));
+    /* A second one keeps its own kit and waits for the engine. */
     REQUIRE(s.addSeqTrack(1, SeqSource::Kit, 3, "/crosspad/kits/B/kit.json"));
-    REQUIRE(s.seqRoute(1) == 1);
+    REQUIRE(s.seqRoute(1) == 0);
     REQUIRE(s.tracks[1].kit == "/crosspad/kits/B/kit.json");
-    REQUIRE(s.tracks[1].seqBlocks);                        // never the first's scene over everything
+    REQUIRE(s.tracks[1].seqBlocks);
     REQUIRE(s.seqTracks() == 2);
-    REQUIRE(s.kitSlots[0] == 1);
-    /* A third kit takes the other kit engine. */
-    REQUIRE(s.seqSlotFree());
-    REQUIRE(s.addSeqTrack(2, SeqSource::Kit, 4, "/crosspad/kits/C/kit.json"));
-    REQUIRE(s.seqRoute(2) == 1);
-    REQUIRE(s.kitSlots[0] == 1);                               // the first keeps its engine
-    REQUIRE(s.kitSlots[1] == 2);
-    REQUIRE(s.liveRoute(2) == 3);
+    REQUIRE(s.liveKit == 0);
+    REQUIRE(s.liveRoute(1) == -1);
+    REQUIRE(s.kit == "/crosspad/kits/A/kit.json");
+
+    /* Given the engine, its kit is the song's -- what the pads play and the
+     * Sampler edits -- and a kit loaded meanwhile becomes its own. */
+    REQUIRE(s.setLiveKit(1));
+    REQUIRE(s.liveRoute(0) == -1);
+    REQUIRE(s.liveRoute(1) == 0);
+    REQUIRE(s.seqTrackOnRoute(0) == 1);
+    REQUIRE(s.kit == "/crosspad/kits/B/kit.json");
+    s.kitHeld("/crosspad/kits/B2/kit.json");
+    REQUIRE(s.tracks[1].kit == "/crosspad/kits/B2/kit.json");
+    REQUIRE(s.tracks[0].kit == "/crosspad/kits/A/kit.json");
+    /* A kit picked for a track: the song's too only while it is live. */
+    s.setTrackKit(0, "/crosspad/kits/A2/kit.json");
+    REQUIRE(s.kit == "/crosspad/kits/B2/kit.json");
+    s.setTrackKit(1, "/crosspad/kits/B3/kit.json");
+    REQUIRE(s.kit == "/crosspad/kits/B3/kit.json");
+    REQUIRE_FALSE(s.setLiveKit(5));                        // no kit track
 
     const SongClip bounced{"t1_bnc.wav", 0, 4};
-    REQUIRE(s.bounceSeqTrack(0, &bounced));
-    REQUIRE(s.tracks[0].kind == TrackKind::Audio);
-    REQUIRE(s.tracks[0].clips.size() == 1);
-    REQUIRE(s.tracks[0].clips[0].file == "t1_bnc.wav");
+    REQUIRE(s.bounceSeqTrack(1, &bounced));
+    REQUIRE(s.tracks[1].kind == TrackKind::Audio);
+    REQUIRE(s.tracks[1].clips.size() == 1);
+    REQUIRE(s.tracks[1].clips[0].file == "t1_bnc.wav");
+    REQUIRE(s.liveKit == -1);                              // the engine is free for the next
     REQUIRE(s.seqSlotFree());
     REQUIRE(s.freeSeqRoute(SeqSource::Kit) == 0);
-    /* A kit given to the pads' route is the song's. */
+    /* A new kit track with nobody live takes the engine, and its kit is the song's. */
     REQUIRE(s.addSeqTrack(3, SeqSource::Kit, 5, "/crosspad/kits/D/kit.json"));
-    REQUIRE(s.seqRoute(3) == 0);
+    REQUIRE(s.liveKit == 3);
     REQUIRE(s.kit == "/crosspad/kits/D/kit.json");
-    REQUIRE(s.tracks[3].kit.empty());
 }
 
 TEST_CASE("AudioSong: Drums, Slice and Pitch tracks at once, a route each, and audio beside them", "[song][tracks][routes]") {
@@ -213,16 +227,17 @@ TEST_CASE("AudioSong: Drums, Slice and Pitch tracks at once, a route each, and a
     REQUIRE(s.addSeqTrack(2, SeqSource::Pitch, 2));
     REQUIRE(s.addAudioTrack(3));
     CHECK(s.seqRoute(0) == 0);
-    CHECK(s.seqRoute(1) == 1);
+    CHECK(s.seqRoute(1) == 0);
     CHECK(s.seqRoute(2) == 2);
     CHECK(s.seqRoute(3) == -1);
+    CHECK(s.liveRoute(1) == -1);                           // the Drums track has the kits' engine
     CHECK(s.seqTrackOnRoute(2) == 2);
     CHECK(s.seqTracks() == 3);
     CHECK(s.kit == "/crosspad/kits/DRUMS/kit.json");
-    /* No second Pitch; a third kit waits its turn on the second kit engine. */
+    /* No second Pitch; a third kit waits its turn on the kits' engine. */
     CHECK(s.freeSeqRoute(SeqSource::Pitch) == -1);
-    CHECK(s.freeSeqRoute(SeqSource::Kit) == 1);
-    /* A Pitch track first leaves both kit routes free. */
+    CHECK(s.freeSeqRoute(SeqSource::Kit) == 0);
+    /* A Pitch track first leaves the kits' route free. */
     AudioSong p;
     REQUIRE(p.addSeqTrack(0, SeqSource::Pitch, 0));
     CHECK(p.seqRoute(0) == 2);
@@ -231,7 +246,7 @@ TEST_CASE("AudioSong: Drums, Slice and Pitch tracks at once, a route each, and a
     CHECK(p.seqRoute(1) == 0);
 }
 
-TEST_CASE("AudioSong: a Pitch track beside kit tracks is saved as version 4 and comes back so", "[song][tracks][routes]") {
+TEST_CASE("AudioSong: a Pitch track beside kit tracks survives a save", "[song][tracks][routes]") {
     const auto d = freshProject("cp_song_four_sources");
     AudioSong a;
     a.dir = d;
@@ -243,49 +258,44 @@ TEST_CASE("AudioSong: a Pitch track beside kit tracks is saved as version 4 and 
     {
         std::ifstream in(d + "/song.json");
         const std::string text((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
-        CHECK(text.find("\"version\":4") != std::string::npos);
+        CHECK(text.find("\"version\":6") != std::string::npos);   // two kit tracks: 6
     }
     AudioSong b;
     REQUIRE(b.load(d) == SongLoad::Loaded);
     CHECK(b.seqRoute(0) == 0);
-    CHECK(b.seqRoute(1) == 1);
+    CHECK(b.seqRoute(1) == 0);
     CHECK(b.seqRoute(2) == 2);
     CHECK(b.tracks[1].kit == "/crosspad/kits/SLICE/kit.json");
 }
 
-TEST_CASE("AudioSong: kits of their own take turns on the second kit engine", "[song][tracks][routes]") {
+TEST_CASE("AudioSong: kit tracks take turns on the kits' engine", "[song][tracks][routes]") {
     const auto d = freshProject("cp_song_kit_slot");
     AudioSong a;
     a.dir = d;
     a.bpm = 120.0f;
-    REQUIRE(a.addSeqTrack(0, SeqSource::Kit, 0, "/crosspad/kits/A/kit.json"));
-    for (int t = 1; t < 5; ++t) {
+    for (int t = 0; t < 5; ++t) {
         const std::string kit = "/crosspad/kits/K" + std::to_string(t) + "/kit.json";
         REQUIRE(a.addSeqTrack(t, SeqSource::Kit, (uint8_t)t, kit));
-        CHECK(a.seqRoute(t) == 1);
+        CHECK(a.seqRoute(t) == 0);
     }
-    /* Two play through the engines, the rest have nothing to play them. */
-    CHECK(a.kitSlots[0] == 1);
-    CHECK(a.kitSlots[1] == 2);
-    CHECK(a.seqTrackOnRoute(1) == 1);
-    CHECK(a.seqTrackOnRoute(3) == 2);
+    /* One plays through the engine, the rest have nothing to play them. */
+    CHECK(a.liveKit == 0);
+    CHECK(a.seqTrackOnRoute(0) == 0);
     CHECK(a.liveRoute(0) == 0);
-    CHECK(a.liveRoute(1) == 1);
-    CHECK(a.liveRoute(2) == 3);
     CHECK(a.liveRoute(3) == -1);
-    a.kitSlots[0] = 3;
-    a.kitSlots[1] = -1;
-    CHECK(a.seqTrackOnRoute(1) == 3);
-    CHECK(a.liveRoute(1) == -1);
-    /* A track above it removed: the slot moves up with its track. */
+    REQUIRE(a.setLiveKit(3));
+    CHECK(a.seqTrackOnRoute(0) == 3);
+    CHECK(a.liveRoute(0) == -1);
+    CHECK(a.kit == "/crosspad/kits/K3/kit.json");
+    /* A track above it removed: the engine moves up with its track. */
     a.removeTrack(1);
-    CHECK(a.kitSlots[0] == 2);
+    CHECK(a.liveKit == 2);
     CHECK(a.tracks[2].kit == "/crosspad/kits/K3/kit.json");
     a.removeTrack(2);
-    CHECK(a.kitSlots[0] == -1);
-    CHECK(a.seqTrackOnRoute(1) == -1);
-    /* More than one kit of its own is version 6; the armed one has the engine
-     * when the song opens. */
+    CHECK(a.liveKit == -1);
+    CHECK(a.seqTrackOnRoute(0) == -1);
+    /* More than one kit is version 6; the armed one has the engine when the
+     * song opens, and its kit is the song's. */
     a.armed = 2;
     REQUIRE(a.save());
     {
@@ -296,9 +306,9 @@ TEST_CASE("AudioSong: kits of their own take turns on the second kit engine", "[
     AudioSong b;
     REQUIRE(b.load(d) == SongLoad::Loaded);
     CHECK(b.seqTracks() == 3);
-    CHECK(b.seqRoute(1) == 1);
-    CHECK(b.seqRoute(2) == 1);
-    CHECK(b.kitSlots[0] == 2);
+    CHECK(b.seqRoute(1) == 0);
+    CHECK(b.liveKit == 2);
+    CHECK(b.kit == b.tracks[2].kit);
     /* A seq track is a scene: eight at most. */
     AudioSong c;
     for (int t = 0; t < AudioSong::kSeqScenes; ++t)
@@ -336,50 +346,48 @@ TEST_CASE("AudioSong: the armed track is a seq track, else the first", "[song][t
     REQUIRE(s.armedSeqTrack() == 2);
     s.armed = 0;                                           // an audio track takes no take
     REQUIRE(s.armedSeqTrack() == 1);
-    REQUIRE(s.seqTrackOnRoute(1) == 2);
+    REQUIRE(s.seqTrackOnRoute(0) == 1);                    // the first kit track has the engine
 }
 
-TEST_CASE("AudioSong: two kit tracks and the armed one survive a save, as version 3", "[song][tracks]") {
+TEST_CASE("AudioSong: a song from before every kit track had a kit opens with the song's on the first", "[song][tracks]") {
     const auto d = freshProject("cp_song_two_kits");
-    AudioSong a;
-    a.dir = d;
-    a.kit = "/crosspad/kits/A/kit.json";
-    REQUIRE(a.addSeqTrack(0, SeqSource::Kit, 0));
-    REQUIRE(a.addSeqTrack(1, SeqSource::Kit, 1, "/crosspad/kits/B/kit.json"));
-    a.armed = 1;
-    REQUIRE(a.save());
     {
-        std::ifstream in(d + "/song.json");
-        const std::string text((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
-        REQUIRE(text.find("\"version\":3") != std::string::npos);
+        /* Version 3: the first kit track played the song's kit, the second
+         * its own on the second kit engine, and that one was armed. */
+        std::ofstream out(d + "/song.json");
+        out << R"({"version":3,"bpm":120,"kit":"/crosspad/kits/A/kit.json","armed":1,"tracks":[)"
+               R"({"used":true,"kind":1,"src":0,"scene":0,"clips":[]},)"
+               R"({"used":true,"kind":1,"src":0,"scene":1,"kit":"/crosspad/kits/B/kit.json","clips":[]}]})";
     }
     AudioSong b;
     REQUIRE(b.load(d) == SongLoad::Loaded);
     REQUIRE(b.seqTracks() == 2);
-    REQUIRE(b.kit == "/crosspad/kits/A/kit.json");
+    REQUIRE(b.tracks[0].kit == "/crosspad/kits/A/kit.json");
     REQUIRE(b.tracks[1].kit == "/crosspad/kits/B/kit.json");
     REQUIRE(b.seqRoute(0) == 0);
-    REQUIRE(b.seqRoute(1) == 1);
+    REQUIRE(b.seqRoute(1) == 0);
     REQUIRE(b.armed == 1);
+    REQUIRE(b.liveKit == 1);                               // the armed one plays live
+    REQUIRE(b.kit == "/crosspad/kits/B/kit.json");
     fs::remove_all(d);
 }
 
-TEST_CASE("AudioSong: a file with seqs that cannot all play keeps the ones that can", "[song][tracks]") {
+TEST_CASE("AudioSong: a file with two Pitch tracks keeps the first", "[song][tracks]") {
     const auto d = freshProject("cp_song_too_many_seqs");
     {
         std::ofstream out(d + "/song.json");
         out << R"({"version":3,"bpm":120,"tracks":[)"
                R"({"used":true,"kind":1,"src":0,"scene":0,"clips":[]},)"
-               R"({"used":true,"kind":1,"src":0,"scene":1,"clips":[]},)"
+               R"({"used":true,"kind":1,"src":1,"scene":1,"clips":[]},)"
                R"({"used":true,"kind":1,"src":0,"scene":2,"kit":"/crosspad/kits/B/kit.json","clips":[]},)"
                R"({"used":true,"kind":1,"src":1,"scene":3,"clips":[]}]})";
     }
     AudioSong s;
     REQUIRE(s.load(d) == SongLoad::Loaded);
     REQUIRE(s.seqRoute(0) == 0);
-    REQUIRE(s.tracks[1].kind == TrackKind::Audio);         // a second track on the pads' kit
-    REQUIRE(s.seqRoute(2) == 1);
-    REQUIRE(s.seqRoute(3) == 2);                           // a Pitch track beside kits: its own route
+    REQUIRE(s.seqRoute(1) == 2);
+    REQUIRE(s.seqRoute(2) == 0);
+    REQUIRE(s.tracks[3].kind == TrackKind::Audio);         // a second Pitch track
     fs::remove_all(d);
 }
 
@@ -545,18 +553,19 @@ TEST_CASE("AudioSong: a freeze as 2.9 wrote it -- one file whole -- loads as one
     fs::remove_all(d);
 }
 
-TEST_CASE("AudioSong: a file claiming two seq tracks on one route keeps the first", "[song][tracks]") {
+TEST_CASE("AudioSong: a file with two kit tracks on the song's kit keeps both, the first live", "[song][tracks]") {
     const auto d = freshProject("cp_song_twoseq");
     {
-        std::ofstream(songFile(d)) << R"({"version":1,"tracks":[
+        std::ofstream(songFile(d)) << R"({"version":1,"kit":"/crosspad/kits/A/kit.json","tracks":[
             {"used":true,"kind":1,"src":0,"scene":0,"clips":[]},
             {"used":true,"kind":1,"src":0,"scene":1,"clips":[]}]})";
     }
     AudioSong s;
     REQUIRE(s.load(d) == SongLoad::Loaded);
-    REQUIRE(s.seqTracks() == 1);
-    REQUIRE(s.tracks[0].kind == TrackKind::Seq);
-    REQUIRE(s.tracks[1].kind == TrackKind::Audio);
+    REQUIRE(s.seqTracks() == 2);
+    REQUIRE(s.tracks[1].kit == "/crosspad/kits/A/kit.json");
+    REQUIRE(s.liveKit == 0);
+    REQUIRE(s.liveRoute(1) == -1);
     fs::remove_all(d);
 }
 
@@ -707,7 +716,7 @@ TEST_CASE("AudioSong: two tracks change places, and what names them follows", "[
     s.tracks[1].name = "B";
     s.tracks[0].name = "A";
     s.armed = 1;
-    s.kitSlots[0] = 1;
+    s.liveKit = 1;
     ClipSet set;
     set.setRows(1);
     set.put(0, 0, "a.wav");
@@ -719,7 +728,7 @@ TEST_CASE("AudioSong: two tracks change places, and what names them follows", "[
     CHECK(s.tracks[1].name == "A");
     CHECK(s.tracks[1].clips.size() == 1);
     CHECK(s.armed == 0);
-    CHECK(s.kitSlots[0] == 0);
+    CHECK(s.liveKit == 0);
     CHECK(s.sets[0].at(0, 0) == "b.wav");
     CHECK(s.sets[0].at(0, 1) == "a.wav");
     CHECK_FALSE(s.swapTracks(1, 2));        // track 3 is not in use
@@ -915,6 +924,25 @@ TEST_CASE("AudioSong: the Pitch track's pad map survives a save and is in its fr
     b.pitchPads.note[3] += 12;                           // that pad an octave up: another freeze
     CHECK(seq_freeze_key(b, 0, 44100, SceneLookup{}) != keyWith);
     fs::remove_all(d);
+}
+
+TEST_CASE("AudioSong: a track's swing -- its scene's -- is in its freeze key, straight left out", "[song][swing]") {
+    AudioSong a = songAt120();
+    REQUIRE(a.addSeqTrack(0, SeqSource::Kit, 2, "/crosspad/kits/A/kit.json"));
+    SeqNote n;
+    n.pad = 1;
+    n.vel = 100;
+    a.putSeqTake(0, 0, makeSeqPattern(1, {n}), a.samplesPerBar(44100), 1);
+    uint16_t feel = 0;
+    SceneLookup scenes;
+    scenes.swing = [&](uint8_t scene) { return scene == 2 ? feel : (uint16_t)0; };
+    const uint32_t straight = seq_freeze_key(a, 0, 44100, scenes);
+    CHECK(straight == seq_freeze_key(a, 0, 44100, SceneLookup{}));   // a freeze from before swing still fits
+    feel = 48 | (2 << 8);
+    const uint32_t swung = seq_freeze_key(a, 0, 44100, scenes);
+    CHECK(swung != straight);
+    feel = 48 | (4 << 8);                                // the sixteenths swung instead
+    CHECK(seq_freeze_key(a, 0, 44100, scenes) != swung);
 }
 
 TEST_CASE("AudioSong: blocks with the same notes share them again after a load", "[song][tracks]") {

@@ -76,21 +76,13 @@ public:
     /// what the player had.
     virtual void beginPadsCapture() = 0;
     virtual void endPadsCapture() = 0;
-    /// A freeze's capture: only the engine on @p route (0 the pads' kit, 1
-    /// the second kit, 2 the Pitch instrument), so fingers on another
+    /// A freeze's capture: only the engine on @p route (0 the kits', 2 the
+    /// Pitch instrument), so fingers on another
     /// track's engine stay out of the take, and that engine kept off the
     /// outputs while it lasts -- a freeze is a file and is never heard, off
     /// the clock or in real time. endPadsCapture() ends it. A platform
     /// without a tap per engine takes the pads as a bounce does.
     virtual void beginRouteCapture(uint8_t route) { (void)route; beginPadsCapture(); }
-    /// A harvest (SongEngine::harvestTrack()): while it lasts, every render
-    /// block, the platform hands SongEngine::rtHarvest() what the engine on
-    /// @p route made of it -- that engine's output at the Mixer's level and
-    /// pan for its channel, without the song's fader on it, as a freeze's
-    /// capture has it -- and keeps playing it out loud. A platform without
-    /// such a tap never harvests (the freezes wait for the song to stop).
-    virtual bool beginHarvest(uint8_t route) { (void)route; return false; }
-    virtual void endHarvest() {}
     /// A bounce's or a freeze's render off the clock, as fast as the platform can go: the
     /// outputs fall silent, the render runs the clock and the captured
     /// channels only, and holds back only for the card -- the capture's
@@ -109,22 +101,10 @@ public:
     /// a bounce, which stops it first, records at the Mixer's level. Called
     /// only when it changes. A platform without a mixer leaves it alone.
     virtual void setSeqGain(SeqSource source, float gain) { (void)source; (void)gain; }
-    /// The same for a kit track, by the engine it plays through
-    /// (AudioSong::seqRoute()): 0 the pads' kit -- setSeqGain(Kit) unless a
-    /// platform has more than one --, 1 the second kit's.
-    virtual void setKitGain(uint8_t route, float gain)
-    {
-        if (route == 0) setSeqGain(SeqSource::Kit, gain);
-    }
     /// The seq track's pan (-1..+1, SongTrack::pan) on that engine, as
     /// setSeqGain() is its fader: on top of the Mixer's pan while the song
     /// plays, 0 when it stops. Called only when it changes.
     virtual void setSeqPan(SeqSource source, float pan) { (void)source; (void)pan; }
-    /// The same for a kit track, by its route, as setKitGain().
-    virtual void setKitPan(uint8_t route, float pan)
-    {
-        if (route == 0) setSeqPan(SeqSource::Kit, pan);
-    }
     /// Seq route @p route's loudest sample since the last ask, 0..1 a side,
     /// from the engine it plays through alone. False where the platform
     /// cannot tell: route 0's meter then reads the pads bus.

@@ -35,7 +35,6 @@ SongEngine::Impl::Impl(ISongEnginePlatform& platform, MetronomeNode& clock, Patt
     : p(platform), clk_(clock), seq_(sequencer), sz(checkedSizes(platform.sizes())) {
     ring_.platform = &p;
     bRing_.platform = &p;
-    hRing_.platform = &p;
     for (auto& r : seqRoute_) r.store(-1, std::memory_order_relaxed);
 }
 
@@ -252,7 +251,6 @@ void SongEngine::Impl::worker() {
             fillRings();
             const int64_t t1 = p.nowUs();
             dbgMax(dbgFillMaxUs_, t1 - t0);
-            serviceHarvest();
             /* The background reads only with half a ring in hand, as the
              * streamer does: below that the song is about to run dry. */
             if (ring_.used() >= ring_.cap / 2 && play_.load() != Play::Ended) {
@@ -318,9 +316,6 @@ uint32_t SongEngine::openGeneration() const { return impl_->openGeneration(); }
 bool SongEngine::bounceScene(uint8_t scene, uint8_t track) { return impl_->bounceScene(scene, track); }
 bool SongEngine::bounceSeqTrack(uint8_t track) { return impl_->bounceSeqTrack(track); }
 bool SongEngine::freezeTrack(uint8_t track) { return impl_->freezeTrack(track); }
-bool SongEngine::harvestTrack(uint8_t track) { return impl_->harvestTrack(track); }
-int SongEngine::harvestingTrack(uint32_t* done, uint32_t* total) const { return impl_->harvestingTrack(done, total); }
-void SongEngine::rtHarvest(const float* bus, uint32_t frames) { impl_->rtHarvest(bus, frames); }
 FreezeState SongEngine::freezeState(uint8_t track) { return impl_->freezeState(track); }
 uint32_t SongEngine::playEndBars() { return impl_->playEndBars(); }
 BounceStatus SongEngine::bounceStatus() { return impl_->bounceStatus(); }

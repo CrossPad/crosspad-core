@@ -93,6 +93,7 @@ bool kit_parse_metadata(KitInfo& kit, JsonDocument& doc)
     kit.version     = doc["version"]     | "";
     kit.created_at  = doc["created_at"]  | "";
     kit.category    = doc["category"]    | "";
+    kit.own         = doc["own"]         | false;
     kit.bpm         = doc["bpm"]         | (uint16_t)0;
     kit.keepRate    = doc["keep_rate"]   | false;
     const int pitch = doc["pitch"] | 0;
@@ -186,6 +187,7 @@ bool kit_serialize(const KitInfo& kit, JsonDocument& doc)
     doc["version"]     = kit.version;
     doc["created_at"]  = kit.created_at;
     if (!kit.category.empty()) doc["category"] = kit.category;
+    if (kit.own) doc["own"] = true;   // absent for a kit not made on the board
     if (kit.bpm) doc["bpm"] = kit.bpm;   // absent rather than 0 when unset
     if (kit.keepRate) doc["keep_rate"] = true;
     if (kit.pitch) doc["pitch"] = kit.pitch;   // semitones; absent is 0

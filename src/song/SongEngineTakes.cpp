@@ -174,7 +174,7 @@ bool SongEngine::Impl::openTake(SyncTake take, uint32_t fromBar) {
          * tempo from: its grid is the sequencer's. */
         if (song_.bpm <= 0.0f) song_.bpm = seq_.getClickBpm();
     }
-    if (!seq_.beginSongTake(kTakeRoom)) return false;
+    if (!seq_.beginSongTake(kTakeRoom, song_.tracks[t].scene)) return false;
     /* A track made for the take holds the take and nothing else; one
      * that played its scene keeps playing what it played. */
     if (!made) song_.adoptSceneNotes(t, scenePattern(song_.tracks[t].scene), endBars(song_));
@@ -249,6 +249,9 @@ SceneLookup SongEngine::Impl::scenes() const {
     SceneLookup l;
     l.pattern = [this](uint8_t scene) { return scenePattern(scene); };
     l.bars = [this](uint8_t scene) { return seq_.sceneBars(scene); };
+    l.swing = [this](uint8_t scene) {
+        return (uint16_t)(seq_.sceneSwing(scene) | (seq_.sceneSwingPerBeat(scene) << 8));
+    };
     return l;
 }
 

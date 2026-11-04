@@ -54,30 +54,19 @@ void SongEngine::Impl::mix(float* out, uint32_t frames) {
     const int16_t* s = scratch_.data();
     float* o = out + skip * 2;
     for (uint32_t i = 0; i < got * 2; ++i) o[i] += (float)s[i] * (1.0f / 32768.0f);
-    const uint32_t from = pos_.load(std::memory_order_relaxed);
-    uint32_t pos = from + n;
+    uint32_t pos = pos_.load(std::memory_order_relaxed) + n;
     const uint32_t end = end_.load(std::memory_order_relaxed);
     const bool loop = loop_.load(std::memory_order_relaxed);
     const uint32_t la = loopA_.load(std::memory_order_relaxed), lb = loopB_.load(std::memory_order_relaxed);
     const uint32_t lim = loop && lb > la ? lb : end;
-    /* Where in the song this block was, for a harvest's capture (rtHarvest()):
-     * from `from`, and from hBlockWrapAt_ frames in on at hBlockWrapTo_. */
-    hBlockPos_ = from;
-    hBlockN_ = n;
-    hBlockWrapAt_ = n;
-    hBlockOk_ = skip == 0;
     if (lim && pos >= lim) {
         /* Modulo, not minus: the song can be shortened while it plays. */
-        if (loop) {
-            pos = wrap_position(pos, end, la, lb);
-            hBlockWrapAt_ = lim > from ? lim - from : 0;
-            hBlockWrapTo_ = pos >= n - hBlockWrapAt_ ? pos - (n - hBlockWrapAt_) : 0;
-        } else {
+        if (loop) pos = wrap_position(pos, end, la, lb);
+        else {
             Play expected = Play::Running;
             play_.compare_exchange_strong(expected, Play::Ended, std::memory_order_seq_cst);
         }
     }
-    hBlockGen_.fetch_add(1, std::memory_order_release);
     pos_.store(pos, std::memory_order_relaxed);
 }
 
@@ -376,7 +365,7 @@ Arrangement SongEngine::Impl::flatten(const AudioSong& song) const {
             a.seqMapped = true;   // an empty map: the sequencer plays none of it
             continue;
         }
-        /* A kit of its own neither kit engine holds now: nothing plays its
+        /* A kit track the kits' engine does not play now: nothing plays its
          * notes. Its last freeze stands in -- the song as it was before the
          * last take or edit on it, rather than a hole in the set -- under
          * the blocks it has now only, until it is frozen again or given an
@@ -431,6 +420,7 @@ Arrangement SongEngine::Impl::flatten(const AudioSong& song) const {
             all.b = cut;
             all.route = (uint8_t)route;
             all.track = (uint8_t)t;
+            all.swingScene = song.tracks[t].scene;
             /* The clock plays one scene, the pads' kit's: a Pitch track's
              * goes round as notes of its own, as it is now. */
             if (route) {
@@ -533,6 +523,7 @@ std::vector<PatternSequencer::SongSpan> SongEngine::Impl::seqSpansOf(const SongT
         s.a = a;
         s.b = b;
         s.route = route;
+        s.swingScene = tr.scene;
         if (!cs[i].notes && route && !own) own = scenePattern(tr.scene);
         const SeqPatternPtr& notes = cs[i].notes || !route ? cs[i].notes : own;
         if (notes) {
@@ -709,9 +700,9 @@ void SongEngine::Impl::rebuild() {
 
 /// The seq tracks as the arrangement has them while the song plays:
 /// each one's fader and pan on the engine its notes play through
-/// (setSeqGain / setKitGain, setSeqPan / setKitPan), and its notes silent while it is muted or another track
+/// (setSeqGain, setSeqPan), and its notes silent while it is muted or another track
 /// is soloed -- the pads a player hits stay theirs -- or under a REC,
-/// which replaces them. A route at a time: the other kit track plays on.
+/// which replaces them. A route at a time: the Pitch track plays on.
 /// Stopped, the engines as the Mixer has them -- unless the song's screen
 /// is up (setSongScreen()), where the fingers hear the tracks' levels. Caller
 /// holds songMutex_.
@@ -719,31 +710,29 @@ void SongEngine::Impl::applySeqSound() {
     const bool on = playing();
     const bool levels = on || songScreen_;
     uint8_t muted = 0;
-    float gain[4] = {1.0f, 1.0f, 1.0f, 1.0f};   // the pads' kit, the instrument, the kit slots' engines
-    float pan[4] = {0.0f, 0.0f, 0.0f, 0.0f};
+    float gain[2] = {1.0f, 1.0f};   // the kits' engine, the instrument
+    float pan[2] = {0.0f, 0.0f};
     for (int t = 0; t < kTracks; ++t) {
         const int route = song_.liveRoute(t);
         if (route < 0) continue;
         const SongTrack& tr = song_.tracks[t];
         if ((takeRecMute_ && t == takeTrack_) || (on && song_.silenced(t))) muted |= (uint8_t)(1u << route);
         if (levels) {
-            const int e = tr.source == SeqSource::Pitch ? 1 : route == 3 ? 3 : route ? 2 : 0;
+            const int e = tr.source == SeqSource::Pitch ? 1 : 0;
             gain[e] = tr.volume;
             pan[e] = tr.pan;
         }
     }
     seq_.setSongRoutesMuted(muted);
-    for (int i = 0; i < 4; ++i) {
-        const uint8_t kitRoute = i == 3 ? 3 : i == 2 ? 1 : 0;
+    for (int i = 0; i < 2; ++i) {
+        const SeqSource src = i == 1 ? SeqSource::Pitch : SeqSource::Kit;
         if (gain[i] != seqGain_[i]) {
             seqGain_[i] = gain[i];
-            if (i == 1) p.setSeqGain(SeqSource::Pitch, gain[i]);
-            else        p.setKitGain(kitRoute, gain[i]);
+            p.setSeqGain(src, gain[i]);
         }
         if (pan[i] != seqPan_[i]) {
             seqPan_[i] = pan[i];
-            if (i == 1) p.setSeqPan(SeqSource::Pitch, pan[i]);
-            else        p.setKitPan(kitRoute, pan[i]);
+            p.setSeqPan(src, pan[i]);
         }
     }
 }
@@ -1029,7 +1018,6 @@ void SongEngine::Impl::startPlayback(uint32_t fromBar) {
 
 void SongEngine::Impl::endPlayback() {
     lastFillUs_ = 0;
-    cancelHarvest("the song stopped");
     /* A take this playback ran lands before the sequencer stops: where
      * the song is when it stops is where the take ends. */
     if (takeBound_) {
