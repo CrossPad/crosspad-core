@@ -6,6 +6,12 @@ carries the same number) and consumers gate on it with
 `crosspad/RequireVersion.hpp`. This file starts at 1.45.0; earlier releases
 are described in their `chore: X.Y.Z` commits.
 
+## 2.44.2 — 2026-11-06
+
+- `Stm32Settings::longPressMs` (the power-off hold) defaults to 2400 ms, not
+  4000, and is stored under `long_press2`: a board that saved 4000 under
+  `long_press` starts at the new default instead of keeping the old hold.
+
 ## 2.44.1 — 2026-11-04
 
 - `InfoRowTable` holds 32 rows, not 24. A firmware with 14 apps already

@@ -34,7 +34,9 @@ struct Stm32Settings {
     // in it, so the dropdown fell back to "Never" while a live 1000 s timeout ran.
     uint16_t dimTimeoutS  = 600;
     uint16_t sleepTimeoutS = 1800;
-    uint16_t longPressMs  = 4000;
+    // Power-off hold. Read from "long_press2": the 4000 ms boards saved under
+    // "long_press" would otherwise keep their old 4 s hold.
+    uint16_t longPressMs  = 2400;
     uint8_t  usbSuspendS  = 30;
     uint8_t  wakeBrightness = 50;
 
@@ -142,7 +144,7 @@ struct Stm32Settings {
         en3v3Hold     = s.readU8("cfg_stm", "en_3v3", en3v3Hold);
         dimTimeoutS   = (uint16_t)s.readI32("cfg_stm", "dim_to", dimTimeoutS);
         sleepTimeoutS = (uint16_t)s.readI32("cfg_stm", "sleep_to", sleepTimeoutS);
-        longPressMs   = (uint16_t)s.readI32("cfg_stm", "long_press", longPressMs);
+        longPressMs   = (uint16_t)s.readI32("cfg_stm", "long_press2", longPressMs);
         usbSuspendS   = s.readU8("cfg_stm", "usb_susp", usbSuspendS);
         wakeBrightness = s.readU8("cfg_stm", "wake_br", wakeBrightness);
         encCcMode = s.readU8("cfg_stm", "enc_mode", encCcMode);
@@ -192,7 +194,7 @@ struct Stm32Settings {
         s.saveU8("cfg_stm", "en_3v3", en3v3Hold);
         s.saveI32("cfg_stm", "dim_to", dimTimeoutS);
         s.saveI32("cfg_stm", "sleep_to", sleepTimeoutS);
-        s.saveI32("cfg_stm", "long_press", longPressMs);
+        s.saveI32("cfg_stm", "long_press2", longPressMs);
         s.saveU8("cfg_stm", "usb_susp", usbSuspendS);
         s.saveU8("cfg_stm", "wake_br", wakeBrightness);
         s.saveU8("cfg_stm", "enc_mode", encCcMode);
