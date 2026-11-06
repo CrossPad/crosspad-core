@@ -6,6 +6,14 @@ carries the same number) and consumers gate on it with
 `crosspad/RequireVersion.hpp`. This file starts at 1.45.0; earlier releases
 are described in their `chore: X.Y.Z` commits.
 
+## 2.44.3 — 2026-11-06
+
+- `Stm32Settings::sanitizeLongPressMs`: an imported (`fromJson`) or stored
+  (`load`) power-off hold above the STM's 3700 ms becomes the 2400 ms
+  default, one under 1000 ms becomes 1000. Backups from v1.1.1 and the
+  Founders firmware carry the old 4000 default, which the import kept and
+  saved under `long_press2`, undoing the 2.44.2 migration.
+
 ## 2.44.2 — 2026-11-06
 
 - `Stm32Settings::longPressMs` (the power-off hold) defaults to 2400 ms, not

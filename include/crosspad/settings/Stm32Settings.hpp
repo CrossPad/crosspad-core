@@ -35,8 +35,12 @@ struct Stm32Settings {
     uint16_t dimTimeoutS  = 600;
     uint16_t sleepTimeoutS = 1800;
     // Power-off hold. Read from "long_press2": the 4000 ms boards saved under
-    // "long_press" would otherwise keep their old 4 s hold.
-    uint16_t longPressMs  = 2400;
+    // "long_press" would otherwise keep their old 4 s hold. STM 1.16 clamps it
+    // to 1000..3700 ms, under its 4.2 s ship hold.
+    static constexpr uint16_t kLongPressMinMs     = 1000;
+    static constexpr uint16_t kLongPressMaxMs     = 3700;
+    static constexpr uint16_t kLongPressDefaultMs = 2400;
+    uint16_t longPressMs  = kLongPressDefaultMs;
     uint8_t  usbSuspendS  = 30;
     uint8_t  wakeBrightness = 50;
 
@@ -144,7 +148,7 @@ struct Stm32Settings {
         en3v3Hold     = s.readU8("cfg_stm", "en_3v3", en3v3Hold);
         dimTimeoutS   = (uint16_t)s.readI32("cfg_stm", "dim_to", dimTimeoutS);
         sleepTimeoutS = (uint16_t)s.readI32("cfg_stm", "sleep_to", sleepTimeoutS);
-        longPressMs   = (uint16_t)s.readI32("cfg_stm", "long_press2", longPressMs);
+        longPressMs   = sanitizeLongPressMs(s.readI32("cfg_stm", "long_press2", longPressMs));
         usbSuspendS   = s.readU8("cfg_stm", "usb_susp", usbSuspendS);
         wakeBrightness = s.readU8("cfg_stm", "wake_br", wakeBrightness);
         encCcMode = s.readU8("cfg_stm", "enc_mode", encCcMode);
@@ -331,7 +335,7 @@ struct Stm32Settings {
         en3v3Hold      = (uint8_t)jsonInt(json["en3v3Hold"], en3v3Hold, 0, 1);
         dimTimeoutS    = (uint16_t)jsonInt(json["dimTimeoutS"], dimTimeoutS, 0, 65535);
         sleepTimeoutS  = (uint16_t)jsonInt(json["sleepTimeoutS"], sleepTimeoutS, 0, 65535);
-        longPressMs    = (uint16_t)jsonInt(json["longPressMs"], longPressMs, 0, 65535);
+        longPressMs    = sanitizeLongPressMs(jsonInt(json["longPressMs"], longPressMs, 0, 65535));
         usbSuspendS    = (uint8_t)jsonInt(json["usbSuspendS"], usbSuspendS, 0, 255);
         wakeBrightness = (uint8_t)jsonInt(json["wakeBrightness"], wakeBrightness, 0, 100);
         encCcMode      = (uint8_t)jsonInt(json["encCcMode"], encCcMode, 0, 3);
@@ -341,6 +345,16 @@ struct Stm32Settings {
         if (json["pads"].is<JsonObject>()) {
             padsFromJson(json["pads"]);
         }
+    }
+
+    /// A power-off hold the STM can run. Above 3700 ms it comes from the old,
+    /// 40 % longer ladder (v1.1.1 and the Founders firmware defaulted to 4000,
+    /// and every backup they wrote carries it), so it gets the new default, as
+    /// the "long_press2" key gives it in NVS. Keeping it would hold for 3.7 s
+    /// while Settings shows a preset. Below 1000 ms the STM ran 1000 anyway.
+    static uint16_t sanitizeLongPressMs(long long ms) {
+        if (ms > kLongPressMaxMs) return kLongPressDefaultMs;
+        return ms < kLongPressMinMs ? kLongPressMinMs : (uint16_t)ms;
     }
 
     /// Clamped read. An absent or non-numeric key leaves `cur` alone, so a file
