@@ -323,6 +323,32 @@ TEST_CASE("SettingsIo: partial file keeps current values", "[settings][io]") {
     REQUIRE(dst.stm.sensitivity(0) == 777);
 }
 
+TEST_CASE("SettingsIo: a v1.1.1 backup's 4 s power-off hold imports as 2.4 s", "[settings][io]") {
+    // v1.1.1 and the Founders firmware defaulted the hold to 4000 ms, so their
+    // backups carry it. STM 1.16 clamps that to 3700 while Settings, which has
+    // no 4 s preset, showed 2.4 s. It takes the default the NVS migration gives.
+    TempFile file("cp_io_long_press.json");
+    writeRaw(file.c_str(),
+             "{\"kind\":\"crosspad-settings\",\"version\":2,"
+             "\"settings\":{\"stm\":{\"longPressMs\":4000}}}");
+    CrosspadSettings dst = snapshot();
+    dst.stm.longPressMs = 1500;
+    REQUIRE(settingsImportAll(dst, file.c_str()).ok);
+    REQUIRE(dst.stm.longPressMs == Stm32Settings::kLongPressDefaultMs);
+
+    // A hold the STM runs is kept; one under its 1 s floor reads as the 1 s it was.
+    writeRaw(file.c_str(),
+             "{\"kind\":\"crosspad-settings\",\"version\":2,"
+             "\"settings\":{\"stm\":{\"longPressMs\":3000}}}");
+    REQUIRE(settingsImportAll(dst, file.c_str()).ok);
+    REQUIRE(dst.stm.longPressMs == 3000);
+    writeRaw(file.c_str(),
+             "{\"kind\":\"crosspad-settings\",\"version\":2,"
+             "\"settings\":{\"stm\":{\"longPressMs\":500}}}");
+    REQUIRE(settingsImportAll(dst, file.c_str()).ok);
+    REQUIRE(dst.stm.longPressMs == Stm32Settings::kLongPressMinMs);
+}
+
 TEST_CASE("SettingsIo: out-of-range values are clamped", "[settings][io]") {
     TempFile file("cp_io_clamp.json");
     writeRaw(file.c_str(),
