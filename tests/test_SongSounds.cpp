@@ -7,6 +7,7 @@
 
 #include "crosspad/instrument/InstrumentPlayState.hpp"
 #include "crosspad/kit/KitSaved.hpp"
+#include "crosspad/song/ArrangeFocus.hpp"
 #include "crosspad/song/SongSounds.hpp"
 #include "crosspad/util/RetryBackoff.hpp"
 
@@ -462,11 +463,65 @@ TEST_CASE("song sounds: the live kit track's kit is loaded, and a kit loaded is 
 
     /* Another kit loaded (the Sampler's browser, from the track's seq view):
      * the live track's, not the other one's. */
+    arrangeFocus().track = 1;
+    arrangeFocus().seq = true;
     r.kits.setCurrentKitId(2);
     r.sounds.kitLoaded();
+    arrangeFocus().clear();
     CHECK(song.tracks[1].kit == kKitC);
     CHECK(song.tracks[0].kit == kKitA);
     CHECK(song.kit == kKitC);
+}
+
+TEST_CASE("song sounds: a kit loaded away from Arrange waits for the player's choice", "[song][sounds]") {
+    Rig r;
+    test::setKits(r.kits, {kKitA, kKitB, kKitC});
+    r.kits.setCurrentKitId(0);
+    auto& song = r.engine.song();
+    song.kit = kKitA;
+    REQUIRE(song.addSeqTrack(0, SeqSource::Kit, 0, kKitA));
+    REQUIRE(song.setLiveKit(0));
+    r.sounds.songOpened();
+    r.sounds.step();
+    REQUIRE(r.host.loads.empty());
+
+    r.host.foreground = "Sampler";
+    r.kits.setCurrentKitId(1);                 // picked in the Sampler
+    r.sounds.kitLoaded();
+    CHECK(r.sounds.kitChoiceTrack() == 0);
+    CHECK(r.sounds.kitChoiceKit() == kKitB);
+    CHECK(song.tracks[0].kit == kKitA);        // the song is not touched
+    CHECK(song.kit == kKitA);
+    CHECK(song.liveKit == -1);                 // the track plays its freeze
+    r.sounds.step();
+    r.sounds.step();
+    CHECK(r.host.loads.empty());               // the player's kit stays
+
+    SECTION("replace: the track plays the kit") {
+        r.sounds.resolveKitChoice(true);
+        CHECK(r.sounds.kitChoiceTrack() == -1);
+        CHECK(song.liveKit == 0);
+        CHECK(song.tracks[0].kit == kKitB);
+        CHECK(song.kit == kKitB);
+        CHECK(r.sounds.takeNewTrackKit().empty());
+    }
+    SECTION("new track: the song as it was, the kit left for Arrange") {
+        r.sounds.resolveKitChoice(false);
+        CHECK(song.liveKit == 0);
+        CHECK(song.tracks[0].kit == kKitA);
+        CHECK(r.sounds.takeNewTrackKit() == kKitB);
+        CHECK(r.sounds.takeNewTrackKit().empty());
+    }
+    SECTION("the track's own kit back: nothing to choose") {
+        r.kits.setCurrentKitId(0);
+        r.sounds.kitLoaded();
+        CHECK(r.sounds.kitChoiceTrack() == -1);
+        CHECK(song.liveKit == 0);
+    }
+    SECTION("another song opening drops the choice") {
+        r.sounds.songOpened();
+        CHECK(r.sounds.kitChoiceTrack() == -1);
+    }
 }
 
 TEST_CASE("kit saved: a kit written by the loader is announced under its logical path", "[kit][sounds]") {
