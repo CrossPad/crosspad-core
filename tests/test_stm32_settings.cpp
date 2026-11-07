@@ -151,3 +151,17 @@ TEST_CASE("Stm32Settings: a store saved before press debounce existed loads 6 ms
     tuned.load(kv);
     REQUIRE(tuned.pressDebounceMs == 10);
 }
+
+TEST_CASE("Stm32Settings: a 4 s hold already in long_press2 loads as 2.4 s", "[settings][stm]") {
+    // Core 2.44.2 imported a v1.1.1 backup's 4000 unchanged and saved it under
+    // the new key; the next boot repairs it instead of pushing it to the STM.
+    test::MemoryKVStore kv;
+    kv.saveI32("cfg_stm", "long_press2", 4000);
+    Stm32Settings s;
+    s.load(kv);
+    REQUIRE(s.longPressMs == Stm32Settings::kLongPressDefaultMs);
+
+    kv.saveI32("cfg_stm", "long_press2", 1500);
+    s.load(kv);
+    REQUIRE(s.longPressMs == 1500);
+}

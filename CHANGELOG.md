@@ -13,7 +13,14 @@ are described in their `chore: X.Y.Z` commits.
   `{"sample":5}`), is skipped. It used to assign a null `const char*` to a
   `std::string` (strlen(NULL)), so a hand-edited or third-party kit.json
   panicked the board (LoadProhibited) when the kit was loaded.
-  (2.44.3 is taken by the open PR #65.)
+
+## 2.44.3 — 2026-11-06
+
+- `Stm32Settings::sanitizeLongPressMs`: an imported (`fromJson`) or stored
+  (`load`) power-off hold above the STM's 3700 ms becomes the 2400 ms
+  default, one under 1000 ms becomes 1000. Backups from v1.1.1 and the
+  Founders firmware carry the old 4000 default, which the import kept and
+  saved under `long_press2`, undoing the 2.44.2 migration.
 
 ## 2.44.2 — 2026-11-06
 
