@@ -429,7 +429,7 @@ public:
     /// The scene a new seq track should take, among @p sceneCount: the one
     /// just added (the last, when @p justAdded) -- **not** the sequencer's
     /// active scene, which while it plays is still the old one until the loop
-    /// ends, and gave a Slice track the Drums track's scene (22.10.2026) --
+    /// ends, and would give a Slice track the Drums track's scene --
     /// else the lowest no seq track plays. -1 when every one is taken.
     int sceneForNewSeq(uint8_t sceneCount, bool justAdded) const;
     /// Make @p track a seq on @p source playing @p scene. A kit track plays

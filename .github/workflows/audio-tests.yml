@@ -31,13 +31,12 @@ permissions:
 # moved, not a digest); moving to a new image revision is a commit like any
 # other. Unset CI_RUNNER before the self-hosted runner goes off:
 # GitHub never falls back from a self-hosted label to a hosted runner.
-# SECURITY: pull_request runs the PR's code on hardware PC, and the job
-# container gets the host's Docker socket. Before this repository goes public,
-# take pull_request off the self-hosted runner.
+# SECURITY: a pull request from a fork always runs on GitHub's runner, never on
+# the self-hosted one (its job container gets the host's Docker socket).
 jobs:
   tier1-unit:
     name: Tier 1 portable unit tests
-    runs-on: ${{ vars.CI_RUNNER || 'ubuntu-latest' }}
+    runs-on: ${{ github.event.pull_request.head.repo.fork && 'ubuntu-latest' || vars.CI_RUNNER || 'ubuntu-latest' }}
     container:
       image: ghcr.io/crosspad/crosspad-ci:v5.5.5-1@sha256:d89e2175ab2371eca90278a6a8774108b9387775344b2bbf837eabc2a30036bd
       credentials:

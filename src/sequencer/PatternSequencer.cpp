@@ -428,7 +428,7 @@ void PatternSequencer::pollLocked()
          * ended is now part of the pattern and plays from here on. */
         for (uint8_t s = 0; s < kNumSequences; ++s)
             for (uint16_t i = 0; i < counts_[s]; ++i) events_[s][i].fresh = 0;
-        /* One pass replaces; the next ones layer on it, as on the MPC -- a
+        /* One pass replaces; the next ones layer on it, as on a hardware groovebox -- a
          * second Record pass would erase the take just played in. */
         if (replacing) setTransport(SequencerMode::Overdub, SequencerState::Running);
 

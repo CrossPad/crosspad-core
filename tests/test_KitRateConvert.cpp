@@ -524,7 +524,7 @@ TEST_CASE("an upsampled file has the length of the new rate", "[KitRateConvert]"
     CHECK(k.pads[0].samples[0].end == 0);
 }
 
-// ── Untrusted card contents (security review, 16.10.2026) ──────────────────
+// ── Untrusted card contents (security review) ──────────────────────────────
 
 TEST_CASE("an adtl list whose ltxt size wraps the arithmetic stays in its buffer", "[KitRateConvert][untrusted]") {
     // "adtl" + "ltxt" + a size that wraps at + 8 + sz to 4, and four bytes:
@@ -680,7 +680,7 @@ TEST_CASE("big metadata chunks of a mono file are copied whole", "[KitRateConver
     CHECK(layoutOf(kit + "/44k1/m.wav").frames == 44100);
 }
 
-// ── Second review (16.10.2026): one parser, exact references, no stale buffers ──
+// ── Second review: one parser, exact references, no stale buffers ──
 
 namespace {
 std::vector<uint8_t> fmtBody(uint16_t tag, uint16_t ch, uint16_t bits, uint32_t rate, uint32_t size = 16) {

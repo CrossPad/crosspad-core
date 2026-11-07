@@ -33,7 +33,7 @@ jobs:
         downstream:
           - repo: CrossPad/crosspad-pc
           - repo: CrossPad/ESP32-S3
-          - repo: matixan/2playerCrosspad
+          - repo: CrossPad/platform-idf
 
     steps:
       - name: Determine ref label

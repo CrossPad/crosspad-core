@@ -113,8 +113,8 @@ TEST_CASE("SampleBank: rejects loops that are too short or run past the end",
 // On the device a bank's PCM comes out of the engine arena, which is wiped
 // wholesale (re-registered) whenever the engines hand it over. A block handed
 // out before such a wipe is not one the heap knows any more: freeing it is
-// "CORRUPT HEAP: Bad head" inside multi_heap_free -- the kit_churn crash of
-// 2026-10-09. The bank remembers the generation it was built in and, once that
+// "CORRUPT HEAP: Bad head" inside multi_heap_free, as kit_churn hit it.
+// The bank remembers the generation it was built in and, once that
 // generation has passed, forgets its blocks instead of freeing them.
 // ---------------------------------------------------------------------------
 

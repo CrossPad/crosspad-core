@@ -5,7 +5,7 @@
 
 namespace crosspad {
 
-/// The pads' 16 levels, as on the MPC: one pad -- the source -- on all
+/// The pads' 16 levels, as on hardware pad samplers: one pad -- the source -- on all
 /// sixteen, at a loudness each (Velocity) or a semitone each (Pitch).
 enum class PadLevels : uint8_t { Off = 0, Velocity = 1, Pitch = 2 };
 

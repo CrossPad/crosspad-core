@@ -9,7 +9,7 @@
  * do not control — a phone, a DAW, another player's device — so it gets its
  * own transpose. The values are the ones drum-pad hosts actually ask for
  * rather than musical intervals: whole octaves, and the drum-rack bases that
- * Ableton, FL Studio and the MPC family sit on. +36 is the common one — a
+ * Ableton, FL Studio and hardware pad samplers sit on. +36 is the common one — a
  * grid whose pad 1 sends note 0 lands on C1 (36), where Live's Drum Rack and
  * FPC expect it.
  *

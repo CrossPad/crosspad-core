@@ -315,7 +315,7 @@ TEST_CASE("song sounds: an unsaved instrument is saved into the song first", "[s
 TEST_CASE("song sounds: an instrument opened while the song's sounds are still coming is not kept", "[song][sounds]") {
     /* Opening a song, a sound keeper still on the last song's instrument asked
      * for it before this step asked for the song's own -- and its open,
-     * kept, wrote the last song's instrument over this one's (28.10.2026). */
+     * kept, wrote the last song's instrument over this one's. */
     Rig r;
     r.engine.addSeqTrack(SeqSource::Pitch);
     r.engine.song().instrument = "/crosspad/pitchplay/sub_bass/instrument.json";

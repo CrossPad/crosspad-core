@@ -1397,7 +1397,7 @@ release/core-1.41.0 after that branch had gone to main and so never reached it.
 
 ## 1.45.0 — 2026-10-07
 
-The firmware sale line -- 1.42.0, 1.43.0 and the press debounce
+The firmware release line -- 1.42.0, 1.43.0 and the press debounce
 (fix/latency, 8903372) -- merged onto main's 1.44.1 (Firmware Store,
 IInputPairs).
 
@@ -1443,7 +1443,7 @@ IInputPairs).
 ### Version numbers
 
 1.42.0 (release/core-1.42.0, 62ba0ba) and 1.43.0 (release/core-1.43.0,
-c693ad9) were released only on the sale line while main went from 1.41.0 to
+c693ad9) were released only on the release line while main went from 1.41.0 to
 1.44.1, so 1.44.x does not contain them. A second, different tree is also
 labelled 1.43.0: bc4e3ef on feat/seq-note-length (sequencer note length).
 Gate on >= 1.45.0 for anything listed above.

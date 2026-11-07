@@ -226,7 +226,7 @@ private:
 
     /// The held bar, in the song it was held in: a song opened since starts
     /// at its bar one, not where the last one stopped (a REC in a new, empty
-    /// song landed on bar seven, 26.10.2026). By the open, not the name: a
+    /// song would land on bar seven). By the open, not the name: a
     /// NEW after a delete gets the deleted song's name.
     uint32_t held(const ISongEngine* se) const
     {
