@@ -6,6 +6,7 @@
 #include "crosspad/kit/IKitManager.hpp"
 #include "crosspad/kit/KitSaved.hpp"
 #include "crosspad/platform/PlatformServices.hpp"
+#include "crosspad/song/ArrangeFocus.hpp"
 #include "crosspad/song/ISongEngine.hpp"
 
 #include <cstdio>
@@ -174,7 +175,8 @@ void SongSounds::step()
         /* A song with nothing in it yet -- a new one -- is started with what the
          * player was playing: it takes the loaded kit instead of giving it back. */
         kitLoaded();
-    } else if (kit != have) {
+    } else if (kit != have && !(kitChoiceTrack() >= 0 && have == choiceKit_)) {
+        /* Not the kit that waits for the player's choice: that one stays. */
         if (!kit.empty()) {
             const int id = findKit(*kits, kit);
             if (id >= 0) {
@@ -290,12 +292,68 @@ void SongSounds::kitLoaded()
          * still to come. Written over, it was lost and the board kept the kit
          * that happened to be loading. */
         if (song.kit != lastKit_) return;
-        lastKit_ = cur->path;
-        if (song.kit == cur->path) return;
-        song.kitHeld(cur->path);
-        host_.log(false, (song.name + ": kit " + cur->path).c_str());
+        const int waiting = kitChoiceTrack();
+        if (song.kit == cur->path) {
+            /* The track's own kit back: nothing is left to choose. */
+            if (waiting < 0) return;
+            choiceTrack_ = -1;
+            choiceKit_.clear();
+            song.setLiveKit(waiting);
+        } else {
+            /* Away from Arrange the kit is the pads', not yet the song's: a
+             * kit track it would replace keeps its kit and plays its freeze
+             * until the player chooses (kitChoiceTrack()). Not for the track
+             * whose sound is being edited from its seq view (ArrangeFocus). */
+            int track = waiting >= 0 ? waiting : (song.seqRoute(song.liveKit) == 0 ? song.liveKit : -1);
+            for (int t = 0; t < AudioSong::kTracks && track < 0; ++t)
+                if (song.seqRoute(t) == 0) track = t;
+            const ArrangeFocus& f = arrangeFocus();
+            const bool editing = f.held() && f.seq && f.track == track;
+            if (track >= 0 && !editing && !foregroundIs("Arrange")) {
+                choiceTrack_ = track;
+                choiceGen_ = openGen_.load();
+                choiceKit_ = cur->path;
+                if (song.liveKit == track) song.liveKit = -1;
+                host_.log(false, (song.name + ": kit " + cur->path + " waits for a choice").c_str());
+            } else {
+                lastKit_ = cur->path;
+                song.kitHeld(cur->path);
+                host_.log(false, (song.name + ": kit " + cur->path).c_str());
+            }
+        }
     }
     se->commit();
+}
+
+int SongSounds::kitChoiceTrack() const
+{
+    return choiceTrack_ >= 0 && choiceGen_ == openGen_.load() ? choiceTrack_ : -1;
+}
+
+void SongSounds::resolveKitChoice(bool replace)
+{
+    const int track = kitChoiceTrack();
+    const std::string kit = choiceKit_;
+    choiceTrack_ = -1;
+    choiceKit_.clear();
+    ISongEngine* se = songs();
+    if (track < 0 || !se || se->openState() != SongOpState::Ready) return;
+    {
+        std::lock_guard<std::recursive_mutex> l(se->songMutex());
+        AudioSong& song = se->song();
+        if (!song.setLiveKit(track)) return;
+        if (replace) song.kitHeld(kit);
+        else         newTrackKit_ = kit;
+        lastKit_ = song.kit;
+    }
+    se->commit();
+}
+
+std::string SongSounds::takeNewTrackKit()
+{
+    std::string kit;
+    kit.swap(newTrackKit_);
+    return kit;
 }
 
 /// UI thread, the song settled: a pad map Pitch Play published since is the

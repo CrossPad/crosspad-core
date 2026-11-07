@@ -6,6 +6,18 @@ carries the same number) and consumers gate on it with
 `crosspad/RequireVersion.hpp`. This file starts at 1.45.0; earlier releases
 are described in their `chore: X.Y.Z` commits.
 
+## 2.45.0 — 2026-11-07
+
+- `SongSounds`: a kit loaded away from Arrange onto a song with kit tracks is
+  no longer written into the song. The kit track it would replace keeps its
+  kit and plays its freeze (`AudioSong::liveKit` -1), `step()` does not load
+  the song's kit back over it, and the player chooses on the way into Arrange:
+  `kitChoiceTrack()` / `kitChoiceKit()`, `resolveKitChoice(replace)` (the
+  track takes the kit, or the song stays as it was and `takeNewTrackKit()`
+  hands the kit to Arrange for a kit track of its own). A pick made from the
+  track's seq view (`ArrangeFocus`) is still that track's at once. Another
+  song opening drops the choice.
+
 ## 2.44.4 — 2026-11-07
 
 - `kit_parse_pads`: a pad sample given as an object with no `"sample"`, or

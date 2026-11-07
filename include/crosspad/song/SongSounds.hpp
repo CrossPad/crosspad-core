@@ -108,6 +108,21 @@ public:
     void keepInstrument(const KitInfo& spec, const std::function<bool(const KitInfo&)>& save,
                         bool changed = false);
 
+    /// A kit loaded outside Arrange onto a song with kit tracks is not written
+    /// into the song (kitLoaded()): the player chooses on the way into Arrange.
+    /// The kit track it would replace -- playing its freeze meanwhile -- or -1
+    /// when nothing waits. Gone when another song opens. UI thread.
+    int kitChoiceTrack() const;
+    /// The kit that waits for the choice. UI thread.
+    const std::string& kitChoiceKit() const { return choiceKit_; }
+    /// UI thread: @p replace -- the track plays the kit, as a kit loaded in
+    /// Arrange does. Otherwise the song stays as it was and the kit waits in
+    /// takeNewTrackKit() for Arrange to put it on a kit track of its own.
+    void resolveKitChoice(bool replace);
+    /// UI thread, Arrange as it shows: the kit a new kit track is to be made
+    /// with, once; empty for none.
+    std::string takeNewTrackKit();
+
     /// A step is still to come.
     bool pending() const { return pending_.load(std::memory_order_acquire); }
 
@@ -153,6 +168,12 @@ private:
     /// pad map is kept only into the song it was settled for (keepPitchPads()).
     std::atomic<uint32_t> settledGen_{0};
     std::string settledDir_;   // UI thread
+    /// kitChoiceTrack(), the openGen_ it was made in, its kit, and the kit
+    /// a "new track" answer left for Arrange. UI thread.
+    int choiceTrack_ = -1;
+    uint32_t choiceGen_ = 0;
+    std::string choiceKit_;
+    std::string newTrackKit_;
     void keepPitchPads();
 };
 
