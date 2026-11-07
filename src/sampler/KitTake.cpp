@@ -30,7 +30,7 @@ CROSSPAD_COLD void copyPad(const KitInfo& kit, const Pad& pad, TakePad& tp)
 {
     tp = TakePad{};
     tp.mode    = pad.playbackMode;
-    /* One voice: every slice cuts the one sounding, as on an MPC. */
+    /* One voice: every slice cuts the one sounding, as on a hardware sampler. */
     tp.choke   = static_cast<uint8_t>(kit.engine == KitEngine::Slice ? 1 : pad.choke_group);
     tp.volume  = static_cast<int16_t>(pad.volume);
     tp.pan     = static_cast<int16_t>(pad.pan);

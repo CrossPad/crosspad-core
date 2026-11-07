@@ -195,7 +195,7 @@ TEST_CASE("BlockPool acquire and release survive two threads", "[blockpool]") {
 }
 
 // ── HeadPlan ────────────────────────────────────────────────────────────────
-// The numbers below are the author's own kits, measured on 2026-10-06:
+// The numbers below are a real kit collection, measured on 2026-10-06:
 // 23 kits, 1783 WAVs, 771 MB. A kit is 15-24 samples of 0.1-16 MB.
 
 #include "crosspad/sampler/SampleStore.hpp"
@@ -249,7 +249,7 @@ TEST_CASE("HeadPlan on the author's real kits stays near a megabyte", "[headplan
     REQUIRE(p.resolve(fdb.data(), 24) == 64u * 1024);
     REQUIRE(HeadPlan::cost(fdb.data(), 24, 64u * 1024) == 24u * 64 * 1024);  // 1.5 MB
 
-    // Against the 5 533 984 B the prebuilt engine took whatever was loaded.
+    // The prebuilt engine's pool is a fixed 5 533 984 B, whatever is loaded.
     REQUIRE(HeadPlan::cost(fdb.data(), 24, 64u * 1024) < 5533984u / 3);
 }
 

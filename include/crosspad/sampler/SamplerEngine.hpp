@@ -118,8 +118,7 @@ public:
          * tail at all. So the wait only matters for a sample's first hit, and
          * it is long -- at 200 ms it took a rest inside a phrase for the end
          * of the file and cut the phrase off there (DREAMSCAPE pad 4: a
-         * 221 ms rest at 1.05 s, 1.8 s of the sample never played,
-         * 09.10.2026).
+         * 221 ms rest at 1.05 s, 1.8 s of the sample never played).
          *
          * Only one-shots. A loop is meant to carry on, and a held note is the
          * player's to release. 0 disables it.
@@ -146,8 +145,7 @@ public:
          * Sixteen, the pad count (23.10.2026): measured on a v2, sixteen
          * stereo one-shots streaming under a kit change and fifteen loops
          * under the USB-audio profile with a host stream, no underrun, the
-         * card ~50 % busy. Ten was the number before the render and the
-         * card's sector path got cheaper.
+         * card ~50 % busy.
          */
         uint8_t maxStreamingVoices = 16;
 

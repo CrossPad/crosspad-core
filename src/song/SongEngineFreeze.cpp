@@ -53,7 +53,7 @@ void SongEngine::Impl::rtCapture(const float* bus, uint32_t frames) {
 
 /// A seq track's bounce takes only the bars its blocks sound in: the
 /// take is played in real time, and a one-bar block in a 64-bar song was
-/// 64 bars of waiting, nearly all of it silence (20.10.2026). A track
+/// 64 bars of waiting, nearly all of it silence. A track
 /// that plays its scene over everything is the whole song, as before.
 /// Arrange's BOUNCE: a freeze (runFreeze()) whose blocks become the
 /// track's audio -- the same renders, found on the card where they are

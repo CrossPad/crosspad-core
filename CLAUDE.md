@@ -40,7 +40,7 @@ Windows: `tests\build.bat` (VS 2022 vcvarsall + VS cmake). `tests/test_*.cpp` fi
 - The version is the triple in `include/crosspad/CrosspadCoreVersion.hpp` (bump rules in its header comment: MAJOR when an interface a consumer implements or calls changes shape, MINOR when something is added, PATCH for fixes). `library.json` `version` carries the same number — bump both in one commit, and add a `CHANGELOG.md` entry.
 - Consumers gate on it at compile time with `crosspad/RequireVersion.hpp`: a major mismatch is an `#error`, minor/patch drift a `#warning` (crosspad-pc: `src/crosspad_deps.hpp`; crosspad-gui: `CROSSPAD_GUI_REQUIRES_CORE_*`).
 - `.github/workflows/lib-release.yml`: a push to `main` that touches `library.json` or `CrosspadCoreVersion.hpp` tags `vX.Y.Z` through CrossPad/.github's reusable `app-release.yml` in library mode (a bare tag, no GitHub Release). platform-idf's hourly bump reads the tags and moves core when an app needs it.
-- `.github/workflows/notify-downstream.yml`: a `v*` tag or a merged PR sends a `submodule-update` dispatch to crosspad-pc, ESP32-S3 and matixan/2playerCrosspad.
+- `.github/workflows/notify-downstream.yml`: a `v*` tag or a merged PR sends a `submodule-update` dispatch to crosspad-pc, ESP32-S3 and platform-idf.
 - `.github/workflows/docs.yml` builds the Doxygen HTML on `main` as a workflow artifact (`api-docs`); nothing publishes it to GitHub Pages.
 
 ## Three-Layer Architecture

@@ -289,9 +289,9 @@ TEST_CASE("SamplerEngine plays a pad whose START is past the head, from the bloc
     Rig rig;
     rig.build();
     /* Silent up to the trim: a voice playing from the file's first frame would
-     * be heard as nothing. Before, the head was frames 0..1023 whatever the
-     * START, and the voice found its first frame nowhere -- silent, an
-     * underrun a hit (12.10.2026). */
+     * be heard as nothing. A head of frames 0..1023 whatever the START
+     * leaves the voice finding its first frame nowhere -- silent, an
+     * underrun a hit. */
     rig.src.add("long.wav", 60000, 1);
     rig.src.silence("long.wav", 0, 20000);
     const uint16_t slot = rig.store.load("long.wav", 1024, 20000, 0);
@@ -525,7 +525,7 @@ TEST_CASE("SamplerEngine stops a one-shot once it has gone inaudible", "[sampler
 TEST_CASE("SamplerEngine plays a one-shot on through a rest inside it", "[samplerengine]") {
     // A phrase, not a hit: sound, a rest, sound again, then the tail. Waiting
     // 200 ms took a 221 ms rest for the end of the file and cut the phrase
-    // there (DREAMSCAPE pad 4, 09.10.2026).
+    // there (DREAMSCAPE pad 4).
     Rig rig;
     rig.build();
     rig.src.add("phrase.wav", 40000, 1);
@@ -1153,9 +1153,9 @@ TEST_CASE("SamplerEngine's block render plays what the frame-by-frame one did, b
     const Played blk = playScript();
 
     REQUIRE(blk.out.size() == 20634);
-    /* 0x8e94f5f726c5288d until 21.10.2026, when a trim ending inside its
-     * file (pad 6, to frame 900) began fading out over kTrimFadeMs; with that
-     * fade switched off the render still gives the old digest. */
+    /* A trim ending inside its file (pad 6, to frame 900) fades out over
+     * kTrimFadeMs; with that fade switched off the render gives the
+     * frame-by-frame digest, 0x8e94f5f726c5288d. */
     CHECK(digest(blk.out) == 0x58cfe201ef12eed5ull);
 
     float peak = 0.0f;

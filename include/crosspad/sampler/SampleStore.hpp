@@ -182,7 +182,7 @@ public:
      * first frame: a note starts in its head, and a trim that started past a
      * head read from frame 0 played nothing at all -- the streamer fills from
      * the end of the head forwards and the voice found its first frame
-     * nowhere (12.10.2026, every slice past 0.37 s at a 64 kB head). Slices of
+     * nowhere (every slice past 0.37 s at a 64 kB head). Slices of
      * one file are therefore a head each.
      *
      * @param headFrames what HeadPlan resolved, in frames; the slot keeps

@@ -17,7 +17,7 @@
  * which is wiped wholesale -- re-registered, every block in it gone at once --
  * whenever the engines hand it over. A block from before such a wipe is not
  * one the heap knows any more, and freeing it is an assert inside the heap
- * ("CORRUPT HEAP: Bad head", kit_churn 2026-10-09). Given a generation source
+ * ("CORRUPT HEAP: Bad head" under kit_churn). Given a generation source
  * (a counter the platform bumps on every wipe), the bank remembers the
  * generation it was built in; once that has passed it carves nothing more and
  * its destructor *forgets* its blocks instead of freeing them. The wipe

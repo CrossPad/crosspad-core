@@ -143,7 +143,7 @@ void SongEngine::Impl::closeSeqEdit() {
     /* Left with its REC still on -- ARR, the MODE map, another clip: the
      * take lands as far as it got. The next transport claim stops it a
      * moment later, and by then nothing is bound to write it back; it was
-     * lost, and the block in Arrange kept its old notes (13.10.2026). */
+     * lost, and the block in Arrange kept its old notes. */
     syncSeqEditNow(true);
     std::lock_guard<std::recursive_mutex> l(songMutex_);
     editTrack_ = -1;
@@ -185,7 +185,7 @@ bool SongEngine::Impl::openTake(SyncTake take, uint32_t fromBar) {
      * off runs the song on past its end (takeHorizon_), and so does a take from a
      * bar past the end: the playhead put there is the song asked to grow. A take
      * punched in at the end of a four-bar groove ran it on to bar six instead of
-     * laying the part over the groove (26.10.2026). */
+     * laying the part over the groove. */
     const uint32_t songEnd = endBars(song_);
     takeWhole_ = song_.loop && !song_.hasRegion() && fromBar < songEnd;
     takeCycle_ = (song_.loop && song_.hasRegion()) || takeWhole_;
@@ -282,7 +282,7 @@ SeqPatternPtr SongEngine::Impl::scenePattern(uint8_t scene) const {
 void SongEngine::Impl::serviceTake() {
     if (seqTake_.load() == SyncTake::None) return;
     /* Not a wait for the song: a screen holding it to draw kept the worker
-     * off the ring until it ran dry (PUNCH over eight tracks, 2026-10-27).
+     * off the ring until it ran dry (PUNCH over eight tracks).
      * The notes wait in the sequencer for the next pass. */
     std::unique_lock<std::recursive_mutex> l(songMutex_, std::try_to_lock);
     if (!l.owns_lock() || seqTake_.load() == SyncTake::None) return;
@@ -352,7 +352,7 @@ bool SongEngine::Impl::landTake(const std::vector<PatternSequencer::SongTakeNote
         if (mine.empty()) return false;
         /* Shorter than the loop it was played in, it goes round to the
          * loop's end: one bar played into four is that bar four times,
-         * not a bar and then silence while the loop goes on (20.10.2026).
+         * not a bar and then silence while the loop goes on.
          * The pattern is the shortest that both holds the notes and
          * divides the loop, so it lands on its bar one every time round. */
         const uint32_t fill = takeFillEnd(fromBar, last);
@@ -396,10 +396,9 @@ uint32_t SongEngine::Impl::takeFillEnd(uint32_t fromBar, uint32_t last) const {
 /// The take is over -- stopped, or punched out with the song playing on:
 /// what is left of it lands. A REC ends with the bar its last note is in,
 /// wherever STOP was pressed: a note on the last quarter of bar four is a
-/// four-bar sequence, not five because the stop came in bar five
-/// (13.10.2026; it ran to the stop before). A lap round a region is the
-/// region's, and is landed whole as it wraps (landLaps()). Caller holds
-/// songMutex_.
+/// four-bar sequence, not five because the stop came in bar five.
+/// A lap round a region is the region's, and is landed whole as it wraps
+/// (landLaps()). Caller holds songMutex_.
 void SongEngine::Impl::finishTake() {
     const SyncTake take = seqTake_.load();
     if (take == SyncTake::None) return;
