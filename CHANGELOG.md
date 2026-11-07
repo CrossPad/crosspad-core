@@ -6,6 +6,15 @@ carries the same number) and consumers gate on it with
 `crosspad/RequireVersion.hpp`. This file starts at 1.45.0; earlier releases
 are described in their `chore: X.Y.Z` commits.
 
+## 2.44.4 — 2026-11-07
+
+- `kit_parse_pads`: a pad sample given as an object with no `"sample"`, or
+  with a `"sample"` that is not a string (`{"start":0,"end":100}`,
+  `{"sample":5}`), is skipped. It used to assign a null `const char*` to a
+  `std::string` (strlen(NULL)), so a hand-edited or third-party kit.json
+  panicked the board (LoadProhibited) when the kit was loaded.
+  (2.44.3 is taken by the open PR #65.)
+
 ## 2.44.2 — 2026-11-06
 
 - `Stm32Settings::longPressMs` (the power-off hold) defaults to 2400 ms, not
