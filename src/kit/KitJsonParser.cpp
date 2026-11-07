@@ -152,7 +152,10 @@ bool kit_parse_pads(KitInfo& kit, JsonDocument& doc)
                 if (sv.is<const char*>()) {
                     sampleName = sv.as<const char*>();
                 } else if (sv.is<JsonObject>()) {
-                    sampleName = sv["sample"].as<const char*>();
+                    // | "" — as<const char*>() is nullptr when "sample" is
+                    // missing or not a string, and a null char* into a
+                    // std::string is strlen(NULL) (a panic on the board).
+                    sampleName = sv["sample"] | "";
                     startF     = sv["start"] | (uint32_t)0;
                     endF       = sv["end"]   | (uint32_t)0;
                 }

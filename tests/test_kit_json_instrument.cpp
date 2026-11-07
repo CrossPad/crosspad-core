@@ -389,3 +389,28 @@ TEST_CASE("kit json: drums are told by their category, any case", "[kitjson]") {
     CHECK_FALSE(kit.isDrums());
     CHECK(kit.voiceCap() == 0);
 }
+
+TEST_CASE("kit json: a sample object without a sample name is skipped and does not crash", "[kit]") {
+    // A hand-edited or third-party kit.json: the object has no "sample", or
+    // "sample" is not a string. Both used to assign a null const char* to a
+    // std::string (strlen(NULL), LoadProhibited on the board).
+    const char* json = R"({
+      "name": "BAD", "author": "someone",
+      "pads": [
+        { "samples": [ { "start": 0, "end": 100 } ] },
+        { "samples": [ { "sample": 5 } ] },
+        { "samples": [ { "sample": null }, { "sample": ["a.wav"] }, "", 7 ] },
+        { "samples": [ { "start": 1 }, { "sample": "kick.wav", "start": 10, "end": 20 }, "snare.wav" ] }
+      ]
+    })";
+    KitInfo kit = parse(json);
+    CHECK(kit.pads[0].samples.empty());
+    CHECK(kit.pads[1].samples.empty());
+    CHECK(kit.pads[2].samples.empty());
+    REQUIRE(kit.pads[3].samples.size() == 2);
+    CHECK(kit.pads[3].samples[0].sample == "kick.wav");
+    CHECK(kit.pads[3].samples[0].start == 10);
+    CHECK(kit.pads[3].samples[0].end == 20);
+    CHECK(kit.pads[3].samples[1].sample == "snare.wav");
+    CHECK(kit.total_samples == 2);
+}
