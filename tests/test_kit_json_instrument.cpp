@@ -11,7 +11,7 @@ using crosspad::KitInfo;
 
 namespace {
 
-// The example from docs/superpowers/specs/2026-09-03-pitched-instrument-design.md.
+// The example from docs/design/2026-09-03-pitched-instrument-design.md.
 const char* kPitchedKitJson = R"({
   "name": "HIL SINE PITCHED", "author": "hil", "engine": "pitched", "type": 0,
   "instrument": {
