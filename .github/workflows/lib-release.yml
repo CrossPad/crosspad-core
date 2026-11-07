@@ -3,7 +3,7 @@ name: Library release
 # Tags vX.Y.Z when library.json's version changes; the logic is CrossPad/.github's
 # reusable app-release.yml in library mode (a bare tag, no release, no post).
 # platform-idf's hourly bump reads the tags and moves core when an app needs it.
-# Push only: this repo's runners never run pull_request code.
+# Push only: never runs pull_request code.
 on:
   push:
     branches: [main]

@@ -25,14 +25,14 @@ permissions:
 
 # CI image: ghcr.io/crosspad/crosspad-ci (tools/ci/Dockerfile in platform-idf),
 # the same image -- and so the same cmake, ninja, compilers and Python -- for
-# every CrossPad repository, on hardware machine (repository variable
-# CI_RUNNER=self-hosted, tools/ci_runner.py in platform-idf) and on GitHub's
-# runners alike. It is pinned here by tag and digest (GHCR lets a tag be
-# moved, not a digest); moving to a new image revision is a commit like any
-# other. Unset CI_RUNNER before the self-hosted runner goes off:
+# every CrossPad repository, on an optional self-hosted runner (chosen by the
+# repository variable CI_RUNNER, tools/ci_runner.py in platform-idf) and on
+# GitHub's runners alike. It is pinned here by tag and digest (GHCR lets a tag
+# be moved, not a digest); moving to a new image revision is a commit like any
+# other. Unset CI_RUNNER when that runner goes offline:
 # GitHub never falls back from a self-hosted label to a hosted runner.
 # SECURITY: a pull request from a fork always runs on GitHub's runner, never on
-# the self-hosted one (its job container gets the host's Docker socket).
+# a self-hosted one.
 jobs:
   tier1-unit:
     name: Tier 1 portable unit tests
@@ -42,11 +42,9 @@ jobs:
       credentials:
         username: ${{ github.actor }}
         password: ${{ secrets.GITHUB_TOKEN }}
-      # This repository's own cache volume on hardware (ccache): one for
-      # pushes to main, one for everything else (pull requests, manual runs,
-      # other branches). A split, not a security boundary: a job on hardware
-      # reaches the host's Docker through the socket the runner mounts. On a
-      # hosted runner it starts empty.
+      # This repository's own cache volume (ccache): one for pushes to main,
+      # one for everything else (pull requests, manual runs, other branches).
+      # On a hosted runner it starts empty.
       volumes:
         - crosspad-ci-cache-${{ github.event.repository.name }}-${{ github.ref == 'refs/heads/main' && 'trusted' || 'untrusted' }}:/cache
     env:

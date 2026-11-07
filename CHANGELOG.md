@@ -1223,7 +1223,7 @@ this is the first number above every one either of them used.
   the allocator's memory -- the device's engine arena reset), stamps itself
   with it, and once it is `stale()` carves nothing more and its destructor
   *forgets* its blocks instead of freeing them into the heap that replaced
-  them ("CORRUPT HEAP: Bad head", kit_churn on hardware). `generation()`,
+  them ("CORRUPT HEAP: Bad head", in kit_churn). `generation()`,
   `stale()` are new. `PitchedLoadEnv::generation` stamps the bank; a build
   that sees the generation change fails with "memory reset during the build"
   and frees no transient block from before the wipe. Source-compatible (the

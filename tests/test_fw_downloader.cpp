@@ -149,7 +149,7 @@ struct FakeFiles : IFwFiles {
     }
 };
 
-// Answers like the bench server and the Worker: 200, 206 with the asked range, 416.
+// Answers like the local test server and the Worker: 200, 206 with the asked range, 416.
 struct FakeHttp : IHttpStream {
     struct Request {
         std::string url;
