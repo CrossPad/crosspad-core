@@ -21,6 +21,18 @@ namespace {
 /// The longest warning the player is shown, terminator included.
 constexpr size_t kWarnChars = 96;
 
+/// Failed tries of the song's instrument before the player is told: the first
+/// one often fails only because a bounce (Arrange's auto-freeze) holds the
+/// memory, and the retry 2 s later takes.
+constexpr uint8_t kInstSayAfter = 2;
+
+/// A load that failed for memory, which the player can give back, rather than
+/// for the instrument's files (PitchedKitLoader's reasons).
+bool forMemory(const std::string& why)
+{
+    return why.find("no memory") != std::string::npos || why.find("budget") != std::string::npos;
+}
+
 ISongEngine* songs() { return getPlatformServices().songEngine; }
 
 int findKit(IKitManager& kits, const std::string& path)
@@ -206,6 +218,7 @@ void SongSounds::step()
             if (inst != instWanted_) {
                 instWanted_ = inst;
                 instRetry_.reset();
+                instFails_ = 0;
                 instAsked_ = instSaid_ = false;
             }
             /* One that will not load -- no memory beside the kits -- is asked for
@@ -213,16 +226,23 @@ void SongSounds::step()
             if (st == IInstrumentHost::State::Failed && instAsked_) {
                 instAsked_ = false;
                 instRetry_.failed(stepMs_);
-                /* Said where the Pitch track is heard -- Arrange, the
-                 * Sequencer, Pitch Play --, not over an app that has nothing
-                 * to do with the song (a game holding the memory it needed):
-                 * there it is only logged, and said once one of those opens. */
-                if (!instSaid_ && (foregroundIs("Arrange", "Sequencer") || foregroundIs("PitchPlay"))) {
-                    instSaid_ = true;
-                    char msg[kWarnChars];
-                    std::snprintf(msg, sizeof(msg), "Pitch sound did not load: %s", host->message().c_str());
-                    host_.warn(msg);
-                }
+                if (instFails_ < kInstSayAfter) ++instFails_;
+            }
+            /* Said once the retry failed too, and where the Pitch track is
+             * heard -- Arrange, the Sequencer, Pitch Play --, not over an app
+             * that has nothing to do with the song (a game holding the memory
+             * it needed): there it is only logged, and said once one of those
+             * opens while it still does not load. */
+            if (st == IInstrumentHost::State::Failed && instFails_ >= kInstSayAfter && !instSaid_ &&
+                (foregroundIs("Arrange", "Sequencer") || foregroundIs("PitchPlay"))) {
+                instSaid_ = true;
+                const std::string why = host->message();
+                char msg[kWarnChars];
+                if (forMemory(why))
+                    std::snprintf(msg, sizeof(msg), "Pitch sound needs more memory: remove a track");
+                else
+                    std::snprintf(msg, sizeof(msg), "Pitch sound did not load: %s", why.c_str());
+                host_.warn(msg);
             }
             if (!instRetry_.due(stepMs_)) return;
             host_.log(false, ("the song's instrument: " + inst).c_str());
@@ -230,6 +250,7 @@ void SongSounds::step()
             return;
         }
         instRetry_.reset();
+        instFails_ = 0;
         instAsked_ = false;
         /* What Arrange keeps loaded for the Pitch track, and what the
          * Sequencer and the Recorder borrow: this song's. */

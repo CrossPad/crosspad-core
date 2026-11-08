@@ -206,12 +206,14 @@ TEST_CASE("song sounds: an instrument that will not load is asked for again late
     const uint32_t first = (uint32_t)stepsTo(2) * SongSounds::kStepMs;
     CHECK(first >= RetryBackoff::kFirstMs);                 // not a load a step
     CHECK(first <= RetryBackoff::kFirstMs + 2 * SongSounds::kStepMs);
-    REQUIRE(r.host.warnings.size() == 1);
-    CHECK(r.host.warnings[0].find("no memory") != std::string::npos);
+    CHECK(r.host.warnings.empty());                         // the retry may take: not said yet
     CHECK(r.sounds.pending());
-    const uint32_t second = (uint32_t)stepsTo(3) * SongSounds::kStepMs;   // failed again
+    const uint32_t second = (uint32_t)stepsTo(3) * SongSounds::kStepMs;   // the retry failed too
     CHECK(second >= 2 * RetryBackoff::kFirstMs);            // twice as long
-    CHECK(r.host.warnings.size() == 1);                     // and not said again
+    REQUIRE(r.host.warnings.size() == 1);                   // said, in the player's words
+    CHECK(r.host.warnings[0] == "Pitch sound needs more memory: remove a track");
+    stepsTo(4);                                             // and again
+    CHECK(r.host.warnings.size() == 1);                     // not said again
     r.inst.st = IInstrumentHost::State::Ready;             // memory came back, the next try took
     r.inst.inst.path = "/crosspad/pitchplay/Keys/instrument.json";
     r.sounds.step();
@@ -233,12 +235,49 @@ TEST_CASE("song sounds: an instrument that will not load is said only where the 
         while (r.inst.opened.size() < opens && n < 400) { r.sounds.step(); ++n; }
         return n;
     };
-    stepsTo(2);
+    stepsTo(3);
+    r.sounds.step();                                        // the retry failed too
     CHECK(r.host.warnings.empty());                         // logged, not shown over the game
     r.host.foreground = "Arrange";                         // still failing where it is heard
-    stepsTo(3);
+    r.sounds.step();
     REQUIRE(r.host.warnings.size() == 1);
-    CHECK(r.host.warnings[0].find("no memory") != std::string::npos);
+    CHECK(r.host.warnings[0].find("more memory") != std::string::npos);
+}
+
+TEST_CASE("song sounds: an instrument the retry loads is never said", "[song][sounds]") {
+    Rig r;
+    r.host.foreground = "Arrange";
+    r.engine.addSeqTrack(SeqSource::Pitch);
+    r.engine.song().instrument = "/crosspad/pitchplay/Keys/instrument.json";
+    r.sounds.songOpened();
+    r.sounds.step();
+    REQUIRE(r.inst.opened.size() == 1);
+    r.inst.st = IInstrumentHost::State::Failed;            // an auto-freeze bouncing beside it
+    r.inst.msg = "zone 0: no memory (220500 B)";
+    int n = 0;
+    while (r.inst.opened.size() < 2 && n < 400) { r.sounds.step(); ++n; }
+    REQUIRE(r.inst.opened.size() == 2);
+    r.inst.st = IInstrumentHost::State::Ready;             // the bounce is over, the retry took
+    r.inst.inst.path = "/crosspad/pitchplay/Keys/instrument.json";
+    for (int i = 0; i < 100; ++i) r.sounds.step();
+    CHECK(r.host.warnings.empty());
+    CHECK_FALSE(r.sounds.pending());
+}
+
+TEST_CASE("song sounds: an instrument whose files will not load says why", "[song][sounds]") {
+    Rig r;
+    r.host.foreground = "PitchPlay";
+    r.engine.addSeqTrack(SeqSource::Pitch);
+    r.engine.song().instrument = "/crosspad/pitchplay/Keys/instrument.json";
+    r.sounds.songOpened();
+    r.sounds.step();
+    r.inst.st = IInstrumentHost::State::Failed;
+    r.inst.msg = "zone 0: bad wav 'c3.wav'";
+    int n = 0;
+    while (r.inst.opened.size() < 2 && n < 400) { r.sounds.step(); ++n; }
+    r.sounds.step();
+    REQUIRE(r.host.warnings.size() == 1);
+    CHECK(r.host.warnings[0] == "Pitch sound did not load: zone 0: bad wav 'c3.wav'");
 }
 
 TEST_CASE("song sounds: an instrument from the card's root is opened as named", "[song][sounds]") {
