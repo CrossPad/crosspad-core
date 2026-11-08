@@ -6,14 +6,18 @@ carries the same number) and consumers gate on it with
 `crosspad/RequireVersion.hpp`. This file starts at 1.45.0; earlier releases
 are described in their `chore: X.Y.Z` commits.
 
-## 2.45.2 — 2026-11-08
+## 2.46.0 — 2026-11-08
 
-- `SongSounds`: the song's Pitch instrument that fails to load is said only
-  when the retry 2 s later fails too (`kInstSayAfter`): the first try often
-  fails only while Arrange's auto-freeze bounce holds the PSRAM the beside-kits
-  build keeps back, and the retry takes. A failure for memory (`no memory`,
+- `InstrumentLoadNote` (`crosspad/instrument/InstrumentLoadNote.hpp`, header
+  only): when and how a song's Pitch sound that would not load is told to the
+  player, for every caller that asks the instrument host for it. Said only
+  after `kSayAfter` (2) failed tries: the first one often fails only while
+  Arrange's auto-freeze bounce holds the PSRAM the beside-kits build keeps
+  back, and the retry 2 s later takes. A failure for memory (`no memory`,
   `budget`) reads "Pitch sound needs more memory: remove a track"; another
   reason keeps "Pitch sound did not load: <reason>".
+- `SongSounds` follows it: the song's instrument is said only when the retry
+  failed too.
 
 ## 2.45.1 — 2026-11-08
 

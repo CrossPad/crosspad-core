@@ -2,6 +2,7 @@
 #include "crosspad/song/SongSounds.hpp"
 
 #include "crosspad/instrument/IInstrumentHost.hpp"
+#include "crosspad/instrument/InstrumentLoadNote.hpp"
 #include "crosspad/instrument/InstrumentPlayState.hpp"
 #include "crosspad/kit/IKitManager.hpp"
 #include "crosspad/kit/KitSaved.hpp"
@@ -20,18 +21,6 @@ namespace {
 
 /// The longest warning the player is shown, terminator included.
 constexpr size_t kWarnChars = 96;
-
-/// Failed tries of the song's instrument before the player is told: the first
-/// one often fails only because a bounce (Arrange's auto-freeze) holds the
-/// memory, and the retry 2 s later takes.
-constexpr uint8_t kInstSayAfter = 2;
-
-/// A load that failed for memory, which the player can give back, rather than
-/// for the instrument's files (PitchedKitLoader's reasons).
-bool forMemory(const std::string& why)
-{
-    return why.find("no memory") != std::string::npos || why.find("budget") != std::string::npos;
-}
 
 ISongEngine* songs() { return getPlatformServices().songEngine; }
 
@@ -226,22 +215,18 @@ void SongSounds::step()
             if (st == IInstrumentHost::State::Failed && instAsked_) {
                 instAsked_ = false;
                 instRetry_.failed(stepMs_);
-                if (instFails_ < kInstSayAfter) ++instFails_;
+                if (instFails_ < InstrumentLoadNote::kSayAfter) ++instFails_;
             }
             /* Said once the retry failed too, and where the Pitch track is
              * heard -- Arrange, the Sequencer, Pitch Play --, not over an app
              * that has nothing to do with the song (a game holding the memory
              * it needed): there it is only logged, and said once one of those
              * opens while it still does not load. */
-            if (st == IInstrumentHost::State::Failed && instFails_ >= kInstSayAfter && !instSaid_ &&
+            if (st == IInstrumentHost::State::Failed && instFails_ >= InstrumentLoadNote::kSayAfter && !instSaid_ &&
                 (foregroundIs("Arrange", "Sequencer") || foregroundIs("PitchPlay"))) {
                 instSaid_ = true;
-                const std::string why = host->message();
                 char msg[kWarnChars];
-                if (forMemory(why))
-                    std::snprintf(msg, sizeof(msg), "Pitch sound needs more memory: remove a track");
-                else
-                    std::snprintf(msg, sizeof(msg), "Pitch sound did not load: %s", why.c_str());
+                InstrumentLoadNote::text(host->message(), msg, sizeof(msg));
                 host_.warn(msg);
             }
             if (!instRetry_.due(stepMs_)) return;
