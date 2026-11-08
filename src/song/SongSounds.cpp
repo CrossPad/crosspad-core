@@ -213,7 +213,11 @@ void SongSounds::step()
             if (st == IInstrumentHost::State::Failed && instAsked_) {
                 instAsked_ = false;
                 instRetry_.failed(stepMs_);
-                if (!instSaid_) {
+                /* Said where the Pitch track is heard -- Arrange, the
+                 * Sequencer, Pitch Play --, not over an app that has nothing
+                 * to do with the song (a game holding the memory it needed):
+                 * there it is only logged, and said once one of those opens. */
+                if (!instSaid_ && (foregroundIs("Arrange", "Sequencer") || foregroundIs("PitchPlay"))) {
                     instSaid_ = true;
                     char msg[kWarnChars];
                     std::snprintf(msg, sizeof(msg), "Pitch sound did not load: %s", host->message().c_str());

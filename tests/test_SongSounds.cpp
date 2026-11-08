@@ -190,6 +190,7 @@ TEST_CASE("song sounds: a song's Pitch track opens its instrument", "[song][soun
 
 TEST_CASE("song sounds: an instrument that will not load is asked for again later, said once", "[song][sounds]") {
     Rig r;
+    r.host.foreground = "Arrange";
     r.engine.addSeqTrack(SeqSource::Pitch);
     r.engine.song().instrument = "/crosspad/pitchplay/Keys/instrument.json";
     r.sounds.songOpened();
@@ -215,6 +216,29 @@ TEST_CASE("song sounds: an instrument that will not load is asked for again late
     r.inst.inst.path = "/crosspad/pitchplay/Keys/instrument.json";
     r.sounds.step();
     CHECK_FALSE(r.sounds.pending());
+}
+
+TEST_CASE("song sounds: an instrument that will not load is said only where the Pitch track is heard", "[song][sounds]") {
+    Rig r;
+    r.host.foreground = "Doom";                            // a game holding the memory
+    r.engine.addSeqTrack(SeqSource::Pitch);
+    r.engine.song().instrument = "/crosspad/pitchplay/Keys/instrument.json";
+    r.sounds.songOpened();
+    r.sounds.step();
+    REQUIRE(r.inst.opened.size() == 1);
+    r.inst.st = IInstrumentHost::State::Failed;
+    r.inst.msg = "zone 0: no memory (215640 B)";
+    auto stepsTo = [&](size_t opens) {
+        int n = 0;
+        while (r.inst.opened.size() < opens && n < 400) { r.sounds.step(); ++n; }
+        return n;
+    };
+    stepsTo(2);
+    CHECK(r.host.warnings.empty());                         // logged, not shown over the game
+    r.host.foreground = "Arrange";                         // still failing where it is heard
+    stepsTo(3);
+    REQUIRE(r.host.warnings.size() == 1);
+    CHECK(r.host.warnings[0].find("no memory") != std::string::npos);
 }
 
 TEST_CASE("song sounds: an instrument from the card's root is opened as named", "[song][sounds]") {

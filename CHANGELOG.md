@@ -6,6 +6,12 @@ carries the same number) and consumers gate on it with
 `crosspad/RequireVersion.hpp`. This file starts at 1.45.0; earlier releases
 are described in their `chore: X.Y.Z` commits.
 
+## 2.45.1 — 2026-11-08
+
+- `SongSounds`: "Pitch sound did not load" is said only where the song's Pitch
+  track is heard (Arrange, the Sequencer, PitchPlay) -- not over a game or
+  another app, where the sound plays anyway once the instrument is up.
+
 ## 2.45.0 — 2026-11-07
 
 - `SongSounds`: a kit loaded away from Arrange onto a song with kit tracks is
