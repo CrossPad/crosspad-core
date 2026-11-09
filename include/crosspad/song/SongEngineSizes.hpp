@@ -11,7 +11,9 @@ namespace crosspad {
  *
  * A platform tunes them to its memory and storage through
  * ISongEnginePlatform::sizes(), read once when the engine is built. The
- * defaults are the ones the ESP32-S3 board runs.
+ * defaults are a small-memory starting point; the ESP32-S3 board raises both
+ * rings in its port (a 1 MB bounce ring, since 128 kB failed 2-minute bounces
+ * on card stalls).
  *
  * The tracks are mixed by the worker into one ring, not played from a ring
  * each, so a mute or a track fader is heard a song ring's depth late.
