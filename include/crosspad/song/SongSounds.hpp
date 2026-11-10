@@ -153,10 +153,12 @@ private:
     /// The openGen_ savesHeard_ was seeded for. UI thread.
     uint32_t seededGen_ = UINT32_MAX;
     /// The song's instrument when it would not load: asked for again on instRetry_'s
-    /// clock (stepMs_, kStepMs a step), said once. UI thread.
+    /// clock (stepMs_, kStepMs a step), said once -- after instFails_ reaches
+    /// InstrumentLoadNote::kSayAfter. UI thread.
     std::string instWanted_;
     RetryBackoff instRetry_;
     uint32_t stepMs_ = 0;
+    uint8_t instFails_ = 0;
     bool instAsked_ = false;
     bool instSaid_ = false;
     /// The InstrumentPlayState generation the open song's pad map was last

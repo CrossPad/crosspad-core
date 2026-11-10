@@ -2,6 +2,7 @@
 #include "crosspad/song/SongSounds.hpp"
 
 #include "crosspad/instrument/IInstrumentHost.hpp"
+#include "crosspad/instrument/InstrumentLoadNote.hpp"
 #include "crosspad/instrument/InstrumentPlayState.hpp"
 #include "crosspad/kit/IKitManager.hpp"
 #include "crosspad/kit/KitSaved.hpp"
@@ -206,6 +207,7 @@ void SongSounds::step()
             if (inst != instWanted_) {
                 instWanted_ = inst;
                 instRetry_.reset();
+                instFails_ = 0;
                 instAsked_ = instSaid_ = false;
             }
             /* One that will not load -- no memory beside the kits -- is asked for
@@ -213,16 +215,19 @@ void SongSounds::step()
             if (st == IInstrumentHost::State::Failed && instAsked_) {
                 instAsked_ = false;
                 instRetry_.failed(stepMs_);
-                /* Said where the Pitch track is heard -- Arrange, the
-                 * Sequencer, Pitch Play --, not over an app that has nothing
-                 * to do with the song (a game holding the memory it needed):
-                 * there it is only logged, and said once one of those opens. */
-                if (!instSaid_ && (foregroundIs("Arrange", "Sequencer") || foregroundIs("PitchPlay"))) {
-                    instSaid_ = true;
-                    char msg[kWarnChars];
-                    std::snprintf(msg, sizeof(msg), "Pitch sound did not load: %s", host->message().c_str());
-                    host_.warn(msg);
-                }
+                if (instFails_ < InstrumentLoadNote::kSayAfter) ++instFails_;
+            }
+            /* Said once the retry failed too, and where the Pitch track is
+             * heard -- Arrange, the Sequencer, Pitch Play --, not over an app
+             * that has nothing to do with the song (a game holding the memory
+             * it needed): there it is only logged, and said once one of those
+             * opens while it still does not load. */
+            if (st == IInstrumentHost::State::Failed && instFails_ >= InstrumentLoadNote::kSayAfter && !instSaid_ &&
+                (foregroundIs("Arrange", "Sequencer") || foregroundIs("PitchPlay"))) {
+                instSaid_ = true;
+                char msg[kWarnChars];
+                InstrumentLoadNote::text(host->message(), msg, sizeof(msg));
+                host_.warn(msg);
             }
             if (!instRetry_.due(stepMs_)) return;
             host_.log(false, ("the song's instrument: " + inst).c_str());
@@ -230,6 +235,7 @@ void SongSounds::step()
             return;
         }
         instRetry_.reset();
+        instFails_ = 0;
         instAsked_ = false;
         /* What Arrange keeps loaded for the Pitch track, and what the
          * Sequencer and the Recorder borrow: this song's. */
