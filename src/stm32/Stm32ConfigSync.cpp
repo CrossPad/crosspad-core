@@ -4,6 +4,23 @@
 
 namespace crosspad {
 
+namespace {
+
+// A 16-bit STM setting is two one-byte registers, and the STM puts each byte
+// into the live value as it arrives: there is no commit. Written HI then LO,
+// 600 s -> Never (0x0258 -> 0x0000) stands at 0x0058 = 88 s in between, and a
+// board idle for longer goes to sleep before the LO byte lands. So the high
+// byte goes to 0xFF first: every value on the way is at least 0xFF00, never
+// shorter than the old or the new one, whatever the old one was.
+bool writeU16(IStm32RegisterBus& bus, uint16_t hiReg, uint16_t v) {
+    bool ok = bus.writeReg8(hiReg, 0xFF);
+    ok = bus.writeReg8((uint16_t)(hiReg + 1), (uint8_t)(v & 0xFF)) && ok;
+    ok = bus.writeReg8(hiReg, (uint8_t)(v >> 8)) && ok;
+    return ok;
+}
+
+} // namespace
+
 bool stm32ShouldResync(int lastBootCount, uint8_t current) {
     return lastBootCount < 0 || (uint8_t)lastBootCount != current;
 }
@@ -11,13 +28,7 @@ bool stm32ShouldResync(int lastBootCount, uint8_t current) {
 bool Stm32ConfigSync::pushAll(const Stm32Settings& s) {
     bool ok = true;
     auto w8 = [&](uint16_t reg, uint8_t v) { ok = bus_.writeReg8(reg, v) && ok; };
-    // u16 registers: write HI first to stage, then LO to commit.
-    // Two separate single-byte writes so that lastByteAt(HI) and lastByteAt(LO)
-    // both resolve correctly in the mock and on real hardware.
-    auto w16 = [&](uint16_t hi, uint16_t v) {
-        w8(hi,       (uint8_t)(v >> 8));
-        w8((uint16_t)(hi + 1), (uint8_t)(v & 0xFF));
-    };
+    auto w16 = [&](uint16_t hi, uint16_t v) { ok = writeU16(bus_, hi, v) && ok; };
 
     // system (0x0300..0x0311)
     w8(REG_CTL_AUDIO_EN, s.audioEn);
@@ -34,7 +45,7 @@ bool Stm32ConfigSync::pushAll(const Stm32Settings& s) {
     w8(REG_CTL_WAKE_BRIGHT, s.wakeBrightness);
     w8(REG_CTL_USB_SUSP_S, s.usbSuspendS);
 
-    // timeouts (u16 BE, commit on LO)
+    // timeouts and hold time (u16 BE)
     w16(REG_CTL_DIM_TO_S_HI, s.dimTimeoutS);
     w16(REG_CTL_SLEEP_TO_S_HI, s.sleepTimeoutS);
     w16(REG_CTL_LONG_PRESS_HI, s.longPressMs);
@@ -137,9 +148,7 @@ bool Stm32ConfigSync::writeReg8(uint16_t reg, uint8_t v) {
 }
 
 bool Stm32ConfigSync::writeReg16(uint16_t hiReg, uint16_t v) {
-    bool ok = bus_.writeReg8(hiReg, (uint8_t)(v >> 8));
-    ok = bus_.writeReg8((uint16_t)(hiReg + 1), (uint8_t)(v & 0xFF)) && ok;
-    return ok;
+    return writeU16(bus_, hiReg, v);
 }
 
 } // namespace crosspad

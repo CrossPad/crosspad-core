@@ -6,6 +6,15 @@ carries the same number) and consumers gate on it with
 `crosspad/RequireVersion.hpp`. This file starts at 1.45.0; earlier releases
 are described in their `chore: X.Y.Z` commits.
 
+## 2.46.1 — 2026-11-17
+
+- `Stm32ConfigSync`: a 16-bit STM setting (dim timeout, sleep timeout, power
+  hold time) no longer stands at a shorter value while it is being written. The
+  STM takes each byte into the live value as it arrives, so HI then LO took the
+  sleep timeout from 600 s to Never through 88 s. `pushAll()` and
+  `writeReg16()` now write HI = 0xFF, LO, HI: every value on the way is at
+  least 0xFF00.
+
 ## 2.46.0 — 2026-11-08
 
 - `InstrumentLoadNote` (`crosspad/instrument/InstrumentLoadNote.hpp`, header
