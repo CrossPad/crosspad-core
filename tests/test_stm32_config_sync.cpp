@@ -40,6 +40,42 @@ public:
     }
 };
 
+// A LiveU16Bus that loses one write: the n-th (from 0) does not arrive.
+class LossyLiveU16Bus : public LiveU16Bus {
+public:
+    explicit LossyLiveU16Bus(int lost) : lost_(lost) {}
+    bool writeReg(uint16_t reg, const uint8_t* data, size_t len) override {
+        return count_++ == lost_ ? false : LiveU16Bus::writeReg(reg, data, len);
+    }
+private:
+    int lost_;
+    int count_ = 0;
+};
+
+// The STM's side of a 16-bit setting that commits: the HI write is kept aside
+// and the LO write takes both bytes into the value the firmware uses.
+class CommitOnLoBus : public IStm32RegisterBus {
+public:
+    uint16_t hiReg;
+    uint8_t  pendingHi = 0;
+    std::vector<uint16_t> committed;
+
+    CommitOnLoBus(uint16_t hi, uint16_t was) : hiReg(hi), pendingHi((uint8_t)(was >> 8)) {}
+
+    bool writeReg(uint16_t reg, const uint8_t* data, size_t len) override {
+        for (size_t i = 0; i < len; ++i) {
+            uint16_t r = (uint16_t)(reg + i);
+            if (r == hiReg) pendingHi = data[i];
+            else if (r == (uint16_t)(hiReg + 1)) committed.push_back((uint16_t)((pendingHi << 8) | data[i]));
+        }
+        return true;
+    }
+    bool readReg(uint16_t, uint8_t* dst, size_t len) override {
+        for (size_t i = 0; i < len; ++i) dst[i] = 0;
+        return true;
+    }
+};
+
 // How long the STM waits on a value: 0 is Never for the two idle timeouts, and
 // the hold time is clamped to 1000..3700 ms where it is read.
 uint32_t waited(uint16_t hiReg, uint16_t v) {
@@ -62,7 +98,6 @@ void requireNeverShorter(const LiveU16Bus& bus, uint16_t hiReg, U16Step step) {
         CAPTURE(v);
         REQUIRE(waited(hiReg, v) >= floor);
     }
-    REQUIRE(h.back() == step.to);
 }
 
 } // namespace
@@ -212,7 +247,37 @@ TEST_CASE("Stm32ConfigSync::writeReg16 never shortens a wait on the way to the n
             Stm32ConfigSync sync(bus);
             REQUIRE(sync.writeReg16(hiReg, step.to) == true);
             requireNeverShorter(bus, hiReg, step);
+            REQUIRE(bus.held.at(hiReg).back() == step.to);
         }
+    }
+}
+
+TEST_CASE("Stm32ConfigSync::writeReg16 with a lost write never leaves a shorter wait", "[stm][sync]") {
+    const U16Step steps[] = {{600, 768}, {0x0200, 0x01FF}, {600, 0}, {0, 600}, {2400, 1000}};
+    for (uint16_t hiReg : kU16Regs) {
+        for (U16Step step : steps) {
+            for (int lost = 0; lost < 3; ++lost) {
+                CAPTURE(lost);
+                LossyLiveU16Bus bus(lost);
+                bus.preset(hiReg, step.from);
+                Stm32ConfigSync sync(bus);
+                REQUIRE(sync.writeReg16(hiReg, step.to) == false);
+                requireNeverShorter(bus, hiReg, step);
+                if (lost == 0) REQUIRE(bus.held.at(hiReg) == std::vector<uint16_t>{step.from});
+            }
+        }
+    }
+}
+
+TEST_CASE("Stm32ConfigSync::writeReg16 commits a register that takes the pair on its LO write", "[stm][sync]") {
+    const uint16_t regs[] = {REG_CTL_BTN_THR_HI, REG_CTL_BTN_HYST_HI, REG_CTL_CHG_ICHG_HI,
+                             REG_CTL_BATT_CAP_MAH_HI};
+    for (uint16_t hiReg : regs) {
+        CAPTURE(hiReg);
+        CommitOnLoBus bus(hiReg, 0x0123);
+        Stm32ConfigSync sync(bus);
+        REQUIRE(sync.writeReg16(hiReg, 300) == true);
+        REQUIRE(bus.committed == std::vector<uint16_t>{300});
     }
 }
 
@@ -224,7 +289,10 @@ TEST_CASE("Stm32ConfigSync::pushAll never shortens a wait on the way to the new 
         s.dimTimeoutS = s.sleepTimeoutS = s.longPressMs = step.to;
         Stm32ConfigSync sync(bus);
         REQUIRE(sync.pushAll(s) == true);
-        for (uint16_t hiReg : kU16Regs) requireNeverShorter(bus, hiReg, step);
+        for (uint16_t hiReg : kU16Regs) {
+            requireNeverShorter(bus, hiReg, step);
+            REQUIRE(bus.held.at(hiReg).back() == step.to);
+        }
     }
 }
 

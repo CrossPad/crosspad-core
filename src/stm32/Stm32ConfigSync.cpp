@@ -6,17 +6,30 @@ namespace crosspad {
 
 namespace {
 
-// A 16-bit STM setting is two one-byte registers, and the STM puts each byte
-// into the live value as it arrives: there is no commit. Written HI then LO,
-// 600 s -> Never (0x0258 -> 0x0000) stands at 0x0058 = 88 s in between, and a
-// board idle for longer goes to sleep before the LO byte lands. So the high
-// byte goes to 0xFF first: every value on the way is at least 0xFF00, never
-// shorter than the old or the new one, whatever the old one was.
+// The 16-bit STM settings whose bytes the STM puts into the value it runs on
+// as each one arrives. Every other 16-bit register stages its HI byte and takes
+// the pair on the LO write (reg_map.h says so where it defines them).
+bool takenByteByByte(uint16_t hiReg) {
+    return hiReg == REG_CTL_DIM_TO_S_HI || hiReg == REG_CTL_SLEEP_TO_S_HI ||
+           hiReg == REG_CTL_LONG_PRESS_HI;
+}
+
+// A 16-bit STM setting is two one-byte registers. A register that takes the
+// pair on its LO write gets HI then LO. One taken byte by byte has no commit:
+// written HI then LO, 600 s -> Never (0x0258 -> 0x0000) stands at 0x0058 = 88 s
+// in between, and a board idle for longer goes to sleep before the LO byte
+// lands. There the high byte goes to 0xFF first, so every value on the way is
+// at least 0xFF00, never shorter than the old or the new one, whatever the old
+// one was. A failed write ends it: the register is then as it was or at
+// 0xFF00 and above, where going on would put a new byte beside an old one.
 bool writeU16(IStm32RegisterBus& bus, uint16_t hiReg, uint16_t v) {
-    bool ok = bus.writeReg8(hiReg, 0xFF);
-    ok = bus.writeReg8((uint16_t)(hiReg + 1), (uint8_t)(v & 0xFF)) && ok;
-    ok = bus.writeReg8(hiReg, (uint8_t)(v >> 8)) && ok;
-    return ok;
+    const uint16_t loReg = (uint16_t)(hiReg + 1);
+    const uint8_t  hi = (uint8_t)(v >> 8), lo = (uint8_t)(v & 0xFF);
+    if (!takenByteByByte(hiReg)) {
+        bool ok = bus.writeReg8(hiReg, hi);
+        return bus.writeReg8(loReg, lo) && ok;
+    }
+    return bus.writeReg8(hiReg, 0xFF) && bus.writeReg8(loReg, lo) && bus.writeReg8(hiReg, hi);
 }
 
 } // namespace

@@ -12,8 +12,10 @@ are described in their `chore: X.Y.Z` commits.
   hold time) no longer stands at a shorter value while it is being written. The
   STM takes each byte into the live value as it arrives, so HI then LO took the
   sleep timeout from 600 s to Never through 88 s. `pushAll()` and
-  `writeReg16()` now write HI = 0xFF, LO, HI: every value on the way is at
-  least 0xFF00.
+  `writeReg16()` now write HI = 0xFF, LO, HI to these three registers: every
+  value on the way is at least 0xFF00, and a write that fails ends the
+  sequence. Every other 16-bit register commits on its LO write and is still
+  written HI then LO.
 
 ## 2.46.0 — 2026-11-08
 
