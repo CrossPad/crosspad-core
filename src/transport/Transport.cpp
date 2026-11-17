@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "crosspad/transport/Transport.hpp"
+#include "TransportTempo.hpp"
 
 #include "crosspad/platform/PlatformServices.hpp"
 #include "crosspad/settings/IKeyValueStore.hpp"
@@ -23,6 +24,15 @@ std::atomic<ITransportTarget*> s_home{nullptr};
 std::atomic<bool> s_tempoFromHost{false};
 /* The last tempo asked for, which a commit hands the song. */
 std::atomic<float> s_pendingTempo{0.0f};
+
+/* transportTempoToSave()'s state, set from the MIDI clock's task and read by
+ * whoever saves. s_heldTempo is the board's tempo while the host's is on the
+ * clock (0: the clock's is the board's); s_hostLeftTempo is the clock's tempo
+ * when the host let go (0 while it drives). */
+std::mutex s_heldMutex;
+float s_heldTempo = 0.0f;
+float s_hostLeftTempo = 0.0f;
+constexpr float kSameTempo = 1e-3f;
 
 bool can(ITransportTarget* t, uint8_t bit)
 {
@@ -133,6 +143,10 @@ void transportSetTempo(float bpm)
     if (bpm < kTransportTempoMin) bpm = kTransportTempoMin;
     if (bpm > kTransportTempoMax) bpm = kTransportTempoMax;
     s_pendingTempo.store(bpm);
+    {
+        std::lock_guard<std::mutex> l(s_heldMutex);
+        if (!s_tempoFromHost.load(std::memory_order_relaxed)) s_heldTempo = 0.0f;
+    }
     ISongEngine* se = getPlatformServices().songEngine;
     if (se && se->playing()) return;
     if (SequencerController* seq = getPlatformServices().sequencer) seq->setBpm(bpm);
@@ -159,7 +173,39 @@ void transportCommitTempo()
 
 bool transportTempoFromHost() { return s_tempoFromHost.load(std::memory_order_relaxed); }
 
-void transportSetTempoFromHost(bool host) { s_tempoFromHost.store(host, std::memory_order_relaxed); }
+void transportSetTempoFromHost(bool host)
+{
+    std::lock_guard<std::mutex> l(s_heldMutex);
+    if (s_tempoFromHost.exchange(host, std::memory_order_relaxed) == host) return;
+    /* Called before the host's first estimate reaches the clock: what it
+     * reads on the way in is still the board's tempo. */
+    const float clock = transportTempo();
+    if (host) {
+        /* Back after letting go, the clock where it left it: the board's
+         * tempo is still the one from before the first time. */
+        const bool untouched = s_heldTempo > 0.0f && std::fabs(clock - s_hostLeftTempo) < kSameTempo;
+        if (!untouched) s_heldTempo = clock;
+        s_hostLeftTempo = 0.0f;
+    } else {
+        s_hostLeftTempo = clock;
+    }
+}
+
+float transportTempoToSave(float clockBpm)
+{
+    std::lock_guard<std::mutex> l(s_heldMutex);
+    if (s_heldTempo <= 0.0f) return clockBpm;
+    if (s_tempoFromHost.load(std::memory_order_relaxed) ||
+        std::fabs(clockBpm - s_hostLeftTempo) < kSameTempo) return s_heldTempo;
+    s_heldTempo = 0.0f;         // moved since the host left: set on the board
+    return clockBpm;
+}
+
+void transportTempoLoaded(float bpm)
+{
+    std::lock_guard<std::mutex> l(s_heldMutex);
+    s_heldTempo = s_tempoFromHost.load(std::memory_order_relaxed) ? bpm : 0.0f;
+}
 
 bool transportClick()
 {

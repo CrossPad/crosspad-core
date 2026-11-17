@@ -2,6 +2,7 @@
 #include "crosspad/sequencer/SequenceStore.hpp"
 #include "crosspad/platform/IFileSystem.hpp"
 #include "../util/JsonStdio.hpp"
+#include "../transport/TransportTempo.hpp"
 
 #include <ArduinoJson.h>
 
@@ -26,7 +27,7 @@ bool SequenceStore::save(const PatternSequencer& seq, const std::string& path)
     JsonDocument doc;
     doc["version"] = kVersion;
     doc["ppq"]     = (int)PatternSequencer::kPpq;
-    doc["bpm"]     = seq.getClickBpm();
+    doc["bpm"]     = transportTempoToSave(seq.getClickBpm());
     doc["active"]  = seq.activeScene();
 
     /* As many scenes as the kit has, not as many as the engine could hold: the
@@ -130,7 +131,10 @@ SequenceLoad SequenceStore::open(PatternSequencer& seq, const std::string& path)
     /* Tempo first: every tick-to-sample conversion below reads it, and so does
      * the trim inside setSceneBars. */
     const float bpm = doc["bpm"] | 0.0f;
-    if (bpm > 0.0f) seq.setClickBpm(bpm);
+    if (bpm > 0.0f) {
+        seq.setClickBpm(bpm);
+        transportTempoLoaded(bpm);
+    }
 
     const int ppq = doc["ppq"] | (int)PatternSequencer::kPpq;
 

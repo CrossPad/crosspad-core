@@ -1403,3 +1403,99 @@ TEST_CASE("sequencer: a song's blocks play with their own track's swing", "[seq]
     r.run(kBeat / 4);
     CHECK(r.fired == std::vector<uint8_t>{2, 1});
 }
+
+// ── A host's tempo ──────────────────────────────────────────────────────────
+
+#include "crosspad/platform/PlatformServices.hpp"
+#include "crosspad/sequencer/SequencerController.hpp"
+#include "crosspad/transport/Transport.hpp"
+
+#include <ArduinoJson.h>
+#include <fstream>
+#include <sstream>
+
+namespace {
+/// The tempo @p path holds, read without loading it: a load is a tempo set on
+/// the board, which is what these tests are about.
+float savedBpm(const char* path)
+{
+    std::ifstream in(path);
+    std::stringstream text;
+    text << in.rdbuf();
+    JsonDocument doc;
+    REQUIRE(deserializeJson(doc, text.str()) == DeserializationError::Ok);
+    return doc["bpm"] | 0.0f;
+}
+
+/// @p r's sequencer published as the platform's, as on the board.
+struct Published {
+    SequencerController ctrl;
+    explicit Published(Rig& r) {
+        ctrl.init(r.seq);
+        getPlatformServices().sequencer = &ctrl;
+    }
+    ~Published() {
+        transportSetTempoFromHost(false);
+        getPlatformServices().sequencer = nullptr;
+    }
+};
+} // namespace
+
+TEST_CASE("sequencer: a host's MIDI-clock tempo never reaches the sequence file", "[seq][tempo][host]") {
+    const char* path = "cp_seq_host_tempo.json";
+    Rig a;
+    Published pub(a);
+    a.seq.setClickBpm(100.0f);
+    REQUIRE(SequenceStore::save(a.seq, path));
+    CHECK(savedBpm(path) == 100.0f);
+
+    transportSetTempoFromHost(true);
+    a.seq.setClickBpm(128.0f);                          // what the platform's clock does each tick
+    REQUIRE(SequenceStore::save(a.seq, path));
+    CHECK(savedBpm(path) == 100.0f);
+
+    /* The host lets go: the board plays on at its last tempo, still the host's. */
+    transportSetTempoFromHost(false);
+    REQUIRE(SequenceStore::save(a.seq, path));
+    CHECK(savedBpm(path) == 100.0f);
+
+    /* ...and takes over again: the tempo before it is still the board's. */
+    transportSetTempoFromHost(true);
+    a.seq.setClickBpm(132.0f);
+    REQUIRE(SequenceStore::save(a.seq, path));
+    CHECK(savedBpm(path) == 100.0f);
+
+    /* A tempo set on the board after the host has gone is the board's. */
+    transportSetTempoFromHost(false);
+    transportSetTempo(90.0f);
+    REQUIRE(SequenceStore::save(a.seq, path));
+    CHECK(savedBpm(path) == 90.0f);
+    std::remove(path);
+}
+
+TEST_CASE("sequencer: a groove loaded while a host drives keeps its own tempo", "[seq][tempo][host]") {
+    const char* first = "cp_seq_host_first.json";
+    const char* second = "cp_seq_host_second.json";
+    Rig other;
+    other.seq.setClickBpm(110.0f);
+    REQUIRE(SequenceStore::save(other.seq, second));
+
+    Rig a;
+    Published pub(a);
+    a.seq.setClickBpm(100.0f);
+    transportSetTempoFromHost(true);
+    a.seq.setClickBpm(128.0f);
+    REQUIRE(SequenceStore::load(a.seq, second));        // a kit change under the DAW
+    a.seq.setClickBpm(128.0f);                          // the next host tick
+    REQUIRE(SequenceStore::save(a.seq, first));
+    CHECK(savedBpm(first) == 110.0f);
+
+    /* Loaded after the host has gone, a file's tempo is the board's. */
+    transportSetTempoFromHost(false);
+    REQUIRE(SequenceStore::load(a.seq, second));
+    a.seq.setClickBpm(128.0f);                          // set on the board, the host's old tempo
+    REQUIRE(SequenceStore::save(a.seq, first));
+    CHECK(savedBpm(first) == 128.0f);
+    std::remove(first);
+    std::remove(second);
+}

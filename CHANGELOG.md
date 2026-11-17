@@ -6,6 +6,16 @@ carries the same number) and consumers gate on it with
 `crosspad/RequireVersion.hpp`. This file starts at 1.45.0; earlier releases
 are described in their `chore: X.Y.Z` commits.
 
+## 2.46.1 — 2026-11-17
+
+- A host's MIDI-clock tempo no longer reaches `sequences.json`.
+  `SequenceStore::save()` writes the tempo that was in force when the host
+  took over (`transportSetTempoFromHost(true)`), also after the host lets go
+  while the clock still runs at what it left on it, until a tempo is set on
+  the board (`transportSetTempo()`, a sequence file loaded with no host, or
+  the clock moved away). A file loaded while the host drives keeps its own
+  tempo.
+
 ## 2.46.0 — 2026-11-08
 
 - `InstrumentLoadNote` (`crosspad/instrument/InstrumentLoadNote.hpp`, header
