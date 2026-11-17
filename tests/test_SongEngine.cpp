@@ -2085,7 +2085,7 @@ TEST_CASE("song engine: a freeze of the engine the pads play waits while they ar
     CHECK(r.engine->freezeState(0) == FreezeState::Frozen);
 }
 
-TEST_CASE("song engine: a bounce asked for while the pads play its engine waits for them, then bounces", "[song][freeze]") {
+TEST_CASE("song engine: a bounce asked for while the pads play its engine waits for them, then takes the outputs", "[song][freeze]") {
     Rig r;
     REQUIRE(r.open("Demo"));
     {
@@ -2111,20 +2111,22 @@ TEST_CASE("song engine: a bounce asked for while the pads play its engine waits 
     CHECK(r.platform.captureBegun.load() == 0);                      // their engine still on the outputs
 
     r.platform.padsPlayed = false;
-    /* Faster than real time, so a block waits while the writer is half a
-     * ring behind (as an offline render does): a worker held up on a busy
-     * host would otherwise lose blocks, "card too slow". Until the engine
-     * ends the take itself, a timeout of its own included. */
-    const auto until = std::chrono::steady_clock::now() + std::chrono::seconds(30);
-    while (r.engine->bounceStatus().state == BounceState::Running && std::chrono::steady_clock::now() < until) {
-        if (!r.engine->captureBacklogged()) r.block(out, bus);
+    /* The pads let go: the next blocks start the capture. Whether the take then
+     * finishes depends on how fast this host writes it, so it is cancelled here;
+     * a bounce run to the end is the other bounce tests' to check. */
+    for (int i = 0; i < 100 && r.platform.captureBegun.load() == 0; ++i) {
+        r.block(out, bus);
         std::this_thread::sleep_for(std::chrono::milliseconds(2));
     }
-    INFO(r.engine->bounceStatus().error);
-    CHECK(r.engine->bounceStatus().state == BounceState::Done);
+    CHECK(r.platform.captureBegun.load() == 1);
+    r.engine->cancelBounce();
+    for (int i = 0; i < 1000 && r.engine->bounceStatus().state == BounceState::Running; ++i) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(2));
+    }
+    CHECK(r.engine->bounceStatus().state != BounceState::Running);
     CHECK(r.platform.captureEnded.load() == r.platform.captureBegun.load());
     std::lock_guard<std::recursive_mutex> l(r.engine->songMutex());
-    CHECK(r.engine->song().tracks[0].kind == TrackKind::Audio);
+    CHECK(r.engine->song().tracks[0].kind == TrackKind::Seq);   // a cancelled take places nothing
 }
 
 TEST_CASE("song engine: a block going round is frozen from two of its passes", "[song][freeze]") {
