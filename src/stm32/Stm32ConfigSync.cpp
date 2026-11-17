@@ -6,30 +6,45 @@ namespace crosspad {
 
 namespace {
 
-// The 16-bit STM settings whose bytes the STM puts into the value it runs on
-// as each one arrives. Every other 16-bit register stages its HI byte and takes
-// the pair on the LO write (reg_map.h says so where it defines them).
-bool takenByteByByte(uint16_t hiReg) {
+// The 16-bit STM settings that get the 0xFF-first order: the STM puts each of
+// their bytes into the value it runs on as the byte arrives, and a shorter
+// value on the way does harm (the board dims, sleeps or powers off early).
+// Every other pair is written HI then LO. Some of those the STM takes on the
+// LO write (button threshold and hysteresis, charger ICHG..SYSMIN, pad
+// sensitivity), some byte by byte as well (CHG_AUTO_LIM, BATT_CAP_MAH,
+// VPAD_RATE/COUNT); 0xFF in HI would be applied to those as a real value.
+bool longValueOnTheWay(uint16_t hiReg) {
     return hiReg == REG_CTL_DIM_TO_S_HI || hiReg == REG_CTL_SLEEP_TO_S_HI ||
            hiReg == REG_CTL_LONG_PRESS_HI;
 }
 
-// A 16-bit STM setting is two one-byte registers. A register that takes the
-// pair on its LO write gets HI then LO. One taken byte by byte has no commit:
-// written HI then LO, 600 s -> Never (0x0258 -> 0x0000) stands at 0x0058 = 88 s
-// in between, and a board idle for longer goes to sleep before the LO byte
-// lands. There the high byte goes to 0xFF first, so every value on the way is
-// at least 0xFF00, never shorter than the old or the new one, whatever the old
-// one was. A failed write ends it: the register is then as it was or at
-// 0xFF00 and above, where going on would put a new byte beside an old one.
+// A 16-bit STM setting is two one-byte registers, written HI then LO. For the
+// three above that order is wrong: 600 s -> Never (0x0258 -> 0x0000) stands at
+// 0x0058 = 88 s in between, and a board idle for longer goes to sleep before
+// the LO byte lands. They are written HI = 0xFF, LO, HI, LO instead:
+//  - every value on the way is at least 0xFF00 (65280 s, or the hold time's
+//    upper clamp), which is never shorter than the old or the new value unless
+//    one of them is 0 = Never and the other is not short of 65280;
+//  - Never -> Never would itself stand at 0xFF00, so a register that already
+//    reads back the value is not written at all. When that read fails the
+//    sequence runs, and Never -> Never is then finite (65280 s) between two
+//    writes;
+//  - the last LO write changes nothing on an STM that takes the bytes as they
+//    arrive and commits the pair on one that takes it on LO.
+// A failed write ends the sequence: the register is then as it was or at
+// 0xFF00 and above, where going on would put a new byte beside an old one, and
+// it stays there until the next push.
 bool writeU16(IStm32RegisterBus& bus, uint16_t hiReg, uint16_t v) {
     const uint16_t loReg = (uint16_t)(hiReg + 1);
     const uint8_t  hi = (uint8_t)(v >> 8), lo = (uint8_t)(v & 0xFF);
-    if (!takenByteByByte(hiReg)) {
+    if (!longValueOnTheWay(hiReg)) {
         bool ok = bus.writeReg8(hiReg, hi);
         return bus.writeReg8(loReg, lo) && ok;
     }
-    return bus.writeReg8(hiReg, 0xFF) && bus.writeReg8(loReg, lo) && bus.writeReg8(hiReg, hi);
+    uint8_t now[2];
+    if (bus.readReg(hiReg, now, 2) && now[0] == hi && now[1] == lo) return true;
+    return bus.writeReg8(hiReg, 0xFF) && bus.writeReg8(loReg, lo) &&
+           bus.writeReg8(hiReg, hi) && bus.writeReg8(loReg, lo);
 }
 
 } // namespace

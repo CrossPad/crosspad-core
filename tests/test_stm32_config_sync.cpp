@@ -34,10 +34,19 @@ public:
         }
         return true;
     }
-    bool readReg(uint16_t, uint8_t* dst, size_t len) override {
-        for (size_t i = 0; i < len; ++i) dst[i] = 0;
+    bool readReg(uint16_t reg, uint8_t* dst, size_t len) override {
+        if (!readable) return false;
+        for (size_t i = 0; i < len; ++i) {
+            uint16_t r = (uint16_t)(reg + i);
+            auto hi = held.find(r);
+            auto lo = held.find((uint16_t)(r - 1));
+            dst[i] = hi != held.end() ? (uint8_t)(hi->second.back() >> 8)
+                   : lo != held.end() ? (uint8_t)(lo->second.back() & 0xFF)
+                   : 0;
+        }
         return true;
     }
+    bool readable = true;
 };
 
 // A LiveU16Bus that loses one write: the n-th (from 0) does not arrive.
@@ -87,6 +96,7 @@ struct U16Step { uint16_t from, to; };
 const U16Step kU16Steps[] = {
     {600, 0}, {0, 600}, {1800, 600}, {600, 1800}, {0x0258, 0x0100},
     {0x0A00, 0x09FF}, {0x09FF, 0x0A00}, {2400, 1000}, {1000, 3700}, {0xFFFF, 1},
+    {0, 0}, {600, 600},
 };
 const uint16_t kU16Regs[] = {REG_CTL_DIM_TO_S_HI, REG_CTL_SLEEP_TO_S_HI, REG_CTL_LONG_PRESS_HI};
 
@@ -256,7 +266,7 @@ TEST_CASE("Stm32ConfigSync::writeReg16 with a lost write never leaves a shorter 
     const U16Step steps[] = {{600, 768}, {0x0200, 0x01FF}, {600, 0}, {0, 600}, {2400, 1000}};
     for (uint16_t hiReg : kU16Regs) {
         for (U16Step step : steps) {
-            for (int lost = 0; lost < 3; ++lost) {
+            for (int lost = 0; lost < 4; ++lost) {
                 CAPTURE(lost);
                 LossyLiveU16Bus bus(lost);
                 bus.preset(hiReg, step.from);
@@ -269,15 +279,53 @@ TEST_CASE("Stm32ConfigSync::writeReg16 with a lost write never leaves a shorter 
     }
 }
 
+TEST_CASE("Stm32ConfigSync::writeReg16 leaves a register that already holds the value alone", "[stm][sync]") {
+    for (uint16_t hiReg : kU16Regs) {
+        for (uint16_t v : {(uint16_t)0, (uint16_t)600, (uint16_t)0xFF00}) {
+            CAPTURE(hiReg, v);
+            LiveU16Bus bus;
+            bus.preset(hiReg, v);
+            Stm32ConfigSync sync(bus);
+            REQUIRE(sync.writeReg16(hiReg, v) == true);
+            REQUIRE(bus.held.at(hiReg) == std::vector<uint16_t>{v});
+        }
+    }
+}
+
+TEST_CASE("Stm32ConfigSync::writeReg16 writes when the register cannot be read", "[stm][sync]") {
+    for (uint16_t hiReg : kU16Regs) {
+        for (U16Step step : {U16Step{600, 0}, U16Step{600, 600}, U16Step{0, 600}}) {
+            LiveU16Bus bus;
+            bus.readable = false;
+            bus.preset(hiReg, step.from);
+            Stm32ConfigSync sync(bus);
+            REQUIRE(sync.writeReg16(hiReg, step.to) == true);
+            requireNeverShorter(bus, hiReg, step);
+            REQUIRE(bus.held.at(hiReg).size() == 5);
+            REQUIRE(bus.held.at(hiReg).back() == step.to);
+        }
+    }
+}
+
 TEST_CASE("Stm32ConfigSync::writeReg16 commits a register that takes the pair on its LO write", "[stm][sync]") {
-    const uint16_t regs[] = {REG_CTL_BTN_THR_HI, REG_CTL_BTN_HYST_HI, REG_CTL_CHG_ICHG_HI,
-                             REG_CTL_BATT_CAP_MAH_HI};
+    const uint16_t regs[] = {REG_CTL_BTN_THR_HI, REG_CTL_BTN_HYST_HI, REG_CTL_CHG_ICHG_HI};
     for (uint16_t hiReg : regs) {
         CAPTURE(hiReg);
         CommitOnLoBus bus(hiReg, 0x0123);
         Stm32ConfigSync sync(bus);
         REQUIRE(sync.writeReg16(hiReg, 300) == true);
         REQUIRE(bus.committed == std::vector<uint16_t>{300});
+    }
+}
+
+TEST_CASE("Stm32ConfigSync::writeReg16 ends on the new value if the STM took a timeout on its LO write", "[stm][sync]") {
+    for (uint16_t hiReg : kU16Regs) {
+        CAPTURE(hiReg);
+        CommitOnLoBus bus(hiReg, 0x0258);
+        Stm32ConfigSync sync(bus);
+        REQUIRE(sync.writeReg16(hiReg, 0x0100) == true);
+        REQUIRE(bus.committed.back() == 0x0100);
+        for (uint16_t v : bus.committed) REQUIRE(waited(hiReg, v) >= waited(hiReg, 0x0100));
     }
 }
 
