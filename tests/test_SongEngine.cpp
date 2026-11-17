@@ -2111,10 +2111,16 @@ TEST_CASE("song engine: a bounce asked for while the pads play its engine waits 
     CHECK(r.platform.captureBegun.load() == 0);                      // their engine still on the outputs
 
     r.platform.padsPlayed = false;
-    for (int i = 0; i < 4000 && r.engine->bounceStatus().state == BounceState::Running; ++i) {
-        r.block(out, bus);
+    /* Faster than real time, so a block waits while the writer is half a
+     * ring behind (as an offline render does): a worker held up on a busy
+     * host would otherwise lose blocks, "card too slow". Until the engine
+     * ends the take itself, a timeout of its own included. */
+    const auto until = std::chrono::steady_clock::now() + std::chrono::seconds(30);
+    while (r.engine->bounceStatus().state == BounceState::Running && std::chrono::steady_clock::now() < until) {
+        if (!r.engine->captureBacklogged()) r.block(out, bus);
         std::this_thread::sleep_for(std::chrono::milliseconds(2));
     }
+    INFO(r.engine->bounceStatus().error);
     CHECK(r.engine->bounceStatus().state == BounceState::Done);
     CHECK(r.platform.captureEnded.load() == r.platform.captureBegun.load());
     std::lock_guard<std::recursive_mutex> l(r.engine->songMutex());
