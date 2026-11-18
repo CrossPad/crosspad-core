@@ -12,6 +12,13 @@
 #include "crosspad/app/AppEntry.hpp"
 #include <cstddef>
 
+/* How many apps the registry holds. A platform with more RAM, or more apps than
+ * the default takes, defines it for the whole build; the launcher's own entries
+ * are registered after the apps and need room too (see MAX_APPS). */
+#ifndef CROSSPAD_MAX_APPS
+#define CROSSPAD_MAX_APPS 24
+#endif
+
 namespace crosspad {
 
 /**
@@ -57,7 +64,8 @@ private:
      * (Power OFF) after them -- which registerApp() dropped without a word,
      * so the board simply had no way to be turned off. An AppEntry is a
      * handful of pointers; eight more cost less than that bug did. */
-    static constexpr size_t MAX_APPS = 24;
+    static constexpr size_t MAX_APPS = CROSSPAD_MAX_APPS;
+    static_assert(CROSSPAD_MAX_APPS >= 16, "the apps that ship are sixteen on their own");
     AppEntry apps[MAX_APPS];
     size_t appCount = 0;
     size_t dropped_ = 0;

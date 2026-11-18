@@ -19,14 +19,154 @@ uint8_t readU8In(IKeyValueStore& store, const char* ns, const char* key,
 constexpr uint8_t kLcdBrightnessMin = 5;    // Settings -> Display slider floor
 constexpr uint8_t kPercentMax       = 100;  // brightness and every volume field
 
+enum class FieldKind : uint8_t { Bool, U8 };
+
+/// A setting that is stored as it is held: a bool, or a byte kept within
+/// [lo, hi]. loadFrom() and saveTo() both walk kFields, so the two cannot
+/// disagree on a key. `fallback` is what a store without the key answers, and
+/// it -- not the constructor's value, which the load overwrites -- is what a
+/// board that never saved its settings boots with.
+struct Field {
+    const char* ns;
+    const char* key;
+    FieldKind   kind;
+    uint8_t     fallback;
+    uint8_t     lo;
+    uint8_t     hi;
+    void*     (*at)(CrosspadSettings&);
+};
+
+// The typed pointer inside each accessor makes a row of the wrong kind a
+// compile error.
+#define CP_BOOL(ns, key, member, fallback) \
+    {ns, key, FieldKind::Bool, fallback, 0, 1, [](CrosspadSettings& s) -> void* { bool* p = &s.member; return p; }}
+#define CP_U8_IN(ns, key, member, fallback, lo, hi) \
+    {ns, key, FieldKind::U8, fallback, lo, hi, [](CrosspadSettings& s) -> void* { uint8_t* p = &s.member; return p; }}
+#define CP_U8(ns, key, member, fallback) CP_U8_IN(ns, key, member, fallback, 0, UINT8_MAX)
+
+constexpr Field kFields[] = {
+    // Display
+    CP_U8_IN("cfg_display", "brightness", LCDbrightness, 100, kLcdBrightnessMin, kPercentMax),
+    CP_U8("cfg_display", "theme_clr", themeColorIndex, 0),
+    CP_U8("cfg_display", "perf_stats", perfStatsFlags, 0),
+    CP_BOOL("cfg_display", "drawer_en", quickSettingsEnabled, true),
+
+    // Recorder
+    CP_BOOL("cfg_rec", "auto_trim", recorderAutoTrim, false),
+
+    // Audio (master)
+    CP_BOOL("cfg_audio", "engine_en", AudioEngineEnabled, true),
+    /* What an unprovisioned board boots with. */
+    CP_BOOL("cfg_audio", "usb_audio", usbAudioEnabled, true),
+    CP_BOOL("cfg_audio", "usb_guard", usbSerialGuard, true),
+    CP_U8("cfg_audio", "usb_preset", usbAudioPreset, 0),
+    CP_U8("cfg_audio", "usb_gain_db", usbAudioGainDb, 0),
+    CP_BOOL("cfg_audio", "mute", masterFX.mute, false),
+    CP_BOOL("cfg_audio", "spk_en", masterFX.speakersEnabled, true),
+    CP_U8_IN("cfg_audio", "in_vol", masterFX.inVolume, 50, 0, kPercentMax),
+    CP_U8_IN("cfg_audio", "out_vol", masterFX.outVolume, 50, 0, kPercentMax),
+    CP_BOOL("cfg_audio", "delay_byp", masterFX.delay.bypass, true),
+    CP_BOOL("cfg_audio", "reverb_byp", masterFX.reverb.bypass, true),
+    CP_BOOL("cfg_audio", "dist_byp", masterFX.distortion.bypass, true),
+    CP_BOOL("cfg_audio", "chorus_byp", masterFX.chorus.bypass, true),
+    CP_BOOL("cfg_audio", "flangr_byp", masterFX.flanger.bypass, true),
+
+    // RGB
+    CP_U8("cfg_rgb", "brightness", RGBbrightness, 100),
+
+    // Keypad
+    CP_BOOL("cfg_keypad", "enable", keypad.enableKeypad, true),
+    CP_BOOL("cfg_keypad", "noteoff_rel", keypad.noteOffOnRelease, false),
+    CP_BOOL("cfg_keypad", "inactive_lt", keypad.inactiveLights, true),
+    CP_BOOL("cfg_keypad", "lt_noteon", keypad.lightsOnNoteOn, false),
+    CP_BOOL("cfg_keypad", "lt_noteoff", keypad.lightsOnNoteOff, false),
+    CP_BOOL("cfg_keypad", "upper_fn", keypad.upperRowFunctions, false),
+    CP_BOOL("cfg_keypad", "eco", keypad.ecoMode, false),
+    CP_BOOL("cfg_keypad", "send_stm", keypad.send2STM, false),
+    CP_BOOL("cfg_keypad", "send_ble", keypad.send2BLE, true),
+    CP_BOOL("cfg_keypad", "send_usb", keypad.send2USB, true),
+    CP_BOOL("cfg_keypad", "send_cc", keypad.sendCC, false),
+
+    // Vibration
+    CP_BOOL("cfg_vibrate", "enable", vibration.enable, true),
+    CP_BOOL("cfg_vibrate", "on_touch", vibration.enableVibrationOnTouch, true),
+    CP_BOOL("cfg_vibrate", "on_error", vibration.enableVibrationOnError, true),
+    CP_BOOL("cfg_vibrate", "audio_vib", vibration.enableAudioToVibe, true),
+    CP_U8("cfg_vibrate", "in_min", vibration.inputMin, 10),
+    CP_U8("cfg_vibrate", "in_max", vibration.inputMax, 127),
+    CP_U8("cfg_vibrate", "out_min", vibration.outputMin, 5),
+    CP_U8("cfg_vibrate", "out_max", vibration.outputMax, 200),
+    CP_BOOL("cfg_vibrate", "debug", vibration.debugging, false),
+
+    // Wireless. The fallbacks match WirelessSettings' own defaults: a device that
+    // has never saved this section behaves the same as one that never had it.
+    CP_BOOL("cfg_wireless", "wifi", wireless.enableWiFi, false),
+    CP_BOOL("cfg_wireless", "ble", wireless.enableBLE, false),
+    CP_BOOL("cfg_wireless", "remote", wireless.enableRemote, true),
+    CP_BOOL("cfg_wireless", "osc", wireless.enableOSC, false),
+    CP_BOOL("cfg_wireless", "osc_srv", wireless.enableOSCServer, true),
+    CP_BOOL("cfg_wireless", "udp", wireless.enableUDP, true),
+    CP_BOOL("cfg_wireless", "tcp", wireless.enableTCP, true),
+    CP_BOOL("cfg_wireless", "websrv", wireless.enableWebServer, true),
+    CP_U8("cfg_wireless", "ble_mode", wireless.bleMidiMode, 1),
+    CP_U8("cfg_wireless", "ble_toff", wireless.bleMidiTxOffset, 0),
+
+    // STM Routing
+    CP_BOOL("cfg_stm_rt", "routing_en", stmRouting.RoutingMatrixEnabled, true),
+    CP_BOOL("cfg_stm_rt", "btn_midi", stmRouting.ConfigButtonsAsMidi, false),
+    CP_BOOL("cfg_stm_rt", "m2mt", stmRouting.Midi2MidiThru, false),
+    CP_BOOL("cfg_stm_rt", "m2usb", stmRouting.Midi2USB, true),
+    CP_BOOL("cfg_stm_rt", "m2esp", stmRouting.Midi2ESP, false),
+    CP_BOOL("cfg_stm_rt", "u2midi", stmRouting.USB2Midi, false),
+    CP_BOOL("cfg_stm_rt", "u2ut", stmRouting.USB2USBThru, false),
+    CP_BOOL("cfg_stm_rt", "u2esp", stmRouting.USB2ESP, true),
+    CP_BOOL("cfg_stm_rt", "e2midi", stmRouting.ESP2Midi, true),
+    CP_BOOL("cfg_stm_rt", "e2usb", stmRouting.ESP2USB, true),
+    CP_BOOL("cfg_stm_rt", "e2et", stmRouting.ESP2ESPThru, false),
+    CP_BOOL("cfg_stm_rt", "b2m", stmRouting.Buttons2Midi, false),
+    CP_BOOL("cfg_stm_rt", "b2u", stmRouting.Buttons2USB, false),
+    CP_BOOL("cfg_stm_rt", "b2e", stmRouting.Buttons2ESP, true),
+
+    // ESP Routing
+    CP_BOOL("cfg_esp_rt", "ble2midi", esp32Routing.BLE2Midi, true),
+    CP_BOOL("cfg_esp_rt", "ble2audio", esp32Routing.BLE2Audio, true),
+    CP_BOOL("cfg_esp_rt", "midi2ble", esp32Routing.Midi2BLE, true),
+    CP_BOOL("cfg_esp_rt", "midi2audio", esp32Routing.Midi2Audio, true),
+
+    // Kit
+    CP_U8("cfg_system", "kit", Kit, 0),
+};
+
+#undef CP_BOOL
+#undef CP_U8_IN
+#undef CP_U8
+
+/// One codec output or input level: both codecs, both pairs of each.
+struct CodecLevel {
+    const char* key;
+    uint8_t     codec;
+    uint8_t     pair;
+};
+constexpr CodecLevel kOutCodecLevels[] = {{"ovc00", 0, 0}, {"ovc01", 0, 1}, {"ovc10", 1, 0}, {"ovc11", 1, 1}};
+constexpr CodecLevel kInCodecLevels[]  = {{"ivc00", 0, 0}, {"ivc01", 0, 1}, {"ivc10", 1, 0}, {"ivc11", 1, 1}};
+
+/// The per-slot keys of cfg_imu_midi are "s<slot>_<name>".
+void imuSlotKey(char* key, size_t size, size_t slot, const char* name) {
+    snprintf(key, size, "s%u_%s", (unsigned)slot, name);
+}
+constexpr size_t kImuKeyMax = 16;
+
 } // namespace
 
 void CrosspadSettings::loadFrom(IKeyValueStore& store) {
-    // Display
-    LCDbrightness     = readU8In(store, "cfg_display", "brightness", 100, kLcdBrightnessMin, kPercentMax);
-    themeColorIndex   = store.readU8("cfg_display", "theme_clr", 0);
-    perfStatsFlags    = store.readU8("cfg_display", "perf_stats", 0);
-    quickSettingsEnabled = store.readBool("cfg_display", "drawer_en", true);
+    for (const Field& f : kFields) {
+        if (f.kind == FieldKind::Bool) {
+            *static_cast<bool*>(f.at(*this)) = store.readBool(f.ns, f.key, f.fallback != 0);
+        } else {
+            *static_cast<uint8_t*>(f.at(*this)) = readU8In(store, f.ns, f.key, f.fallback, f.lo, f.hi);
+        }
+    }
+
     /* A key of its own, not "launcher": every board that ever saved its
      * settings holds a Grid or List there from when the board ignored it and
      * always opened on the pad map. Reading that would move those boards off
@@ -39,18 +179,6 @@ void CrosspadSettings::loadFrom(IKeyValueStore& store) {
                                                   (uint8_t)TouchSensitivity::Low,
                                                   (uint8_t)TouchSensitivity::High);
 
-    // Recorder
-    /* The fallback, not the constructor's: this load() is what a boot sees. */
-    recorderAutoTrim         = store.readBool("cfg_rec", "auto_trim", false);
-
-    // Audio (master)
-    AudioEngineEnabled       = store.readBool("cfg_audio", "engine_en", true);
-    /* The fallback here, not the constructor's, is what an unprovisioned board
-     * boots with — the constructor value is overwritten by this load(). */
-    usbAudioEnabled          = store.readBool("cfg_audio", "usb_audio", true);
-    usbSerialGuard           = store.readBool("cfg_audio", "usb_guard", true);
-    usbAudioPreset           = store.readU8("cfg_audio", "usb_preset", 0);
-    usbAudioGainDb           = store.readU8("cfg_audio", "usb_gain_db", 0);
     {
         uint32_t sr = store.readU8("cfg_audio_eng", "sr_idx", 0); // 0=44100, 1=48000, 2=96000
         if (sr < AudioEngineSettings::kSampleRatesCount) {
@@ -63,50 +191,16 @@ void CrosspadSettings::loadFrom(IKeyValueStore& store) {
         const int32_t q = store.readI32("cfg_audio_eng", "q_frames", (int32_t)audioEngine.queueFrames);
         audioEngine.queueFrames = (q >= 0 && q <= (int32_t)AudioEngineSettings::kMaxQueueFrames) ? (uint32_t)q : 0;
     }
-    masterFX.mute            = store.readBool("cfg_audio", "mute", false);
-    masterFX.speakersEnabled = store.readBool("cfg_audio", "spk_en", true);
-    masterFX.inVolume        = readU8In(store, "cfg_audio", "in_vol", 50, 0, kPercentMax);
-    masterFX.outVolume       = readU8In(store, "cfg_audio", "out_vol", 50, 0, kPercentMax);
-    masterFX.delay.bypass    = store.readBool("cfg_audio", "delay_byp", true);
-    masterFX.reverb.bypass   = store.readBool("cfg_audio", "reverb_byp", true);
-    masterFX.distortion.bypass = store.readBool("cfg_audio", "dist_byp", true);
-    masterFX.chorus.bypass   = store.readBool("cfg_audio", "chorus_byp", true);
-    masterFX.flanger.bypass  = store.readBool("cfg_audio", "flangr_byp", true);
-    masterFX.outVolumeCodec[0][0] = readU8In(store, "cfg_audio", "ovc00", masterFX.outVolumeCodec[0][0], 0, kPercentMax);
-    masterFX.outVolumeCodec[0][1] = readU8In(store, "cfg_audio", "ovc01", masterFX.outVolumeCodec[0][1], 0, kPercentMax);
-    masterFX.outVolumeCodec[1][0] = readU8In(store, "cfg_audio", "ovc10", masterFX.outVolumeCodec[1][0], 0, kPercentMax);
-    masterFX.outVolumeCodec[1][1] = readU8In(store, "cfg_audio", "ovc11", masterFX.outVolumeCodec[1][1], 0, kPercentMax);
-    masterFX.inVolumeCodec[0][0] = readU8In(store, "cfg_audio", "ivc00", masterFX.inVolumeCodec[0][0], 0, kPercentMax);
-    masterFX.inVolumeCodec[0][1] = readU8In(store, "cfg_audio", "ivc01", masterFX.inVolumeCodec[0][1], 0, kPercentMax);
-    masterFX.inVolumeCodec[1][0] = readU8In(store, "cfg_audio", "ivc10", masterFX.inVolumeCodec[1][0], 0, kPercentMax);
-    masterFX.inVolumeCodec[1][1] = readU8In(store, "cfg_audio", "ivc11", masterFX.inVolumeCodec[1][1], 0, kPercentMax);
 
-    // RGB
-    RGBbrightness = store.readU8("cfg_rgb", "brightness", 100);
-
-    // Keypad
-    keypad.enableKeypad      = store.readBool("cfg_keypad", "enable", true);
-    keypad.noteOffOnRelease  = store.readBool("cfg_keypad", "noteoff_rel", false);
-    keypad.inactiveLights    = store.readBool("cfg_keypad", "inactive_lt", true);
-    keypad.lightsOnNoteOn    = store.readBool("cfg_keypad", "lt_noteon", false);
-    keypad.lightsOnNoteOff   = store.readBool("cfg_keypad", "lt_noteoff", false);
-    keypad.upperRowFunctions = store.readBool("cfg_keypad", "upper_fn", false);
-    keypad.ecoMode           = store.readBool("cfg_keypad", "eco", false);
-    keypad.send2STM          = store.readBool("cfg_keypad", "send_stm", false);
-    keypad.send2BLE          = store.readBool("cfg_keypad", "send_ble", true);
-    keypad.send2USB          = store.readBool("cfg_keypad", "send_usb", true);
-    keypad.sendCC            = store.readBool("cfg_keypad", "send_cc", false);
-
-    // Vibration
-    vibration.enable                = store.readBool("cfg_vibrate", "enable", true);
-    vibration.enableVibrationOnTouch = store.readBool("cfg_vibrate", "on_touch", true);
-    vibration.enableVibrationOnError = store.readBool("cfg_vibrate", "on_error", true);
-    vibration.enableAudioToVibe     = store.readBool("cfg_vibrate", "audio_vib", true);
-    vibration.inputMin              = store.readU8("cfg_vibrate", "in_min", 10);
-    vibration.inputMax              = store.readU8("cfg_vibrate", "in_max", 127);
-    vibration.outputMin             = store.readU8("cfg_vibrate", "out_min", 5);
-    vibration.outputMax             = store.readU8("cfg_vibrate", "out_max", 200);
-    vibration.debugging             = store.readBool("cfg_vibrate", "debug", false);
+    // A level the store does not hold stays what it is.
+    for (const CodecLevel& l : kOutCodecLevels) {
+        uint8_t& v = masterFX.outVolumeCodec[l.codec][l.pair];
+        v = readU8In(store, "cfg_audio", l.key, v, 0, kPercentMax);
+    }
+    for (const CodecLevel& l : kInCodecLevels) {
+        uint8_t& v = masterFX.inVolumeCodec[l.codec][l.pair];
+        v = readU8In(store, "cfg_audio", l.key, v, 0, kPercentMax);
+    }
 
     /* IMU -> MIDI. Every fallback below is the value ImuMidiSettings' constructor
      * uses; a board that never saved this section must behave like one that never
@@ -117,67 +211,29 @@ void CrosspadSettings::loadFrom(IKeyValueStore& store) {
         const ImuMidiSettings d{};
         imuMidi.enabled       = store.readBool("cfg_imu_midi", "en", d.enabled);
         imuMidi.minIntervalMs = store.readU8("cfg_imu_midi", "ival", d.minIntervalMs);
-        char key[16];
+        char key[kImuKeyMax];
         for (size_t i = 0; i < kImuMidiSlots; ++i) {
             auto &slot = imuMidi.slots[i];
             const auto &dd = d.slots[i];
-            snprintf(key, sizeof(key), "s%u_en", (unsigned)i);
+            imuSlotKey(key, sizeof(key), i, "en");
             slot.enabled = store.readBool("cfg_imu_midi", key, dd.enabled);
-            snprintf(key, sizeof(key), "s%u_src", (unsigned)i);
+            imuSlotKey(key, sizeof(key), i, "src");
             slot.source = store.readU8("cfg_imu_midi", key, dd.source);
-            snprintf(key, sizeof(key), "s%u_tgt", (unsigned)i);
+            imuSlotKey(key, sizeof(key), i, "tgt");
             slot.target = store.readU8("cfg_imu_midi", key, dd.target);
-            snprintf(key, sizeof(key), "s%u_cc", (unsigned)i);
+            imuSlotKey(key, sizeof(key), i, "cc");
             slot.cc = store.readU8("cfg_imu_midi", key, dd.cc);
-            snprintf(key, sizeof(key), "s%u_ch", (unsigned)i);
+            imuSlotKey(key, sizeof(key), i, "ch");
             slot.channel = store.readU8("cfg_imu_midi", key, dd.channel);
-            snprintf(key, sizeof(key), "s%u_inv", (unsigned)i);
+            imuSlotKey(key, sizeof(key), i, "inv");
             slot.invert = store.readBool("cfg_imu_midi", key, dd.invert);
-            snprintf(key, sizeof(key), "s%u_span", (unsigned)i);
+            imuSlotKey(key, sizeof(key), i, "span");
             slot.inputSpan = (float)store.readI32("cfg_imu_midi", key,
                                                   (int32_t)dd.inputSpan);
         }
     }
 
-    // Wireless
-    wireless.enableWiFi      = store.readBool("cfg_wireless", "wifi", false);
-    wireless.enableBLE       = store.readBool("cfg_wireless", "ble", false);
-    wireless.enableRemote    = store.readBool("cfg_wireless", "remote", true);
-    wireless.enableOSC       = store.readBool("cfg_wireless", "osc", false);
-    wireless.enableOSCServer = store.readBool("cfg_wireless", "osc_srv", true);
-    wireless.enableUDP       = store.readBool("cfg_wireless", "udp", true);
-    wireless.enableTCP       = store.readBool("cfg_wireless", "tcp", true);
-    wireless.enableWebServer = store.readBool("cfg_wireless", "websrv", true);
-    // Fallbacks must match WirelessSettings' own defaults: a device that has
-    // never saved this section should behave the same as one that never had it.
-    wireless.bleMidiMode       = store.readU8("cfg_wireless", "ble_mode", 1);
     wireless.bleMidiNoteOffset = (int8_t)store.readU8("cfg_wireless", "ble_noff", 0);
-    wireless.bleMidiTxOffset   = store.readU8("cfg_wireless", "ble_toff", 0);
-
-    // STM Routing
-    stmRouting.RoutingMatrixEnabled = store.readBool("cfg_stm_rt", "routing_en", true);
-    stmRouting.ConfigButtonsAsMidi  = store.readBool("cfg_stm_rt", "btn_midi", false);
-    stmRouting.Midi2MidiThru        = store.readBool("cfg_stm_rt", "m2mt", false);
-    stmRouting.Midi2USB             = store.readBool("cfg_stm_rt", "m2usb", true);
-    stmRouting.Midi2ESP             = store.readBool("cfg_stm_rt", "m2esp", false);
-    stmRouting.USB2Midi             = store.readBool("cfg_stm_rt", "u2midi", false);
-    stmRouting.USB2USBThru          = store.readBool("cfg_stm_rt", "u2ut", false);
-    stmRouting.USB2ESP              = store.readBool("cfg_stm_rt", "u2esp", true);
-    stmRouting.ESP2Midi             = store.readBool("cfg_stm_rt", "e2midi", true);
-    stmRouting.ESP2USB              = store.readBool("cfg_stm_rt", "e2usb", true);
-    stmRouting.ESP2ESPThru          = store.readBool("cfg_stm_rt", "e2et", false);
-    stmRouting.Buttons2Midi         = store.readBool("cfg_stm_rt", "b2m", false);
-    stmRouting.Buttons2USB          = store.readBool("cfg_stm_rt", "b2u", false);
-    stmRouting.Buttons2ESP          = store.readBool("cfg_stm_rt", "b2e", true);
-
-    // ESP Routing
-    esp32Routing.BLE2Midi   = store.readBool("cfg_esp_rt", "ble2midi", true);
-    esp32Routing.BLE2Audio  = store.readBool("cfg_esp_rt", "ble2audio", true);
-    esp32Routing.Midi2BLE   = store.readBool("cfg_esp_rt", "midi2ble", true);
-    esp32Routing.Midi2Audio = store.readBool("cfg_esp_rt", "midi2audio", true);
-
-    // Kit
-    Kit = store.readU8("cfg_system", "kit", 0);
 
     // STM running config
     stm.load(store);
@@ -190,23 +246,17 @@ void CrosspadSettings::loadFrom(IKeyValueStore& store) {
 }
 
 void CrosspadSettings::saveTo(IKeyValueStore& store) {
-    // Display
-    store.saveU8("cfg_display", "brightness", LCDbrightness);
-    store.saveU8("cfg_display", "theme_clr", themeColorIndex);
-    store.saveU8("cfg_display", "perf_stats", perfStatsFlags);
-    store.saveBool("cfg_display", "drawer_en", quickSettingsEnabled);
+    for (const Field& f : kFields) {
+        if (f.kind == FieldKind::Bool) {
+            store.saveBool(f.ns, f.key, *static_cast<const bool*>(f.at(*this)));
+        } else {
+            store.saveU8(f.ns, f.key, *static_cast<const uint8_t*>(f.at(*this)));
+        }
+    }
+
     store.saveU8("cfg_display", "home_view", (uint8_t)launcherStyle);
     store.saveU8("cfg_display", "touch_sens", (uint8_t)touchSensitivity);
 
-    // Recorder
-    store.saveBool("cfg_rec", "auto_trim", recorderAutoTrim);
-
-    // Audio (master)
-    store.saveBool("cfg_audio", "engine_en", AudioEngineEnabled);
-    store.saveBool("cfg_audio", "usb_audio", usbAudioEnabled);
-    store.saveBool("cfg_audio", "usb_guard", usbSerialGuard);
-    store.saveU8("cfg_audio", "usb_preset", usbAudioPreset);
-    store.saveU8("cfg_audio", "usb_gain_db", usbAudioGainDb);
     {
         uint8_t srIdx = 1;
         for (uint8_t i = 0; i < AudioEngineSettings::kSampleRatesCount; ++i) {
@@ -220,112 +270,39 @@ void CrosspadSettings::saveTo(IKeyValueStore& store) {
         store.saveU8("cfg_audio_eng", "fc_idx", fcIdx);
         store.saveI32("cfg_audio_eng", "q_frames", (int32_t)audioEngine.queueFrames);
     }
-    store.saveBool("cfg_audio", "mute", masterFX.mute);
-    store.saveBool("cfg_audio", "spk_en", masterFX.speakersEnabled);
-    store.saveU8("cfg_audio", "in_vol", masterFX.inVolume);
-    store.saveU8("cfg_audio", "out_vol", masterFX.outVolume);
-    store.saveBool("cfg_audio", "delay_byp", masterFX.delay.bypass);
-    store.saveBool("cfg_audio", "reverb_byp", masterFX.reverb.bypass);
-    store.saveBool("cfg_audio", "dist_byp", masterFX.distortion.bypass);
-    store.saveBool("cfg_audio", "chorus_byp", masterFX.chorus.bypass);
-    store.saveBool("cfg_audio", "flangr_byp", masterFX.flanger.bypass);
-    store.saveU8("cfg_audio", "ovc00", masterFX.outVolumeCodec[0][0]);
-    store.saveU8("cfg_audio", "ovc01", masterFX.outVolumeCodec[0][1]);
-    store.saveU8("cfg_audio", "ovc10", masterFX.outVolumeCodec[1][0]);
-    store.saveU8("cfg_audio", "ovc11", masterFX.outVolumeCodec[1][1]);
-    store.saveU8("cfg_audio", "ivc00", masterFX.inVolumeCodec[0][0]);
-    store.saveU8("cfg_audio", "ivc01", masterFX.inVolumeCodec[0][1]);
-    store.saveU8("cfg_audio", "ivc10", masterFX.inVolumeCodec[1][0]);
-    store.saveU8("cfg_audio", "ivc11", masterFX.inVolumeCodec[1][1]);
 
-    // RGB
-    store.saveU8("cfg_rgb", "brightness", RGBbrightness);
-
-    // Keypad
-    store.saveBool("cfg_keypad", "enable", keypad.enableKeypad);
-    store.saveBool("cfg_keypad", "noteoff_rel", keypad.noteOffOnRelease);
-    store.saveBool("cfg_keypad", "inactive_lt", keypad.inactiveLights);
-    store.saveBool("cfg_keypad", "lt_noteon", keypad.lightsOnNoteOn);
-    store.saveBool("cfg_keypad", "lt_noteoff", keypad.lightsOnNoteOff);
-    store.saveBool("cfg_keypad", "upper_fn", keypad.upperRowFunctions);
-    store.saveBool("cfg_keypad", "eco", keypad.ecoMode);
-    store.saveBool("cfg_keypad", "send_stm", keypad.send2STM);
-    store.saveBool("cfg_keypad", "send_ble", keypad.send2BLE);
-    store.saveBool("cfg_keypad", "send_usb", keypad.send2USB);
-    store.saveBool("cfg_keypad", "send_cc", keypad.sendCC);
+    for (const CodecLevel& l : kOutCodecLevels) {
+        store.saveU8("cfg_audio", l.key, masterFX.outVolumeCodec[l.codec][l.pair]);
+    }
+    for (const CodecLevel& l : kInCodecLevels) {
+        store.saveU8("cfg_audio", l.key, masterFX.inVolumeCodec[l.codec][l.pair]);
+    }
 
     // IMU -> MIDI
     store.saveBool("cfg_imu_midi", "en", imuMidi.enabled);
     store.saveU8("cfg_imu_midi", "ival", imuMidi.minIntervalMs);
     {
-        char key[16];
+        char key[kImuKeyMax];
         for (size_t i = 0; i < kImuMidiSlots; ++i) {
             const auto &slot = imuMidi.slots[i];
-            snprintf(key, sizeof(key), "s%u_en", (unsigned)i);
+            imuSlotKey(key, sizeof(key), i, "en");
             store.saveBool("cfg_imu_midi", key, slot.enabled);
-            snprintf(key, sizeof(key), "s%u_src", (unsigned)i);
+            imuSlotKey(key, sizeof(key), i, "src");
             store.saveU8("cfg_imu_midi", key, slot.source);
-            snprintf(key, sizeof(key), "s%u_tgt", (unsigned)i);
+            imuSlotKey(key, sizeof(key), i, "tgt");
             store.saveU8("cfg_imu_midi", key, slot.target);
-            snprintf(key, sizeof(key), "s%u_cc", (unsigned)i);
+            imuSlotKey(key, sizeof(key), i, "cc");
             store.saveU8("cfg_imu_midi", key, slot.cc);
-            snprintf(key, sizeof(key), "s%u_ch", (unsigned)i);
+            imuSlotKey(key, sizeof(key), i, "ch");
             store.saveU8("cfg_imu_midi", key, slot.channel);
-            snprintf(key, sizeof(key), "s%u_inv", (unsigned)i);
+            imuSlotKey(key, sizeof(key), i, "inv");
             store.saveBool("cfg_imu_midi", key, slot.invert);
-            snprintf(key, sizeof(key), "s%u_span", (unsigned)i);
+            imuSlotKey(key, sizeof(key), i, "span");
             store.saveI32("cfg_imu_midi", key, (int32_t)slot.inputSpan);
         }
     }
 
-    // Vibration
-    store.saveBool("cfg_vibrate", "enable", vibration.enable);
-    store.saveBool("cfg_vibrate", "on_touch", vibration.enableVibrationOnTouch);
-    store.saveBool("cfg_vibrate", "on_error", vibration.enableVibrationOnError);
-    store.saveBool("cfg_vibrate", "audio_vib", vibration.enableAudioToVibe);
-    store.saveU8("cfg_vibrate", "in_min", vibration.inputMin);
-    store.saveU8("cfg_vibrate", "in_max", vibration.inputMax);
-    store.saveU8("cfg_vibrate", "out_min", vibration.outputMin);
-    store.saveU8("cfg_vibrate", "out_max", vibration.outputMax);
-    store.saveBool("cfg_vibrate", "debug", vibration.debugging);
-
-    // Wireless
-    store.saveBool("cfg_wireless", "wifi", wireless.enableWiFi);
-    store.saveBool("cfg_wireless", "ble", wireless.enableBLE);
-    store.saveBool("cfg_wireless", "remote", wireless.enableRemote);
-    store.saveBool("cfg_wireless", "osc", wireless.enableOSC);
-    store.saveBool("cfg_wireless", "osc_srv", wireless.enableOSCServer);
-    store.saveBool("cfg_wireless", "udp", wireless.enableUDP);
-    store.saveBool("cfg_wireless", "tcp", wireless.enableTCP);
-    store.saveBool("cfg_wireless", "websrv", wireless.enableWebServer);
-    store.saveU8("cfg_wireless", "ble_mode", wireless.bleMidiMode);
     store.saveU8("cfg_wireless", "ble_noff", (uint8_t)wireless.bleMidiNoteOffset);
-    store.saveU8("cfg_wireless", "ble_toff", wireless.bleMidiTxOffset);
-
-    // STM Routing
-    store.saveBool("cfg_stm_rt", "routing_en", stmRouting.RoutingMatrixEnabled);
-    store.saveBool("cfg_stm_rt", "btn_midi", stmRouting.ConfigButtonsAsMidi);
-    store.saveBool("cfg_stm_rt", "m2mt", stmRouting.Midi2MidiThru);
-    store.saveBool("cfg_stm_rt", "m2usb", stmRouting.Midi2USB);
-    store.saveBool("cfg_stm_rt", "m2esp", stmRouting.Midi2ESP);
-    store.saveBool("cfg_stm_rt", "u2midi", stmRouting.USB2Midi);
-    store.saveBool("cfg_stm_rt", "u2ut", stmRouting.USB2USBThru);
-    store.saveBool("cfg_stm_rt", "u2esp", stmRouting.USB2ESP);
-    store.saveBool("cfg_stm_rt", "e2midi", stmRouting.ESP2Midi);
-    store.saveBool("cfg_stm_rt", "e2usb", stmRouting.ESP2USB);
-    store.saveBool("cfg_stm_rt", "e2et", stmRouting.ESP2ESPThru);
-    store.saveBool("cfg_stm_rt", "b2m", stmRouting.Buttons2Midi);
-    store.saveBool("cfg_stm_rt", "b2u", stmRouting.Buttons2USB);
-    store.saveBool("cfg_stm_rt", "b2e", stmRouting.Buttons2ESP);
-
-    // ESP Routing
-    store.saveBool("cfg_esp_rt", "ble2midi", esp32Routing.BLE2Midi);
-    store.saveBool("cfg_esp_rt", "ble2audio", esp32Routing.BLE2Audio);
-    store.saveBool("cfg_esp_rt", "midi2ble", esp32Routing.Midi2BLE);
-    store.saveBool("cfg_esp_rt", "midi2audio", esp32Routing.Midi2Audio);
-
-    // Kit
-    store.saveU8("cfg_system", "kit", Kit);
 
     // STM running config
     stm.audioEn = masterFX.speakersEnabled ? 1 : 0;
