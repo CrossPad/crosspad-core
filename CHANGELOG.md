@@ -6,6 +6,13 @@ carries the same number) and consumers gate on it with
 `crosspad/RequireVersion.hpp`. This file starts at 1.45.0; earlier releases
 are described in their `chore: X.Y.Z` commits.
 
+## 2.47.0 — 2026-11-12
+
+- `ISettingsUI::leaveStm32Dfu()`: bring the STM32 back from DFU mode (a
+  hardware reset of the co-processor). The Settings DFU screen calls it when
+  the player taps it; the ROM bootloader reads neither the encoder nor the
+  power button. Default no-op.
+
 ## 2.46.0 — 2026-11-08
 
 - `InstrumentLoadNote` (`crosspad/instrument/InstrumentLoadNote.hpp`, header
