@@ -86,6 +86,18 @@ public:
         Msg m; m.type = Msg::CC; m.controller = controller; m.value = value; m.channel = channel;
         msgs.push_back(m);
     }
+    void sendAftertouch(uint8_t note, uint8_t pressure, uint8_t channel) override {
+        Msg m; m.type = Msg::Aftertouch; m.note = note; m.value = pressure; m.channel = channel;
+        msgs.push_back(m);
+    }
+    void sendProgramChange(uint8_t program, uint8_t channel) override {
+        Msg m; m.type = Msg::ProgramChange; m.value = program; m.channel = channel;
+        msgs.push_back(m);
+    }
+    void sendPitchBend(int16_t value, uint8_t channel) override {
+        Msg m; m.type = Msg::PitchBend; m.pitchBend = value; m.channel = channel;
+        msgs.push_back(m);
+    }
 
     size_t count() const { return msgs.size(); }
     void clear() { msgs.clear(); }
