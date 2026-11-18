@@ -48,6 +48,7 @@ class ISampleTools;
 class IInputGain;
 class IInputPairs;
 class IInputMonitor;
+class IFxBus;
 class IOutputLevels;
 class IAudioBuffer;
 class IPadMix;
@@ -103,6 +104,7 @@ struct PlatformServices {
     IInputGain*       inputGain       = nullptr;   ///< the inputs' preamp gain (mics, line-in)
     IInputPairs*      inputPairs      = nullptr;   ///< which inputs the ADCs hear; null when all always do
     IInputMonitor*    inputMonitor    = nullptr;   ///< an input heard live, as the Mixer's MONITOR; null where there is no mixer
+    IFxBus*           fxBus           = nullptr;   ///< the effects bus a performance FX app inserts its processor on; null where there is no mixer
     IOutputLevels*    outputLevels    = nullptr;   ///< the speakers' and jacks' analog levels; null where the board has none
     IAudioBuffer*     audioBuffer     = nullptr;   ///< block and output queue, chosen live; null where fixed
     /// Per-pad level and pan of whichever engine plays the pads now; the
