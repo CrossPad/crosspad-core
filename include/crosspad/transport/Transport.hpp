@@ -187,7 +187,10 @@ void  transportCommitTempo();
 /// True while a host's MIDI clock drives the tempo: an edit would be undone
 /// at its next tick, so a control offering one should say so instead.
 bool  transportTempoFromHost();
-/// The platform's MIDI clock, each time the source of its tempo changes.
+/// The platform's MIDI clock, each time the source of its tempo changes, and
+/// before the host's tempo is put on the clock: the tempo read then is the one
+/// the board's sequence files keep while the host's plays (a host's tempo is
+/// never saved).
 void  transportSetTempoFromHost(bool host);
 
 /// The metronome: the click of the clock the tempo lives on, heard whenever
