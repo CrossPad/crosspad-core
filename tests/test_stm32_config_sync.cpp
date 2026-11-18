@@ -4,8 +4,113 @@
 #include "crosspad/stm32/Stm32ConfigSync.hpp"
 #include "crosspad/stm32/reg_map.h"
 
+#include <algorithm>
+#include <map>
+#include <vector>
+
 using namespace crosspad;
 using namespace test;
+
+namespace {
+
+// The STM's side of a 16-bit setting: every one-byte write goes straight into
+// the half of the live value it addresses, and the firmware reads that value
+// between any two writes. Keeps every value each register has held.
+class LiveU16Bus : public IStm32RegisterBus {
+public:
+    std::map<uint16_t, std::vector<uint16_t>> held;   // by HI register, oldest first
+
+    void preset(uint16_t hiReg, uint16_t v) { held[hiReg] = {v}; }
+
+    bool writeReg(uint16_t reg, const uint8_t* data, size_t len) override {
+        for (size_t i = 0; i < len; ++i) {
+            uint16_t r = (uint16_t)(reg + i);
+            auto hi = held.find(r);
+            auto lo = held.find((uint16_t)(r - 1));
+            if (hi != held.end())
+                hi->second.push_back((uint16_t)((hi->second.back() & 0x00FFu) | (data[i] << 8)));
+            else if (lo != held.end())
+                lo->second.push_back((uint16_t)((lo->second.back() & 0xFF00u) | data[i]));
+        }
+        return true;
+    }
+    bool readReg(uint16_t reg, uint8_t* dst, size_t len) override {
+        if (!readable) return false;
+        for (size_t i = 0; i < len; ++i) {
+            uint16_t r = (uint16_t)(reg + i);
+            auto hi = held.find(r);
+            auto lo = held.find((uint16_t)(r - 1));
+            dst[i] = hi != held.end() ? (uint8_t)(hi->second.back() >> 8)
+                   : lo != held.end() ? (uint8_t)(lo->second.back() & 0xFF)
+                   : 0;
+        }
+        return true;
+    }
+    bool readable = true;
+};
+
+// A LiveU16Bus that loses one write: the n-th (from 0) does not arrive.
+class LossyLiveU16Bus : public LiveU16Bus {
+public:
+    explicit LossyLiveU16Bus(int lost) : lost_(lost) {}
+    bool writeReg(uint16_t reg, const uint8_t* data, size_t len) override {
+        return count_++ == lost_ ? false : LiveU16Bus::writeReg(reg, data, len);
+    }
+private:
+    int lost_;
+    int count_ = 0;
+};
+
+// The STM's side of a 16-bit setting that commits: the HI write is kept aside
+// and the LO write takes both bytes into the value the firmware uses.
+class CommitOnLoBus : public IStm32RegisterBus {
+public:
+    uint16_t hiReg;
+    uint8_t  pendingHi = 0;
+    std::vector<uint16_t> committed;
+
+    CommitOnLoBus(uint16_t hi, uint16_t was) : hiReg(hi), pendingHi((uint8_t)(was >> 8)) {}
+
+    bool writeReg(uint16_t reg, const uint8_t* data, size_t len) override {
+        for (size_t i = 0; i < len; ++i) {
+            uint16_t r = (uint16_t)(reg + i);
+            if (r == hiReg) pendingHi = data[i];
+            else if (r == (uint16_t)(hiReg + 1)) committed.push_back((uint16_t)((pendingHi << 8) | data[i]));
+        }
+        return true;
+    }
+    bool readReg(uint16_t, uint8_t* dst, size_t len) override {
+        for (size_t i = 0; i < len; ++i) dst[i] = 0;
+        return true;
+    }
+};
+
+// How long the STM waits on a value: 0 is Never for the two idle timeouts, and
+// the hold time is clamped to 1000..3700 ms where it is read.
+uint32_t waited(uint16_t hiReg, uint16_t v) {
+    if (hiReg == REG_CTL_LONG_PRESS_HI) return v < 1000 ? 1000u : v > 3700 ? 3700u : v;
+    return v == 0 ? 0x10000u : v;
+}
+
+struct U16Step { uint16_t from, to; };
+const U16Step kU16Steps[] = {
+    {600, 0}, {0, 600}, {1800, 600}, {600, 1800}, {0x0258, 0x0100},
+    {0x0A00, 0x09FF}, {0x09FF, 0x0A00}, {2400, 1000}, {1000, 3700}, {0xFFFF, 1},
+    {0, 0}, {600, 600},
+};
+const uint16_t kU16Regs[] = {REG_CTL_DIM_TO_S_HI, REG_CTL_SLEEP_TO_S_HI, REG_CTL_LONG_PRESS_HI};
+
+void requireNeverShorter(const LiveU16Bus& bus, uint16_t hiReg, U16Step step) {
+    const auto& h = bus.held.at(hiReg);
+    uint32_t floor = std::min(waited(hiReg, step.from), waited(hiReg, step.to));
+    CAPTURE(hiReg, step.from, step.to);
+    for (uint16_t v : h) {
+        CAPTURE(v);
+        REQUIRE(waited(hiReg, v) >= floor);
+    }
+}
+
+} // namespace
 
 TEST_CASE("stm32ShouldResync: first sync and reset detection", "[stm][sync]") {
     REQUIRE(stm32ShouldResync(-1, 7) == true);    // never synced
@@ -30,7 +135,7 @@ TEST_CASE("Stm32ConfigSync::pushAll writes the ESP-authoritative set", "[stm][sy
     REQUIRE(bus.lastByteAt(REG_CTL_NOTE_OFFSET) == (uint8_t)(int8_t)-5);
     REQUIRE(bus.lastByteAt(REG_CTL_KEYPAD_DIS) == 0);  // keypadEnabled=true -> dis=0
 
-    // 16-bit timeout written HI then LO
+    // 16-bit timeout: both halves end on the new value
     REQUIRE(bus.lastByteAt(REG_CTL_SLEEP_TO_S_HI) == 0x04);
     REQUIRE(bus.lastByteAt(REG_CTL_SLEEP_TO_S_LO) == 0xD2);
 
@@ -142,6 +247,101 @@ TEST_CASE("Stm32ConfigSync per-field writes", "[stm][sync]") {
     REQUIRE(sync.writeReg16(REG_CTL_SLEEP_TO_S_HI, 0x0102) == true);
     REQUIRE(bus.lastByteAt(REG_CTL_SLEEP_TO_S_HI) == 0x01);
     REQUIRE(bus.lastByteAt(REG_CTL_SLEEP_TO_S_LO) == 0x02);
+}
+
+TEST_CASE("Stm32ConfigSync::writeReg16 never shortens a wait on the way to the new value", "[stm][sync]") {
+    for (uint16_t hiReg : kU16Regs) {
+        for (U16Step step : kU16Steps) {
+            LiveU16Bus bus;
+            bus.preset(hiReg, step.from);
+            Stm32ConfigSync sync(bus);
+            REQUIRE(sync.writeReg16(hiReg, step.to) == true);
+            requireNeverShorter(bus, hiReg, step);
+            REQUIRE(bus.held.at(hiReg).back() == step.to);
+        }
+    }
+}
+
+TEST_CASE("Stm32ConfigSync::writeReg16 with a lost write never leaves a shorter wait", "[stm][sync]") {
+    const U16Step steps[] = {{600, 768}, {0x0200, 0x01FF}, {600, 0}, {0, 600}, {2400, 1000}};
+    for (uint16_t hiReg : kU16Regs) {
+        for (U16Step step : steps) {
+            for (int lost = 0; lost < 4; ++lost) {
+                CAPTURE(lost);
+                LossyLiveU16Bus bus(lost);
+                bus.preset(hiReg, step.from);
+                Stm32ConfigSync sync(bus);
+                REQUIRE(sync.writeReg16(hiReg, step.to) == false);
+                requireNeverShorter(bus, hiReg, step);
+                if (lost == 0) REQUIRE(bus.held.at(hiReg) == std::vector<uint16_t>{step.from});
+            }
+        }
+    }
+}
+
+TEST_CASE("Stm32ConfigSync::writeReg16 leaves a register that already holds the value alone", "[stm][sync]") {
+    for (uint16_t hiReg : kU16Regs) {
+        for (uint16_t v : {(uint16_t)0, (uint16_t)600, (uint16_t)0xFF00}) {
+            CAPTURE(hiReg, v);
+            LiveU16Bus bus;
+            bus.preset(hiReg, v);
+            Stm32ConfigSync sync(bus);
+            REQUIRE(sync.writeReg16(hiReg, v) == true);
+            REQUIRE(bus.held.at(hiReg) == std::vector<uint16_t>{v});
+        }
+    }
+}
+
+TEST_CASE("Stm32ConfigSync::writeReg16 writes when the register cannot be read", "[stm][sync]") {
+    for (uint16_t hiReg : kU16Regs) {
+        for (U16Step step : {U16Step{600, 0}, U16Step{600, 600}, U16Step{0, 600}}) {
+            LiveU16Bus bus;
+            bus.readable = false;
+            bus.preset(hiReg, step.from);
+            Stm32ConfigSync sync(bus);
+            REQUIRE(sync.writeReg16(hiReg, step.to) == true);
+            requireNeverShorter(bus, hiReg, step);
+            REQUIRE(bus.held.at(hiReg).size() == 5);
+            REQUIRE(bus.held.at(hiReg).back() == step.to);
+        }
+    }
+}
+
+TEST_CASE("Stm32ConfigSync::writeReg16 commits a register that takes the pair on its LO write", "[stm][sync]") {
+    const uint16_t regs[] = {REG_CTL_BTN_THR_HI, REG_CTL_BTN_HYST_HI, REG_CTL_CHG_ICHG_HI};
+    for (uint16_t hiReg : regs) {
+        CAPTURE(hiReg);
+        CommitOnLoBus bus(hiReg, 0x0123);
+        Stm32ConfigSync sync(bus);
+        REQUIRE(sync.writeReg16(hiReg, 300) == true);
+        REQUIRE(bus.committed == std::vector<uint16_t>{300});
+    }
+}
+
+TEST_CASE("Stm32ConfigSync::writeReg16 ends on the new value if the STM took a timeout on its LO write", "[stm][sync]") {
+    for (uint16_t hiReg : kU16Regs) {
+        CAPTURE(hiReg);
+        CommitOnLoBus bus(hiReg, 0x0258);
+        Stm32ConfigSync sync(bus);
+        REQUIRE(sync.writeReg16(hiReg, 0x0100) == true);
+        REQUIRE(bus.committed.back() == 0x0100);
+        for (uint16_t v : bus.committed) REQUIRE(waited(hiReg, v) >= waited(hiReg, 0x0100));
+    }
+}
+
+TEST_CASE("Stm32ConfigSync::pushAll never shortens a wait on the way to the new value", "[stm][sync]") {
+    for (U16Step step : kU16Steps) {
+        LiveU16Bus bus;
+        for (uint16_t hiReg : kU16Regs) bus.preset(hiReg, step.from);
+        Stm32Settings s;
+        s.dimTimeoutS = s.sleepTimeoutS = s.longPressMs = step.to;
+        Stm32ConfigSync sync(bus);
+        REQUIRE(sync.pushAll(s) == true);
+        for (uint16_t hiReg : kU16Regs) {
+            requireNeverShorter(bus, hiReg, step);
+            REQUIRE(bus.held.at(hiReg).back() == step.to);
+        }
+    }
 }
 
 TEST_CASE("Stm32ConfigSync::writePadConfig writes one pad's 6-byte block", "[stm][sync]") {

@@ -6,6 +6,23 @@ carries the same number) and consumers gate on it with
 `crosspad/RequireVersion.hpp`. This file starts at 1.45.0; earlier releases
 are described in their `chore: X.Y.Z` commits.
 
+## 2.46.1 — 2026-11-17
+
+- `Stm32ConfigSync`: a 16-bit STM setting (dim timeout, sleep timeout, power
+  hold time) no longer stands at a shorter value while it is being written. The
+  STM takes each byte into the live value as it arrives, so HI then LO took the
+  sleep timeout from 600 s to Never through 88 s. `pushAll()` and
+  `writeReg16()` now write HI = 0xFF, LO, HI, LO to these three registers:
+  every value on the way is at least 0xFF00, the closing LO write also serves
+  an STM that takes the pair on LO, and a write that fails ends the sequence
+  (the register then stays at the long value until the next push). A register
+  that already reads back the value is not written, so Never stays Never
+  instead of standing at 0xFF00 (65280 s) between two writes; that floor
+  remains only when the read fails. Every other 16-bit register is still
+  written HI then LO, whether the STM takes it on the LO write (button
+  threshold and hysteresis, charger ICHG..SYSMIN, pad sensitivity) or byte by
+  byte (`CHG_AUTO_LIM`, `BATT_CAP_MAH`, `VPAD_RATE`/`COUNT`).
+
 ## 2.46.0 — 2026-11-08
 
 - `InstrumentLoadNote` (`crosspad/instrument/InstrumentLoadNote.hpp`, header

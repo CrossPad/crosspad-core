@@ -4,6 +4,51 @@
 
 namespace crosspad {
 
+namespace {
+
+// The 16-bit STM settings that get the 0xFF-first order: the STM puts each of
+// their bytes into the value it runs on as the byte arrives, and a shorter
+// value on the way does harm (the board dims, sleeps or powers off early).
+// Every other pair is written HI then LO. Some of those the STM takes on the
+// LO write (button threshold and hysteresis, charger ICHG..SYSMIN, pad
+// sensitivity), some byte by byte as well (CHG_AUTO_LIM, BATT_CAP_MAH,
+// VPAD_RATE/COUNT); 0xFF in HI would be applied to those as a real value.
+bool longValueOnTheWay(uint16_t hiReg) {
+    return hiReg == REG_CTL_DIM_TO_S_HI || hiReg == REG_CTL_SLEEP_TO_S_HI ||
+           hiReg == REG_CTL_LONG_PRESS_HI;
+}
+
+// A 16-bit STM setting is two one-byte registers, written HI then LO. For the
+// three above that order is wrong: 600 s -> Never (0x0258 -> 0x0000) stands at
+// 0x0058 = 88 s in between, and a board idle for longer goes to sleep before
+// the LO byte lands. They are written HI = 0xFF, LO, HI, LO instead:
+//  - every value on the way is at least 0xFF00 (65280 s, or the hold time's
+//    upper clamp), which is never shorter than the old or the new value unless
+//    one of them is 0 = Never and the other is not short of 65280;
+//  - Never -> Never would itself stand at 0xFF00, so a register that already
+//    reads back the value is not written at all. When that read fails the
+//    sequence runs, and Never -> Never is then finite (65280 s) between two
+//    writes;
+//  - the last LO write changes nothing on an STM that takes the bytes as they
+//    arrive and commits the pair on one that takes it on LO.
+// A failed write ends the sequence: the register is then as it was or at
+// 0xFF00 and above, where going on would put a new byte beside an old one, and
+// it stays there until the next push.
+bool writeU16(IStm32RegisterBus& bus, uint16_t hiReg, uint16_t v) {
+    const uint16_t loReg = (uint16_t)(hiReg + 1);
+    const uint8_t  hi = (uint8_t)(v >> 8), lo = (uint8_t)(v & 0xFF);
+    if (!longValueOnTheWay(hiReg)) {
+        bool ok = bus.writeReg8(hiReg, hi);
+        return bus.writeReg8(loReg, lo) && ok;
+    }
+    uint8_t now[2];
+    if (bus.readReg(hiReg, now, 2) && now[0] == hi && now[1] == lo) return true;
+    return bus.writeReg8(hiReg, 0xFF) && bus.writeReg8(loReg, lo) &&
+           bus.writeReg8(hiReg, hi) && bus.writeReg8(loReg, lo);
+}
+
+} // namespace
+
 bool stm32ShouldResync(int lastBootCount, uint8_t current) {
     return lastBootCount < 0 || (uint8_t)lastBootCount != current;
 }
@@ -11,13 +56,7 @@ bool stm32ShouldResync(int lastBootCount, uint8_t current) {
 bool Stm32ConfigSync::pushAll(const Stm32Settings& s) {
     bool ok = true;
     auto w8 = [&](uint16_t reg, uint8_t v) { ok = bus_.writeReg8(reg, v) && ok; };
-    // u16 registers: write HI first to stage, then LO to commit.
-    // Two separate single-byte writes so that lastByteAt(HI) and lastByteAt(LO)
-    // both resolve correctly in the mock and on real hardware.
-    auto w16 = [&](uint16_t hi, uint16_t v) {
-        w8(hi,       (uint8_t)(v >> 8));
-        w8((uint16_t)(hi + 1), (uint8_t)(v & 0xFF));
-    };
+    auto w16 = [&](uint16_t hi, uint16_t v) { ok = writeU16(bus_, hi, v) && ok; };
 
     // system (0x0300..0x0311)
     w8(REG_CTL_AUDIO_EN, s.audioEn);
@@ -34,7 +73,7 @@ bool Stm32ConfigSync::pushAll(const Stm32Settings& s) {
     w8(REG_CTL_WAKE_BRIGHT, s.wakeBrightness);
     w8(REG_CTL_USB_SUSP_S, s.usbSuspendS);
 
-    // timeouts (u16 BE, commit on LO)
+    // timeouts and hold time (u16 BE)
     w16(REG_CTL_DIM_TO_S_HI, s.dimTimeoutS);
     w16(REG_CTL_SLEEP_TO_S_HI, s.sleepTimeoutS);
     w16(REG_CTL_LONG_PRESS_HI, s.longPressMs);
@@ -137,9 +176,7 @@ bool Stm32ConfigSync::writeReg8(uint16_t reg, uint8_t v) {
 }
 
 bool Stm32ConfigSync::writeReg16(uint16_t hiReg, uint16_t v) {
-    bool ok = bus_.writeReg8(hiReg, (uint8_t)(v >> 8));
-    ok = bus_.writeReg8((uint16_t)(hiReg + 1), (uint8_t)(v & 0xFF)) && ok;
-    return ok;
+    return writeU16(bus_, hiReg, v);
 }
 
 } // namespace crosspad
