@@ -6,6 +6,13 @@ carries the same number) and consumers gate on it with
 `crosspad/RequireVersion.hpp`. This file starts at 1.45.0; earlier releases
 are described in their `chore: X.Y.Z` commits.
 
+## 2.46.1 — 2026-11-20
+
+- Settings > MIDI "Send CC" now sends a Control Change for each pad instead
+  of its note (controller = the pad's note number, value = the press
+  velocity, at least 1, and 0 on release; same channel and outputs). Before,
+  the switch only muted the pads' notes and sent nothing in their place.
+
 ## 2.46.0 — 2026-11-08
 
 - `InstrumentLoadNote` (`crosspad/instrument/InstrumentLoadNote.hpp`, header
