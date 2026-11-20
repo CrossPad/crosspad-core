@@ -6,6 +6,16 @@ carries the same number) and consumers gate on it with
 `crosspad/RequireVersion.hpp`. This file starts at 1.45.0; earlier releases
 are described in their `chore: X.Y.Z` commits.
 
+## 2.46.1 — 2026-11-20
+
+- `SongEngine`: a freeze or bounce whose result is out is over, also in the
+  moment the worker has published Done or Failed and not yet let go of the
+  job. `freezeState()` no longer says Freezing then, so a leave that read
+  Done finds the track Frozen instead of failing "track N did not freeze";
+  a request in that moment waits for the worker (up to 20 ms) instead of
+  being refused; and `yieldFreeze()` neither cancels that finished freeze
+  nor holds the next one off for `kYieldHoldUs`.
+
 ## 2.46.0 — 2026-11-08
 
 - `InstrumentLoadNote` (`crosspad/instrument/InstrumentLoadNote.hpp`, header
