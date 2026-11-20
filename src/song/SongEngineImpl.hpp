@@ -671,6 +671,8 @@ struct SongEngine::Impl {
     bool requestBounce(uint8_t scene, uint8_t track, uint32_t bars, uint32_t fromBar = 0,
                        uint32_t freezeKey = 0, bool toAudio = false);
     BounceStatus bounceStatus();
+    bool jobRunning();
+    void awaitRelease();
     void cancelBounce() { bCancel_.store(true); }
     bool playCountedIn(uint32_t fromBar, SyncTake take, uint8_t beats);
     uint8_t countInBeatsLeft() const;

@@ -101,7 +101,8 @@ bool SongEngine::Impl::freezeTrack(uint8_t track) {
 
 FreezeState SongEngine::Impl::freezeState(uint8_t track) {
     if (track >= kTracks) return FreezeState::None;
-    if (busy_.load() && bFreeze_ && bTrack_ == track) return FreezeState::Freezing;
+    /* A caller that read Done (ElementNav's leave) finds the track Frozen. */
+    if (bFreeze_ && bTrack_ == track && jobRunning()) return FreezeState::Freezing;
     std::lock_guard<std::recursive_mutex> l(songMutex_);
     const SongTrack& t = song_.tracks[track];
     if (t.kind != TrackKind::Seq || t.freeze.empty()) return FreezeState::None;
@@ -128,6 +129,7 @@ bool SongEngine::Impl::requestBounce(uint8_t scene, uint8_t track, uint32_t bars
         if (audioTarget(track, false) < 0) return false;
     }
     if (!freezeKey) yieldFreeze();   // a bounce asked for goes before a freeze
+    awaitRelease();   // ElementNav asks for the next track's freeze as soon as it reads the last one Done
     if (busy_.exchange(true)) return false;
     {
         std::lock_guard<std::mutex> l(statusMutex_);
@@ -152,21 +154,37 @@ BounceStatus SongEngine::Impl::bounceStatus() {
     return status_;
 }
 
+/// The worker holds a job whose result is not out. It publishes Done or
+/// Failed a moment before it lets go of busy_, and in between the job is
+/// over: neither Freezing, nor a freeze to cancel, nor a reason to refuse.
+bool SongEngine::Impl::jobRunning() {
+    return busy_.load() && bounceStatus().state == BounceState::Running;
+}
+
+/// A job whose result is out: the worker is only letting go of busy_.
+void SongEngine::Impl::awaitRelease() {
+    for (int i = 0; i < 20 && busy_.load() && !jobRunning(); ++i) p.sleepMs(1);
+}
+
 /// A freeze running gives way to anything asked of the worker -- PLAY,
 /// a take, an open, an edit, a bounce: cancelled, the track plays live,
 /// and this returns once the worker has put the sequencer back (a take
 /// or playback started under the freeze's restore lost its song map to
 /// it). A bounce does not give way: false.
 bool SongEngine::Impl::yieldFreeze() {
+    awaitRelease();
     if (!busy_.load()) return true;
     if (!bFreeze_) return false;
-    bCancel_.store(true);
-    p.wake();
+    const int64_t t0 = p.nowUs();
+    /* A freeze already done is not cancelled, nor the next one held off. */
+    if (jobRunning()) {
+        bCancel_.store(true);
+        p.wake();
+        yieldHoldUs_.store(t0 + kYieldHoldUs);
+    }
     /* A piece stops at its next 4 kB, then closes its file and removes
      * it: well under this on the board, which only a card stalled in a
      * write runs out. */
-    const int64_t t0 = p.nowUs();
-    yieldHoldUs_.store(t0 + kYieldHoldUs);
     for (int i = 0; i < 600 && busy_.load(); ++i) p.sleepMs(5);
     dbgMax(dbgYieldMaxUs_, p.nowUs() - t0);
     return !busy_.load();
