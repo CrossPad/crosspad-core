@@ -6,6 +6,19 @@ carries the same number) and consumers gate on it with
 `crosspad/RequireVersion.hpp`. This file starts at 1.45.0; earlier releases
 are described in their `chore: X.Y.Z` commits.
 
+## 2.48.0 — 2026-11-25
+
+### Added
+
+- `IFxBus` (`crosspad/audio/IFxBus.hpp`, `PlatformServices::fxBus`): one
+  effects bus as an insert for a performance FX app -- sources (`FxSource`:
+  line 1/2, line 3/4, the mics, USB) sent to it at a level, pre- or
+  post-fader, the app's processor (an `IAudioNode`, `process()` in place,
+  every block) over their sum, and the result returned to the outputs picked
+  (`FxOutput`: Out 1/2, Out 3/4, USB). While attached, a source with a send
+  is off its own routes, so the processor carries the dry signal too. Null
+  where the platform has no mixer.
+
 ## 2.47.0 — 2026-11-25
 
 - `ISettingsUI::leaveStm32Dfu()`: bring the STM32 back from DFU mode (a
