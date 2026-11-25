@@ -152,6 +152,54 @@ TEST_CASE("PadManager: MIDI output on pad press", "[pad]") {
     services.setMidiOutput(nullptr);
 }
 
+TEST_CASE("PadManager: Send CC turns pad notes into Control Changes", "[pad]") {
+    test::CoreTestPlatform platform;
+    REQUIRE(platform.init());
+
+    test::RecordingMidiOutput midiOut;
+    auto& services = getPlatformServices();
+    services.setMidiOutput(&midiOut);
+
+    auto* settings = CrosspadSettings::getInstance();
+    settings->keypad.enableKeypad = true;
+    settings->keypad.sendCC = true;
+
+    auto& pm = platform.padManager;
+    const uint8_t note = pm.getMidiNoteForPad(3);
+    const uint8_t channel = pm.getPadChannel(3);
+    pm.handlePadPress(3, 90);
+    pm.handlePadRelease(3);
+
+    using Msg = test::RecordingMidiOutput::Msg;
+    REQUIRE(midiOut.count() == 2);
+    CHECK(midiOut.msgs[0].type == Msg::CC);
+    CHECK(midiOut.msgs[0].controller == note);
+    CHECK(midiOut.msgs[0].value == 90);
+    CHECK(midiOut.msgs[0].channel == channel);
+    CHECK(midiOut.msgs[1].type == Msg::CC);
+    CHECK(midiOut.msgs[1].controller == note);
+    CHECK(midiOut.msgs[1].value == 0);
+    CHECK(midiOut.msgs[1].channel == channel);
+
+    // A zero-velocity press still reads as a press, not as a release.
+    midiOut.clear();
+    pm.handlePadPress(3, 0);
+    REQUIRE(midiOut.count() == 1);
+    CHECK(midiOut.msgs[0].value == 1);
+    pm.handlePadRelease(3);
+
+    // Off again: back to notes.
+    settings->keypad.sendCC = false;
+    midiOut.clear();
+    pm.handlePadPress(3, 90);
+    pm.handlePadRelease(3);
+    REQUIRE(midiOut.count() == 2);
+    CHECK(midiOut.msgs[0].type == Msg::NoteOn);
+    CHECK(midiOut.msgs[1].type == Msg::NoteOff);
+
+    services.setMidiOutput(nullptr);
+}
+
 TEST_CASE("PadManager: pushPadLogic/popPadLogic stack", "[pad]") {
     test::CoreTestPlatform platform;
     REQUIRE(platform.init());
