@@ -6,7 +6,7 @@ carries the same number) and consumers gate on it with
 `crosspad/RequireVersion.hpp`. This file starts at 1.45.0; earlier releases
 are described in their `chore: X.Y.Z` commits.
 
-## 2.47.0 — 2026-11-14
+## 2.48.0 — 2026-11-25
 
 ### Added
 
@@ -18,6 +18,17 @@ are described in their `chore: X.Y.Z` commits.
   (`FxOutput`: Out 1/2, Out 3/4, USB). While attached, a source with a send
   is off its own routes, so the processor carries the dry signal too. Null
   where the platform has no mixer.
+
+## 2.47.0 — 2026-11-25
+
+- `ISettingsUI::leaveStm32Dfu()`: bring the STM32 back from DFU mode (a
+  hardware reset of the co-processor). The Settings DFU screen calls it when
+  the player taps it; the ROM bootloader reads neither the encoder nor the
+  power button. Default no-op.
+- Settings > MIDI "Send CC" now sends a Control Change for each pad instead
+  of its note (controller = the pad's note number, value = the press
+  velocity, at least 1, and 0 on release; same channel and outputs). Before,
+  the switch only muted the pads' notes and sent nothing in their place.
 
 ## 2.46.0 — 2026-11-08
 

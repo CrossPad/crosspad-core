@@ -41,6 +41,13 @@ public:
     /// without an STM32 (PC sim). Implementers send the DFU sysex command.
     virtual void enterStm32Dfu() {}
 
+    /// Bring the STM32 back from DFU mode to its application (a hardware reset
+    /// of the co-processor). The DFU screen calls it when the player leaves it:
+    /// in the ROM bootloader the STM reads neither the encoder nor the power
+    /// button, so this is the only way out the device itself offers. Default
+    /// no-op, like enterStm32Dfu().
+    virtual void leaveStm32Dfu() {}
+
     /// Co-processor firmware the platform can flash itself. false = nothing to
     /// show (no co-processor, or no bundled image) and the rows are hidden.
     virtual bool getCoprocFwInfo(CoprocFwInfo& /*out*/) { return false; }

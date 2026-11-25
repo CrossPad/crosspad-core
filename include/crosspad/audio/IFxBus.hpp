@@ -36,6 +36,9 @@ enum class FxOutput : uint8_t {
 /// of the three analog inputs its ADCs hear from the sends
 /// (sourceAvailable() is false for one left out) and holds their ADCs on
 /// them. Null where the platform has no mixer.
+///
+/// Every call comes from one thread, the GUI's: the render only reads what
+/// the calls leave in the mixer's atomics.
 class IFxBus {
 public:
     virtual ~IFxBus() = default;

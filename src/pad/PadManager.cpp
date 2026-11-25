@@ -144,11 +144,17 @@ void PadManager::handlePadPress(uint8_t padIdx, uint8_t velocity, EventSource so
     }
 
     // Send MIDI message if needed
-    if (settings_ && settings_->keypad.enableKeypad && !settings_->keypad.sendCC) {
+    // "Send CC" (Settings > MIDI): a Control Change instead of the note —
+    // controller = the pad's note number, value = velocity (at least 1, so a
+    // press never reads as a release); 0 on release.
+    if (settings_ && settings_->keypad.enableKeypad) {
         uint8_t note = getMidiNoteForPad(padIdx);
         uint8_t channel = getPadChannel(padIdx);
         if (midiOutput_) {
-            midiOutput_->sendNoteOn(note, channel);
+            if (settings_->keypad.sendCC)
+                midiOutput_->sendControlChange(note, velocity ? velocity : 1, channel);
+            else
+                midiOutput_->sendNoteOn(note, channel);
         }
     }
 
@@ -192,11 +198,14 @@ void PadManager::handlePadRelease(uint8_t padIdx, EventSource source) {
         ledController_->notifyNoteOff(padIdx);
     }
 
-    if (settings_ && settings_->keypad.enableKeypad && !settings_->keypad.sendCC) {
+    if (settings_ && settings_->keypad.enableKeypad) {
         uint8_t note = getMidiNoteForPad(padIdx);
         uint8_t channel = getPadChannel(padIdx);
         if (midiOutput_) {
-            midiOutput_->sendNoteOff(note, channel);
+            if (settings_->keypad.sendCC)
+                midiOutput_->sendControlChange(note, 0, channel);
+            else
+                midiOutput_->sendNoteOff(note, channel);
         }
 
         if (!settings_->keypad.noteOffOnRelease) return;
