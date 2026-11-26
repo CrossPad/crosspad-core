@@ -3,6 +3,10 @@
 #include "test_helpers.hpp"
 #include "crosspad/settings/CrosspadSettings.hpp"
 
+#include <map>
+#include <string>
+#include <vector>
+
 using namespace crosspad;
 
 TEST_CASE("CrosspadSettings: default values", "[settings]") {
@@ -179,4 +183,72 @@ TEST_CASE("CrosspadSettings: the output queue survives a reboot and a corrupt va
     store.saveI32("cfg_audio_eng", "q_frames", -5);
     settings->loadFrom(store);
     REQUIRE(settings->audioEngine.queueFrames == 0);
+}
+
+namespace {
+
+/* Records which keys a load reads and a save writes, and with which type. */
+class KeyRecorder : public crosspad::IKeyValueStore {
+public:
+    using Keys = std::map<std::string, char>;   // "ns/key" -> 'b' bool, 'u' u8, 'i' i32
+    Keys read, saved;
+    std::vector<std::string> typeClashes;
+
+    bool init() override { return true; }
+    void saveBool(const char* ns, const char* key, bool) override { note(saved, ns, key, 'b'); }
+    void saveU8(const char* ns, const char* key, uint8_t) override { note(saved, ns, key, 'u'); }
+    void saveI32(const char* ns, const char* key, int32_t) override { note(saved, ns, key, 'i'); }
+    bool readBool(const char* ns, const char* key, bool d) override { note(read, ns, key, 'b'); return d; }
+    uint8_t readU8(const char* ns, const char* key, uint8_t d) override { note(read, ns, key, 'u'); return d; }
+    int32_t readI32(const char* ns, const char* key, int32_t d) override { note(read, ns, key, 'i'); return d; }
+    void eraseAll() override {}
+
+private:
+    void note(Keys& into, const char* ns, const char* key, char type) {
+        const std::string name = std::string(ns) + "/" + key;
+        const auto it = into.find(name);
+        if (it != into.end() && it->second != type) typeClashes.push_back(name);
+        into[name] = type;
+    }
+};
+
+/* NVS refuses a namespace or a key longer than this (NVS_KEY_NAME_MAX_SIZE - 1). */
+constexpr size_t kNvsNameMax = 15;
+
+}  // namespace
+
+TEST_CASE("CrosspadSettings: load and save use the same keys with the same types", "[settings]") {
+    auto* settings = CrosspadSettings::getInstance();
+    KeyRecorder store;
+    settings->saveTo(store);
+    settings->loadFrom(store);
+
+    REQUIRE_FALSE(store.saved.empty());
+    CHECK(store.typeClashes.empty());
+    for (const auto& [name, type] : store.saved) {
+        INFO("saved and never loaded, or loaded as another type: " << name);
+        const auto it = store.read.find(name);
+        REQUIRE(it != store.read.end());
+        CHECK(it->second == type);
+    }
+    for (const auto& [name, type] : store.read) {
+        INFO("loaded and never saved: " << name);
+        CHECK(store.saved.count(name) == 1);
+    }
+}
+
+TEST_CASE("CrosspadSettings: every namespace and key fits NVS", "[settings]") {
+    auto* settings = CrosspadSettings::getInstance();
+    KeyRecorder store;
+    settings->saveTo(store);
+    settings->loadFrom(store);
+
+    for (const auto* keys : {&store.saved, &store.read}) {
+        for (const auto& [name, type] : *keys) {
+            INFO(name);
+            const size_t slash = name.find('/');
+            CHECK(slash <= kNvsNameMax);
+            CHECK(name.size() - slash - 1 <= kNvsNameMax);
+        }
+    }
 }
