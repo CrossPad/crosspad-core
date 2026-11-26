@@ -26,6 +26,11 @@ class CrosspadSettings;
  *    → posts to EventBus, triggers sample playback, optionally forwards to BLE (Midi2BLE)
  *  - Pad output (IMidiOutput): sendNoteOn/Off etc.
  *    → routes to STM32/USB/BLE based on keypad.send2STM/send2USB/send2BLE
+ *
+ * Every @p channel here is 0-based (0..15 for MIDI channels 1..16), as in
+ * IMidiOutput, and is forwarded unchanged. A transport library that reports
+ * channels as 1..16 (the Arduino MIDI library does) must be converted by the
+ * platform callback before it calls a handle* method.
  */
 class MidiInputHandler : public IMidiOutput {
 public:
